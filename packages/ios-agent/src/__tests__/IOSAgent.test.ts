@@ -285,6 +285,54 @@ describe('IOSAgent', () => {
     })
   })
 
+  describe('input setup — lazy TouchHelper on a null-helper booted session (followups H-E)', () => {
+    beforeEach(() => { MockTouchHelper.mockClear() })
+
+    // A reconnect clears+re-registers deviceStates with touchHelper=null while the sim stays booted (IOSAgent _scheduleReconnect → initDeviceStates); input must self-heal without a fresh device:boot. These tests drive that null-helper-on-booted-sim state directly — skipping device:boot is intentional, since booting would create the helper and bypass the lazy path under test.
+    async function joinBootlessSession() {
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true)) // sim booted, session has touchHelper=null (no device:boot)
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      MockTouchHelper.mockClear()
+      return { browser, agent }
+    }
+
+    it('lazily creates TouchHelper when input arrives with no device:boot for the session', async () => {
+      const { browser, agent } = await joinBootlessSession()
+
+      browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.4, y: 0.6 } }))
+
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results).toHaveLength(1), { timeout: 500 })
+      const th = MockTouchHelper.mock.results[0].value
+      expect(th.start).toHaveBeenCalled()
+      expect(th.touchStart).toHaveBeenCalledWith(0.4, 0.6)
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    // A tap is start + end (two messages); sync setup lets the end see the helper the start created (async would drop touchEnd → stuck finger).
+    it('keeps touch start/end paired through lazy setup (no stuck finger)', async () => {
+      const { browser, agent } = await joinBootlessSession()
+
+      browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+
+      await vi.waitFor(() => {
+        expect(MockTouchHelper.mock.results).toHaveLength(1)
+        const th = MockTouchHelper.mock.results[0].value
+        expect(th.touchStart).toHaveBeenCalledTimes(1)
+        expect(th.touchEnd).toHaveBeenCalledTimes(1)
+      }, { timeout: 500 })
+
+      agent.disconnect()
+      browser.close()
+    })
+  })
+
   describe('pinch relay messages', () => {
     beforeEach(() => { MockTouchHelper.mockClear() })
 

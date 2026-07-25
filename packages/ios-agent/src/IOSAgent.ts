@@ -577,6 +577,13 @@ export class IOSAgent implements DeviceAgent {
     }
   }
 
+  // Lazily set up the touch channel: a reconnect re-issues the session with touchHelper=null while the sim stays booted, so input self-heals without a fresh device:boot. Sync so a tap's start+end stay paired (async would drop touchEnd → stuck finger).
+  private ensureTouchHelper(state: DeviceState): void {
+    if (state.touchHelper) return
+    state.touchHelper = new TouchHelper(state.deviceId)
+    state.touchHelper.start()
+  }
+
   private handleRelayMessage(msg: { type: string; sessionId?: string; payload?: unknown }): void {
     switch (msg.type) {
       case 'device:boot': {
@@ -624,9 +631,10 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:touch:start': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state?.touchHelper) { logger.error('touch:start — touchHelper not ready'); break }
+        if (!state) break
+        this.ensureTouchHelper(state)
         const { x, y } = msg.payload as { x: number; y: number }
-        state.touchHelper.touchStart(x, y)
+        state.touchHelper?.touchStart(x, y)
         break
       }
       case 'input:touch:move': {
@@ -643,9 +651,10 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:pinch:start': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state?.touchHelper) break
+        if (!state) break
+        this.ensureTouchHelper(state)
         const { f0, f1 } = msg.payload as { f0: { x: number; y: number }; f1: { x: number; y: number } }
-        state.touchHelper.pinchStart(f0.x, f0.y, f1.x, f1.y)
+        state.touchHelper?.pinchStart(f0.x, f0.y, f1.x, f1.y)
         break
       }
       case 'input:pinch:move': {
@@ -696,6 +705,7 @@ export class IOSAgent implements DeviceAgent {
       case 'input:type': {
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
+        if (state) this.ensureTouchHelper(state)
         const { text } = (msg.payload ?? {}) as { text?: string }
         if (!state?.touchHelper) {
           this.ws?.send(JSON.stringify({ type: 'input:type-error', sessionId, message: 'No booted device' }))
@@ -729,7 +739,8 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:key': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state?.touchHelper) break
+        if (!state) break
+        this.ensureTouchHelper(state)
         const { code, modifiers } = msg.payload as { code: string; modifiers?: number }
         const usage = KEY_CODE_MAP[code]
         if (usage === undefined) break
@@ -744,13 +755,14 @@ export class IOSAgent implements DeviceAgent {
               state.touchHelper?.sendKey(usage, modifiers ?? 0)
             })
         } else {
-          state.touchHelper.sendKey(usage, modifiers ?? 0)
+          state.touchHelper?.sendKey(usage, modifiers ?? 0)
         }
         break
       }
       case 'input:button': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state?.touchHelper) break
+        if (!state) break
+        this.ensureTouchHelper(state)
         const { name, phase } = msg.payload as { name: string; phase?: 'down' | 'up' }
         // Map the cross-platform button vocabulary (used by MCP) onto this
         // device's actual chrome button names. Dashboard already sends the raw
@@ -759,13 +771,13 @@ export class IOSAgent implements DeviceAgent {
         if (chromeName === 'home') {
           // Home has no HID down/up split — always a single legacy press. Send once on release
           // (or on a phase-less legacy message) so a down+up pair doesn't fire it twice.
-          if (phase !== 'down') state.touchHelper.pressLegacyButton(0)
+          if (phase !== 'down') state.touchHelper?.pressLegacyButton(0)
         } else {
           const btn = state.loadedChrome?.buttons.find((b) => b.name === chromeName)
           if (btn && btn.usagePage > 0 && btn.usage > 0) {
-            if (phase === 'down') state.touchHelper.pressButtonDown(btn.usagePage, btn.usage)
-            else if (phase === 'up') state.touchHelper.pressButtonUp(btn.usagePage, btn.usage)
-            else state.touchHelper.pressButton(btn.usagePage, btn.usage)
+            if (phase === 'down') state.touchHelper?.pressButtonDown(btn.usagePage, btn.usage)
+            else if (phase === 'up') state.touchHelper?.pressButtonUp(btn.usagePage, btn.usage)
+            else state.touchHelper?.pressButton(btn.usagePage, btn.usage)
           }
         }
         break
