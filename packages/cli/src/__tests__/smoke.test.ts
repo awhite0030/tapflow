@@ -35,25 +35,46 @@ describe('CLI smoke tests', () => {
         env: { ...process.env, TAPFLOW_DATA_DIR: dataDir },
       })
 
+      const startedAt = Date.now()
       let stdout = ''
       let stderr = ''
-      proc.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
+      let listening = false
+      let settled = false
+      let deadline: ReturnType<typeof setTimeout>
+      let grace: ReturnType<typeof setTimeout>
+
+      const finish = (err?: Error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(deadline)
+        clearTimeout(grace)
+        proc.kill()
+        if (err) reject(err)
+        else resolve()
+      }
+
+      // Wait for the "Relay started on …" line rather than sampling stdout after a fixed
+      // delay: a cold tsx start plus relay boot can outlast any fixed window on a loaded
+      // CI runner, which made this test flaky.
+      proc.stdout.on('data', (d: Buffer) => {
+        stdout += d.toString()
+        if (listening || !stdout.includes('localhost:14321')) return
+        listening = true
+        // Keep watching for the ~2s the fixed window used to cover, so a relay that prints
+        // and then dies still trips the early-exit guard below; never wait less than 500ms
+        // when a slow runner pushed the line out late.
+        grace = setTimeout(finish, Math.max(500, 2_000 - (Date.now() - startedAt)))
+      })
       proc.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
 
       // 즉시 종료하면 실패
       proc.on('exit', (code) => {
-        if (code !== null) reject(new Error(`relay start exited early (code ${code})\n${stderr}`))
+        if (code !== null) finish(new Error(`relay start exited early (code ${code})\n${stderr}`))
       })
 
-      setTimeout(() => {
-        proc.kill()
-        try {
-          expect(stdout).toContain('localhost:14321')
-          resolve()
-        } catch (e) {
-          reject(e)
-        }
-      }, 2000)
+      deadline = setTimeout(() => {
+        finish(new Error(`relay start never reported listening within 15s\nstdout: ${stdout}\nstderr: ${stderr}`))
+      }, 15_000)
     })
-  }, 10_000)
+  }, 20_000)
 })
