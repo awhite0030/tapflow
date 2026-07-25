@@ -49,7 +49,6 @@ The audience is the whole team (PO, PM, designers, backend, QA) — not just QA.
 ## HOW NOT
 
 - Do not reintroduce the `next` package.
-- Do not run as a standalone server — the relay serves it.
 - Do not call the Agent directly from the dashboard — always go through the relay.
 - Do not put platform-specific conditionals (`if platform === 'ios'`) in UI components.
 - Do not send session recording data to external storage.

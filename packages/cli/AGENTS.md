@@ -13,24 +13,12 @@ status: living
 ## WHAT
 
 `tapflow` CLI: handles local dev environment checks and simulator / relay / agent startup.
-Commands are registered in `src/index.ts`:
+Commands are registered in `src/index.ts`; user-facing reference: [`docs/reference/cli.md`](../../docs/reference/cli.md). Non-obvious contracts:
 
-| Command | Behavior |
-|---------|----------|
-| `init [--tunnel, --force]` | Scaffold `tapflow.config.json` interactively; auto-adds the `.tapflow/` runtime dirs (`data/`, `artifacts/`) to `.gitignore` |
-| `admin init [--relay]` | Create the first admin account on the relay (CLI fallback for headless servers; web `/setup` is the default path) |
-| `start [--device, --platform]` | Local-only shortcut — starts relay + agent together (same Mac) |
-| `relay start [--port, --tunnel]` | Start relay only (for Docker/Linux server) |
-| `agent start [--relay, --device, --platform, --token]` | Start agent only — connects to an existing relay. `--token` (or `TAPFLOW_AGENT_TOKEN`) carries an `agent`-scope PAT, required when the relay is on a different machine; flag wins over env. |
-| `doctor [platform]` | Check system prerequisites (`ios` \| `android`; omit for all): iOS Xcode/simctl/Simulator, Android SDK/adb/AVD |
-| `setup [platform]` | Guided environment setup (`ios` \| `android`; omit to auto-detect): installs/repairs JDK, Android SDK (self-contained at `~/Library/Android/sdk`), simulator runtime / AVDs |
-| `devices` | List available simulators and AVDs |
-| `boot <name>` | Boot a simulator by name or UDID |
-| `reset` | Shut down all simulators and emulators |
-| `status [--relay]` | Show connected agents, devices, and session count (WebSocket `agents:listed`) |
-| `logs [--relay] [--lines]` | Query the relay in-memory log buffer (`GET /api/v1/logs`) |
-| `flow run <files...> [--relay, --token, --session, --device, --build, --no-install, --junit, --artifacts, --timeout]` | Replay YAML flows deterministically via `@tapflowio/flow-runner` (no LLM). Exit codes: `0` passed · `1` flow failed · `2` env/config error. Always sends `device:boot` (idempotent — it initializes the agent's touch/stream state). `--token` needs a `view`-scope PAT; REST (`/ui-tree`, `/screenshot`) requires auth even on localhost. |
-| `migrate <subcommand>` | Migration commands (subcommand: `data-dir`). `migrate data-dir` moves a legacy `.tapflow-data/` into the unified `.tapflow/data/` (atomic rename), repoints `local.dataDir` in `tapflow.config.json` when it pinned the old default, and updates `.gitignore`. Idempotent; the relay itself never moves data (read-only fallback only). |
+- `init` never touches the relay; it scaffolds config and auto-adds the `.tapflow/` runtime dirs to `.gitignore`. `admin init` is the CLI fallback for headless servers (web `/setup` is the default path).
+- `agent start --token` (or `TAPFLOW_AGENT_TOKEN`) carries an `agent`-scope PAT, required when the relay is on a different machine; flag wins over env.
+- `flow run` exit codes: `0` passed · `1` flow failed · `2` env/config error. Always sends `device:boot` (idempotent — it initializes the agent's touch/stream state). `--token` needs a `view`-scope PAT; REST (`/ui-tree`, `/screenshot`) requires auth even on localhost.
+- `migrate data-dir` moves a legacy `.tapflow-data/` into the unified `.tapflow/data/` (atomic rename), repoints `local.dataDir` in `tapflow.config.json` when it pinned the old default, and updates `.gitignore`. Idempotent; the relay itself never moves data (read-only fallback only).
 
 ### Command Design Principles
 
@@ -48,5 +36,4 @@ Each command has exactly one responsibility. `tapflow start` is for local develo
 ## HOW NOT
 
 - Do not add commands that access external systems (cloud, remote infrastructure) — this is a local tool.
-- Do not hardcode credentials or tokens.
 - Only `reset` tears down running state (shutting down simulators/emulators). `setup` may install/configure the local environment (Homebrew packages, JDK, Android SDK, shell rc) but only after explicit consent and only in interactive (TTY) sessions — non-interactive runs print guidance instead. No command deletes user data.

@@ -50,6 +50,7 @@ playground/       ← local integration test environment
 - `main` is always deployable. Direct commits are not allowed. Start work on a `feature/{topic}` branch → PR → merge.
 - Always create new branches from `origin/main` (`git fetch origin && git checkout -b feature/{topic} origin/main`). Your local `main` may be behind.
 - Releases are driven by [changesets](https://github.com/changesets/changesets). A tag push triggers GitHub Actions → npm publish + GitHub Release. Merging to main does not auto-publish.
+- Never publish with raw `npm publish` — it does not rewrite `workspace:*` dependencies between packages; the changesets → pnpm publish path does.
 
 ### Versioning (Semver)
 
@@ -59,7 +60,7 @@ Versions follow `MAJOR.MINOR.PATCH`. Determine the bump from the commits since t
 |------|------|
 | `patch` | `fix`, `perf`, `docs`, `chore`, `refactor` — no API change |
 | `minor` | `feat` — new functionality, backward-compatible |
-| `major` | Any breaking change (see [AGENTS.md](./AGENTS.md) Principle 4 for scope) |
+| `major` | Any breaking change (see [AGENTS.md](./AGENTS.md) Core Principles for scope) |
 
 **Before `v1.0.0`:** breaking changes may land in `minor` versions. Once `v1.0.0` is tagged, the table above is strictly enforced.
 

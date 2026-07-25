@@ -1,3 +1,9 @@
+---
+type: rules
+topics: [flow-runner, yaml, replay]
+status: living
+---
+
 # flow-runner — AGENTS.md
 
 > Common rules: [AGENTS.md](../../AGENTS.md) | Full index: [INDEX.md](../../INDEX.md)
@@ -9,7 +15,7 @@
 `@tapflowio/flow-runner`: deterministic YAML flow engine — the replay half of the automated QA axis.
 Flows are authored once (by an agent via MCP, or by hand) and replayed with **zero LLM calls**: same input → same execution, no API cost in CI.
 
-Published on the standard npm channel and versioned by changesets in the repo-wide fixed group. Never publish with raw `npm publish` — it does not rewrite the `workspace:*` dependency on agent-core; the changesets → pnpm publish path does.
+Published on the standard npm channel and versioned by changesets in the repo-wide fixed group. Publish only via the changesets flow — see [CONTRIBUTING.md § Branches & releases](../../CONTRIBUTING.md#branches--releases).
 
 Consumers: `tapflow flow run` (CLI) and the `run_flow` MCP tool — both drive the same engine, so results never diverge.
 

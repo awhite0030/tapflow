@@ -71,26 +71,3 @@ Committed *why* behind non-obvious decisions. Read the relevant one **before** c
 | [streaming-latency-log.md](./contributing/streaming-latency-log.md) | log | Append-only glass-to-glass latency log — pipeline analysis, attempts, decisions |
 | [android-video-streaming-diagnosis.md](./contributing/android-video-streaming-diagnosis.md) | diagnosis | Android emulator streaming issues traced to root cause, one section per issue |
 | [awdl-wifi-latency-diagnosis.md](./contributing/awdl-wifi-latency-diagnosis.md) | diagnosis | Periodic Wi-Fi stream hitch traced to AWDL via ICMP ping — method and evidence |
-
----
-
-## Hierarchy
-
-```text
-AGENTS.md (common rules — WHAT/WHY/HOW/HOW NOT)
-└── INDEX.md (this file — package & doc reference index)
-    ├── packages/agent-core/AGENTS.md
-    ├── packages/ios-agent/AGENTS.md
-    ├── packages/android-agent/AGENTS.md
-    ├── packages/audiotap-helper/AGENTS.md
-    ├── packages/relay/AGENTS.md
-    ├── packages/dashboard/AGENTS.md
-    ├── packages/cli/AGENTS.md
-    ├── packages/mcp-server/AGENTS.md
-    ├── packages/flow-runner/AGENTS.md
-    ├── playground/AGENTS.md
-    ├── .work/CLAUDE.md
-    ├── .internal/marketing/AGENTS.md
-    ├── docs/AGENTS.md
-    └── CONTRIBUTING.md
-```
