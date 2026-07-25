@@ -46,6 +46,7 @@
     "access": "public"
   },
   "scripts": {
+    "postinstall": "node -e \"if (process.platform === 'darwin') { try { require('fs').chmodSync('bin/emulator-encoder', 0o755) } catch {} }\"",
     "build": "tsc -b",
     "typecheck": "tsc -b",
     "test": "vitest run",
