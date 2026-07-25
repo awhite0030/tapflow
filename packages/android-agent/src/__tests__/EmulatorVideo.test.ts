@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
-import { EmulatorVideo, detectCornerRadius, type EncoderProcess } from '../emulator/EmulatorVideo'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { EmulatorVideo, detectCornerRadius, ensureExecutable, type EncoderProcess } from '../emulator/EmulatorVideo'
 import { EmulatorGrpcClient, type RawEmulatorController } from '../emulator/EmulatorGrpcClient'
 import type { ScrcpyFrame } from '../scrcpy/ScrcpyVideo'
 
@@ -202,5 +205,44 @@ describe('EmulatorVideo', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// followups M3: emulator-encoder ships without the exec bit on installs that skip the
+// postinstall (--ignore-scripts), so the gRPC video/audio path fails with EACCES and
+// silently falls back to scrcpy (no audio, no host-mute). ensureExecutable self-heals it.
+describe('ensureExecutable', () => {
+  it('restores the exec bit on a non-executable binary', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapflow-encoder-'))
+    const bin = path.join(dir, 'emulator-encoder')
+    try {
+      fs.writeFileSync(bin, '#!/bin/sh\n')
+      fs.chmodSync(bin, 0o644) // no exec bit — mimics a --ignore-scripts install
+      expect(() => fs.accessSync(bin, fs.constants.X_OK)).toThrow()
+
+      ensureExecutable(bin)
+
+      expect(() => fs.accessSync(bin, fs.constants.X_OK)).not.toThrow()
+      expect(fs.statSync(bin).mode & 0o111).not.toBe(0)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('is a no-op (no throw) when the binary is already executable', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapflow-encoder-'))
+    const bin = path.join(dir, 'emulator-encoder')
+    try {
+      fs.writeFileSync(bin, '#!/bin/sh\n')
+      fs.chmodSync(bin, 0o755)
+      expect(() => ensureExecutable(bin)).not.toThrow()
+      expect(() => fs.accessSync(bin, fs.constants.X_OK)).not.toThrow()
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not throw when the binary is missing (spawn will surface the real error)', () => {
+    expect(() => ensureExecutable('/no/such/emulator-encoder')).not.toThrow()
   })
 })

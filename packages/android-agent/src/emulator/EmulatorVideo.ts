@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import fs from 'node:fs'
 import { createLogger } from '@tapflowio/agent-core'
 import { EmulatorGrpcClient } from './EmulatorGrpcClient.js'
 import type { ScrcpyFrame } from '../scrcpy/ScrcpyVideo.js'
@@ -9,6 +10,21 @@ const logger = createLogger('android-agent:emulator-video')
 
 // The Swift VT encoder, two levels up in both src/ (tsx) and dist/ (build).
 const ENCODER_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'emulator-encoder')
+
+// Defense-in-depth for the postinstall chmod: installs that skip scripts (--ignore-scripts,
+// some CI/security setups) leave emulator-encoder without the exec bit → spawn EACCES → silent
+// scrcpy fallback with no gRPC audio or host-mute. Restore it before spawning; a read-only prefix
+// just falls through to the real spawn error (unchanged scrcpy fallback).
+export function ensureExecutable(bin: string): void {
+  try {
+    fs.accessSync(bin, fs.constants.X_OK)
+  } catch {
+    try {
+      fs.chmodSync(bin, 0o755)
+      logger.info(`restored exec bit on ${bin} (postinstall likely skipped)`)
+    } catch { /* read-only fs — spawn surfaces EACCES and we fall back to scrcpy as before */ }
+  }
+}
 
 export interface EmulatorVideoInfo {
   width: number
@@ -77,7 +93,7 @@ export class EmulatorVideo {
   /** Spawns the encoder and starts capture; resolves once the first frame fixes the dimensions. */
   async start(): Promise<EmulatorVideoInfo> {
     const fps = this.options.fps ?? 30
-    const spawnEncoder = this.options.spawnEncoder ?? ((f: number) => spawn(ENCODER_BIN, [String(f)]))
+    const spawnEncoder = this.options.spawnEncoder ?? ((f: number) => { ensureExecutable(ENCODER_BIN); return spawn(ENCODER_BIN, [String(f)]) })
     this.encoder = spawnEncoder(fps)
     this.encoder.stderr.on('data', (d: Buffer) => logger.info(`encoder: ${d.toString().trim()}`))
     this.encoder.stdout.on('data', (chunk: Buffer) => this.onEncoderOutput(chunk))
