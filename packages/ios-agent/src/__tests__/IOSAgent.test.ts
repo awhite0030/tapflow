@@ -285,6 +285,63 @@ describe('IOSAgent', () => {
     })
   })
 
+  describe('input setup — lazy TouchHelper on boot-less session attach', () => {
+    beforeEach(() => { MockTouchHelper.mockClear() })
+
+    // Repro (followups H-E): an agent reconnect re-issues the session, so its
+    // DeviceState is recreated with touchHelper=null while the simulator stays
+    // booted. If the client then sends input without a fresh device:boot, the
+    // input handlers used to drop it silently ("읽기 O / 쓰기 X"). It must
+    // self-heal by setting up the touch channel lazily.
+    it('lazily creates TouchHelper when input arrives on a session that skipped device:boot', async () => {
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      // NO device:boot — this session never runs handleDeviceBoot (the only place
+      // that used to create TouchHelper), so touchHelper starts null.
+      MockTouchHelper.mockClear()
+
+      browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.4, y: 0.6 } }))
+
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results).toHaveLength(1), { timeout: 500 })
+      const th = MockTouchHelper.mock.results[0].value
+      expect(th.start).toHaveBeenCalled()
+      expect(th.touchStart).toHaveBeenCalledWith(0.4, 0.6)
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    // A tap is input:touch:start + input:touch:end (two messages). The lazy setup
+    // must be synchronous so the end sees the helper the start created — an async
+    // setup would let the end run first and drop touchEnd (a stuck finger).
+    it('keeps touch start/end paired through lazy setup (no stuck finger)', async () => {
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      MockTouchHelper.mockClear()
+
+      browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+
+      await vi.waitFor(() => {
+        expect(MockTouchHelper.mock.results).toHaveLength(1)
+        const th = MockTouchHelper.mock.results[0].value
+        expect(th.touchStart).toHaveBeenCalledTimes(1)
+        expect(th.touchEnd).toHaveBeenCalledTimes(1)
+      }, { timeout: 500 })
+
+      agent.disconnect()
+      browser.close()
+    })
+  })
+
   describe('pinch relay messages', () => {
     beforeEach(() => { MockTouchHelper.mockClear() })
 
