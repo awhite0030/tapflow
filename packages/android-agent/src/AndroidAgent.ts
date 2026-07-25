@@ -1167,6 +1167,14 @@ export class AndroidAgent implements DeviceAgent {
       await this.adb.sendKeyEvent(serial, SPECIAL[code])
       return
     }
+    // A Ctrl/Cmd chord is a command, not text. `input text` can't do chords, so map the
+    // clipboard shortcuts to dedicated keycodes (a Mac viewer sends Cmd = meta 0x08; treat
+    // meta and ctrl alike). Any other chord+letter (e.g. Cmd+A) must NOT type the raw letter.
+    if (modifiers & (0x01 | 0x08)) {
+      const CLIP: Record<string, string> = { KeyC: 'KEYCODE_COPY', KeyV: 'KEYCODE_PASTE', KeyX: 'KEYCODE_CUT' }
+      if (CLIP[code]) await this.adb.sendKeyEvent(serial, CLIP[code])
+      return
+    }
     const shift = Boolean(modifiers & 0x02)
     let char: string | null = null
     if (code.startsWith('Key')) {
