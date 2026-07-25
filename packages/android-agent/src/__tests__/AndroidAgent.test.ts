@@ -835,6 +835,40 @@ describe('AndroidAgent', () => {
         expect(inputSpy).toHaveBeenCalledWith('emulator-5554', 'text', '!')
       })
 
+      // followups M1: a Cmd/Ctrl chord used to be typed as the raw letter (Cmd+C → 'c'), so
+      // copy/paste both silently failed. They must map to the dedicated keycodes instead.
+      it('maps Cmd+C (meta) to KEYCODE_COPY, not a typed "c"', () => {
+        const keyEvSpy = vi.spyOn(adb, 'sendKeyEvent')
+        const inputSpy = vi.spyOn(adb, 'sendInput')
+        inject({ type: 'input:key', payload: { code: 'KeyC', modifiers: 0x08 } })
+        expect(keyEvSpy).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_COPY')
+        expect(inputSpy).not.toHaveBeenCalled()
+      })
+
+      it('maps Cmd+V to KEYCODE_PASTE and Ctrl+X to KEYCODE_CUT', () => {
+        const keyEvSpy = vi.spyOn(adb, 'sendKeyEvent')
+        const inputSpy = vi.spyOn(adb, 'sendInput')
+        inject({ type: 'input:key', payload: { code: 'KeyV', modifiers: 0x08 } })
+        inject({ type: 'input:key', payload: { code: 'KeyX', modifiers: 0x01 } })
+        expect(keyEvSpy).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_PASTE')
+        expect(keyEvSpy).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_CUT')
+        expect(inputSpy).not.toHaveBeenCalled()
+      })
+
+      it('does not type the raw letter for a non-clipboard chord (Cmd+A)', () => {
+        const keyEvSpy = vi.spyOn(adb, 'sendKeyEvent')
+        const inputSpy = vi.spyOn(adb, 'sendInput')
+        inject({ type: 'input:key', payload: { code: 'KeyA', modifiers: 0x08 } })
+        expect(inputSpy).not.toHaveBeenCalled()
+        expect(keyEvSpy).not.toHaveBeenCalled()
+      })
+
+      it('still types a plain letter with no chord modifier (regression)', () => {
+        const inputSpy = vi.spyOn(adb, 'sendInput')
+        inject({ type: 'input:key', payload: { code: 'KeyC', modifiers: 0 } })
+        expect(inputSpy).toHaveBeenCalledWith('emulator-5554', 'text', 'c')
+      })
+
       it('keyboard:toggle is a client-side no-op (no adb side effect, no throw)', () => {
         const keyEvSpy = vi.spyOn(adb, 'sendKeyEvent')
         const inputSpy = vi.spyOn(adb, 'sendInput')
