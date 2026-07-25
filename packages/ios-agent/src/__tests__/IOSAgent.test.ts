@@ -285,24 +285,23 @@ describe('IOSAgent', () => {
     })
   })
 
-  describe('input setup — lazy TouchHelper on boot-less session attach', () => {
+  describe('input setup — lazy TouchHelper on a null-helper booted session (followups H-E)', () => {
     beforeEach(() => { MockTouchHelper.mockClear() })
 
-    // Repro (followups H-E): an agent reconnect re-issues the session, so its
-    // DeviceState is recreated with touchHelper=null while the simulator stays
-    // booted. If the client then sends input without a fresh device:boot, the
-    // input handlers used to drop it silently ("읽기 O / 쓰기 X"). It must
-    // self-heal by setting up the touch channel lazily.
-    it('lazily creates TouchHelper when input arrives on a session that skipped device:boot', async () => {
+    // A reconnect clears+re-registers deviceStates with touchHelper=null while the sim stays booted (IOSAgent _scheduleReconnect → initDeviceStates); input must self-heal without a fresh device:boot. These tests drive that null-helper-on-booted-sim state directly — skipping device:boot is intentional, since booting would create the helper and bypass the lazy path under test.
+    async function joinBootlessSession() {
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
-      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true)) // sim booted, session has touchHelper=null (no device:boot)
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
-      // NO device:boot — this session never runs handleDeviceBoot (the only place
-      // that used to create TouchHelper), so touchHelper starts null.
       MockTouchHelper.mockClear()
+      return { browser, agent }
+    }
+
+    it('lazily creates TouchHelper when input arrives with no device:boot for the session', async () => {
+      const { browser, agent } = await joinBootlessSession()
 
       browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.4, y: 0.6 } }))
 
@@ -315,17 +314,9 @@ describe('IOSAgent', () => {
       browser.close()
     })
 
-    // A tap is input:touch:start + input:touch:end (two messages). The lazy setup
-    // must be synchronous so the end sees the helper the start created — an async
-    // setup would let the end run first and drop touchEnd (a stuck finger).
+    // A tap is start + end (two messages); sync setup lets the end see the helper the start created (async would drop touchEnd → stuck finger).
     it('keeps touch start/end paired through lazy setup (no stuck finger)', async () => {
-      const browser = new WebSocket(`ws://localhost:${port}`)
-      await waitForOpen(browser)
-      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
-      await agent.connect(`ws://localhost:${port}`)
-      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
-      await waitForType(browser, 'session:joined')
-      MockTouchHelper.mockClear()
+      const { browser, agent } = await joinBootlessSession()
 
       browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
       browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))

@@ -577,13 +577,7 @@ export class IOSAgent implements DeviceAgent {
     }
   }
 
-  // Ensure the session's touch channel exists. handleDeviceBoot is the normal setup
-  // path, but a session can become active without it — an agent reconnect re-issues
-  // the session (deviceStates recreated with touchHelper=null) while the simulator
-  // stays booted, and the client may send input without a fresh device:boot. Create
-  // the helper lazily so input self-heals instead of being silently dropped. Kept
-  // synchronous so a tap's start+end stay paired: an async setup would let the end
-  // run before the helper exists and drop touchEnd (a stuck finger).
+  // Lazily set up the touch channel: a reconnect re-issues the session with touchHelper=null while the sim stays booted, so input self-heals without a fresh device:boot. Sync so a tap's start+end stay paired (async would drop touchEnd → stuck finger).
   private ensureTouchHelper(state: DeviceState): void {
     if (state.touchHelper) return
     state.touchHelper = new TouchHelper(state.deviceId)
