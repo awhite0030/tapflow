@@ -35,25 +35,44 @@ describe('CLI smoke tests', () => {
         env: { ...process.env, TAPFLOW_DATA_DIR: dataDir },
       })
 
+      const startedAt = Date.now()
       let stdout = ''
       let stderr = ''
-      proc.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
+      let listening = false
+      let settled = false
+      let deadline: ReturnType<typeof setTimeout>
+      let grace: ReturnType<typeof setTimeout>
+
+      const finish = (err?: Error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(deadline)
+        clearTimeout(grace)
+        proc.kill()
+        if (err) reject(err)
+        else resolve()
+      }
+
+      // Wait for the readiness line: a cold tsx start can outlast any fixed window on CI.
+      proc.stdout.on('data', (d: Buffer) => {
+        stdout += d.toString()
+        if (listening || !stdout.includes('localhost:14321')) return
+        listening = true
+        // Keep the ~2s of liveness the fixed window used to observe, floored at 500ms.
+        grace = setTimeout(finish, Math.max(500, 2_000 - (Date.now() - startedAt)))
+      })
       proc.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
 
-      // 즉시 종료하면 실패
-      proc.on('exit', (code) => {
-        if (code !== null) reject(new Error(`relay start exited early (code ${code})\n${stderr}`))
+      // 즉시 종료하면 실패 (a signal kill reports code === null, so check both)
+      proc.on('exit', (code, signal) => {
+        if (code !== null || signal !== null) {
+          finish(new Error(`relay start exited early (code ${code}, signal ${signal})\n${stderr}`))
+        }
       })
 
-      setTimeout(() => {
-        proc.kill()
-        try {
-          expect(stdout).toContain('localhost:14321')
-          resolve()
-        } catch (e) {
-          reject(e)
-        }
-      }, 2000)
+      deadline = setTimeout(() => {
+        finish(new Error(`relay start never reported listening within 15s\nstdout: ${stdout}\nstderr: ${stderr}`))
+      }, 15_000)
     })
-  }, 10_000)
+  }, 20_000)
 })
