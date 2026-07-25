@@ -11,18 +11,7 @@ VitePress 1.x 기반 정적 문서 사이트. 작업하면서 겪은 삽질과 �
 
 ## 파일 구조
 
-```
-docs/
-├── .vitepress/
-│   ├── config.ts              # VitePress 설정 (shiki 테마 주입 등)
-│   └── theme/
-│       ├── index.ts           # 테마 진입점
-│       ├── custom.css         # CSS 커스터마이징
-│       ├── tapflow-light.json # shiki 커스텀 테마 (라이트)
-│       └── tapflow-dark.json  # shiki 커스텀 테마 (다크)
-└── reference/
-    └── cli.md                 # CLI 레퍼런스
-```
+VitePress 표준 구조를 따른다. 사이드바·shiki 테마 주입은 `.vitepress/config.ts`, CSS 커스터마이징과 shiki 커스텀 테마는 `.vitepress/theme/`에 있다. 문서 본문은 영어가 `docs/`, 한국어가 `docs/ko/`.
 
 
 ## 문서 작성 규칙

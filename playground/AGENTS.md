@@ -43,7 +43,7 @@ pnpm pre-release   # dashboard 빌드 → relay 기동 → localhost:4000
 
 ### Dev/test 스크립트 (모노레포 루트에서 실행)
 
-dev/test 커맨드는 **루트에서** 실행한다. 이 패키지의 스크립트(`relay`·`ios-agent`·`android-agent`·`mock-agents`·`seed`·`demo-seed`·`doctor`·`reset`·`mcp`·`pre-release`)는 루트가 호출하는 구현(leaf)이며, 여기서 직접 타이핑하지 않는다. 전체 목록은 루트 [CONTRIBUTING.md](../CONTRIBUTING.md#dev--test-commands).
+dev/test 커맨드는 **루트에서** 실행한다. 이 패키지의 스크립트는 루트가 호출하는 구현(leaf)이며, 여기서 직접 타이핑하지 않는다. 전체 목록은 루트 [CONTRIBUTING.md](../CONTRIBUTING.md#dev--test-commands).
 
 relay API는 4000, dashboard는 3001(Vite dev server).
 

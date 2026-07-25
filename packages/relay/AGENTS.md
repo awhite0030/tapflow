@@ -44,18 +44,7 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
 
 ### API Endpoints (builds / apps)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/v1/apps` | App list (with latest_build summary) |
-| `POST` | `/api/v1/apps` | Create an app entry |
-| `PATCH` | `/api/v1/apps/:id` | Manually rename an app (Admin/Developer) |
-| `DELETE` | `/api/v1/apps/:id` | Delete an app (and its builds) |
-| `POST` | `/api/v1/builds` | Upload a build (`.app.zip` / `.tar.gz` / `.tgz` / `.apk`) |
-| `GET` | `/api/v1/builds` | Build list (filterable by `app_id`) |
-| `GET` | `/api/v1/builds/:id` | Single build |
-| `PATCH` | `/api/v1/builds/:id` | Update `status_label` / `version_label` |
-| `POST` | `/api/v1/builds/:id/schedule-deletion` | Put the build on the deletion clock (`delete_after = now + TTL`) |
-| `DELETE` | `/api/v1/builds/:id/schedule-deletion` | Cancel a scheduled deletion |
+Routes are registered in `RelayServer.ts`; user-facing reference: [`docs/reference/api.md`](../../docs/reference/api.md).
 
 > **Deletion lifecycle (issue #258)**: review status and deletion are orthogonal. `status_label` (incl. `Done`) is a pure review state and never schedules deletion; purge keys off `delete_after` only, which is set by the explicit schedule-deletion action. `completed_at` is informational.
 

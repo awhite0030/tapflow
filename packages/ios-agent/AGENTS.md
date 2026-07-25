@@ -23,10 +23,9 @@ status: living
 
 ## HOW NOT
 
-- Do not inline `xcrun` commands with business logic.
 - Do not expose iOS-specific methods as public API if they are not in the `DeviceAgent` interface.
 - Do not reintroduce SCStream/ScreenCaptureKit — geometry coordinate mismatches cause double-frame issues.
-- Do not stream JPEG frames over WebRTC DataChannel — the channel silently closes on large messages (~200KB+), and there is no P2P benefit in a relay-intermediary architecture.
+- Do not stream JPEG frames over WebRTC DataChannel — the channel silently closes on large messages (~236KB+; details in "WebSocket Binary streaming — transport choice" below).
 
 ---
 
@@ -226,7 +225,7 @@ snapshot.
 Keyboard injection uses `IndigoHIDMessageForKeyboardArbitrary(usage, op)`.  
 `IndigoHIDMessageForHIDArbitrary(target=0x32, page=0x07, ...)` is the digitizer (touch) path — iOS does not recognize it as a hardware keyboard, so the CapsLock HUD and Korean/English toggle do not work.
 
-→ Detailed analysis (target differences, symptom patterns, SimKeyboardInputController symbols): [`internal/simkit-internals.md` §5](../../internal/simkit-internals.md)
+→ Detailed analysis (target differences, symptom patterns, SimKeyboardInputController symbols): [`contributing/simkit-internals.md` §5](../../contributing/simkit-internals.md)
 
 ---
 
