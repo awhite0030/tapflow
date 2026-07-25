@@ -53,23 +53,21 @@ describe('CLI smoke tests', () => {
         else resolve()
       }
 
-      // Wait for the "Relay started on …" line rather than sampling stdout after a fixed
-      // delay: a cold tsx start plus relay boot can outlast any fixed window on a loaded
-      // CI runner, which made this test flaky.
+      // Wait for the readiness line: a cold tsx start can outlast any fixed window on CI.
       proc.stdout.on('data', (d: Buffer) => {
         stdout += d.toString()
         if (listening || !stdout.includes('localhost:14321')) return
         listening = true
-        // Keep watching for the ~2s the fixed window used to cover, so a relay that prints
-        // and then dies still trips the early-exit guard below; never wait less than 500ms
-        // when a slow runner pushed the line out late.
+        // Keep the ~2s of liveness the fixed window used to observe, floored at 500ms.
         grace = setTimeout(finish, Math.max(500, 2_000 - (Date.now() - startedAt)))
       })
       proc.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
 
-      // 즉시 종료하면 실패
-      proc.on('exit', (code) => {
-        if (code !== null) finish(new Error(`relay start exited early (code ${code})\n${stderr}`))
+      // 즉시 종료하면 실패 (a signal kill reports code === null, so check both)
+      proc.on('exit', (code, signal) => {
+        if (code !== null || signal !== null) {
+          finish(new Error(`relay start exited early (code ${code}, signal ${signal})\n${stderr}`))
+        }
       })
 
       deadline = setTimeout(() => {
