@@ -126,10 +126,7 @@ interface DeviceState {
   sessionId: string
   deviceId: string
   touchHelper: AndroidTouchHelper | null
-  // Whether this session's device is booted, for truthful input acks. Set when the
-  // device is ready, cleared on shutdown. Starts false after a reconnect (state is
-  // recreated) even if the emulator is still up — the input-ack path verifies once
-  // via adb and caches the result here.
+  // Device-booted flag for truthful input acks — set on device:ready, cleared on shutdown; false after a reconnect until the ack path re-verifies once via adb.
   booted: boolean
   streamWs: WebSocket | null
   scrcpySession: ScrcpySession | null
@@ -851,10 +848,7 @@ export class AndroidAgent implements DeviceAgent {
     }))
   }
 
-  // Ack a terminal input (tap/swipe/key/button) — mirrors ios-agent.ackInput.
-  // input:done means the input was dispatched to a booted device (not a guarantee it
-  // physically landed); input:error means there was no live pointer channel or the
-  // device wasn't booted, so nothing was dispatched.
+  // Ack a terminal input (mirrors ios-agent.ackInput): input:done = dispatched to a booted device (not a landing guarantee); input:error = no live pointer channel / not booted.
   private async ackInput(state: DeviceState, dispatched: boolean): Promise<void> {
     const booted = dispatched && (state.booted || (await this.isBooted(state.deviceId)))
     if (booted) state.booted = true // cache the post-reconnect verify so later inputs skip adb

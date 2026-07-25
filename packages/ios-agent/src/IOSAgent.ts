@@ -76,10 +76,7 @@ interface DeviceState {
   sessionId: string
   deviceId: string
   touchHelper: TouchHelper | null
-  // Whether this session's device is booted, for truthful input acks. Set on a
-  // successful device:boot, cleared on shutdown. Starts false after a reconnect
-  // (state is recreated) even though the sim may still be booted — the input-ack
-  // path verifies once via simctl and caches the result here.
+  // Device-booted flag for truthful input acks — set on device:boot, cleared on shutdown; false after a reconnect until the ack path re-verifies once via simctl.
   booted: boolean
   streamWs: WebSocket | null
   streamReader: ReadableStreamDefaultReader<StreamFrame> | null
@@ -594,12 +591,7 @@ export class IOSAgent implements DeviceAgent {
     state.touchHelper.start()
   }
 
-  // Ack a terminal input (tap/swipe/key/button). input:done means the input was
-  // dispatched to a booted device — NOT a guarantee the tap physically landed (HID
-  // injection is fire-and-forget), same "agent handled it" semantics as the other
-  // :done acks. input:error means there was no live touch channel or the device
-  // wasn't booted, so nothing was dispatched. Runs off the sync injection path, so
-  // it never affects touch start/end pairing.
+  // Ack a terminal input: input:done = dispatched to a booted device (not a landing guarantee — HID is fire-and-forget); input:error = no live channel / not booted. Off the sync inject path, so start/end pairing is unaffected.
   private async ackInput(state: DeviceState, dispatched: boolean): Promise<void> {
     const booted = dispatched && (state.booted || (await this.isBooted(state.deviceId)))
     if (booted) state.booted = true // cache the post-reconnect verify so later inputs skip simctl

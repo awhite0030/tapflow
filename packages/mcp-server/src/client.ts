@@ -181,13 +181,14 @@ export class TapflowClient {
         (m) =>
           (m['type'] === 'input:done' || m['type'] === 'input:error') &&
           m['sessionId'] === sessionId,
-        // Short window: a booted device acks in ms; the reconnect-verify path adds
-        // one simctl/adb call (~sub-second). If it lapses, an older agent/relay
-        // doesn't ack input — assume dispatched rather than stall each gesture.
+        // Short window: acks are near-instant (the reconnect-verify adds one sub-second simctl/adb call); a lapse means an older agent/relay that never acks → optimistic (see catch below).
         2_000,
       )
-    } catch {
-      return // no ack within the window → older agent/relay; assume dispatched
+    } catch (e) {
+      // Only a timeout means an older agent/relay that never acks → assume dispatched.
+      // A WebSocket close (or any other error) means the input was NOT dispatched — surface it.
+      if (e instanceof Error && e.message === 'Request timed out') return
+      throw e
     }
     if (msg['type'] === 'input:error') {
       throw new Error((msg['message'] as string) ?? 'Input failed')

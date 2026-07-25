@@ -355,14 +355,24 @@ describe('IOSAgent', () => {
       browser.close()
     })
 
-    it('acks input:error when the device is not booted (dispatched but simctl reports shutdown)', async () => {
+    it('acks input:error after the device is shut down (booted then shutdown)', async () => {
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
-      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(false)) // simctl reports shutdown
+      const simctl = mockSimctl(true)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
-      // no device:boot → booted flag stays false; the ack path verifies via simctl
+      // Boot first (per the device:boot guideline → booted flag true, TouchHelper set up).
+      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:ready')
+
+      // Power the device off: shutdown clears the booted flag, and simctl now reports it shut down.
+      ;(simctl.listDevices as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: 'shutdown', osVersion: 'iOS 18.3' },
+      ])
+      browser.send(JSON.stringify({ type: 'device:shutdown', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:shutdown-done')
 
       const errored = waitForType(browser, 'input:error')
       browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))

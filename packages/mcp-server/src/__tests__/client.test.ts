@@ -2,9 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
 import { TapflowClient } from '../client.js'
 
-// inputAck models the agent's H-F terminal-input ack: 'done' = a new agent that
-// acks a booted device, 'error' = the agent rejects (not booted / no channel),
-// 'none' = an older agent that never acks (degradation path).
+// inputAck models the agent's terminal-input ack: 'done' = new agent (booted), 'error' = rejects (not booted / no channel), 'none' = older agent that never acks (degradation).
 function createMockRelay(): {
   wss: WebSocketServer
   port: number
@@ -191,6 +189,13 @@ describe('TapflowClient', () => {
     it('resolves optimistically when an older agent never acks (degradation)', async () => {
       relay.setInputAck('none')
       await expect(client.tap('sess-1', 1, 2)).resolves.toBeUndefined()
+    })
+
+    it('rejects (not optimistic) when the relay connection drops mid-input', async () => {
+      relay.setInputAck('none') // no ack will arrive
+      const p = client.tap('sess-1', 1, 2)
+      relay.lastClient().close() // drop the connection while awaiting the ack
+      await expect(p).rejects.toThrow(/closed/i)
     })
   })
 

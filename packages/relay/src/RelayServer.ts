@@ -82,6 +82,11 @@ const RESOURCE_THRESHOLD = Number.isFinite(_parsedThreshold) ? _parsedThreshold 
 
 // Messages that only agents are allowed to send. Authenticated browser sockets
 // that send any of these are disconnected immediately.
+// Terminal input messages the MCP client awaits an ack for — if the agent is offline
+// the relay replies input:error so the client fails truthfully (non-terminal moves/starts
+// expect no ack and are dropped silently).
+const TERMINAL_INPUT_TYPES = new Set<string>(['input:touch:end', 'input:pinch:end', 'input:key', 'input:button'])
+
 const AGENT_MSG_TYPES = new Set([
   'agent:register', 'agent:resources', 'screenshot:done', 'screenshot:error',
   'ui:tree:response', 'ui:tree:error',
@@ -672,6 +677,11 @@ export class RelayServer {
         const session = this.sessions.get(msg.sessionId!)
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
+        } else if (TERMINAL_INPUT_TYPES.has(msg.type) && ws.readyState === WebSocket.OPEN) {
+          // Agent offline or session evicted: a terminal input can't be dispatched.
+          // Reply to the sender (the MCP/browser socket) so it fails truthfully
+          // instead of falling through to its optimistic 2s timeout.
+          ws.send(JSON.stringify({ type: 'input:error', sessionId: msg.sessionId, message: 'agent offline' }))
         }
         break
       }
