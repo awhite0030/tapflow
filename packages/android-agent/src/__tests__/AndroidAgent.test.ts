@@ -847,10 +847,12 @@ describe('AndroidAgent', () => {
 
       it('maps Cmd+V to KEYCODE_PASTE and Ctrl+X to KEYCODE_CUT', () => {
         const keyEvSpy = vi.spyOn(adb, 'sendKeyEvent')
+        const inputSpy = vi.spyOn(adb, 'sendInput')
         inject({ type: 'input:key', payload: { code: 'KeyV', modifiers: 0x08 } })
         inject({ type: 'input:key', payload: { code: 'KeyX', modifiers: 0x01 } })
         expect(keyEvSpy).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_PASTE')
         expect(keyEvSpy).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_CUT')
+        expect(inputSpy).not.toHaveBeenCalled()
       })
 
       it('does not type the raw letter for a non-clipboard chord (Cmd+A)', () => {
