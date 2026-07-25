@@ -11,10 +11,7 @@ const logger = createLogger('android-agent:emulator-video')
 // The Swift VT encoder, two levels up in both src/ (tsx) and dist/ (build).
 const ENCODER_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'emulator-encoder')
 
-// Defense-in-depth for the postinstall chmod: installs that skip scripts (--ignore-scripts,
-// some CI/security setups) leave emulator-encoder without the exec bit → spawn EACCES → silent
-// scrcpy fallback with no gRPC audio or host-mute. Restore it before spawning; a read-only prefix
-// just falls through to the real spawn error (unchanged scrcpy fallback).
+// Restore the encoder's exec bit before spawning: if it was lost in the install path, spawn would EACCES → silent scrcpy fallback with no gRPC audio/host-mute. Best-effort — a read-only fs falls through to the real spawn error.
 export function ensureExecutable(bin: string): void {
   try {
     fs.accessSync(bin, fs.constants.X_OK)

@@ -208,9 +208,7 @@ describe('EmulatorVideo', () => {
   })
 })
 
-// followups M3: emulator-encoder ships without the exec bit on installs that skip the
-// postinstall (--ignore-scripts), so the gRPC video/audio path fails with EACCES and
-// silently falls back to scrcpy (no audio, no host-mute). ensureExecutable self-heals it.
+// followups M3: a lost encoder exec bit makes spawn EACCES → silent scrcpy fallback (no audio/host-mute); ensureExecutable self-heals it.
 describe('ensureExecutable', () => {
   it('restores the exec bit on a non-executable binary', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapflow-encoder-'))
