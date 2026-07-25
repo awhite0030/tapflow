@@ -169,10 +169,36 @@ export class TapflowClient {
     )
   }
 
-  tap(sessionId: string, x: number, y: number): void {
+  // Awaits the agent's terminal-input ack (sent on the gesture's last message).
+  // input:error → the device wasn't booted / no input channel, so the gesture was
+  // dropped: surface it as a failure. A timeout means an older agent/relay that
+  // doesn't ack input — fall back to optimistic success so tap/swipe keep working
+  // (additive protocol, graceful degradation).
+  private async awaitInputAck(sessionId: string): Promise<void> {
+    let msg: RelayMsg
+    try {
+      msg = await this.waitFor(
+        (m) =>
+          (m['type'] === 'input:done' || m['type'] === 'input:error') &&
+          m['sessionId'] === sessionId,
+        // Short window: a booted device acks in ms; the reconnect-verify path adds
+        // one simctl/adb call (~sub-second). If it lapses, an older agent/relay
+        // doesn't ack input — assume dispatched rather than stall each gesture.
+        2_000,
+      )
+    } catch {
+      return // no ack within the window → older agent/relay; assume dispatched
+    }
+    if (msg['type'] === 'input:error') {
+      throw new Error((msg['message'] as string) ?? 'Input failed')
+    }
+  }
+
+  async tap(sessionId: string, x: number, y: number): Promise<void> {
     const payload = { x, y }
     this.send({ type: 'input:touch:start', sessionId, payload })
     this.send({ type: 'input:touch:end', sessionId, payload })
+    await this.awaitInputAck(sessionId)
   }
 
   async swipe(
@@ -203,6 +229,7 @@ export class TapflowClient {
     }
     await delay(interval)
     this.send({ type: 'input:touch:end', sessionId, payload: { x: endX, y: endY } })
+    await this.awaitInputAck(sessionId)
   }
 
   // Awaits the agent's ack so a following input (e.g. pressKey Enter) is sent
@@ -222,16 +249,18 @@ export class TapflowClient {
 
   // Agents consume KeyboardEvent.code names ({ code, modifiers }) on input:key.
   // 'Return' is accepted as an alias — neither platform maps it, 'Enter' is the code.
-  pressKey(sessionId: string, key: string): void {
+  async pressKey(sessionId: string, key: string): Promise<void> {
     const code = key === 'Return' ? 'Enter' : key
     this.send({ type: 'input:key', sessionId, payload: { code, modifiers: 0 } })
+    await this.awaitInputAck(sessionId)
   }
 
   // Agents consume { name, phase? } on input:button; a phase-less message is a
   // single press on both platforms (iOS 'home' is legacy-pressed once, chrome
   // buttons and Android BUTTON_KEY_MAP names resolve by name).
-  pressButton(sessionId: string, button: string): void {
+  async pressButton(sessionId: string, button: string): Promise<void> {
     this.send({ type: 'input:button', sessionId, payload: { name: button } })
+    await this.awaitInputAck(sessionId)
   }
 
   async openUrl(sessionId: string, url: string): Promise<void> {

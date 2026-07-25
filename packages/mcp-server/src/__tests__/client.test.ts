@@ -2,22 +2,35 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
 import { TapflowClient } from '../client.js'
 
+// inputAck models the agent's H-F terminal-input ack: 'done' = a new agent that
+// acks a booted device, 'error' = the agent rejects (not booted / no channel),
+// 'none' = an older agent that never acks (degradation path).
 function createMockRelay(): {
   wss: WebSocketServer
   port: number
   lastClient: () => WebSocket
   send: (msg: Record<string, unknown>) => void
+  setInputAck: (mode: 'done' | 'error' | 'none') => void
   sentMessages: () => Record<string, unknown>[]
   close: () => Promise<void>
 } {
   const wss = new WebSocketServer({ port: 0 })
   const received: Record<string, unknown>[] = []
   let conn: WebSocket | null = null
+  let inputAck: 'done' | 'error' | 'none' = 'done'
+  const TERMINAL = new Set(['input:touch:end', 'input:key', 'input:button'])
 
   wss.on('connection', (ws) => {
     conn = ws
     ws.on('message', (data) => {
-      try { received.push(JSON.parse(data.toString()) as Record<string, unknown>) } catch { /* ignore */ }
+      let msg: Record<string, unknown>
+      try { msg = JSON.parse(data.toString()) as Record<string, unknown> } catch { return }
+      received.push(msg)
+      if (inputAck !== 'none' && TERMINAL.has(msg['type'] as string)) {
+        ws.send(JSON.stringify(inputAck === 'error'
+          ? { type: 'input:error', sessionId: msg['sessionId'], message: 'device not booted' }
+          : { type: 'input:done', sessionId: msg['sessionId'] }))
+      }
     })
   })
 
@@ -28,6 +41,7 @@ function createMockRelay(): {
     port,
     lastClient: () => conn!,
     send: (msg) => conn?.send(JSON.stringify(msg)),
+    setInputAck: (mode) => { inputAck = mode },
     sentMessages: () => received,
     close: () => new Promise((resolve) => wss.close(() => resolve())),
   }
@@ -163,11 +177,20 @@ describe('TapflowClient', () => {
 
   describe('tap', () => {
     it('sends touch:start then touch:end with coordinates', async () => {
-      client.tap('sess-1', 100, 200)
-      await waitForMessage(relay, 'input:touch:end')
+      await client.tap('sess-1', 100, 200)
       const msgs = relay.sentMessages()
       expect(msgs[0]).toMatchObject({ type: 'input:touch:start', sessionId: 'sess-1', payload: { x: 100, y: 200 } })
       expect(msgs[1]).toMatchObject({ type: 'input:touch:end', sessionId: 'sess-1', payload: { x: 100, y: 200 } })
+    })
+
+    it('throws when the agent acks input:error (device not booted)', async () => {
+      relay.setInputAck('error')
+      await expect(client.tap('sess-1', 1, 2)).rejects.toThrow('device not booted')
+    })
+
+    it('resolves optimistically when an older agent never acks (degradation)', async () => {
+      relay.setInputAck('none')
+      await expect(client.tap('sess-1', 1, 2)).resolves.toBeUndefined()
     })
   })
 
@@ -198,20 +221,20 @@ describe('TapflowClient', () => {
 
   describe('pressKey', () => {
     it('sends the agent contract { code, modifiers } — not { key }', async () => {
-      client.pressKey('sess-1', 'Enter')
+      await client.pressKey('sess-1', 'Enter')
       const msg = await waitForMessage(relay, 'input:key')
       expect(msg).toMatchObject({ type: 'input:key', sessionId: 'sess-1', payload: { code: 'Enter', modifiers: 0 } })
       expect((msg as { payload: Record<string, unknown> }).payload).not.toHaveProperty('key')
     })
 
     it('maps the Return alias to Enter (no platform maps "Return")', async () => {
-      client.pressKey('sess-1', 'Return')
+      await client.pressKey('sess-1', 'Return')
       const msg = await waitForMessage(relay, 'input:key')
       expect(msg).toMatchObject({ payload: { code: 'Enter', modifiers: 0 } })
     })
 
     it('passes other KeyboardEvent.code names through unchanged', async () => {
-      client.pressKey('sess-1', 'Backspace')
+      await client.pressKey('sess-1', 'Backspace')
       const msg = await waitForMessage(relay, 'input:key')
       expect(msg).toMatchObject({ payload: { code: 'Backspace', modifiers: 0 } })
     })
@@ -219,7 +242,7 @@ describe('TapflowClient', () => {
 
   describe('pressButton', () => {
     it('sends the agent contract { name } — not { button }', async () => {
-      client.pressButton('sess-1', 'home')
+      await client.pressButton('sess-1', 'home')
       const msg = await waitForMessage(relay, 'input:button')
       expect(msg).toMatchObject({ type: 'input:button', sessionId: 'sess-1', payload: { name: 'home' } })
       expect((msg as { payload: Record<string, unknown> }).payload).not.toHaveProperty('button')

@@ -731,6 +731,15 @@ describe('AndroidAgent', () => {
         // last px from start: 0.1*1080 = 108, 0.2*2400 = 480
         expect(control.touchUp).toHaveBeenCalledWith(0, 108, 480)
       })
+
+      // followups H-F: the terminal of a tap acks input:done when dispatched to a
+      // booted device (pointer channel present + adb reports booted).
+      it('acks input:done on touch:end for a booted session', async () => {
+        const done = waitForType(browser, 'input:done')
+        browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+        browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+        expect((await done).sessionId).toBe(agent.sessionId)
+      })
     })
 
     describe('input — pinch', () => {
