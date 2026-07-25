@@ -286,7 +286,7 @@ export function registerTools(server: McpServer, client: TapflowClient): void {
     },
     async ({ sessionId, x, y, screenshotWidth, screenshotHeight }) => {
       try {
-        client.tap(sessionId, x / screenshotWidth, y / screenshotHeight)
+        await client.tap(sessionId, x / screenshotWidth, y / screenshotHeight)
         return ok(JSON.stringify({ tapped: true, x, y }))
       } catch (e) {
         return err(`tap failed: ${(e as Error).message}`)
@@ -361,7 +361,7 @@ export function registerTools(server: McpServer, client: TapflowClient): void {
     },
     async ({ sessionId, key }) => {
       try {
-        client.pressKey(sessionId, key)
+        await client.pressKey(sessionId, key)
         return ok(JSON.stringify({ pressed: true, key }))
       } catch (e) {
         return err(`press_key failed: ${(e as Error).message}`)
@@ -383,7 +383,7 @@ export function registerTools(server: McpServer, client: TapflowClient): void {
     },
     async ({ sessionId, button }) => {
       try {
-        client.pressButton(sessionId, button)
+        await client.pressButton(sessionId, button)
         return ok(JSON.stringify({ pressed: true, button }))
       } catch (e) {
         return err(`press_button failed: ${(e as Error).message}`)

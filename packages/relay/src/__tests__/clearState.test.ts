@@ -83,6 +83,20 @@ describe('app:clear-state relay routing', () => {
     browser.close()
   })
 
+  it('replies input:error to the sender when a terminal input arrives after the agent is gone', async () => {
+    const { agent, browser, sessionId } = await setup()
+    const agentClosed = new Promise<void>((r) => agent.on('close', () => r()))
+    agent.close()
+    await agentClosed
+
+    browser.send(JSON.stringify({ type: 'input:touch:end', sessionId, payload: { x: 0.5, y: 0.5 } }))
+    const err = await waitForType(browser, 'input:error')
+    expect(err.sessionId).toBe(sessionId)
+    expect(err.message).toBe('agent offline')
+
+    browser.close()
+  })
+
   it('forwards the error reply back to the browser', async () => {
     const { agent, browser, sessionId } = await setup()
 

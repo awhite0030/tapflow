@@ -126,6 +126,8 @@ interface DeviceState {
   sessionId: string
   deviceId: string
   touchHelper: AndroidTouchHelper | null
+  // Device-booted flag for truthful input acks — set on device:ready, cleared on shutdown; false after a reconnect until the ack path re-verifies once via adb.
+  booted: boolean
   streamWs: WebSocket | null
   scrcpySession: ScrcpySession | null
   emulatorVideo: EmulatorVideo | null
@@ -314,6 +316,7 @@ export class AndroidAgent implements DeviceAgent {
         sessionId,
         deviceId,
         touchHelper: null,
+        booted: false,
         streamWs: null,
         scrcpySession: null,
         emulatorVideo: null,
@@ -410,6 +413,7 @@ export class AndroidAgent implements DeviceAgent {
     state.cornerRadius = 0
     state.touchHelper?.stop()
     state.touchHelper = null
+    state.booted = false
     state.streamWs?.close()
     state.streamWs = null
   }
@@ -812,6 +816,7 @@ export class AndroidAgent implements DeviceAgent {
           cornerRadius: state.cornerRadius,
         },
       }))
+      state.booted = true
       this.ws?.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: avdId } }))
     } catch (e) {
       if (seq !== state.bootSeq) return
@@ -841,6 +846,24 @@ export class AndroidAgent implements DeviceAgent {
       sessionId,
       payload: { deviceId: avdId },
     }))
+  }
+
+  // Ack a terminal input (mirrors ios-agent.ackInput): input:done = dispatched to a booted device (not a landing guarantee); input:error = no live pointer channel / not booted.
+  private async ackInput(state: DeviceState, dispatched: boolean): Promise<void> {
+    const booted = dispatched && (state.booted || (await this.isBooted(state.deviceId)))
+    if (booted) state.booted = true // cache the post-reconnect verify so later inputs skip adb
+    this.ws?.send(JSON.stringify(
+      booted
+        ? { type: 'input:done', sessionId: state.sessionId }
+        : { type: 'input:error', sessionId: state.sessionId, message: dispatched ? 'device not booted' : 'input channel not ready' },
+    ))
+  }
+
+  private async isBooted(deviceId: string): Promise<boolean> {
+    try {
+      const devices = await this.adb.listDevices()
+      return devices.find((d) => d.id === deviceId)?.status === 'booted'
+    } catch { return false }
   }
 
   private handleRelayMessage(msg: { type: string; sessionId?: string; payload?: unknown }): void {
@@ -942,6 +965,7 @@ export class AndroidAgent implements DeviceAgent {
         } else {
           state.touchHelper?.touchEnd()
         }
+        void this.ackInput(state, pc !== null || state.touchHelper !== null) // terminal of a tap/swipe → ack the gesture
         break
       }
       case 'input:pinch:start': {
@@ -981,6 +1005,7 @@ export class AndroidAgent implements DeviceAgent {
         } else {
           state.touchHelper?.pinchEnd()
         }
+        void this.ackInput(state, pc !== null || state.touchHelper !== null)
         break
       }
       case 'input:rotate': {
@@ -999,9 +1024,10 @@ export class AndroidAgent implements DeviceAgent {
       }
       case 'input:button': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state?.touchHelper) break
+        if (!state) break
         const { name } = msg.payload as { name: string }
-        state.touchHelper.pressButton(name)
+        state.touchHelper?.pressButton(name)
+        void this.ackInput(state, state.touchHelper !== null)
         break
       }
       case 'stream:request-idr': {
@@ -1055,10 +1081,11 @@ export class AndroidAgent implements DeviceAgent {
       }
       case 'input:key': {
         const state = this.deviceStates.get(msg.sessionId!)
-        const serial = state ? this.adb.getSerial(state.deviceId) : undefined
-        if (!serial) break
+        if (!state) break
+        const serial = this.adb.getSerial(state.deviceId)
         const { code, modifiers } = msg.payload as { code: string; modifiers: number }
-        this.handleKeyInput(serial, code, modifiers).catch(() => {})
+        if (serial) this.handleKeyInput(serial, code, modifiers).catch(() => {})
+        void this.ackInput(state, serial !== undefined)
         break
       }
       case 'screenshot:request': {

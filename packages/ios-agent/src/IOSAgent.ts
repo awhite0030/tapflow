@@ -76,6 +76,8 @@ interface DeviceState {
   sessionId: string
   deviceId: string
   touchHelper: TouchHelper | null
+  // Device-booted flag for truthful input acks — set on device:boot, cleared on shutdown; false after a reconnect until the ack path re-verifies once via simctl.
+  booted: boolean
   streamWs: WebSocket | null
   streamReader: ReadableStreamDefaultReader<StreamFrame> | null
   // Current capture streamer (ScreenCaptureStreamer path only) — lets the relay
@@ -255,6 +257,7 @@ export class IOSAgent implements DeviceAgent {
         sessionId,
         deviceId,
         touchHelper: null,
+        booted: false,
         streamWs: null,
         streamReader: null,
         captureStreamer: null,
@@ -347,6 +350,7 @@ export class IOSAgent implements DeviceAgent {
     state.audioPids = null
     state.touchHelper?.stop()
     state.touchHelper = null
+    state.booted = false
     state.streamWs?.close()
     state.streamWs = null
   }
@@ -478,6 +482,7 @@ export class IOSAgent implements DeviceAgent {
     state.captureStreamer = null // reader.cancel() kills the helper proc; drop the ref so a stale requestKeyframe() no-ops
     state.touchHelper?.stop()
     state.touchHelper = null
+    state.booted = false
     state.streamWs?.close()
     state.streamWs = null
 
@@ -516,6 +521,7 @@ export class IOSAgent implements DeviceAgent {
       // Opt-in audio output: stand up the loopback server and start the whole-sim tap now. Best-effort
       // — never blocks/affects the video path.
       if (this.audioEnabled()) this.startAudioCapture(state, streamWs, deviceId)
+      state.booted = true
       this.ws?.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId } }))
 
       // Sync AppleKeyboards after ready — fire-and-forget so streaming isn't delayed.
@@ -557,6 +563,7 @@ export class IOSAgent implements DeviceAgent {
     state.captureStreamer = null // reader.cancel() kills the helper proc; drop the ref so a stale requestKeyframe() no-ops
     state.touchHelper?.stop()
     state.touchHelper = null
+    state.booted = false
     state.streamWs?.close()
     state.streamWs = null
     this.lastBundleIds.delete(deviceId)
@@ -582,6 +589,24 @@ export class IOSAgent implements DeviceAgent {
     if (state.touchHelper) return
     state.touchHelper = new TouchHelper(state.deviceId)
     state.touchHelper.start()
+  }
+
+  // Ack a terminal input: input:done = dispatched to a booted device (not a landing guarantee — HID is fire-and-forget); input:error = no live channel / not booted. Off the sync inject path, so start/end pairing is unaffected.
+  private async ackInput(state: DeviceState, dispatched: boolean): Promise<void> {
+    const booted = dispatched && (state.booted || (await this.isBooted(state.deviceId)))
+    if (booted) state.booted = true // cache the post-reconnect verify so later inputs skip simctl
+    this.ws?.send(JSON.stringify(
+      booted
+        ? { type: 'input:done', sessionId: state.sessionId }
+        : { type: 'input:error', sessionId: state.sessionId, message: dispatched ? 'device not booted' : 'input channel not ready' },
+    ))
+  }
+
+  private async isBooted(deviceId: string): Promise<boolean> {
+    try {
+      const devices = await this.simctl.listDevices()
+      return devices.find((d) => d.id === deviceId)?.status === 'booted'
+    } catch { return false }
   }
 
   private handleRelayMessage(msg: { type: string; sessionId?: string; payload?: unknown }): void {
@@ -646,7 +671,9 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:touch:end': {
         const state = this.deviceStates.get(msg.sessionId!)
-        state?.touchHelper?.touchEnd()
+        if (!state) break
+        state.touchHelper?.touchEnd()
+        void this.ackInput(state, state.touchHelper !== null) // terminal of a tap/swipe → ack the gesture
         break
       }
       case 'input:pinch:start': {
@@ -666,8 +693,9 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:pinch:end': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state?.touchHelper) break
-        state.touchHelper.pinchEnd()
+        if (!state) break
+        state.touchHelper?.pinchEnd()
+        void this.ackInput(state, state.touchHelper !== null)
         break
       }
       case 'input:rotate': {
@@ -743,7 +771,10 @@ export class IOSAgent implements DeviceAgent {
         this.ensureTouchHelper(state)
         const { code, modifiers } = msg.payload as { code: string; modifiers?: number }
         const usage = KEY_CODE_MAP[code]
-        if (usage === undefined) break
+        if (usage === undefined) {
+          this.ws?.send(JSON.stringify({ type: 'input:error', sessionId: msg.sessionId, message: `unknown key code: ${code}` }))
+          break
+        }
         if (state.softKeyboardVisible) {
           // Hide the SW keyboard first so iOS re-initialises the HW keyboard
           // context. Skipping this causes input-source desync (qks / ㅂㅏㄴ symptoms).
@@ -757,6 +788,7 @@ export class IOSAgent implements DeviceAgent {
         } else {
           state.touchHelper?.sendKey(usage, modifiers ?? 0)
         }
+        void this.ackInput(state, state.touchHelper !== null)
         break
       }
       case 'input:button': {
@@ -780,6 +812,7 @@ export class IOSAgent implements DeviceAgent {
             else state.touchHelper?.pressButton(btn.usagePage, btn.usage)
           }
         }
+        void this.ackInput(state, state.touchHelper !== null)
         break
       }
       case 'open-url': {

@@ -333,6 +333,59 @@ describe('IOSAgent', () => {
     })
   })
 
+  describe('input acks (followups H-F)', () => {
+    beforeEach(() => { MockTouchHelper.mockClear() })
+
+    it('acks input:done after a tap on a booted session', async () => {
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:ready')
+
+      const done = waitForType(browser, 'input:done')
+      browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      expect((await done).sessionId).toBe(agent.sessionId)
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('acks input:error after the device is shut down (booted then shutdown)', async () => {
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const simctl = mockSimctl(true)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      // Boot first (per the device:boot guideline → booted flag true, TouchHelper set up).
+      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:ready')
+
+      // Power the device off: shutdown clears the booted flag, and simctl now reports it shut down.
+      ;(simctl.listDevices as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: 'shutdown', osVersion: 'iOS 18.3' },
+      ])
+      browser.send(JSON.stringify({ type: 'device:shutdown', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:shutdown-done')
+
+      const errored = waitForType(browser, 'input:error')
+      browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      const e = await errored
+      expect(e.sessionId).toBe(agent.sessionId)
+      expect(e.message).toBe('device not booted')
+
+      agent.disconnect()
+      browser.close()
+    })
+  })
+
   describe('pinch relay messages', () => {
     beforeEach(() => { MockTouchHelper.mockClear() })
 

@@ -40,6 +40,8 @@ export type MessageType =
   | 'input:type'
   | 'input:type-done'
   | 'input:type-error'
+  | 'input:done'
+  | 'input:error'
   | 'input:button'
   | 'input:rotate'
   | 'input:keyboard:toggle'
