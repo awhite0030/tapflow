@@ -296,7 +296,11 @@ browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId 
 await waitForType(browser, 'session:joined')
 browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
 await waitForType(browser, 'device:ready')
-// MockTouchHelper.mock.results[0].value is now accessible
+// device:ready alone does not mean the mock exists yet — see below. Sync on the mock itself.
+await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0))
+const touchHelper = MockTouchHelper.mock.results[0].value
 ```
 
 `mockSimctl(true)` (booted=true) → skips `device:booting` and delivers `device:ready` immediately.
+
+**`device:ready` is not a sync point.** With `booted=true` the relay registers the session as already booted and **replays a `device:ready` on `session:start`** (browser-reconnect support), so `waitForType(browser, 'device:ready')` can latch that stale ack rather than the one this boot emits — before any streamer or helper exists. Always `vi.waitFor` on the mock you are about to read (`MockCapture`, `MockTouchHelper`, …), never on the message alone. This is what made the codec-negotiation test flake at ~2/10 suite runs.
