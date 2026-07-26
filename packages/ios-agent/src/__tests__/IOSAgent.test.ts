@@ -1352,6 +1352,38 @@ describe('IOSAgent', () => {
       agent.disconnect(); browser.close()
     }, 10_000)
 
+    // Mirrors the Android test of the same name. The queue has to stay held through the
+    // restore, not just through the answer: the guest applies a write late, so releasing early
+    // lets the next read mistake the still-parked sentinel for "the original" and then wipe it.
+    it('serialises overlapping reads so they cannot trade sentinels', async () => {
+      const simctl = mockSimctl(true)
+      pasteboard = 'ORIGINAL'
+      pasteboardApplyDelayMs = 120                    // the guest never copies; writes land late
+      const { agent, browser } = await bootWith(simctl)
+
+      const seen: string[] = []
+      browser.on('message', (d: Buffer) => {
+        try {
+          const m = JSON.parse(d.toString()) as RelayMessage
+          if (m.type === 'clipboard:data') seen.push(`${m.requestId}:${(m.payload as { text: string }).text}`)
+          if (m.type === 'clipboard:error') seen.push(`${m.requestId}:ERR`)
+        } catch { /* binary frame — ignore */ }
+      })
+
+      for (const requestId of ['P1', 'P2']) {
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId, payload: { press: 'copy' },
+        }))
+      }
+      await vi.waitFor(() => expect(seen.length).toBe(2), { timeout: 9000 })
+
+      // Neither may report a sentinel as copied text, and the original must survive both.
+      expect(seen).toEqual(['P1:ERR', 'P2:ERR'])
+      await vi.waitFor(() => expect(pasteboard).toBe('ORIGINAL'), { timeout: 2000 })
+
+      agent.disconnect(); browser.close()
+    }, 20_000)
+
     it('press:copy sends Cmd+C and only then reads the pasteboard', async () => {
       const simctl = mockSimctl(true)
       const order: string[] = []

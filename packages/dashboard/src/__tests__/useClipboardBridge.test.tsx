@@ -136,20 +136,31 @@ describe('useClipboardBridge', () => {
     await expect(claim).resolves.toBe('cancelled')
   })
 
-  // The bridge must never make copy worse than it was. On an explicit failure the chord still
-  // goes to the device so the copy at least lands on the device's own clipboard.
-  it('falls back to the plain chord when the bridge cannot copy', async () => {
+  // A backend with no clipboard channel never wrote a sentinel, so the chord is safe there —
+  // and it is the only way the copy happens at all.
+  it('falls back to the plain chord when the backend has no clipboard channel', async () => {
     const { chords, reply } = setup()
     press('KeyC')
-    reply({ type: 'clipboard:error', message: 'not supported' }, 'clipboard:read')
+    reply({ type: 'clipboard:error', message: 'not supported', payload: { unsupported: true } }, 'clipboard:read')
     await waitFor(() => expect(chords).toEqual([['KeyC', 0x08]]))
   })
 
   it('falls back with the cut chord for Cmd+X', async () => {
     const { chords, reply } = setup()
     press('KeyX')
-    reply({ type: 'clipboard:error', message: 'not supported' }, 'clipboard:read')
+    reply({ type: 'clipboard:error', message: 'not supported', payload: { unsupported: true } }, 'clipboard:read')
     await waitFor(() => expect(chords).toEqual([['KeyX', 0x08]]))
+  })
+
+  // On an ordinary error the agent has replied but not yet restored, so its sentinel is still
+  // on the device. A chord here would copy, and the restore would then overwrite that with the
+  // pre-read value — handing the user a stale clipboard, which is what the sentinel prevents.
+  it('does not press the chord on an ordinary read error — a sentinel may still be parked', async () => {
+    const { chords, errors, reply } = setup()
+    press('KeyC')
+    reply({ type: 'clipboard:error', message: 'did not copy anything' }, 'clipboard:read')
+    await waitFor(() => expect(errors).toEqual(['did not copy anything']))
+    expect(chords).toEqual([])
   })
 
   // A timeout is NOT a failure — the agent is still mid-copy and already pressed the chord
@@ -372,10 +383,14 @@ describe('round-trip budget vs the agent worst case', () => {
       if (!m) throw new Error(`${name} not found in agent-core/src/types.ts`)
       return Number(m[1].replace(/_/g, ''))
     }
-    // Mirrors CLIPBOARD_AGENT_WORST_MS: the restore window is excluded (it runs after the
-    // reply) and five device calls are counted (each windowed loop can overrun by one).
-    return num('CLIPBOARD_WRITE_DEADLINE_MS') + num('CLIPBOARD_COPY_DEADLINE_MS')
-      + 5 * num('CLIPBOARD_DEVICE_CALL_MS')
+    // Evaluate agent-core's own expression rather than restating it here. Restating it meant a
+    // formula change there — dropping a device call, say — left this passing, which is exactly
+    // the drift this test exists to catch.
+    const expr = src.match(/CLIPBOARD_AGENT_WORST_MS =\s*\n?([^\n]+)/)?.[1]
+    if (!expr) throw new Error('CLIPBOARD_AGENT_WORST_MS not found in agent-core/src/types.ts')
+    const resolved = expr.replace(/[A-Z_]{4,}/g, (name) => String(num(name)))
+    if (!/^[0-9+*\s]+$/.test(resolved)) throw new Error(`unexpected expression: ${expr}`)
+    return Number(new Function(`return ${resolved}`)())
   }
 
   it('the hook derives the same worst case agent-core does', () => {
@@ -399,9 +414,11 @@ describe('round-trip budget vs the agent worst case', () => {
     try {
       const { errors } = setup()
       press('KeyC')
-      // advance to just under the claim limit — the budget must have fired by now
+      // Advance to just under the claim limit — the budget must have fired by now. Asserted
+      // directly, not through `waitFor`: under `shouldAdvanceTime` its polling keeps pushing the
+      // fake clock forward, which handed the budget over a second of slack it should not get.
       await act(async () => { await vi.advanceTimersByTimeAsync(CLAIM_LIMIT_MS - 1) })
-      await waitFor(() => expect(errors.length).toBe(1))
+      expect(errors.length).toBe(1)
     } finally { vi.useRealTimers() }
   })
 })

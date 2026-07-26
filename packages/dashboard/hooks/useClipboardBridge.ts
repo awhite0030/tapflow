@@ -222,9 +222,12 @@ export function useClipboardBridge({ sessionId, send, active, supported, handler
       if (reply.type === 'clipboard:error') {
         fail(new ClaimCancelled(reply.message ?? 'read failed'))
         report(reply.message ?? 'Clipboard read failed')
-        // The copy still has to happen on the device. Safe here for the same reason as paste
-        // below: an errored read never leaves a sentinel behind.
-        sendChord(isCut ? 'KeyX' : 'KeyC', META)
+        // Same gate as paste below, and for the same reason. The agent replies before it
+        // restores, so on an ordinary error its sentinel is still parked — a chord pressed here
+        // would copy, and the restore landing a moment later would overwrite that with the
+        // pre-read value. Only a backend with no clipboard channel is safe: it can never have
+        // written a sentinel, and there the chord is the sole way the copy happens at all.
+        if (isUnsupportedBackend(reply)) sendChord(isCut ? 'KeyX' : 'KeyC', META)
         return
       }
       const { text } = (reply.payload ?? {}) as { text?: string }

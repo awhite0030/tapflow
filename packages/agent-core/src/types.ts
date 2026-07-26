@@ -113,15 +113,24 @@ export const CLIPBOARD_POLL_MS = 20
 /** Slowest observed `simctl pbpaste`/`pbcopy` under load; the read path makes several calls. */
 export const CLIPBOARD_DEVICE_CALL_MS = 300
 
-/** Longest an agent can legitimately take to ANSWER a clipboard read — the slow path being the
- *  one that produces the useful message ("did not copy anything — is something selected?").
+/** How long an agent should be expected to take to ANSWER a clipboard read — the slow path being
+ *  the one that produces the useful message ("did not copy anything — is something selected?").
+ *  The browser waits at least this long before giving up with a generic message of its own.
  *
  *  Two deadline windows are inside the answer: confirm the sentinel applied, then watch for the
  *  copy. The restore window is not — the reply goes out before it starts.
  *
  *  Five device calls, not four. Each windowed loop checks its deadline AFTER the call returns,
  *  so a window can overrun by one call; counting the loops' overruns plus the fixed calls
- *  (read the original, hide the software keyboard, write the sentinel) gives five. Undercounting
- *  these is what previously left the browser giving up first on this very path. */
+ *  (read the original, ready the guest for the chord, write the sentinel) gives five.
+ *  Undercounting these is what previously left the browser giving up first on this very path.
+ *
+ *  NOT a hard upper bound, and it cannot be one. Every device call carries its own multi-second
+ *  timeout (5s for a simctl pasteboard call, an emulator gRPC deadline, an adb keyevent), so a
+ *  genuinely wedged device can take far longer than this. `CLIPBOARD_DEVICE_CALL_MS` is an
+ *  observed-under-load figure, not a ceiling. What this budget buys is that the *normal* slow
+ *  path — a real device that simply had nothing selected — answers before the browser stops
+ *  listening. A hung device loses the specific message; that is the correct trade, since at that
+ *  point the message is not the user's problem. */
 export const CLIPBOARD_AGENT_WORST_MS =
   CLIPBOARD_WRITE_DEADLINE_MS + CLIPBOARD_COPY_DEADLINE_MS + 5 * CLIPBOARD_DEVICE_CALL_MS
