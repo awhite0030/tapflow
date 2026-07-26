@@ -16,6 +16,8 @@ import { useDecoderStream } from '@/hooks/useDecoderStream';
 import type { BinaryFrameHandler } from '@/lib/envelope';
 import type { MutableRefObject } from 'react';
 import type { PerfHook } from '@/components/perf/types';
+import { useClipboardBridge, isBridgedChord, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
+import { toast } from 'sonner';
 
 const CURSOR_RING_R = 13;
 const CURSOR_DOT_R = 8;
@@ -38,6 +40,8 @@ interface IOSViewerProps {
   setLaunching: (v: boolean) => void;
   chrome: ChromeData;
   binaryFrameHandlerRef: React.MutableRefObject<BinaryFrameHandler | undefined>;
+  clipboardHandlerRef: React.MutableRefObject<ClipboardMessageHandler | undefined>;
+  clipboardSupported: boolean;
   onRecordingUploaded?: () => void;
   swKeyboardVisible: boolean;
   swKeyboardPending: boolean;
@@ -49,7 +53,7 @@ export function IOSViewer({
   sessionId, buildId, send, connected, joined,
   deviceReady, installing, installed, installError, bootError,
   launching, setLaunching, chrome,
-  binaryFrameHandlerRef, onRecordingUploaded,
+  binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, onRecordingUploaded,
   swKeyboardVisible, swKeyboardPending, onKbdToggle,
   perfHookRef,
 }: IOSViewerProps) {
@@ -285,6 +289,14 @@ export function IOSViewer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const sendChord = useCallback((code: 'KeyC' | 'KeyV' | 'KeyX', modifiers: number) => {
+    send({ type: 'input:key', sessionId, payload: { code, modifiers } })
+  }, [send, sessionId])
+  useClipboardBridge({
+    sessionId, send, active: keyboardActive, supported: clipboardSupported,
+    handlerRef: clipboardHandlerRef, sendChord, onError: (m) => toast.error(m),
+  })
+
   // ── Keyboard forwarding ───────────────────────────────────────────────────
   useEffect(() => {
     const MODIFIER_CODES = new Set(['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'MetaLeft', 'MetaRight'])
@@ -303,6 +315,10 @@ export function IOSViewer({
       }
       if (!keyboardActive) return
       if (MODIFIER_CODES.has(e.code)) return
+      // The clipboard bridge owns the copy/cut/paste chords when the agent implements them —
+      // the agent presses them on the device itself, so forwarding here too would double-send.
+      // Against an agent without the capability the bridge is inert and these fall through.
+      if (clipboardSupported && isBridgedChord(e)) return
       e.preventDefault()
       const modifiers = (e.shiftKey ? 0x02 : 0) | (e.ctrlKey ? 0x01 : 0) | (e.metaKey ? 0x08 : 0)
       send({ type: 'input:key', sessionId, payload: { code: e.code, modifiers } })
@@ -315,7 +331,7 @@ export function IOSViewer({
     const onBlur = () => { if (isOptionHeld.current) endPinch() }
     window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp); window.addEventListener('blur', onBlur)
     return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); window.removeEventListener('blur', onBlur) }
-  }, [keyboardActive, send, sessionId, handleScreenshot, handleRecordToggle, handleRotate, onKbdToggle, swKeyboardPending])
+  }, [keyboardActive, clipboardSupported, send, sessionId, handleScreenshot, handleRecordToggle, handleRotate, onKbdToggle, swKeyboardPending])
 
   useEffect(() => {
     if (!keyboardActive) return

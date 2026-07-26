@@ -105,7 +105,23 @@ const waitForType = (ws: WebSocket, type: string) =>
     ws.on('message', listener)
   })
 
+let pasteboard = ''
+const isSentinelish = (v: string): boolean => v.startsWith('\u200Btapflow-clipboard-')
+// How long the simulator takes to actually show a written pasteboard. `pbcopy` exiting means
+// accepted, not visible — the read path must not assume otherwise.
+let pasteboardApplyDelayMs = 0
+/** Simulate the app reacting to an injected copy chord by writing to the pasteboard. `afterMs`
+ *  models the real gap between injecting HID and the app actually copying — with 0 the write is
+ *  synchronous, which would mask any read-too-early bug. */
+const copyOnChord = (th: { sendKey: ReturnType<typeof vi.fn> }, text = 'copied text', afterMs = 0) =>
+  th.sendKey.mockImplementation(() => {
+    if (afterMs > 0) setTimeout(() => { pasteboard = text }, afterMs)
+    else pasteboard = text
+  })
+
 function mockSimctl(booted = false): SimctlWrapper {
+  pasteboard = ''
+  pasteboardApplyDelayMs = 0
   return {
     listDevices: vi.fn().mockResolvedValue([
       { id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: booted ? 'booted' : 'shutdown', osVersion: 'iOS 18.3' },
@@ -120,7 +136,13 @@ function mockSimctl(booted = false): SimctlWrapper {
     syncKeyboardsFromLanguages: vi.fn().mockResolvedValue(undefined),
     showSoftwareKeyboard: vi.fn().mockResolvedValue(undefined),
     hideSoftwareKeyboard: vi.fn().mockResolvedValue(undefined),
-    setPasteboard: vi.fn().mockResolvedValue(undefined),
+    // Stateful pasteboard: the agent confirms a write by reading it back, so a mock that
+    // always answers '' would never converge.
+    setPasteboard: vi.fn(async function (this: void, _d: string, t: string) {
+      if (pasteboardApplyDelayMs > 0) setTimeout(() => { pasteboard = t }, pasteboardApplyDelayMs)
+      else pasteboard = t
+    }),
+    getPasteboard: vi.fn(async () => pasteboard),
     stopKeyboardDaemon: vi.fn(),
   } as unknown as SimctlWrapper
 }
@@ -1216,6 +1238,355 @@ describe('IOSAgent', () => {
       agent.disconnect()
       expect(instance.stop).toHaveBeenCalled()
       browser.close()
+    })
+  })
+
+  describe('clipboard bridge', () => {
+    // Every other describe resets this; without it a stale helper from an earlier test
+    // satisfies the `results.length > 0` guards below and they assert nothing.
+    beforeEach(() => { MockTouchHelper.mockClear() })
+
+    async function bootWith(simctl: SimctlWrapper): Promise<{ agent: IOSAgent; browser: WebSocket }> {
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:ready')
+      return { agent, browser }
+    }
+
+    // The viewer gates the whole bridge on this. If the agent stops advertising it, copy and
+    // paste silently degrade to device-only and nothing else in the suite would notice.
+    // Asserted end to end (agent → relay → browser), which is the path the dashboard reads.
+    it('advertises the clipboard capability all the way to the viewer', async () => {
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      const joined = await waitForType(browser, 'session:joined')
+      expect((joined as unknown as { capabilities: string[] }).capabilities).toContain('clipboard')
+
+      agent.disconnect(); browser.close()
+    })
+
+    it('clipboard:read returns the simulator pasteboard as clipboard:data', async () => {
+      const simctl = mockSimctl(true)
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockResolvedValue('한글 テスト 🎉\nline2')
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r1' }))
+      const data = await waitForType(browser, 'clipboard:data')
+      expect(data.requestId).toBe('r1')
+      expect((data.payload as { text: string }).text).toBe('한글 テスト 🎉\nline2')
+      expect(simctl.getPasteboard).toHaveBeenCalledWith('dev-1')
+
+      agent.disconnect(); browser.close()
+    })
+
+    // The core guarantee: the agent must not answer until the device clipboard actually
+    // changed. A fixed delay cannot tell "copied" from "not copied yet"; the sentinel can.
+    it('keeps watching until the pasteboard actually changes', async () => {
+      const simctl = mockSimctl(true)
+      let sentinel = ''
+      let reads = 0
+      ;(simctl.setPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async (_d: string, t: string) => { sentinel = t })
+      // The app has not processed the chord yet on the first two reads.
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async () =>
+        ++reads <= 3 ? sentinel : 'what the app copied')
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'p1', payload: { press: 'copy' },
+      }))
+      const data = await waitForType(browser, 'clipboard:data')
+      expect((data.payload as { text: string }).text).toBe('what the app copied')
+      expect(reads).toBeGreaterThan(2)   // a fixed delay would have answered on the first read
+
+      agent.disconnect(); browser.close()
+    })
+
+    // Re-copying the same text produces no value change at all, which is why a plain
+    // value-change watch cannot work and the sentinel has to be written first.
+    it('handles re-copying the identical text', async () => {
+      const simctl = mockSimctl(true)
+      let current = 'same text'
+      ;(simctl.setPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async (_d: string, t: string) => { current = t })
+      let reads = 0
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        // after the chord, the app writes the very same text back over the sentinel
+        if (++reads > 2) current = 'same text'
+        return current
+      })
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'p2', payload: { press: 'copy' },
+      }))
+      const data = await waitForType(browser, 'clipboard:data')
+      expect((data.payload as { text: string }).text).toBe('same text')
+
+      agent.disconnect(); browser.close()
+    })
+
+    it('fails and restores the original when the device never copies', async () => {
+      const simctl = mockSimctl(true)
+      let current = 'untouched original'
+      const original = current
+      ;(simctl.setPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async (_d: string, t: string) => { current = t })
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async () => current)
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'p3', payload: { press: 'copy' },
+      }))
+      const err = await waitForType(browser, 'clipboard:error')
+      expect(err.message).toMatch(/did not copy/i)
+      // the sentinel must not be left behind on the device
+      expect(simctl.setPasteboard).toHaveBeenLastCalledWith('dev-1', original)
+      expect(current).toBe(original)
+
+      agent.disconnect(); browser.close()
+    }, 10_000)
+
+    it('press:copy sends Cmd+C and only then reads the pasteboard', async () => {
+      const simctl = mockSimctl(true)
+      const order: string[] = []
+      // Track ordering without breaking the sentinel handshake — the read must keep reflecting
+      // the real pasteboard, or the confirm loop can never be satisfied.
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        order.push('read'); return pasteboard
+      })
+      const { agent, browser } = await bootWith(simctl)
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      const th = MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value
+      th.sendKey.mockImplementation(() => { order.push('chord'); pasteboard = 'copied' })
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r2', payload: { press: 'copy' },
+      }))
+      await waitForType(browser, 'clipboard:data')
+      expect(th.sendKey).toHaveBeenCalledWith(0x06, 0x08)   // KeyC + MetaLeft
+      // reads the current value, writes the sentinel, presses, then polls
+      expect(order.indexOf('chord')).toBeLessThan(order.lastIndexOf('read'))
+
+      agent.disconnect(); browser.close()
+    }, 15_000)
+    // B1: pbcopy exiting does not mean the pasteboard shows the sentinel. Pressing the chord
+    // early lets the first poll read the pre-sentinel value and return it as the copy result.
+    it('waits for the sentinel to be visible before pressing the chord', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      const th = MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value
+      th.sendKey.mockClear()
+      pasteboard = 'THE USER ORIGINAL'
+      pasteboardApplyDelayMs = 60              // the sim lags behind the accepted write
+      copyOnChord(th, 'WHAT THE APP COPIED', 80)   // and the app copies later still
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'b1', payload: { press: 'copy' },
+      }))
+      const data = await waitForType(browser, 'clipboard:data')
+      expect((data.payload as { text: string }).text).toBe('WHAT THE APP COPIED')
+
+      agent.disconnect(); browser.close()
+    }, 10_000)
+
+    it('restores the original before releasing the device, even when the write lags', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      pasteboard = 'UNTOUCHED ORIGINAL'
+      pasteboardApplyDelayMs = 40              // both the sentinel and the restore lag
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'b2', payload: { press: 'copy' },
+      }))
+      await waitForType(browser, 'clipboard:error')
+      expect(pasteboard).toBe('UNTOUCHED ORIGINAL')   // no sentinel left behind
+
+      agent.disconnect(); browser.close()
+    }, 15_000)
+
+    it('press:cut sends Cmd+X instead', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      const th = MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value
+      th.sendKey.mockClear()
+      copyOnChord(th)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r3', payload: { press: 'cut' },
+      }))
+      await waitForType(browser, 'clipboard:data')
+      expect(th.sendKey).toHaveBeenCalledWith(0x1b, 0x08)   // KeyX + MetaLeft
+
+      agent.disconnect(); browser.close()
+    }, 15_000)
+    it('hides a visible software keyboard before pressing copy', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      browser.send(JSON.stringify({ type: 'input:keyboard:toggle', sessionId: agent.sessionId }))
+      await waitForType(browser, 'keyboard:toggled')
+      ;(simctl.hideSoftwareKeyboard as ReturnType<typeof vi.fn>).mockClear()
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      copyOnChord(MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r4', payload: { press: 'copy' },
+      }))
+      await waitForType(browser, 'clipboard:data')
+      expect(simctl.hideSoftwareKeyboard).toHaveBeenCalledWith('dev-1')
+
+      agent.disconnect(); browser.close()
+    }, 15_000)
+    it('clipboard:write sets the pasteboard and acks only after it landed', async () => {
+      const simctl = mockSimctl(true)
+      let release!: () => void
+      const gate = new Promise<void>((r) => { release = r })
+      ;(simctl.setPasteboard as ReturnType<typeof vi.fn>).mockReturnValue(gate)
+      const { agent, browser } = await bootWith(simctl)
+
+      let acked = false
+      waitForType(browser, 'clipboard:write-done').then(() => { acked = true })
+      browser.send(JSON.stringify({
+        type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'r5', payload: { text: 'pasted text' },
+      }))
+      await vi.waitFor(() => expect(simctl.setPasteboard).toHaveBeenCalledWith('dev-1', 'pasted text'))
+      await new Promise((r) => setTimeout(r, 50))
+      expect(acked).toBe(false)     // the write has not settled yet
+      release()
+      await vi.waitFor(() => expect(acked).toBe(true))
+
+      agent.disconnect(); browser.close()
+    })
+
+    it('pasteAfter presses Cmd+V after the write, before the ack', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      const th = MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value
+      th.sendKey.mockClear()
+
+      const done = waitForType(browser, 'clipboard:write-done')
+      browser.send(JSON.stringify({
+        type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'r6', payload: { text: 'x', pasteAfter: true },
+      }))
+      await done
+      expect(th.sendKey).toHaveBeenCalledWith(0x19, 0x08)   // KeyV + MetaLeft
+      expect(simctl.setPasteboard).toHaveBeenCalledWith('dev-1', 'x')
+
+      agent.disconnect(); browser.close()
+    })
+
+    it('does not press paste when pasteAfter is not asked for', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      const th = MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value
+      th.sendKey.mockClear()   // shared mock across tests in this file
+
+      const done = waitForType(browser, 'clipboard:write-done')
+      browser.send(JSON.stringify({
+        type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'r7', payload: { text: 'x' },
+      }))
+      await done
+      expect(th.sendKey).not.toHaveBeenCalled()
+
+      agent.disconnect(); browser.close()
+    })
+
+    it('rejects an oversized clipboard instead of forwarding it', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'r8',
+        payload: { text: 'x'.repeat(1024 * 1024 + 1) },
+      }))
+      const err = await waitForType(browser, 'clipboard:error')
+      expect(err.message).toMatch(/too large/i)
+      expect(simctl.setPasteboard).not.toHaveBeenCalled()
+
+      agent.disconnect(); browser.close()
+    })
+
+    // The size ceiling is enforced inside getPasteboard (maxBuffer). Hitting it means the app
+    // DID copy, so restoring the original here would overwrite the user's fresh copy.
+    it('keeps the device copy when the pasteboard is too large to read', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      const th = MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value
+      pasteboard = 'THE USER ORIGINAL'
+      let sentinelSeen = ''
+      let chordPressed = false
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        if (isSentinelish(pasteboard)) sentinelSeen = pasteboard
+        // Only the post-chord read blows the buffer — the app has copied something huge by then.
+        if (chordPressed && !isSentinelish(pasteboard)) throw new Error('stdout maxBuffer length exceeded')
+        return pasteboard
+      })
+      th.sendKey.mockImplementation(() => { chordPressed = true; pasteboard = 'HUGE COPIED TEXT' })
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'big', payload: { press: 'copy' },
+      }))
+      const err = await waitForType(browser, 'clipboard:error')
+      expect(err.message).toMatch(/maxBuffer|too large/i)
+      expect(sentinelSeen).not.toBe('')                       // the handshake did run
+      // and the restore must NOT have fired over the fresh copy
+      expect(simctl.setPasteboard).not.toHaveBeenCalledWith('dev-1', 'THE USER ORIGINAL')
+
+      agent.disconnect(); browser.close()
+    }, 15_000)
+
+    it('surfaces a pasteboard read failure as clipboard:error, not an empty string', async () => {
+      const simctl = mockSimctl(true)
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Unable to connect to device pasteboard.'))
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r9' }))
+      const err = await waitForType(browser, 'clipboard:error')
+      expect(err.requestId).toBe('r9')
+      expect(err.message).toContain('pasteboard')
+
+      agent.disconnect(); browser.close()
+    })
+
+    // Reading needs no TouchHelper, so unlike tap/swipe a plain read works on a session that
+    // attached without going through device:boot (the H-E failure mode).
+    it('a plain read works on a boot-less session', async () => {
+      const simctl = mockSimctl(true)
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockResolvedValue('attached without boot')
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r10' }))
+      const data = await waitForType(browser, 'clipboard:data')
+      expect((data.payload as { text: string }).text).toBe('attached without boot')
+
+      agent.disconnect(); browser.close()
+    })
+
+    it('an empty pasteboard is data, not an error', async () => {
+      const simctl = mockSimctl(true)
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockResolvedValue('')
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r11' }))
+      const data = await waitForType(browser, 'clipboard:data')
+      expect((data.payload as { text: string }).text).toBe('')
+
+      agent.disconnect(); browser.close()
     })
   })
 

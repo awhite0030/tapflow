@@ -10,6 +10,7 @@ import type { AndroidButton, ChromeData, RelayMessage } from '@/lib/types';
 import type { FrameTiming, PerfHook } from './perf/types';
 import { parseEnvelopeHeader, HEADER_SIZE, CODEC_H264, CODEC_AUDIO, type BinaryFrameHandler } from '@/lib/envelope';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
+import type { ClipboardBridgeMessage, ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
 import { canDecodeH264 } from '@/lib/decoders/pickDecoder';
 import { StatsOverlay } from './perf/StatsOverlay';
 import { MetricsPanel } from './perf/MetricsPanel';
@@ -55,12 +56,19 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const [installError, setInstallError] = useState<string | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
+  // What the agent on the other end implements. Absent ⇒ an agent predating the capability,
+  // so the viewer degrades on purpose rather than inferring anything from a timeout.
+  const [agentCapabilities, setAgentCapabilities] = useState<string[]>([]);
   const [swKeyboardVisible, setSwKeyboardVisible] = useState(false);
   const [swKeyboardPending, setSwKeyboardPending] = useState(false);
 
   // Active viewer registers its binary frame decoder here.
   // SimulatorViewer routes incoming binary frames to whichever viewer is mounted.
   const binaryFrameHandlerRef = useRef<BinaryFrameHandler | undefined>(undefined);
+
+  // The mounted viewer's clipboard bridge registers here; replies are correlated by
+  // requestId on its side, so this only has to hand the message over.
+  const clipboardHandlerRef = useRef<ClipboardMessageHandler | undefined>(undefined);
 
   // Opt-in audio output (Android emulator first). Audio frames are codec-tagged and routed
   // straight to Web Audio — they never enter the video FIFO/decoder path. Always-on playback;
@@ -70,6 +78,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const handleMessage = useCallback((msg: RelayMessage) => {
     if (msg.type === 'session:joined') {
       setJoined(true);
+      setAgentCapabilities(msg.capabilities ?? []);
       // Tell the agent up front whether this browser can decode H.264 so it picks the
       // codec accordingly; false (old/unsupported browser) → agent streams JPEG.
       // secureContext (localhost/HTTPS) → the agent can stream full res (WebCodecs hw-decodes it);
@@ -100,6 +109,9 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       const { visible } = msg.payload as { visible: boolean };
       setSwKeyboardVisible(visible);
       setSwKeyboardPending(false);
+    }
+    if (msg.type === 'clipboard:data' || msg.type === 'clipboard:write-done' || msg.type === 'clipboard:error') {
+      clipboardHandlerRef.current?.(msg as unknown as ClipboardBridgeMessage);
     }
     if (msg.type === 'open-url:done') { toast.success('Deeplink opened'); }
     if (msg.type === 'open-url:error') { toast.error(msg.message); }
@@ -153,6 +165,8 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     deviceReady, installing, installed, installError, bootError,
     launching, setLaunching,
     binaryFrameHandlerRef,
+    clipboardHandlerRef,
+    clipboardSupported: agentCapabilities.includes('clipboard'),
     onRecordingUploaded,
     swKeyboardVisible, swKeyboardPending, onKbdToggle,
   };

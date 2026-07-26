@@ -96,6 +96,9 @@ const AGENT_MSG_TYPES = new Set([
   'app:install-done', 'app:install-error', 'app:launch-done', 'app:launch-error',
   'open-url:done', 'open-url:error', 'keyboard:toggled',
   'input:type-done', 'input:type-error', 'input:done', 'input:error',
+  // clipboard:data carries the simulator's clipboard — agent-authenticated, so a
+  // browser socket can never inject it into another viewer.
+  'clipboard:data', 'clipboard:write-done', 'clipboard:error',
   // stream:register binds a session's stream socket — agent-only, or a browser
   // (view PAT / cookie) could hijack an existing session's video feed.
   'stream:register',
@@ -628,6 +631,19 @@ export class RelayServer {
         }
         break
       }
+      // Bound to the session's own agent socket, unlike the replies above: this payload
+      // lands on the viewer's host OS clipboard, so a second agent (another Mac on the
+      // same relay) must not be able to address someone else's session.
+      case 'clipboard:data':
+      case 'clipboard:write-done':
+      case 'clipboard:error': {
+        const session = this.sessions.get(msg.sessionId!)
+        if (session?.agentSocket !== ws) break
+        if (session.browserSocket?.readyState === WebSocket.OPEN) {
+          session.browserSocket.send(JSON.stringify(msg))
+        }
+        break
+      }
 
       // ── Browser → Agent ────────────────────────────────────────────────────
       case 'device:boot':
@@ -682,6 +698,21 @@ export class RelayServer {
           // Reply to the sender (the MCP/browser socket) so it fails truthfully
           // instead of falling through to its optimistic 2s timeout.
           ws.send(JSON.stringify({ type: 'input:error', sessionId: msg.sessionId, message: 'agent offline' }))
+        }
+        break
+      }
+      // Kept out of the input:* chain above: these need their own error type, and the caller
+      // is waiting on a bounded deadline, so an undeliverable request fails now rather than
+      // hanging until the browser gives up.
+      case 'clipboard:read':
+      case 'clipboard:write': {
+        const session = this.sessions.get(msg.sessionId!)
+        if (session?.agentSocket.readyState === WebSocket.OPEN) {
+          session.agentSocket.send(JSON.stringify(msg))
+        } else if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'clipboard:error', sessionId: msg.sessionId, requestId: msg.requestId, message: 'agent offline',
+          }))
         }
         break
       }
@@ -742,7 +773,7 @@ export class RelayServer {
         old.terminate()
       }
     }
-    const sessionIds = this.sessions.create(ws, msg.devices ?? [], msg.agentName, msg.platform, msg.agentId)
+    const sessionIds = this.sessions.create(ws, msg.devices ?? [], msg.agentName, msg.platform, msg.agentId, msg.capabilities)
     const registeredSessions = (msg.devices ?? []).map((d, i) => ({
       deviceId: d.id,
       sessionId: sessionIds[i],
@@ -770,7 +801,12 @@ export class RelayServer {
       ws.send(JSON.stringify({ type: 'error', message: 'Session busy' }))
       return
     }
-    ws.send(JSON.stringify({ type: 'session:joined', sessionId: msg.sessionId }))
+    // Include the agent's capabilities so the viewer knows up front what is implemented on
+    // the other end — an agent that predates a feature omits it, and the dashboard degrades
+    // deliberately instead of inferring anything from a timeout.
+    ws.send(JSON.stringify({
+      type: 'session:joined', sessionId: msg.sessionId, capabilities: session.agentCapabilities ?? [],
+    }))
     if (session.chromeData) {
       ws.send(JSON.stringify({ type: 'session:chrome', payload: session.chromeData }))
     }

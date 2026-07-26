@@ -52,6 +52,11 @@ export type MessageType =
   | 'ui:tree:request'
   | 'ui:tree:response'
   | 'ui:tree:error'
+  | 'clipboard:read'
+  | 'clipboard:write'
+  | 'clipboard:data'
+  | 'clipboard:write-done'
+  | 'clipboard:error'
   | 'error'
 
 import type { AgentResources, UIElement } from '@tapflowio/agent-core'
@@ -87,6 +92,10 @@ export interface RelayMessage {
   // agent:register: raw device list (without sessionId/busy — added by relay)
   devices?: Array<{ id: string; name: string; platform: string; status: string; osVersion?: string }>
   platform?: string  // agent:register: agent platform ('ios' | 'android')
+  // agent:register: what this agent implements (e.g. ['clipboard']). Absent from agents that
+  // predate a capability, which is exactly how a viewer tells them apart — see agent-core.
+  // Echoed back on session:joined so the dashboard knows before it sends anything.
+  capabilities?: string[]
   // agents:listed: grouped by agent
   sessions?: SessionInfo[]
   // agent:registered: per-device sessionId assignments

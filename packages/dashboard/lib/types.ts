@@ -132,7 +132,7 @@ export interface ReleaseGroup {
 
 export type RelayMessage =
   | { type: 'agents:listed'; sessions: SessionInfo[] }
-  | { type: 'session:joined'; sessionId: string }
+  | { type: 'session:joined'; sessionId: string; capabilities?: string[] }
   | { type: 'session:chrome'; payload: ChromeData | { buttons: AndroidButton[]; streamType: 'h264' } }
   | { type: 'session:deviceInfo'; payload: DeviceInfo }
   | { type: 'device:boot'; sessionId: string; payload: { deviceId: string; resetMode?: 'app-only' | 'full-erase'; acceptH264?: boolean } }
@@ -160,4 +160,13 @@ export type RelayMessage =
   | { type: 'open-url'; sessionId: string; payload: { url: string } }
   | { type: 'open-url:done'; sessionId: string }
   | { type: 'open-url:error'; sessionId: string; message: string }
+  // browser → agent. Listed for the same reason every other outbound message is: this union is
+  // the readable record of the protocol. It does not constrain `send()`, which takes `object` —
+  // narrowing that is a separate change across every existing call site.
+  | { type: 'clipboard:read'; sessionId: string; requestId: string; payload?: { press?: 'copy' | 'cut' } }
+  | { type: 'clipboard:write'; sessionId: string; requestId: string; payload: { text: string; pasteAfter?: boolean } }
+  // agent → browser
+  | { type: 'clipboard:data'; sessionId: string; requestId: string; payload: { text: string } }
+  | { type: 'clipboard:write-done'; sessionId: string; requestId: string }
+  | { type: 'clipboard:error'; sessionId: string; requestId: string; message: string; payload?: { unsupported?: boolean } }
   | { type: 'error'; message: string }
