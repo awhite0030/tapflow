@@ -402,8 +402,9 @@ describe('IOSAgent', () => {
       browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
 
-      // device:ready is sent after TouchHelper is created, but the mock recording
-      // occasionally lags a microtask behind the message delivery — wait explicitly
+      // device:ready is sent after TouchHelper is created, but the relay also replays a
+      // device:ready on session:start for an already-booted device, so this may have latched
+      // the stale one — wait for the helper itself. (A vi.fn call log never lags.)
       await vi.waitFor(() => expect(MockTouchHelper.mock.results).toHaveLength(1), { timeout: 500 })
       const thInstance = MockTouchHelper.mock.results[0].value
       return { browser, agent, thInstance }
@@ -1016,6 +1017,11 @@ describe('IOSAgent', () => {
         payload: { deviceId: 'dev-1', ...bootPayload },
       }))
       await waitForType(browser, 'device:ready')
+      // mockSimctl(true) registers the device as already booted, so the relay replays a
+      // device:ready on session:start — waitForType can latch that stale ack instead of this
+      // boot's, and the mock read then saw zero calls (`undefined` vs the expected codec).
+      // Sync on the streamer itself, which is what this test actually asserts.
+      await vi.waitFor(() => expect(MockCapture.mock.calls.length).toBeGreaterThan(0), { timeout: 2000 })
       const calls = MockCapture.mock.calls
       const codec = calls[calls.length - 1]?.[2] as string
       agent.disconnect()
