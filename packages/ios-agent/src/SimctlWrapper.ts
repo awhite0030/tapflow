@@ -47,7 +47,7 @@ function firstLine(e: unknown): string {
   return lines.find((l) => !l.startsWith('Command failed:')) ?? 'the simulator did not respond'
 }
 import type { Device, DeviceStatus } from '@tapflowio/agent-core'
-import { defaultRunner, type SimctlRunner } from './simctl.js'
+import { defaultRunner, OutputTooLargeError, type SimctlRunner } from './simctl.js'
 import { KeyboardHelperDaemon } from './KeyboardHelperDaemon.js'
 
 interface SimctlDevice {
@@ -84,6 +84,10 @@ export function isDeviceMissingError(err: unknown): boolean {
   const text = [e.message, e.stderr].filter((s): s is string => typeof s === 'string').join(' ')
   return /cannot be located on disk|data is no longer present/i.test(text)
 }
+
+/** The device clipboard held more than `MAX_CLIPBOARD_BYTES`. The app did copy — we just cannot
+ *  carry it — so a caller mid-handshake must NOT restore over it. */
+export class ClipboardTooLargeError extends PlatformError {}
 
 export class SimctlWrapper {
   private readonly kbd = new KeyboardHelperDaemon()
@@ -198,7 +202,8 @@ export class SimctlWrapper {
         'pbpaste', deviceId,
       )
     } catch (e) {
-      throw new PlatformError(`Could not read the device clipboard: ${firstLine(e)}`)
+      const message = `Could not read the device clipboard: ${firstLine(e)}`
+      throw e instanceof OutputTooLargeError ? new ClipboardTooLargeError(message) : new PlatformError(message)
     }
   }
 

@@ -3,7 +3,8 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { spawnSync } from 'child_process'
-import { ValidationError } from '@tapflowio/agent-core'
+import { ValidationError, PlatformError, MAX_CLIPBOARD_BYTES } from '@tapflowio/agent-core'
+import { ClipboardTooLargeError } from '../SimctlWrapper.js'
 
 vi.mock('../TouchHelper', () => ({
   TouchHelper: vi.fn(function () { return ({
@@ -1514,6 +1515,66 @@ describe('IOSAgent', () => {
       agent.disconnect(); browser.close()
     }, 15_000)
 
+    // The flag is what the viewer uses to decide whether pressing the plain chord is safe.
+    // Emitting it correctly was untested on the agent side in both polarities.
+    it('reports a parked sentinel when the copy failed after the marker went down', async () => {
+      const simctl = mockSimctl(true)
+      pasteboard = 'ORIGINAL'
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'sp1', payload: { press: 'copy' },
+      }))
+      const err = await waitForType(browser, 'clipboard:error')
+      expect((err.payload as { sentinelParked: boolean }).sentinelParked).toBe(true)
+
+      agent.disconnect(); browser.close()
+    }, 10_000)
+
+    it('reports no parked sentinel when it failed before writing one', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      // Reading the original is the last step before the marker goes down.
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new PlatformError('Could not read the device clipboard: simctl pbpaste timed out'))
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'sp2', payload: { press: 'copy' },
+      }))
+      const err = await waitForType(browser, 'clipboard:error')
+      expect((err.payload as { sentinelParked: boolean }).sentinelParked).toBe(false)
+
+      agent.disconnect(); browser.close()
+    }, 10_000)
+
+    // The flag describes the DEVICE, not the operation that answers. A caller that never touched
+    // the clipboard must still report a marker another operation has down — the chord the viewer
+    // would press in response travels as `input:key`, outside the queue that keeps them apart.
+    it('reports a sentinel parked by a different in-flight operation', async () => {
+      const simctl = mockSimctl(true)
+      pasteboard = 'ORIGINAL'
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'hold', payload: { press: 'copy' },
+      }))
+      await vi.waitFor(() => expect(isSentinelish(pasteboard)).toBe(true), { timeout: 2000 })
+
+      // Rejected up front, before the queue — so it answers while the read above still holds.
+      browser.send(JSON.stringify({
+        type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'big',
+        payload: { text: 'x'.repeat(MAX_CLIPBOARD_BYTES + 1) },
+      }))
+      const err = await waitForType(browser, 'clipboard:error')
+      expect(err.requestId).toBe('big')
+      expect((err.payload as { sentinelParked: boolean }).sentinelParked).toBe(true)
+
+      // Let the read finish before leaving: it still holds the device queue.
+      await vi.waitFor(() => expect(pasteboard).toBe('ORIGINAL'), { timeout: 5000 })
+
+      agent.disconnect(); browser.close()
+    }, 20_000)
+
     it('press:cut sends Cmd+X instead', async () => {
       const simctl = mockSimctl(true)
       const { agent, browser } = await bootWith(simctl)
@@ -1620,6 +1681,33 @@ describe('IOSAgent', () => {
 
     // The size ceiling is enforced inside getPasteboard (maxBuffer). Hitting it means the app
     // DID copy, so restoring the original here would overwrite the user's fresh copy.
+    // The counterpart of the test below. A timed-out pbpaste says nothing about whether the app
+    // copied, so treating it like the size ceiling stranded the sentinel on the device for good:
+    // the user's clipboard destroyed, and an invisible marker pasted into the app under test.
+    it('restores the original when a read fails for any reason other than size', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      const th = MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value
+      pasteboard = 'THE USER ORIGINAL'
+      let chordPressed = false
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        if (chordPressed) throw new PlatformError('Could not read the device clipboard: simctl pbpaste timed out')
+        return pasteboard
+      })
+      th.sendKey.mockImplementation(() => { chordPressed = true })
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'slow', payload: { press: 'copy' },
+      }))
+      const err = await waitForType(browser, 'clipboard:error')
+      expect(err.message).toMatch(/timed out/i)
+      await vi.waitFor(() => expect(pasteboard).toBe('THE USER ORIGINAL'), { timeout: 2000 })
+      expect(isSentinelish(pasteboard)).toBe(false)
+
+      agent.disconnect(); browser.close()
+    }, 10_000)
+
     it('keeps the device copy when the pasteboard is too large to read', async () => {
       const simctl = mockSimctl(true)
       const { agent, browser } = await bootWith(simctl)
@@ -1631,7 +1719,11 @@ describe('IOSAgent', () => {
       ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async () => {
         if (isSentinelish(pasteboard)) sentinelSeen = pasteboard
         // Only the post-chord read blows the buffer — the app has copied something huge by then.
-        if (chordPressed && !isSentinelish(pasteboard)) throw new Error('stdout maxBuffer length exceeded')
+        // The specific type is the point: SimctlWrapper classifies the size ceiling apart from
+        // every other read failure, and only this one may skip the restore.
+        if (chordPressed && !isSentinelish(pasteboard)) {
+          throw new ClipboardTooLargeError('Could not read the device clipboard: stdout maxBuffer length exceeded')
+        }
         return pasteboard
       })
       th.sendKey.mockImplementation(() => { chordPressed = true; pasteboard = 'HUGE COPIED TEXT' })

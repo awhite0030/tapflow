@@ -5,7 +5,7 @@ import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { spawnSync } from 'child_process'
 import { WebSocket } from 'ws'
-import type { Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
+import type { ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
 
 const logger = createLogger('ios-agent')
@@ -42,7 +42,7 @@ import {
   sendAudioYieldingToVideo,
 } from '@tapflowio/agent-core/utils'
 import type { AudioFrame } from '@tapflowio/agent-core'
-import { SimctlWrapper, isDeviceMissingError } from './SimctlWrapper.js'
+import { SimctlWrapper, isDeviceMissingError, ClipboardTooLargeError } from './SimctlWrapper.js'
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
@@ -607,6 +607,22 @@ export class IOSAgent implements DeviceAgent {
   // device must not interleave — each would read the other's marker instead of the real
   // clipboard. Keyed by device, not session: several sessions (and MCP) can address one device.
   private readonly clipboardQueue = createKeyedSerialQueue()
+  // Device-scoped, not operation-scoped. Several sessions (and MCP) can address one simulator,
+  // so an operation that fails before parking anything may still be answering while ANOTHER
+  // holds a marker down. The viewer decides from this whether pressing the plain chord is safe,
+  // and that chord travels as `input:key` — outside this queue — so the answer has to describe
+  // the device rather than the caller.
+  private readonly parkedSentinels = new Map<string, number>()
+
+  private markSentinel(deviceId: string, delta: 1 | -1): void {
+    const n = (this.parkedSentinels.get(deviceId) ?? 0) + delta
+    if (n > 0) this.parkedSentinels.set(deviceId, n)
+    else this.parkedSentinels.delete(deviceId)
+  }
+
+  private sentinelParked(deviceId: string): boolean {
+    return (this.parkedSentinels.get(deviceId) ?? 0) > 0
+  }
 
   // Ack a terminal input: input:done = dispatched to a booted device (not a landing guarantee — HID is fire-and-forget); input:error = no live channel / not booted. Off the sync inject path, so start/end pairing is unaffected.
   private async ackInput(state: DeviceState, dispatched: boolean): Promise<void> {
@@ -895,7 +911,7 @@ export class IOSAgent implements DeviceAgent {
         if (!state) {
           this.ws?.send(JSON.stringify({
             type: 'clipboard:error', sessionId, requestId, message: 'No booted device',
-            payload: { sentinelParked: false },
+            payload: { sentinelParked: false } satisfies ClipboardErrorPayload,
           }))
           break
         }
@@ -932,6 +948,9 @@ export class IOSAgent implements DeviceAgent {
           const before = isSentinel(raw) ? '' : raw
           const sentinel = `${SENTINEL_PREFIX}${randomUUID()}`
           let copied: string | null = null
+          // Counted before the call: setPasteboard can reject after the device took the value,
+          // so anything from here until the restore has to be treated as parked.
+          this.markSentinel(state.deviceId, 1)
           try {
             // Inside the try: if this rejects *after* the device applied it, the restore below
             // still runs. Outside, a leaked sentinel would sit on the device permanently.
@@ -952,12 +971,14 @@ export class IOSAgent implements DeviceAgent {
               try {
                 now = await this.simctl.getPasteboard(state.deviceId)
               } catch (e) {
-                // The size ceiling is enforced by getPasteboard's maxBuffer, and hitting it
-                // means the app DID copy — we just cannot carry it. Mark the device as changed
-                // so the restore below is skipped: restoring here would overwrite the very text
-                // the user just copied. (Android reaches the same state by assigning `copied`
-                // before it throws.)
-                copied = ''
+                // ONLY the size ceiling means the app copied — we just cannot carry it — so the
+                // restore below must be skipped or it would overwrite the very text the user
+                // copied. Every other failure here (a hung or timed-out pbpaste) says nothing
+                // about the device, and skipping the restore for those left the sentinel parked
+                // for good: the user's clipboard destroyed, and a zero-width marker pasted into
+                // the app under test. Android reaches the same two states, by assigning `copied`
+                // before it throws for the over-sized case and not otherwise.
+                if (e instanceof ClipboardTooLargeError) copied = ''
                 throw e
               }
               // A sentinel is never a copy result — ours means "not yet", any other means a
@@ -977,7 +998,7 @@ export class IOSAgent implements DeviceAgent {
               type: 'clipboard:error', message: e instanceof Error ? e.message : String(e),
               // A sentinel may be on the device: setPasteboard can reject after the device took
               // it. The viewer must not press the chord — the restore would overwrite the copy.
-              payload: { sentinelParked: true },
+              payload: { sentinelParked: this.sentinelParked(state.deviceId) } satisfies ClipboardErrorPayload,
             })
           } finally {
             // Only restore when the copy never happened; otherwise this would overwrite the
@@ -993,6 +1014,7 @@ export class IOSAgent implements DeviceAgent {
                 await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
               }
             }
+            this.markSentinel(state.deviceId, -1)
           }
         }
         // `read` answers for itself once the sentinel is in play. This catches only what can
@@ -1001,7 +1023,7 @@ export class IOSAgent implements DeviceAgent {
         this.clipboardQueue(state.deviceId, read).catch((e: unknown) => {
           respond({
             type: 'clipboard:error', message: e instanceof Error ? e.message : String(e),
-            payload: { sentinelParked: false },
+            payload: { sentinelParked: this.sentinelParked(state.deviceId) } satisfies ClipboardErrorPayload,
           })
         })
         break
@@ -1013,7 +1035,7 @@ export class IOSAgent implements DeviceAgent {
         if (!state) {
           this.ws?.send(JSON.stringify({
             type: 'clipboard:error', sessionId, requestId, message: 'No booted device',
-            payload: { sentinelParked: false },
+            payload: { sentinelParked: false } satisfies ClipboardErrorPayload,
           }))
           break
         }
@@ -1022,6 +1044,7 @@ export class IOSAgent implements DeviceAgent {
           this.ws?.send(JSON.stringify({
             type: 'clipboard:error', sessionId, requestId,
             message: `Clipboard is too large (max ${Math.floor(MAX_CLIPBOARD_BYTES / 1024)} KB)`,
+            payload: { sentinelParked: this.sentinelParked(state.deviceId) } satisfies ClipboardErrorPayload,
           }))
           break
         }
@@ -1051,7 +1074,10 @@ export class IOSAgent implements DeviceAgent {
           .then(() => this.ws?.send(JSON.stringify({ type: 'clipboard:write-done', sessionId, requestId })))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message }))
+            this.ws?.send(JSON.stringify({
+              type: 'clipboard:error', sessionId, requestId, message,
+              payload: { sentinelParked: this.sentinelParked(state.deviceId) } satisfies ClipboardErrorPayload,
+            }))
           })
         break
       }

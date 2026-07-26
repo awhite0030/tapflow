@@ -33,6 +33,11 @@ export interface SimctlExecOpts {
   maxBuffer?: number
 }
 
+/** Thrown when a call blows its `maxBuffer`. Distinguishable on purpose: for the clipboard, an
+ *  over-sized read means the app DID copy and the text simply cannot be carried, whereas a
+ *  timeout means nothing is known — and the two need opposite recovery. */
+export class OutputTooLargeError extends Error {}
+
 export interface SimctlRunner {
   exec(...args: string[]): Promise<string>
   execBinary(...args: string[]): Promise<Buffer>
@@ -84,7 +89,7 @@ function runWithOpts(opts: SimctlExecOpts, args: string[]): Promise<string> {
       if (opts.maxBuffer && bytes > opts.maxBuffer) {
         over = true
         proc.kill('SIGKILL')
-        finish(new Error('stdout maxBuffer length exceeded'))
+        finish(new OutputTooLargeError('stdout maxBuffer length exceeded'))
       }
     })
     // Same treatment as stdout: keep bytes, decode once. Bounded like execFile bounded it.

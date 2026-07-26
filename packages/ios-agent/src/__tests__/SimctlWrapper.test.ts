@@ -239,7 +239,6 @@ describe('SimctlWrapper', () => {
 
       const runner: SimctlRunner = {
         exec: vi.fn().mockResolvedValue(''),
-        execBinary: vi.fn(),
         execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }

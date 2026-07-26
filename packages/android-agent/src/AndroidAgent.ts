@@ -1,7 +1,7 @@
 import os from 'os'
 import { randomUUID } from 'crypto'
 import { WebSocket } from 'ws'
-import type { AndroidButton, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
+import type { AndroidButton, ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
@@ -482,6 +482,22 @@ export class AndroidAgent implements DeviceAgent {
   // device must not interleave — each would read the other's marker instead of the real
   // clipboard. Keyed by device, not session: several sessions (and MCP) can address one device.
   private readonly clipboardQueue = createKeyedSerialQueue()
+  // Device-scoped, not operation-scoped. Several sessions (and MCP) can address one emulator, so
+  // an operation that fails before parking anything may still be answering while ANOTHER holds a
+  // marker down. The viewer decides from this whether pressing the plain chord is safe, and that
+  // chord travels as `input:key` — outside this queue — so the answer has to describe the device
+  // rather than the caller. Mirrors the iOS agent.
+  private readonly parkedSentinels = new Map<string, number>()
+
+  private markSentinel(deviceId: string, delta: 1 | -1): void {
+    const n = (this.parkedSentinels.get(deviceId) ?? 0) + delta
+    if (n > 0) this.parkedSentinels.set(deviceId, n)
+    else this.parkedSentinels.delete(deviceId)
+  }
+
+  private sentinelParked(deviceId: string): boolean {
+    return (this.parkedSentinels.get(deviceId) ?? 0) > 0
+  }
 
   // Fire-and-forget a pointer call: gRPC methods are async (swallow rejection), scrcpy sync (no-op).
   private fire(r: void | Promise<void>): void {
@@ -1176,13 +1192,16 @@ export class AndroidAgent implements DeviceAgent {
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
-        // `sentinelParked` defaults false: every caller of `fail` is a path that gave up before
-        // the sentinel went down. The one place a marker can still be on the device replies for
-        // itself, below.
+        // Every caller of `fail` gave up before parking anything itself, but another operation
+        // on the same device may still hold a marker — and the chord the viewer would press in
+        // response does not go through the queue. So report the device, not the caller.
         const fail = (message: string, unsupported = false) =>
           this.ws?.send(JSON.stringify({
             type: 'clipboard:error', sessionId, requestId, message,
-            payload: { unsupported, sentinelParked: false },
+            payload: {
+              unsupported,
+              sentinelParked: state ? this.sentinelParked(state.deviceId) : false,
+            } satisfies ClipboardErrorPayload,
           }))
         // Distinguish the three ways this can be unavailable — they need different fixes.
         if (!state || !serial) { fail('No booted device'); break }
@@ -1229,6 +1248,9 @@ export class AndroidAgent implements DeviceAgent {
             const before = isSentinel(raw) ? '' : raw
             const sentinel = `${SENTINEL_PREFIX}${randomUUID()}`
             let copied: string | null = null
+            // Counted before the call: setClipboard only schedules, so a rejection can still
+            // leave the marker applied — everything from here to the restore counts as parked.
+            this.markSentinel(state.deviceId, 1)
             try {
               // Inside the try: setClipboard only schedules the change, so a rejection can
               // still leave it applied — the restore below has to run either way.
@@ -1263,7 +1285,9 @@ export class AndroidAgent implements DeviceAgent {
               respond({
                 type: 'clipboard:error', message: e instanceof Error ? e.message : String(e),
                 // setClipboard only schedules, so a rejection can still leave the marker applied.
-                payload: { unsupported: false, sentinelParked: true },
+                payload: {
+                  unsupported: false, sentinelParked: this.sentinelParked(state.deviceId),
+                } satisfies ClipboardErrorPayload,
               })
             } finally {
               // Restore only if nothing was copied; otherwise this would clobber the capture.
@@ -1278,6 +1302,7 @@ export class AndroidAgent implements DeviceAgent {
                   await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
                 }
               }
+              this.markSentinel(state.deviceId, -1)
             }
           }
           // `read` answers for itself; this only catches what the press-less branch can throw.

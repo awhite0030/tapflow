@@ -111,8 +111,13 @@ const isUnsupportedBackend = (msg: ClipboardBridgeMessage): boolean =>
  *  whatever the chord copies, so the user pastes a stale value. Absent means assume parked —
  *  an agent that predates the field cannot tell us, and a silent stale paste is the worse half
  *  of the trade. See ClipboardErrorPayload in agent-core. */
-const noSentinelParked = (msg: ClipboardBridgeMessage): boolean =>
-  (msg.payload as { sentinelParked?: boolean } | undefined)?.sentinelParked === false
+const noSentinelParked = (msg: ClipboardBridgeMessage): boolean => {
+  const p = msg.payload as { unsupported?: boolean; sentinelParked?: boolean } | undefined
+  // `unsupported` implies it: a backend with no clipboard channel cannot park anything. Accepting
+  // it keeps `{ unsupported: true }` alone — the natural encoding, and what a third-party agent
+  // would most likely send — from silently costing the user their fallback copy.
+  return p?.sentinelParked === false || p?.unsupported === true
+}
 
 /** Is the user selecting text in the dashboard itself rather than driving the device? */
 function hasDocumentSelection(): boolean {

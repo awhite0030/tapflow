@@ -18,6 +18,7 @@ export {
   CLIPBOARD_DEVICE_CALL_MS,
   CLIPBOARD_AGENT_WORST_MS,
   MAX_CLIPBOARD_BYTES,
+  type ClipboardErrorPayload,
   clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX,
   isClipboardSentinel,
