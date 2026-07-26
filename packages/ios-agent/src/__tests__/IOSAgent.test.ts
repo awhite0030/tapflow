@@ -1406,7 +1406,38 @@ describe('IOSAgent', () => {
         type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'b2', payload: { press: 'copy' },
       }))
       await waitForType(browser, 'clipboard:error')
-      expect(pasteboard).toBe('UNTOUCHED ORIGINAL')   // no sentinel left behind
+      // The reply now goes out BEFORE the restore (the restore is a `finally`, which runs after
+      // the `catch` that answers), so the device may still hold the sentinel at this instant.
+      // What must hold is that the restore completes while the queue is still held.
+      await vi.waitFor(() => expect(pasteboard).toBe('UNTOUCHED ORIGINAL'), { timeout: 3000 })
+
+      agent.disconnect(); browser.close()
+    }, 15_000)
+
+    // Restoring is cleanup, not part of answering. Making the viewer wait for it put a whole
+    // deadline window inside the round trip, which is how the browser ended up giving up before
+    // the agent's specific message arrived.
+    it('answers before it restores, and still restores before releasing the device', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      pasteboard = 'ORIGINAL'
+      // Make the restore slow enough that "reply first" cannot be an artefact of scheduling:
+      // the answer has to arrive while the restore is demonstrably still running.
+      let restoreDone = false
+      ;(simctl.setPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async (_d: string, t: string) => {
+        if (t === 'ORIGINAL') {
+          await new Promise((r) => setTimeout(r, 400))
+          restoreDone = true
+        }
+        pasteboard = t
+      })
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'ord', payload: { press: 'copy' },
+      }))
+      await waitForType(browser, 'clipboard:error')
+      expect(restoreDone).toBe(false)   // answered while the restore was still in flight
+      await vi.waitFor(() => expect(restoreDone).toBe(true), { timeout: 3000 })
 
       agent.disconnect(); browser.close()
     }, 15_000)

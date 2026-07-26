@@ -7,7 +7,7 @@ const logger = createLogger('ios-agent:simctl')
 const execFileAsync = promisify(execFile)
 
 // stderr is only ever read to build an error message, so a runaway one is pure waste.
-const MAX_STDERR_CHARS = 64 * 1024
+const MAX_STDERR_BYTES = 64 * 1024
 
 function isCoreSimulatorVersionMismatch(err: unknown): boolean {
   const msg = (err as { stderr?: string; message?: string }).stderr
@@ -65,7 +65,8 @@ function runWithOpts(opts: SimctlExecOpts, args: string[]): Promise<string> {
     // that may already contain replacement characters.
     const chunks: Buffer[] = []
     let bytes = 0
-    let stderr = ''
+    const stderrChunks: Buffer[] = []
+    let stderrBytes = 0
     let over = false
     let settled = false
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -86,14 +87,15 @@ function runWithOpts(opts: SimctlExecOpts, args: string[]): Promise<string> {
         finish(new Error('stdout maxBuffer length exceeded'))
       }
     })
-    // Bounded like stdout was under execFile; a runaway stderr must not grow without limit.
+    // Same treatment as stdout: keep bytes, decode once. Bounded like execFile bounded it.
     proc.stderr?.on('data', (d: Buffer) => {
-      if (stderr.length < MAX_STDERR_CHARS) stderr += d.toString()
+      if (stderrBytes < MAX_STDERR_BYTES) { stderrChunks.push(d); stderrBytes += d.length }
     })
     proc.on('error', (e) => finish(e))
     proc.on('close', (code) => {
       if (over) return
       const stdout = Buffer.concat(chunks).toString('utf8')
+      const stderr = Buffer.concat(stderrChunks).toString('utf8')
       finish(code === 0 ? undefined : new Error(stderr.trim() || `simctl ${args[0]} exited ${code}`), stdout)
     })
 

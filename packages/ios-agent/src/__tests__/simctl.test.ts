@@ -195,6 +195,14 @@ describe('defaultRunner.execWithOpts', () => {
     expect(proc.kill).not.toHaveBeenCalled()
   })
 
+  // execFile rejects strictly past the ceiling, not at it. Mutating `>` to `>=` used to pass.
+  it('rejects strictly past the ceiling, not at it', async () => {
+    spawnMock.mockReturnValue(fakeProc({ stdout: 'x'.repeat(100) }))
+    await expect(defaultRunner.execWithOpts({ maxBuffer: 100 }, 'pbpaste', 'UDID')).resolves.toHaveLength(100)
+    spawnMock.mockReturnValue(fakeProc({ stdout: 'x'.repeat(101) }))
+    await expect(defaultRunner.execWithOpts({ maxBuffer: 100 }, 'pbpaste', 'UDID')).rejects.toThrow(/maxBuffer/)
+  })
+
   it('reports the command stderr on a non-zero exit', async () => {
     spawnMock.mockReturnValue(fakeProc({ stderr: 'Device must be booted to access its pasteboard.', code: 1 }))
     await expect(defaultRunner.execWithOpts({}, 'pbpaste', 'UDID'))

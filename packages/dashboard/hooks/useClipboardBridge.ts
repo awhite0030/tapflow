@@ -33,13 +33,14 @@ interface Options {
 // the derivation is written out here and a test reads agent-core's source to keep the two in
 // step — an earlier version of this comment silently drifted.
 //
-// Three deadline windows, not two: the failing read confirms its sentinel applied, watches for
-// the copy, then confirms the restore in a `finally` that runs before the rejection surfaces.
+// Two deadline windows are inside the answer (confirm the sentinel applied, watch for the copy);
+// the restore is not — the agent replies from its `catch` and restores in the `finally` after.
+// Five device calls, because each windowed loop can overrun by one.
 //
 // Upper bound: a claimed clipboard write was measured holding for 6s in Chrome and Safari, so
 // staying under that keeps the one-press copy intact.
-const AGENT_WORST_MS = 1_000 + 2_000 + 500 + 4 * 300   // write + copy + restore + device calls
-const ROUND_TRIP_BUDGET_MS = AGENT_WORST_MS + 800      // 5.5s — above the agent, below the 6s claim limit
+export const AGENT_WORST_MS = 1_000 + 2_000 + 5 * 300   // write + copy + device calls
+const ROUND_TRIP_BUDGET_MS = AGENT_WORST_MS + 500       // 5s — above the agent, 1s below the claim limit
 
 // The device chord is always the Cmd/meta one regardless of what the viewer pressed: iOS
 // only understands Cmd+C, and Android treats meta and ctrl alike. A Windows viewer pressing

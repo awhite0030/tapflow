@@ -897,8 +897,17 @@ export class IOSAgent implements DeviceAgent {
           break
         }
         const { press } = (msg.payload ?? {}) as { press?: 'copy' | 'cut' }
-        const read = async (): Promise<string> => {
-          if (!press) return this.simctl.getPasteboard(state.deviceId)
+        // Answering is separate from cleaning up. The restore below runs in a `finally`, which
+        // executes AFTER this — so the viewer hears back as soon as the outcome is known and
+        // does not wait out the restore window. The queue is still held until the restore
+        // finishes, which is what actually matters: the next operation must not see a sentinel.
+        const respond = (body: object) =>
+          this.ws?.send(JSON.stringify({ sessionId, requestId, ...body }))
+        const read = async (): Promise<void> => {
+          if (!press) {
+            respond({ type: 'clipboard:data', payload: { text: await this.simctl.getPasteboard(state.deviceId) } })
+            return
+          }
 
           this.ensureTouchHelper(state)
           if (!state.touchHelper) throw new PlatformError('Cannot press copy — no input channel to the device')
@@ -950,10 +959,18 @@ export class IOSAgent implements DeviceAgent {
               }
               // A sentinel is never a copy result — ours means "not yet", any other means a
               // concurrent operation slipped in and its marker must not be handed to the user.
-              if (!isSentinel(now)) { copied = now; return now }
+              if (!isSentinel(now)) {
+                copied = now
+                respond({ type: 'clipboard:data', payload: { text: now } })
+                return
+              }
               await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
             } while (Date.now() < deadline)
             throw new PlatformError('The device did not copy anything — is something selected?')
+          } catch (e: unknown) {
+            // Reply here rather than letting this propagate: a rejection would surface only
+            // after `finally` had finished restoring, putting that window inside the round trip.
+            respond({ type: 'clipboard:error', message: e instanceof Error ? e.message : String(e) })
           } finally {
             // Only restore when the copy never happened; otherwise this would overwrite the
             // value we just captured. A leaked sentinel would be worse than the original bug.
@@ -970,12 +987,10 @@ export class IOSAgent implements DeviceAgent {
             }
           }
         }
-        this.clipboardQueue(state.deviceId, read)
-          .then((text) => this.ws?.send(JSON.stringify({ type: 'clipboard:data', sessionId, requestId, payload: { text } })))
-          .catch((e: unknown) => {
-            const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message }))
-          })
+        // `read` answers for itself; this only catches what the press-less branch can throw.
+        this.clipboardQueue(state.deviceId, read).catch((e: unknown) => {
+          respond({ type: 'clipboard:error', message: e instanceof Error ? e.message : String(e) })
+        })
         break
       }
       case 'clipboard:write': {

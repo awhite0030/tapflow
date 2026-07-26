@@ -1195,6 +1195,12 @@ export class AndroidAgent implements DeviceAgent {
 
         if (msg.type === 'clipboard:read') {
           const { press } = (msg.payload ?? {}) as { press?: 'copy' | 'cut' }
+          // Answering is separate from cleaning up: the restore is a `finally`, which runs after
+          // the `catch` that replies, so the viewer hears back as soon as the outcome is known.
+          // The queue is still held until the restore lands — that is what stops the next
+          // operation seeing a sentinel. Mirrors the iOS read path.
+          const respond = (body: object) =>
+            this.ws?.send(JSON.stringify({ sessionId, requestId, ...body }))
           // The ceiling applies to whatever leaves the device, not just the sentinel path —
           // iOS gets this from getPasteboard's maxBuffer, so Android is the only side that
           // could put a multi-MB guest clipboard on the socket the video shares.
@@ -1204,8 +1210,11 @@ export class AndroidAgent implements DeviceAgent {
             }
             return text
           }
-          const read = async (): Promise<string> => {
-            if (!press) return capped(await client.getClipboard())
+          const read = async (): Promise<void> => {
+            if (!press) {
+              respond({ type: 'clipboard:data', payload: { text: capped(await client.getClipboard()) } })
+              return
+            }
             // Overwrite with a value only we could have written, press the chord, then wait for
             // it to change. A fixed delay can only guess whether the app has copied yet, and
             // guessing wrong hands back the PREVIOUS clipboard with no error. The sentinel also
@@ -1236,10 +1245,18 @@ export class AndroidAgent implements DeviceAgent {
                 const now = await client.getClipboard()
                 // A sentinel is never a copy result: ours means "not yet", another one means a
                 // concurrent operation slipped in and must not be handed to the user.
-                if (!isSentinel(now)) { copied = now; return capped(now) }
+                if (!isSentinel(now)) {
+                  copied = now
+                  respond({ type: 'clipboard:data', payload: { text: capped(now) } })
+                  return
+                }
                 await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
               } while (Date.now() < deadline)
               throw new PlatformError('The device did not copy anything — is something selected?')
+            } catch (e) {
+              // Reply here rather than letting this propagate: a rejection would surface only
+              // after `finally` had restored, putting that window inside the round trip.
+              respond({ type: 'clipboard:error', message: e instanceof Error ? e.message : String(e), payload: { unsupported: false } })
             } finally {
               // Restore only if nothing was copied; otherwise this would clobber the capture.
               // And wait for it to APPLY, not just schedule: releasing the queue early lets the
@@ -1255,9 +1272,8 @@ export class AndroidAgent implements DeviceAgent {
               }
             }
           }
-          this.clipboardQueue(state.deviceId, read)
-            .then((text) => this.ws?.send(JSON.stringify({ type: 'clipboard:data', sessionId, requestId, payload: { text } })))
-            .catch(onError)
+          // `read` answers for itself; this only catches what the press-less branch can throw.
+          this.clipboardQueue(state.deviceId, read).catch(onError)
         } else {
           const { text, pasteAfter } = (msg.payload ?? {}) as { text?: string; pasteAfter?: boolean }
           if (clipboardByteLength(text ?? '') > MAX_CLIPBOARD_BYTES) {

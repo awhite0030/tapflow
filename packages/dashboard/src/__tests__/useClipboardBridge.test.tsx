@@ -2,9 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { useClipboardBridge, isBridgedChord, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge'
-// Mirrors the hook's own derivation; exported for the coupling test below.
-const AGENT_WORST_MS_FOR_TEST = 1_000 + 2_000 + 500 + 4 * 300
+import { useClipboardBridge, isBridgedChord, AGENT_WORST_MS, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge'
 
 type Sent = { type: string; requestId?: string; payload?: unknown }
 
@@ -374,13 +372,16 @@ describe('round-trip budget vs the agent worst case', () => {
       if (!m) throw new Error(`${name} not found in agent-core/src/types.ts`)
       return Number(m[1].replace(/_/g, ''))
     }
+    // Mirrors CLIPBOARD_AGENT_WORST_MS: the restore window is excluded (it runs after the
+    // reply) and five device calls are counted (each windowed loop can overrun by one).
     return num('CLIPBOARD_WRITE_DEADLINE_MS') + num('CLIPBOARD_COPY_DEADLINE_MS')
-      + num('CLIPBOARD_RESTORE_DEADLINE_MS') + 4 * num('CLIPBOARD_DEVICE_CALL_MS')
+      + 5 * num('CLIPBOARD_DEVICE_CALL_MS')
   }
 
   it('the hook derives the same worst case agent-core does', () => {
     // Changing a deadline in agent-core without updating the hook must fail here.
-    expect(AGENT_WORST_MS_FOR_TEST).toBe(agentWorstFromSource())
+    // The hook's own constant, not a third copy — changing either side must fail here.
+    expect(AGENT_WORST_MS).toBe(agentWorstFromSource())
   })
 
   it('waits past the agent worst case', async () => {
@@ -388,7 +389,7 @@ describe('round-trip budget vs the agent worst case', () => {
     try {
       const { errors } = setup()
       press('KeyC')
-      await act(async () => { await vi.advanceTimersByTimeAsync(agentWorstFromSource()) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(AGENT_WORST_MS) })
       expect(errors).toEqual([])   // still waiting — the agent may yet answer specifically
     } finally { vi.useRealTimers() }
   })

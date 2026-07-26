@@ -77,6 +77,7 @@ describe('SimctlWrapper', () => {
         exec: vi.fn().mockRejectedValue(
           Object.assign(new Error(), { stderr: 'Unable to boot device in current state: Booted' })
         ),
+        execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
       await expect(wrapper.boot('device-1')).resolves.toBeUndefined()
@@ -85,6 +86,7 @@ describe('SimctlWrapper', () => {
     it('rethrows unexpected errors', async () => {
       const runner: SimctlRunner = {
         exec: vi.fn().mockRejectedValue(new Error('xcrun not found')),
+        execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
       await expect(wrapper.boot('device-1')).rejects.toThrow('xcrun not found')
@@ -170,6 +172,7 @@ describe('SimctlWrapper', () => {
           .mockResolvedValueOnce('(\n    "ko-KR",\n    "en-US"\n)')  // defaults read
           .mockResolvedValue(''),                                       // write + kickstart
         execBinary: vi.fn(),
+        execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
       await wrapper.syncKeyboardsFromLanguages('device-1')
@@ -188,6 +191,7 @@ describe('SimctlWrapper', () => {
           .mockResolvedValueOnce('(\n    "ko-KR"\n)')
           .mockResolvedValue(''),
         execBinary: vi.fn(),
+        execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
       await wrapper.syncKeyboardsFromLanguages('device-1')
@@ -202,6 +206,7 @@ describe('SimctlWrapper', () => {
       const runner: SimctlRunner = {
         exec: vi.fn().mockRejectedValue(new Error('Domain does not exist')),
         execBinary: vi.fn(),
+        execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
       await wrapper.syncKeyboardsFromLanguages('device-1')
@@ -217,6 +222,7 @@ describe('SimctlWrapper', () => {
           .mockResolvedValueOnce('')                    // write
           .mockRejectedValueOnce(new Error('kbd not found')), // kickstart fails
         execBinary: vi.fn(),
+        execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
       await expect(wrapper.syncKeyboardsFromLanguages('device-1')).resolves.toBeUndefined()
@@ -234,6 +240,8 @@ describe('SimctlWrapper', () => {
       const runner: SimctlRunner = {
         exec: vi.fn().mockResolvedValue(''),
         execBinary: vi.fn(),
+        execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
+        execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
       const buf = await wrapper.screenshot()
