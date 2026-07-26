@@ -54,6 +54,8 @@ interface MouseEventMsg { x: number; y: number; buttons: number; display: number
 interface WheelEventMsg { dx: number; dy: number; display: number }
 
 type UnaryCb = (err: Error | null) => void
+interface ClipDataMsg { text: string }
+type ClipCb = (err: Error | null, res?: ClipDataMsg) => void
 
 /** The subset of the generated EmulatorController stub we use. Injectable for tests. */
 export interface RawEmulatorController {
@@ -63,6 +65,8 @@ export interface RawEmulatorController {
   sendKey(event: KeyboardEventMsg, cb: UnaryCb): void
   sendMouse(event: MouseEventMsg, cb: UnaryCb): void
   sendWheel(event: WheelEventMsg, cb: UnaryCb): void
+  getClipboard(empty: Record<string, never>, cb: ClipCb): void
+  setClipboard(clip: ClipDataMsg, cb: UnaryCb): void
   close(): void
 }
 
@@ -197,6 +201,21 @@ export class EmulatorGrpcClient {
   sendWheel(dx: number, dy: number, display = 0): Promise<void> {
     return new Promise((resolve, reject) => {
       this.raw.sendWheel({ dx, dy, display }, (err) => (err ? reject(err) : resolve()))
+    })
+  }
+
+  // Guest clipboard. The AVD images do not implement `adb shell cmd clipboard`, so this
+  // gRPC pair is the only usable channel — and it round-trips UTF-8 (emoji, newlines, tabs)
+  // byte-for-byte. `ClipData` carries a single `text` field.
+  getClipboard(): Promise<string> {
+    return new Promise((resolve, reject) => {
+      this.raw.getClipboard({}, (err, res) => (err ? reject(err) : resolve(res?.text ?? '')))
+    })
+  }
+
+  setClipboard(text: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.raw.setClipboard({ text }, (err) => (err ? reject(err) : resolve()))
     })
   }
 

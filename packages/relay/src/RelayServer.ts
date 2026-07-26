@@ -96,6 +96,9 @@ const AGENT_MSG_TYPES = new Set([
   'app:install-done', 'app:install-error', 'app:launch-done', 'app:launch-error',
   'open-url:done', 'open-url:error', 'keyboard:toggled',
   'input:type-done', 'input:type-error', 'input:done', 'input:error',
+  // clipboard:data carries the simulator's clipboard — agent-authenticated, so a
+  // browser socket can never inject it into another viewer.
+  'clipboard:data', 'clipboard:write-done', 'clipboard:error',
   // stream:register binds a session's stream socket — agent-only, or a browser
   // (view PAT / cookie) could hijack an existing session's video feed.
   'stream:register',
@@ -621,6 +624,9 @@ export class RelayServer {
       case 'input:type-error':
       case 'input:done':
       case 'input:error':
+      case 'clipboard:data':
+      case 'clipboard:write-done':
+      case 'clipboard:error':
       case 'keyboard:toggled': {
         const session = this.sessions.get(msg.sessionId!)
         if (session?.browserSocket?.readyState === WebSocket.OPEN) {
@@ -682,6 +688,21 @@ export class RelayServer {
           // Reply to the sender (the MCP/browser socket) so it fails truthfully
           // instead of falling through to its optimistic 2s timeout.
           ws.send(JSON.stringify({ type: 'input:error', sessionId: msg.sessionId, message: 'agent offline' }))
+        }
+        break
+      }
+      // Kept out of the input:* chain above: these need their own error type, and the
+      // caller is waiting on a short deadline (the browser has to finish inside Safari's
+      // user-activation window), so an undeliverable request fails now rather than hanging.
+      case 'clipboard:read':
+      case 'clipboard:write': {
+        const session = this.sessions.get(msg.sessionId!)
+        if (session?.agentSocket.readyState === WebSocket.OPEN) {
+          session.agentSocket.send(JSON.stringify(msg))
+        } else if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'clipboard:error', sessionId: msg.sessionId, requestId: msg.requestId, message: 'agent offline',
+          }))
         }
         break
       }

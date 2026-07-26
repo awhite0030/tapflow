@@ -73,12 +73,24 @@ vi.mock('@tapflowio/audiotap-helper', () => ({
 let grpcStartError: Error | null = null
 let grpcFramesController: ReadableStreamDefaultController<ScrcpyFrame> | null = null
 
+// Guest clipboard the mocked emulator reports back (clipboard bridge tests drive these).
+let grpcClipboardText = ''
+let grpcClipboardError: Error | null = null
+
 vi.mock('../emulator/EmulatorGrpcClient', () => ({
   EmulatorGrpcClient: vi.fn(function () { return ({
     close: vi.fn(),
     touchDown: vi.fn(), touchMove: vi.fn(), touchUp: vi.fn(),
     pinchStart: vi.fn(), pinchMove: vi.fn(), pinchEnd: vi.fn(),
     streamAudio: vi.fn(() => ({ frames: () => new ReadableStream({ start() {} }), cancel: vi.fn() })), // AudioStream shape: { frames, cancel }
+    getClipboard: vi.fn(() => grpcClipboardError
+      ? Promise.reject(grpcClipboardError)
+      : Promise.resolve(grpcClipboardText)),
+    setClipboard: vi.fn((text: string) => {
+      if (grpcClipboardError) return Promise.reject(grpcClipboardError)
+      grpcClipboardText = text
+      return Promise.resolve()
+    }),
   }) }),
 }))
 
@@ -1012,6 +1024,70 @@ describe('AndroidAgent', () => {
       // native screen size from adb drives the touch-mapping dimensions
       expect(getState().videoWidth).toBe(1080)
       expect(getState().videoHeight).toBe(2400)
+    })
+
+    // Clipboard bridge — the emulator gRPC controller exposes get/setClipboard, so the
+    // Android side needs no adb (`cmd clipboard` is not implemented on the AVD images).
+    describe('clipboard bridge', () => {
+      beforeEach(() => { grpcClipboardText = ''; grpcClipboardError = null })
+      afterEach(() => { grpcClipboardError = null })
+
+      it('clipboard:read returns the guest clipboard as clipboard:data', async () => {
+        grpcClipboardText = '한글 テスト 🎉\nline2'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+
+        browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a1' }))
+        const data = await waitForType(browser, 'clipboard:data')
+        expect(data.requestId).toBe('a1')
+        expect((data.payload as { text: string }).text).toBe('한글 テスト 🎉\nline2')
+      })
+
+      it('clipboard:write sets the guest clipboard and acks after it landed', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+
+        const done = waitForType(browser, 'clipboard:write-done')
+        browser.send(JSON.stringify({
+          type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'a2', payload: { text: 'pasted' },
+        }))
+        expect((await done).requestId).toBe('a2')
+        expect(grpcClipboardText).toBe('pasted')
+      })
+
+      it('an empty clipboard is data, not an error', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+
+        browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a3' }))
+        const data = await waitForType(browser, 'clipboard:data')
+        expect((data.payload as { text: string }).text).toBe('')
+      })
+
+      it('surfaces a gRPC failure as clipboard:error', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        grpcClipboardError = new Error('UNAVAILABLE: no connection')
+
+        browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a4' }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.requestId).toBe('a4')
+        expect(err.message).toContain('UNAVAILABLE')
+      })
+
+      // R8: the scrcpy backend (real devices, and the gRPC fallback) has no clipboard
+      // channel wired up. It must say so rather than silently doing nothing.
+      it('reports unsupported on the scrcpy backend instead of failing silently', async () => {
+        grpcStartError = new Error('emulator -grpc not available')
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().scrcpySession).not.toBeNull(), { timeout: 1000 })
+        expect(getState().grpcClient).toBeNull()
+
+        browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a5' }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.requestId).toBe('a5')
+        expect(err.message).toMatch(/not supported/i)
+      })
     })
 
     it('falls back to scrcpy when the gRPC video stream fails to start', async () => {

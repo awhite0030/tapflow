@@ -121,6 +121,7 @@ function mockSimctl(booted = false): SimctlWrapper {
     showSoftwareKeyboard: vi.fn().mockResolvedValue(undefined),
     hideSoftwareKeyboard: vi.fn().mockResolvedValue(undefined),
     setPasteboard: vi.fn().mockResolvedValue(undefined),
+    getPasteboard: vi.fn().mockResolvedValue(''),
     stopKeyboardDaemon: vi.fn(),
   } as unknown as SimctlWrapper
 }
@@ -1216,6 +1217,109 @@ describe('IOSAgent', () => {
       agent.disconnect()
       expect(instance.stop).toHaveBeenCalled()
       browser.close()
+    })
+  })
+
+  describe('clipboard bridge', () => {
+    async function bootWith(simctl: SimctlWrapper): Promise<{ agent: IOSAgent; browser: WebSocket }> {
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:ready')
+      return { agent, browser }
+    }
+
+    it('clipboard:read returns the simulator pasteboard as clipboard:data', async () => {
+      const simctl = mockSimctl(true)
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockResolvedValue('한글 テスト 🎉\nline2')
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r1' }))
+      const data = await waitForType(browser, 'clipboard:data')
+      expect(data.requestId).toBe('r1')
+      expect((data.payload as { text: string }).text).toBe('한글 テスト 🎉\nline2')
+      expect(simctl.getPasteboard).toHaveBeenCalledWith('dev-1')
+
+      agent.disconnect(); browser.close()
+    })
+
+    it('clipboard:write sets the simulator pasteboard and acks after it landed', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+
+      const done = waitForType(browser, 'clipboard:write-done')
+      browser.send(JSON.stringify({
+        type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'r2', payload: { text: 'pasted text' },
+      }))
+      expect((await done).requestId).toBe('r2')
+      // ack only after the write — a caller may send Cmd+V immediately on receiving it
+      expect(simctl.setPasteboard).toHaveBeenCalledWith('dev-1', 'pasted text')
+
+      agent.disconnect(); browser.close()
+    })
+
+    it('clipboard:write does NOT press Cmd+V — the viewer owns that key', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      const th = MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value
+
+      const done = waitForType(browser, 'clipboard:write-done')
+      browser.send(JSON.stringify({
+        type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'r3', payload: { text: 'x' },
+      }))
+      await done
+      expect(th.sendKey).not.toHaveBeenCalled()
+
+      agent.disconnect(); browser.close()
+    })
+
+    it('surfaces a pasteboard read failure as clipboard:error, not an empty string', async () => {
+      const simctl = mockSimctl(true)
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('simctl pbpaste exited 1'))
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r4' }))
+      const err = await waitForType(browser, 'clipboard:error')
+      expect(err.requestId).toBe('r4')
+      expect(err.message).toContain('pbpaste')
+
+      agent.disconnect(); browser.close()
+    })
+
+    // Reading needs no TouchHelper, so unlike tap/swipe it must work on a session that
+    // attached without going through device:boot (the H-E failure mode).
+    it('works on a boot-less session — no TouchHelper required', async () => {
+      const simctl = mockSimctl(true)
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockResolvedValue('attached without boot')
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r5' }))
+      const data = await waitForType(browser, 'clipboard:data')
+      expect((data.payload as { text: string }).text).toBe('attached without boot')
+
+      agent.disconnect(); browser.close()
+    })
+
+    it('an empty pasteboard is data, not an error', async () => {
+      const simctl = mockSimctl(true)
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockResolvedValue('')
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r6' }))
+      const data = await waitForType(browser, 'clipboard:data')
+      expect((data.payload as { text: string }).text).toBe('')
+
+      agent.disconnect(); browser.close()
     })
   })
 

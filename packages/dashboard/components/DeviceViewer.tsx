@@ -10,6 +10,7 @@ import type { AndroidButton, ChromeData, RelayMessage } from '@/lib/types';
 import type { FrameTiming, PerfHook } from './perf/types';
 import { parseEnvelopeHeader, HEADER_SIZE, CODEC_H264, CODEC_AUDIO, type BinaryFrameHandler } from '@/lib/envelope';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
+import type { ClipboardBridgeMessage, ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
 import { canDecodeH264 } from '@/lib/decoders/pickDecoder';
 import { StatsOverlay } from './perf/StatsOverlay';
 import { MetricsPanel } from './perf/MetricsPanel';
@@ -62,6 +63,10 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // SimulatorViewer routes incoming binary frames to whichever viewer is mounted.
   const binaryFrameHandlerRef = useRef<BinaryFrameHandler | undefined>(undefined);
 
+  // The mounted viewer's clipboard bridge registers here; replies are correlated by
+  // requestId on its side, so this only has to hand the message over.
+  const clipboardHandlerRef = useRef<ClipboardMessageHandler | undefined>(undefined);
+
   // Opt-in audio output (Android emulator first). Audio frames are codec-tagged and routed
   // straight to Web Audio — they never enter the video FIFO/decoder path. Always-on playback;
   // muting is delegated to the emulator's own volume keys.
@@ -100,6 +105,9 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       const { visible } = msg.payload as { visible: boolean };
       setSwKeyboardVisible(visible);
       setSwKeyboardPending(false);
+    }
+    if (msg.type === 'clipboard:data' || msg.type === 'clipboard:write-done' || msg.type === 'clipboard:error') {
+      clipboardHandlerRef.current?.(msg as unknown as ClipboardBridgeMessage);
     }
     if (msg.type === 'open-url:done') { toast.success('Deeplink opened'); }
     if (msg.type === 'open-url:error') { toast.error(msg.message); }
@@ -153,6 +161,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     deviceReady, installing, installed, installError, bootError,
     launching, setLaunching,
     binaryFrameHandlerRef,
+    clipboardHandlerRef,
     onRecordingUploaded,
     swKeyboardVisible, swKeyboardPending, onKbdToggle,
   };

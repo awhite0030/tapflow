@@ -1129,6 +1129,38 @@ export class AndroidAgent implements DeviceAgent {
           })
         break
       }
+      // Clipboard bridge. Emulator-only: it rides the gRPC EmulatorController, since the
+      // AVD images have no `adb shell cmd clipboard`. On the scrcpy backend (real devices,
+      // and the gRPC fallback) it reports unsupported rather than doing nothing.
+      case 'clipboard:read':
+      case 'clipboard:write': {
+        const { requestId } = msg as unknown as { requestId?: string }
+        const sessionId = msg.sessionId
+        const client = this.deviceStates.get(sessionId!)?.grpcClient
+        if (!client) {
+          this.ws?.send(JSON.stringify({
+            type: 'clipboard:error', sessionId, requestId,
+            message: 'Clipboard is not supported on this backend (emulator gRPC only)',
+          }))
+          break
+        }
+        const fail = (e: unknown) => {
+          const message = e instanceof Error ? e.message : String(e)
+          this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message }))
+        }
+        if (msg.type === 'clipboard:read') {
+          client.getClipboard()
+            .then((text) => this.ws?.send(JSON.stringify({ type: 'clipboard:data', sessionId, requestId, payload: { text } })))
+            .catch(fail)
+        } else {
+          const { text } = (msg.payload ?? {}) as { text?: string }
+          // Ack only once the write landed — the caller sends Cmd+V on receiving it.
+          client.setClipboard(text ?? '')
+            .then(() => this.ws?.send(JSON.stringify({ type: 'clipboard:write-done', sessionId, requestId })))
+            .catch(fail)
+        }
+        break
+      }
       case 'ui:tree:request': {
         const raw = msg as unknown as { requestId: string; sessionId?: string }
         const { requestId } = raw

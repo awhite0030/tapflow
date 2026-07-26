@@ -31,6 +31,16 @@ function langToKeyboard(lang: string): string {
   const code = lang.split('-')[0].toLowerCase()
   return LANG_KEYBOARD_MAP[code] ?? 'en_US@sw=QWERTY;hw=Automatic'
 }
+
+// Resolve simctl's absolute path once so latency-sensitive calls can skip the `xcrun`
+// lookup. Falls back to going through xcrun if the lookup itself fails.
+let simctlPathOnce: Promise<string | null> | null = null
+function resolveSimctl(args: string[]): Promise<[string, string[]]> {
+  simctlPathOnce ??= execFileAsync('xcrun', ['--find', 'simctl'])
+    .then(({ stdout }) => stdout.trim() || null)
+    .catch(() => null)
+  return simctlPathOnce.then((p) => (p ? [p, args] : ['xcrun', ['simctl', ...args]]))
+}
 import type { Device, DeviceStatus } from '@tapflowio/agent-core'
 import { defaultRunner, type SimctlRunner } from './simctl.js'
 import { KeyboardHelperDaemon } from './KeyboardHelperDaemon.js'
@@ -172,6 +182,18 @@ export class SimctlWrapper {
       proc.stdin.write(text)
       proc.stdin.end()
     })
+  }
+
+  // Read the device pasteboard. Not routed through SimctlRunner for the same reason as
+  // setPasteboard, and it deliberately spawns the resolved simctl binary instead of `xcrun`:
+  // the xcrun lookup costs ~150ms per call (measured 263ms vs 115ms), and this read has to
+  // land inside the browser's user-activation window (Safari's is ~500ms) for the copy
+  // shortcut to complete in one press. Output is returned verbatim — no trim, since a
+  // trailing newline can be part of the copied text.
+  async getPasteboard(deviceId: string): Promise<string> {
+    const [cmd, argv] = await resolveSimctl(['pbpaste', deviceId])
+    const { stdout } = await execFileAsync(cmd, argv, { maxBuffer: 8 * 1024 * 1024, encoding: 'utf-8' })
+    return stdout
   }
 
   async screenshot(format: 'png' | 'jpeg' = 'png'): Promise<Buffer> {

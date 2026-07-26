@@ -865,6 +865,42 @@ export class IOSAgent implements DeviceAgent {
           })
         break
       }
+      // Clipboard bridge. Read/write only — pressing Cmd+C / Cmd+V stays with the viewer,
+      // so these compose with the existing input:key path instead of duplicating it.
+      case 'clipboard:read': {
+        const { requestId } = msg as unknown as { requestId?: string }
+        const sessionId = msg.sessionId
+        const state = this.deviceStates.get(sessionId!)
+        if (!state) {
+          this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message: 'No booted device' }))
+          break
+        }
+        this.simctl.getPasteboard(state.deviceId)
+          .then((text) => this.ws?.send(JSON.stringify({ type: 'clipboard:data', sessionId, requestId, payload: { text } })))
+          .catch((e: unknown) => {
+            const message = e instanceof Error ? e.message : String(e)
+            this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message }))
+          })
+        break
+      }
+      case 'clipboard:write': {
+        const { requestId } = msg as unknown as { requestId?: string }
+        const sessionId = msg.sessionId
+        const state = this.deviceStates.get(sessionId!)
+        if (!state) {
+          this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message: 'No booted device' }))
+          break
+        }
+        const { text } = (msg.payload ?? {}) as { text?: string }
+        // Ack only once the write landed — the caller sends Cmd+V on receiving it.
+        this.simctl.setPasteboard(state.deviceId, text ?? '')
+          .then(() => this.ws?.send(JSON.stringify({ type: 'clipboard:write-done', sessionId, requestId })))
+          .catch((e: unknown) => {
+            const message = e instanceof Error ? e.message : String(e)
+            this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message }))
+          })
+        break
+      }
       case 'ui:tree:request': {
         const raw = msg as unknown as { requestId: string; sessionId?: string }
         const { requestId } = raw

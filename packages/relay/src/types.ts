@@ -52,6 +52,11 @@ export type MessageType =
   | 'ui:tree:request'
   | 'ui:tree:response'
   | 'ui:tree:error'
+  | 'clipboard:read'
+  | 'clipboard:write'
+  | 'clipboard:data'
+  | 'clipboard:write-done'
+  | 'clipboard:error'
   | 'error'
 
 import type { AgentResources, UIElement } from '@tapflowio/agent-core'

@@ -16,6 +16,8 @@ import type { BinaryFrameHandler } from '@/lib/envelope'
 import { androidToNorm as toNormPure, toPinchFingers as makePinchFingers } from '@/lib/coordinate-transform';
 import type { MutableRefObject } from 'react';
 import type { PerfHook } from '@/components/perf/types';
+import { useClipboardBridge, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
+import { toast } from 'sonner';
 
 const CURSOR_RING_R = 13;
 const CURSOR_DOT_R = 8;
@@ -38,6 +40,7 @@ interface AndroidViewerProps {
   setLaunching: (v: boolean) => void;
   androidButtons: AndroidButton[] | null;
   binaryFrameHandlerRef: React.RefObject<BinaryFrameHandler | undefined>;
+  clipboardHandlerRef: React.MutableRefObject<ClipboardMessageHandler | undefined>;
   onRecordingUploaded?: () => void;
   screenWidth?: number;
   screenHeight?: number;
@@ -51,7 +54,7 @@ export function AndroidViewer({
   sessionId, buildId, send, connected, joined,
   deviceReady, installing, installed, installError, bootError,
   launching, setLaunching, androidButtons,
-  binaryFrameHandlerRef, onRecordingUploaded,
+  binaryFrameHandlerRef, clipboardHandlerRef, onRecordingUploaded,
   screenWidth, screenHeight, cornerRadius,
   perfHookRef,
 }: AndroidViewerProps) {
@@ -219,6 +222,14 @@ export function AndroidViewer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const sendChord = useCallback((code: 'KeyC' | 'KeyV', modifiers: number) => {
+    send({ type: 'input:key', sessionId, payload: { code, modifiers } })
+  }, [send, sessionId])
+  useClipboardBridge({
+    sessionId, send, active: keyboardActive, handlerRef: clipboardHandlerRef, sendChord,
+    onError: (m) => toast.error(m),
+  })
+
   // ── Keyboard forwarding ───────────────────────────────────────────────────
   useEffect(() => {
     const MODIFIER_CODES = new Set(['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'MetaLeft', 'MetaRight'])
@@ -235,6 +246,9 @@ export function AndroidViewer({
       }
       if (!keyboardActive) return
       if (MODIFIER_CODES.has(e.code)) return
+      // The clipboard bridge owns the copy/paste chords — it presses them on the device
+      // itself, so forwarding here too would double-send.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.code === 'KeyC' || e.code === 'KeyV')) return
       e.preventDefault()
       const modifiers = (e.shiftKey ? 0x02 : 0) | (e.ctrlKey ? 0x01 : 0) | (e.metaKey ? 0x08 : 0)
       send({ type: 'input:key', sessionId, payload: { code: e.code, modifiers } })

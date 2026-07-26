@@ -160,4 +160,7 @@ export type RelayMessage =
   | { type: 'open-url'; sessionId: string; payload: { url: string } }
   | { type: 'open-url:done'; sessionId: string }
   | { type: 'open-url:error'; sessionId: string; message: string }
+  | { type: 'clipboard:data'; sessionId: string; requestId: string; payload: { text: string } }
+  | { type: 'clipboard:write-done'; sessionId: string; requestId: string }
+  | { type: 'clipboard:error'; sessionId: string; requestId: string; message: string }
   | { type: 'error'; message: string }
