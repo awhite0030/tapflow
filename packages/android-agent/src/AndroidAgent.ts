@@ -1176,9 +1176,13 @@ export class AndroidAgent implements DeviceAgent {
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
+        // `sentinelParked` defaults false: every caller of `fail` is a path that gave up before
+        // the sentinel went down. The one place a marker can still be on the device replies for
+        // itself, below.
         const fail = (message: string, unsupported = false) =>
           this.ws?.send(JSON.stringify({
-            type: 'clipboard:error', sessionId, requestId, message, payload: { unsupported },
+            type: 'clipboard:error', sessionId, requestId, message,
+            payload: { unsupported, sentinelParked: false },
           }))
         // Distinguish the three ways this can be unavailable — they need different fixes.
         if (!state || !serial) { fail('No booted device'); break }
@@ -1256,7 +1260,11 @@ export class AndroidAgent implements DeviceAgent {
             } catch (e) {
               // Reply here rather than letting this propagate: a rejection would surface only
               // after `finally` had restored, putting that window inside the round trip.
-              respond({ type: 'clipboard:error', message: e instanceof Error ? e.message : String(e), payload: { unsupported: false } })
+              respond({
+                type: 'clipboard:error', message: e instanceof Error ? e.message : String(e),
+                // setClipboard only schedules, so a rejection can still leave the marker applied.
+                payload: { unsupported: false, sentinelParked: true },
+              })
             } finally {
               // Restore only if nothing was copied; otherwise this would clobber the capture.
               // And wait for it to APPLY, not just schedule: releasing the queue early lets the

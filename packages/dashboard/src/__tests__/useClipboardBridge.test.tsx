@@ -40,39 +40,43 @@ const pastes = (text: string) => act(() => {
   document.dispatchEvent(e)
 })
 
-describe('useClipboardBridge', () => {
-  // Captures what was handed to navigator.clipboard.write so a test can await the value the
-  // promise-backed ClipboardItem eventually resolves to.
-  let written: Array<Promise<string>>
-  let writeCalls: number
+// Captures what was handed to navigator.clipboard.write so a test can await the value the
+// promise-backed ClipboardItem eventually resolves to.
+let written: Array<Promise<string>>
+let writeCalls: number
 
-  const secureContext = (on: boolean) =>
-    Object.defineProperty(window, 'isSecureContext', { value: on, writable: true, configurable: true })
+const secureContext = (on: boolean) =>
+  Object.defineProperty(window, 'isSecureContext', { value: on, writable: true, configurable: true })
 
-  beforeEach(() => {
-    written = []
-    writeCalls = 0
-    secureContext(true)
-    // jsdom ships neither of these.
-    ;(globalThis as unknown as { ClipboardItem: unknown }).ClipboardItem =
-      class { constructor(public items: Record<string, Promise<Blob>>) {} }
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: {
-        write: vi.fn(async (items: Array<{ items: Record<string, Promise<Blob>> }>) => {
-          writeCalls++
-          const blob = items[0].items['text/plain']
-          const text = blob.then((b) => b.text())
-          void text.catch(() => {})   // tests opt in to the rejection; don't leak it
-          written.push(text)
-          await blob
-        }),
-      },
-    })
+// File-level, not inside the first describe. It used to live there, and the budget describe below
+// — a sibling — silently relied on `defineProperty` and `vi.fn` surviving `restoreAllMocks` and
+// leaking forward. Running that block alone (`vitest -t`, `.only`) then took the plain-HTTP branch
+// and every timing assertion passed vacuously.
+beforeEach(() => {
+  written = []
+  writeCalls = 0
+  secureContext(true)
+  // jsdom ships neither of these.
+  ;(globalThis as unknown as { ClipboardItem: unknown }).ClipboardItem =
+    class { constructor(public items: Record<string, Promise<Blob>>) {} }
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      write: vi.fn(async (items: Array<{ items: Record<string, Promise<Blob>> }>) => {
+        writeCalls++
+        const blob = items[0].items['text/plain']
+        const text = blob.then((b) => b.text())
+        void text.catch(() => {})   // tests opt in to the rejection; don't leak it
+        written.push(text)
+        await blob
+      }),
+    },
   })
+})
 
-  afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => { vi.restoreAllMocks() })
 
+describe('useClipboardBridge', () => {
   // The agent presses the device chord, not the hook — only it knows when the key landed.
   it('Cmd+C asks the agent to press copy and read, without pressing the chord itself', async () => {
     const { sent, chords } = setup()
@@ -141,25 +145,48 @@ describe('useClipboardBridge', () => {
   it('falls back to the plain chord when the backend has no clipboard channel', async () => {
     const { chords, reply } = setup()
     press('KeyC')
-    reply({ type: 'clipboard:error', message: 'not supported', payload: { unsupported: true } }, 'clipboard:read')
+    reply({ type: 'clipboard:error', message: 'not supported', payload: { unsupported: true, sentinelParked: false } }, 'clipboard:read')
     await waitFor(() => expect(chords).toEqual([['KeyC', 0x08]]))
   })
 
   it('falls back with the cut chord for Cmd+X', async () => {
     const { chords, reply } = setup()
     press('KeyX')
-    reply({ type: 'clipboard:error', message: 'not supported', payload: { unsupported: true } }, 'clipboard:read')
+    reply({ type: 'clipboard:error', message: 'not supported', payload: { unsupported: true, sentinelParked: false } }, 'clipboard:read')
     await waitFor(() => expect(chords).toEqual([['KeyX', 0x08]]))
   })
 
-  // On an ordinary error the agent has replied but not yet restored, so its sentinel is still
-  // on the device. A chord here would copy, and the restore would then overwrite that with the
-  // pre-read value — handing the user a stale clipboard, which is what the sentinel prevents.
-  it('does not press the chord on an ordinary read error — a sentinel may still be parked', async () => {
+  // The agent replies before it restores, so with a sentinel still parked a chord here would
+  // copy and the restore would overwrite that with the pre-read value — handing the user a stale
+  // clipboard, which is what the sentinel prevents.
+  it('does not press the chord when a sentinel is still parked', async () => {
     const { chords, errors, reply } = setup()
     press('KeyC')
-    reply({ type: 'clipboard:error', message: 'did not copy anything' }, 'clipboard:read')
+    reply({ type: 'clipboard:error', message: 'did not copy anything', payload: { sentinelParked: true } }, 'clipboard:read')
     await waitFor(() => expect(errors).toEqual(['did not copy anything']))
+    expect(chords).toEqual([])
+  })
+
+  // Failing before the sentinel goes down is not the same thing. iOS never reports `unsupported`
+  // at all, so gating on that alone made the fallback dead code there — the user lost the
+  // on-device copy they used to get whenever reading the original failed.
+  it('falls back when the agent got nowhere near parking a sentinel', async () => {
+    const { chords, reply } = setup()
+    press('KeyC')
+    reply({
+      type: 'clipboard:error', message: 'Cannot press copy — no input channel to the device',
+      payload: { sentinelParked: false },
+    }, 'clipboard:read')
+    await waitFor(() => expect(chords).toEqual([['KeyC', 0x08]]))
+  })
+
+  // An agent from before the field cannot tell us, and a silent stale paste is worse than a copy
+  // that did not happen.
+  it('assumes a sentinel is parked when the agent does not say', async () => {
+    const { chords, errors, reply } = setup()
+    press('KeyC')
+    reply({ type: 'clipboard:error', message: 'read failed' }, 'clipboard:read')
+    await waitFor(() => expect(errors).toEqual(['read failed']))
     expect(chords).toEqual([])
   })
 
@@ -379,16 +406,23 @@ describe('round-trip budget vs the agent worst case', () => {
     const src = readFileSync(
       join(__dirname, '..', '..', '..', 'agent-core', 'src', 'types.ts'), 'utf-8')
     const num = (name: string): number => {
-      const m = src.match(new RegExp(`${name} = ([0-9_]+)`))
+      const m = src.match(new RegExp(`^export const ${name} = ([0-9_]+)`, 'm'))
       if (!m) throw new Error(`${name} not found in agent-core/src/types.ts`)
       return Number(m[1].replace(/_/g, ''))
     }
     // Evaluate agent-core's own expression rather than restating it here. Restating it meant a
     // formula change there — dropping a device call, say — left this passing, which is exactly
     // the drift this test exists to catch.
-    const expr = src.match(/CLIPBOARD_AGENT_WORST_MS =\s*\n?([^\n]+)/)?.[1]
-    if (!expr) throw new Error('CLIPBOARD_AGENT_WORST_MS not found in agent-core/src/types.ts')
-    const resolved = expr.replace(/[A-Z_]{4,}/g, (name) => String(num(name)))
+    // Take the WHOLE statement, continuation lines included. The declaration already wraps, so
+    // adding a term on a following line is the natural way to extend it — and reading only the
+    // first line left such a term invisible here while agent-core's real value moved.
+    const lines = src.split('\n')
+    const at = lines.findIndex((l) => l.startsWith('export const CLIPBOARD_AGENT_WORST_MS ='))
+    if (at < 0) throw new Error('CLIPBOARD_AGENT_WORST_MS not found in agent-core/src/types.ts')
+    const parts = [lines[at].slice(lines[at].indexOf('=') + 1)]
+    for (let i = at + 1; i < lines.length && /^\s+\S/.test(lines[i]); i++) parts.push(lines[i])
+    const expr = parts.join(' ').trim()
+    const resolved = expr.replace(/\s+/g, ' ').replace(/[A-Z_]{4,}/g, (name) => String(num(name)))
     if (!/^[0-9+*\s]+$/.test(resolved)) throw new Error(`unexpected expression: ${expr}`)
     return Number(new Function(`return ${resolved}`)())
   }

@@ -9,6 +9,19 @@ const defer = () => {
 }
 
 describe('createKeyedSerialQueue', () => {
+  // The obvious `.then(run, run)` spelling would pass the previous task's outcome in as `run`'s
+  // first argument. Nothing does that today; this stops it becoming true silently.
+  it('calls each task with no arguments, even after the previous one rejected', async () => {
+    const queue = createKeyedSerialQueue()
+    const args: unknown[][] = []
+    const record = (...a: unknown[]): Promise<void> => { args.push(a); return Promise.resolve() }
+
+    await queue('dev', () => Promise.reject(new Error('boom'))).catch(() => {})
+    await queue('dev', record)
+    await queue('dev', record)
+    expect(args).toEqual([[], []])
+  })
+
   it('runs one task at a time per key, in order', async () => {
     const queue = createKeyedSerialQueue()
     const log: string[] = []

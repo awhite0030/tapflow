@@ -75,6 +75,22 @@ export interface UIElement {
 // plain string list on the wire rather than a helper nobody on the reading side can call.
 export type AgentCapability = 'clipboard'
 
+/** Payload on every `clipboard:error` from a read. `sentinelParked` answers the one question the
+ *  viewer needs to decide its fallback: is a marker still sitting on the device clipboard?
+ *
+ *  If it is, the agent's restore is about to overwrite whatever the device copies next, so
+ *  pressing the plain chord as a fallback would hand the user a stale value — the exact bug the
+ *  sentinel exists to prevent. If it is not, the chord is safe and is the only way the copy
+ *  happens at all. Absent means "assume parked": an agent from before this field cannot tell us,
+ *  and the silent-stale-paste failure is worse than a copy that did not happen.
+ *
+ *  `unsupported` is narrower — this backend has no clipboard channel whatsoever — and drives the
+ *  paste fallback and the wording of the toast. */
+export interface ClipboardErrorPayload {
+  unsupported?: boolean
+  sentinelParked?: boolean
+}
+
 // ── Clipboard bridge shared contract ────────────────────────────────────────
 // Both agents implement the same protocol, so the limits and the sentinel vocabulary
 // live here rather than being duplicated (and drifting) per package.

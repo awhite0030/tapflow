@@ -1352,6 +1352,46 @@ describe('IOSAgent', () => {
       agent.disconnect(); browser.close()
     }, 10_000)
 
+    // Both of these are only reachable if the per-device queue fails, but the queue is the sole
+    // thing standing between them and a corrupted clipboard, so the discrimination itself is
+    // pinned rather than trusted.
+    it('never hands a foreign sentinel back as copied text', async () => {
+      const simctl = mockSimctl(true)
+      const foreign = `\u200Btapflow-clipboard-someone-else`
+      pasteboard = 'ORIGINAL'
+      // Let our own sentinel land and be confirmed, then swap in another operation's marker —
+      // which is what the chord-wait loop would see if the queue ever let two reads overlap.
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        const v = pasteboard
+        if (v.startsWith('\u200Btapflow-clipboard-')) pasteboard = foreign
+        return v
+      })
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'f1', payload: { press: 'copy' },
+      }))
+      const err = await waitForType(browser, 'clipboard:error')
+      expect(err.message).toMatch(/did not copy/i)   // not clipboard:data carrying the marker
+
+      agent.disconnect(); browser.close()
+    }, 10_000)
+
+    it('does not restore a foreign sentinel as if it were the user text', async () => {
+      const simctl = mockSimctl(true)
+      pasteboard = `\u200Btapflow-clipboard-someone-else`   // already parked when we arrive
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'f2', payload: { press: 'copy' },
+      }))
+      await waitForType(browser, 'clipboard:error')        // the guest never copies
+      // Restoring the marker would leave it for the NEXT read to mistake for the original.
+      await vi.waitFor(() => expect(pasteboard).toBe(''), { timeout: 2000 })
+
+      agent.disconnect(); browser.close()
+    }, 10_000)
+
     // Mirrors the Android test of the same name. The queue has to stay held through the
     // restore, not just through the answer: the guest applies a write late, so releasing early
     // lets the next read mistake the still-parked sentinel for "the original" and then wipe it.

@@ -893,7 +893,10 @@ export class IOSAgent implements DeviceAgent {
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         if (!state) {
-          this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message: 'No booted device' }))
+          this.ws?.send(JSON.stringify({
+            type: 'clipboard:error', sessionId, requestId, message: 'No booted device',
+            payload: { sentinelParked: false },
+          }))
           break
         }
         const { press } = (msg.payload ?? {}) as { press?: 'copy' | 'cut' }
@@ -970,7 +973,12 @@ export class IOSAgent implements DeviceAgent {
           } catch (e: unknown) {
             // Reply here rather than letting this propagate: a rejection would surface only
             // after `finally` had finished restoring, putting that window inside the round trip.
-            respond({ type: 'clipboard:error', message: e instanceof Error ? e.message : String(e) })
+            respond({
+              type: 'clipboard:error', message: e instanceof Error ? e.message : String(e),
+              // A sentinel may be on the device: setPasteboard can reject after the device took
+              // it. The viewer must not press the chord — the restore would overwrite the copy.
+              payload: { sentinelParked: true },
+            })
           } finally {
             // Only restore when the copy never happened; otherwise this would overwrite the
             // value we just captured. A leaked sentinel would be worse than the original bug.
@@ -987,9 +995,14 @@ export class IOSAgent implements DeviceAgent {
             }
           }
         }
-        // `read` answers for itself; this only catches what the press-less branch can throw.
+        // `read` answers for itself once the sentinel is in play. This catches only what can
+        // throw BEFORE that — the press-less branch, a missing input channel, and the failed
+        // read of the original — so nothing is parked and the viewer's chord fallback is safe.
         this.clipboardQueue(state.deviceId, read).catch((e: unknown) => {
-          respond({ type: 'clipboard:error', message: e instanceof Error ? e.message : String(e) })
+          respond({
+            type: 'clipboard:error', message: e instanceof Error ? e.message : String(e),
+            payload: { sentinelParked: false },
+          })
         })
         break
       }
@@ -998,7 +1011,10 @@ export class IOSAgent implements DeviceAgent {
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         if (!state) {
-          this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message: 'No booted device' }))
+          this.ws?.send(JSON.stringify({
+            type: 'clipboard:error', sessionId, requestId, message: 'No booted device',
+            payload: { sentinelParked: false },
+          }))
           break
         }
         const { text, pasteAfter } = (msg.payload ?? {}) as { text?: string; pasteAfter?: boolean }

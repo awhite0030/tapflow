@@ -106,6 +106,14 @@ const byteLength = (s: string): number => new TextEncoder().encode(s).length
 const isUnsupportedBackend = (msg: ClipboardBridgeMessage): boolean =>
   !!(msg.payload as { unsupported?: boolean } | undefined)?.unsupported
 
+/** May the viewer press the plain chord after a failed bridged copy? Only when the agent says
+ *  no sentinel is on the device. If one is, the agent's restore lands right after and overwrites
+ *  whatever the chord copies, so the user pastes a stale value. Absent means assume parked —
+ *  an agent that predates the field cannot tell us, and a silent stale paste is the worse half
+ *  of the trade. See ClipboardErrorPayload in agent-core. */
+const noSentinelParked = (msg: ClipboardBridgeMessage): boolean =>
+  (msg.payload as { sentinelParked?: boolean } | undefined)?.sentinelParked === false
+
 /** Is the user selecting text in the dashboard itself rather than driving the device? */
 function hasDocumentSelection(): boolean {
   const sel = window.getSelection()
@@ -222,12 +230,11 @@ export function useClipboardBridge({ sessionId, send, active, supported, handler
       if (reply.type === 'clipboard:error') {
         fail(new ClaimCancelled(reply.message ?? 'read failed'))
         report(reply.message ?? 'Clipboard read failed')
-        // Same gate as paste below, and for the same reason. The agent replies before it
-        // restores, so on an ordinary error its sentinel is still parked — a chord pressed here
-        // would copy, and the restore landing a moment later would overwrite that with the
-        // pre-read value. Only a backend with no clipboard channel is safe: it can never have
-        // written a sentinel, and there the chord is the sole way the copy happens at all.
-        if (isUnsupportedBackend(reply)) sendChord(isCut ? 'KeyX' : 'KeyC', META)
+        // The agent replies before it restores, so a chord pressed while its sentinel is still
+        // parked gets overwritten by that restore. Ask the agent directly rather than inferring
+        // it from the error: a backend with no clipboard channel is not the only path that never
+        // parked one — a missing input channel and a failed read of the original are too.
+        if (noSentinelParked(reply)) sendChord(isCut ? 'KeyX' : 'KeyC', META)
         return
       }
       const { text } = (reply.payload ?? {}) as { text?: string }

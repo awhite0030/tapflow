@@ -10,8 +10,12 @@
 export function createKeyedSerialQueue(): <T>(key: string, run: () => Promise<T>) => Promise<T> {
   const tails = new Map<string, Promise<unknown>>()
   return <T>(key: string, run: () => Promise<T>): Promise<T> => {
-    // `.then(run, run)` so the next task starts whether the previous settled or threw.
-    const next = (tails.get(key) ?? Promise.resolve()).then(run, run)
+    // Start the next task whether the previous settled or threw. Both handlers discard their
+    // argument on purpose: `.then(run, run)` would hand `run` the previous task's result — or
+    // its rejection reason — as a first parameter, which no caller expects and nothing would
+    // catch if one ever took a parameter.
+    const prev = tails.get(key) ?? Promise.resolve()
+    const next = prev.then(() => run(), () => run())
     tails.set(key, next.then(() => {}, () => {}))
     return next
   }
