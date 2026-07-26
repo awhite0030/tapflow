@@ -20,17 +20,22 @@ function pkt(audio: Buffer, timestamp: string) {
   return { format: { samplingRate: '44100', channels: 'Stereo', format: 'AUD_FMT_S16', mode: 'MODE_REAL_TIME' }, timestamp, audio }
 }
 
+// No `as RawEmulatorController`: the cast used to hide missing members. Note this only helps
+// in an editor — `packages/android-agent/tsconfig.json` excludes `src/__tests__`, so `tsc`
+// never sees this file. Hence the runtime completeness check below as well.
 function makeRaw(overrides: Partial<RawEmulatorController> = {}): RawEmulatorController {
-  return {
-    streamScreenshot: vi.fn(),
-    streamAudio: vi.fn(),
+  const base: RawEmulatorController = {
+    streamScreenshot: vi.fn() as unknown as RawEmulatorController['streamScreenshot'],
+    streamAudio: vi.fn() as unknown as RawEmulatorController['streamAudio'],
     sendTouch: vi.fn((_e, cb) => cb(null)),
     sendKey: vi.fn((_e, cb) => cb(null)),
     sendMouse: vi.fn((_e, cb) => cb(null)),
     sendWheel: vi.fn((_e, cb) => cb(null)),
+    getClipboard: vi.fn((_e, _o, cb) => cb(null, { text: '' })),
+    setClipboard: vi.fn((_c, _o, cb) => cb(null)),
     close: vi.fn(),
-    ...overrides,
-  } as RawEmulatorController
+  }
+  return { ...base, ...overrides }
 }
 
 describe('EmulatorGrpcClient', () => {
@@ -144,5 +149,66 @@ describe('EmulatorGrpcClient', () => {
       sendTouch: ((_e: unknown, cb: (e: Error | null) => void) => cb(boom)) as never,
     }))
     await expect(client.touchDown(0, 1, 2)).rejects.toThrow('grpc down')
+  })
+})
+
+// The clipboard calls run inside a per-device critical section on the agent, so one that never
+// settles would wedge every later copy/paste on that device. The deadline is what prevents it,
+// and it has to reach grpc-js as a CALL OPTION — passing it as a message field would typecheck
+// and do nothing.
+describe('clipboard', () => {
+  // Belt and braces for the exclude above: if the client gains a call the double lacks, this
+  // fails at runtime instead of surfacing as an opaque "not a function" inside another test.
+  it('the double implements every member of the stub interface', () => {
+    const raw = makeRaw() as unknown as Record<string, unknown>
+    for (const m of ['streamScreenshot', 'streamAudio', 'sendTouch', 'sendKey', 'sendMouse',
+      'sendWheel', 'getClipboard', 'setClipboard', 'close']) {
+      expect(typeof raw[m]).toBe('function')
+    }
+  })
+
+  it('reads the guest clipboard', async () => {
+    const getClipboard = vi.fn((_e: unknown, _o: unknown, cb: (e: Error | null, r?: { text: string }) => void) =>
+      cb(null, { text: 'from the guest' }))
+    const client = new EmulatorGrpcClient('x', makeRaw({ getClipboard }))
+    await expect(client.getClipboard()).resolves.toBe('from the guest')
+  })
+
+  it('coalesces a missing text field to an empty string', async () => {
+    const getClipboard = vi.fn((_e: unknown, _o: unknown, cb: (e: Error | null, r?: { text: string }) => void) =>
+      cb(null, undefined))
+    const client = new EmulatorGrpcClient('x', makeRaw({ getClipboard }))
+    await expect(client.getClipboard()).resolves.toBe('')
+  })
+
+  it('writes the guest clipboard', async () => {
+    const setClipboard = vi.fn((_c: unknown, _o: unknown, cb: (e: Error | null) => void) => cb(null))
+    const client = new EmulatorGrpcClient('x', makeRaw({ setClipboard }))
+    await client.setClipboard('한글 🎉')
+    expect(setClipboard.mock.calls[0][0]).toEqual({ text: '한글 🎉' })
+  })
+
+  it('passes a deadline as a call option on both calls', async () => {
+    const getClipboard = vi.fn((_e: unknown, _o: unknown, cb: (e: Error | null, r?: { text: string }) => void) =>
+      cb(null, { text: '' }))
+    const setClipboard = vi.fn((_c: unknown, _o: unknown, cb: (e: Error | null) => void) => cb(null))
+    const client = new EmulatorGrpcClient('x', makeRaw({ getClipboard, setClipboard }))
+
+    const before = Date.now()
+    await client.getClipboard()
+    await client.setClipboard('x')
+
+    for (const call of [getClipboard.mock.calls[0], setClipboard.mock.calls[0]]) {
+      // second position, not folded into the message — that is what grpc-js reads
+      const opts = call[1] as { deadline?: number }
+      expect(opts?.deadline).toBeGreaterThan(before)
+    }
+  })
+
+  it('rejects with the gRPC error rather than swallowing it', async () => {
+    const getClipboard = vi.fn((_e: unknown, _o: unknown, cb: (e: Error | null) => void) =>
+      cb(new Error('14 UNAVAILABLE: no connection')))
+    const client = new EmulatorGrpcClient('x', makeRaw({ getClipboard }))
+    await expect(client.getClipboard()).rejects.toThrow(/UNAVAILABLE/)
   })
 })

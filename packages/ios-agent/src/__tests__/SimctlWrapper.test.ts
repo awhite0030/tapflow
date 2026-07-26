@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SimctlWrapper, isDeviceMissingError } from '../SimctlWrapper'
-import type { SimctlRunner } from '../simctl'
+import type { SimctlRunner, SimctlExecOpts } from '../simctl'
 
 vi.mock('child_process', () => ({
   execFile: vi.fn((_cmd: string, _args: string[], cb: (err: null, stdout: string, stderr: string) => void) => {
@@ -35,6 +35,7 @@ function mockRunner(outputs: Record<string, string> = {}): SimctlRunner {
   return {
     exec: vi.fn(async (...args: string[]) => outputs[args[0]] ?? ''),
     execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
+    execWithOpts: vi.fn(async (_opts: SimctlExecOpts, ...args: string[]) => outputs[args[0]] ?? ''),
   }
 }
 
@@ -312,6 +313,65 @@ describe('SimctlWrapper', () => {
       const runner = mockRunner({ get_app_container: 'No such file or directory\n' })
       const wrapper = new SimctlWrapper(runner)
       await expect(wrapper.clearAppData('com.unknown')).rejects.toThrow(/data container/)
+    })
+  })
+
+  // Routed through the runner (rather than spawning directly) so the clipboard gets the same
+  // CoreSimulatorService recovery as every other simctl call — and so it is testable at all.
+  describe('pasteboard', () => {
+    it('reads through the runner, bounded by a timeout and a size ceiling', async () => {
+      const runner = mockRunner({ pbpaste: 'on the device' })
+      const wrapper = new SimctlWrapper(runner)
+
+      await expect(wrapper.getPasteboard('dev-1')).resolves.toBe('on the device')
+      const [opts, ...args] = vi.mocked(runner.execWithOpts).mock.calls[0]
+      expect(args).toEqual(['pbpaste', 'dev-1'])
+      expect(opts.timeoutMs).toBeGreaterThan(0)
+      // The ceiling lives here, which is why callers do not re-check the length.
+      expect(opts.maxBuffer).toBeGreaterThan(0)
+    })
+
+    it('writes the text on stdin — pbcopy cannot take it as an argument', async () => {
+      const runner = mockRunner()
+      const wrapper = new SimctlWrapper(runner)
+
+      await wrapper.setPasteboard('dev-1', '한글 🎉\nline2')
+      const [opts, ...args] = vi.mocked(runner.execWithOpts).mock.calls[0]
+      expect(args).toEqual(['pbcopy', 'dev-1'])
+      expect(opts.input).toBe('한글 🎉\nline2')
+      expect(opts.timeoutMs).toBeGreaterThan(0)
+    })
+
+    it('returns the pasteboard verbatim — a trailing newline can be part of the copied text', async () => {
+      const runner = mockRunner({ pbpaste: 'text\n' })
+      await expect(new SimctlWrapper(runner).getPasteboard('dev-1')).resolves.toBe('text\n')
+    })
+
+    // These messages reach a user-facing toast, so they must not be Node's argv line.
+    it('condenses a read failure and never surfaces the argv line', async () => {
+      const runner = mockRunner()
+      vi.mocked(runner.execWithOpts).mockRejectedValue(
+        new Error('Command failed: xcrun simctl pbpaste UDID\nUnable to connect to device pasteboard.'),
+      )
+      await expect(new SimctlWrapper(runner).getPasteboard('dev-1'))
+        .rejects.toThrow(/Unable to connect to device pasteboard/)
+      await expect(new SimctlWrapper(runner).getPasteboard('dev-1'))
+        .rejects.not.toThrow(/Command failed:/)
+    })
+
+    // The timeout path produces no stderr, which used to fall through to the argv line.
+    it('condenses a bare failure with no usable line', async () => {
+      const runner = mockRunner()
+      vi.mocked(runner.execWithOpts).mockRejectedValue(new Error('Command failed: xcrun simctl pbcopy UDID'))
+      await expect(new SimctlWrapper(runner).setPasteboard('dev-1', 'x'))
+        .rejects.toThrow(/did not respond/)
+    })
+
+    it('wraps write failures too, not just reads', async () => {
+      const runner = mockRunner()
+      vi.mocked(runner.execWithOpts).mockRejectedValue(new Error('boom'))
+      await expect(new SimctlWrapper(runner).setPasteboard('dev-1', 'x'))
+        .rejects.toThrow(/Could not write the device clipboard/)
     })
   })
 })

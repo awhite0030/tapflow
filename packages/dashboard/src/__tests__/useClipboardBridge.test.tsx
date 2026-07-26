@@ -174,7 +174,7 @@ describe('useClipboardBridge', () => {
     try {
       const { chords, errors } = setup()
       press('KeyC')
-      await act(async () => { await vi.advanceTimersByTimeAsync(3_500) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(6_000) })   // past the budget
       await waitFor(() => expect(errors.length).toBe(1))
       expect(chords).toEqual([])
     } finally { vi.useRealTimers() }
@@ -248,7 +248,7 @@ describe('useClipboardBridge', () => {
     try {
       const { chords } = setup()
       pastes('slow one')
-      await act(async () => { await vi.advanceTimersByTimeAsync(3_500) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(6_000) })   // past the budget
       expect(chords).toEqual([])
     } finally { vi.useRealTimers() }
   })
@@ -352,5 +352,28 @@ describe('isBridgedChord', () => {
     expect(isBridgedChord(ev({ code: 'KeyC' }))).toBe(false)
     expect(isBridgedChord(ev({ code: 'KeyC', metaKey: true, altKey: true }))).toBe(false)
     expect(isBridgedChord(ev({ code: 'KeyA', metaKey: true }))).toBe(false)
+  })
+})
+
+// The browser budget and the agent's worst case were once the same number by accident, and the
+// browser then gave up at the exact moment the agent was about to answer with a specific error.
+// agent-core owns the agent side; the dashboard cannot import it, so this pins the relationship
+// from the values themselves rather than trusting two comments to stay in step.
+describe('round-trip budget vs the agent worst case', () => {
+  const AGENT_WORST_MS = 1_000 + 2_000 + 4 * 300   // CLIPBOARD_AGENT_WORST_MS in agent-core
+  const CLAIM_LIMIT_MS = 6_000                      // measured in Chrome and Safari
+
+  it('leaves the agent room to answer first, and stays inside the claim window', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const { errors } = setup()
+      press('KeyC')
+      // just under the agent's worst case: the browser must still be waiting
+      await act(async () => { await vi.advanceTimersByTimeAsync(AGENT_WORST_MS - 100) })
+      expect(errors).toEqual([])
+      // and it must give up before a claimed write would lapse
+      await act(async () => { await vi.advanceTimersByTimeAsync(CLAIM_LIMIT_MS) })
+      await waitFor(() => expect(errors.length).toBe(1))
+    } finally { vi.useRealTimers() }
   })
 })

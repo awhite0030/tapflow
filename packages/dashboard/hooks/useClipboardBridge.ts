@@ -24,10 +24,18 @@ interface Options {
   onError?: (message: string) => void
 }
 
-// How long to wait for the agent before calling it a fault. Not a user-activation window: the
-// clipboard is claimed up front and filled late (see claimClipboard). Only reached when a
-// capable agent is genuinely stuck, since an agent without the capability never gets a request.
-const ROUND_TRIP_BUDGET_MS = 3_000
+// How long to wait for the agent before calling it a fault.
+//
+// This must exceed the agent's own worst case, or the browser gives up first and replaces the
+// agent's specific message ("did not copy anything — is something selected?") with a generic
+// one — which is what happened when both numbers were 3000ms by coincidence. Mirrors
+// agent-core's CLIPBOARD_AGENT_WORST_MS (1000 + 2000 + 4×300 = 4200); the dashboard has no
+// dependency on that package, so the derivation is spelled out here and pinned by a test.
+//
+// Upper bound: a claimed clipboard write was measured holding for 6s in Chrome and Safari, so
+// staying comfortably under that keeps the one-press copy intact.
+const AGENT_WORST_MS = 1_000 + 2_000 + 4 * 300
+const ROUND_TRIP_BUDGET_MS = AGENT_WORST_MS + 800   // 5s — above the agent, below the 6s claim limit
 
 // The device chord is always the Cmd/meta one regardless of what the viewer pressed: iOS
 // only understands Cmd+C, and Android treats meta and ctrl alike. A Windows viewer pressing

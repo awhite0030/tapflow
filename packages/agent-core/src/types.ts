@@ -91,3 +91,23 @@ export const CLIPBOARD_SENTINEL_PREFIX = '​tapflow-clipboard-'
 
 export const isClipboardSentinel = (value: string): boolean =>
   value.startsWith(CLIPBOARD_SENTINEL_PREFIX)
+
+// ── Clipboard timing ────────────────────────────────────────────────────────
+// Shared so the two agents cannot drift, and so the browser can DERIVE its own budget from
+// the agent's worst case rather than happening to pick the same number. They were equal by
+// coincidence once, and that hid a defect where the browser gave up at the exact moment the
+// agent was about to answer.
+
+/** Watch the device clipboard this long for an injected chord to take effect. */
+export const CLIPBOARD_COPY_DEADLINE_MS = 2_000
+/** Confirm a write became visible on the device within this. */
+export const CLIPBOARD_WRITE_DEADLINE_MS = 1_000
+/** Floor between confirm reads — never busy-spin on a fast backend. */
+export const CLIPBOARD_POLL_MS = 20
+/** Slowest observed `simctl pbpaste`/`pbcopy` under load; the read path makes several calls. */
+export const CLIPBOARD_DEVICE_CALL_MS = 300
+
+/** Longest an agent can legitimately take to answer a clipboard read: confirm the sentinel,
+ *  press, watch for the change, restore — plus the device calls each of those costs. */
+export const CLIPBOARD_AGENT_WORST_MS =
+  CLIPBOARD_WRITE_DEADLINE_MS + CLIPBOARD_COPY_DEADLINE_MS + 4 * CLIPBOARD_DEVICE_CALL_MS

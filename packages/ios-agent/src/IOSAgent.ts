@@ -46,6 +46,8 @@ import { SimctlWrapper, isDeviceMissingError } from './SimctlWrapper.js'
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
+  CLIPBOARD_COPY_DEADLINE_MS, CLIPBOARD_WRITE_DEADLINE_MS, CLIPBOARD_POLL_MS,
+  createKeyedSerialQueue,
   type AgentCapability,
 } from '@tapflowio/agent-core'
 import { ScreenCaptureStreamer, type StreamFrame } from './ScreenCaptureStreamer.js'
@@ -58,15 +60,6 @@ import { XCUITreeReader } from './XCUITreeReader.js'
 import { DeviceChromeLoader, type ChromeData } from './DeviceChromeLoader.js'
 import { KEY_CODE_MAP, MODIFIER_BITS } from './KeyCodeMap.js'
 
-// How long to watch the pasteboard for the injected chord to take effect before giving up.
-// Generous on purpose: a cold touch-helper spawn alone costs ~600ms, and simctl pbpaste is
-// 146-300ms per call under load. The browser gives up on its own, shorter budget and degrades
-// the UX; the agent's job is to answer correctly or not at all.
-const COPY_DEADLINE_MS = 2_000
-// Same idea for the write side: confirm the pasteboard took the text before pressing paste.
-const WRITE_DEADLINE_MS = 1_000
-// Floor between confirm reads. simctl already costs ~110ms, but never busy-spin.
-const CLIPBOARD_POLL_MS = 20
 
 // whole-sim audio: how often to re-enumerate the simulator's process tree for new audio-producing
 // processes (launched apps, WebKit WebContent). Short enough that a tab's audio starts promptly,
@@ -612,18 +605,10 @@ export class IOSAgent implements DeviceAgent {
     state.touchHelper.start()
   }
 
-  // Clipboard operations park a sentinel on the device, so two of them must never interleave
-  // on the same device — the second would read the first's sentinel as "the original" and the
-  // first would read the second's as "what the app copied". Keyed by device, not session:
-  // several sessions (and MCP) can address the same simulator.
-  private clipboardQueue = new Map<string, Promise<unknown>>()
-
-  private runExclusively<T>(deviceId: string, fn: () => Promise<T>): Promise<T> {
-    const next = (this.clipboardQueue.get(deviceId) ?? Promise.resolve()).then(fn, fn)
-    // Park a non-rejecting tail so one failure cannot poison the queue for later callers.
-    this.clipboardQueue.set(deviceId, next.then(() => {}, () => {}))
-    return next
-  }
+  // Clipboard work parks a sentinel on the device while it waits, so two operations on the same
+  // device must not interleave — each would read the other's marker instead of the real
+  // clipboard. Keyed by device, not session: several sessions (and MCP) can address one device.
+  private readonly clipboardQueue = createKeyedSerialQueue()
 
   // Ack a terminal input: input:done = dispatched to a booted device (not a landing guarantee — HID is fire-and-forget); input:error = no live channel / not booted. Off the sync inject path, so start/end pairing is unaffected.
   private async ackInput(state: DeviceState, dispatched: boolean): Promise<void> {
@@ -792,7 +777,7 @@ export class IOSAgent implements DeviceAgent {
         // only sent after the paste has actually landed.
         // Shares the clipboard queue: this writes the pasteboard, so running it alongside a
         // clipboard:read would overwrite that read's sentinel and be returned as "copied".
-        this.runExclusively(state.deviceId, doType)
+        this.clipboardQueue(state.deviceId, doType)
           .then(() => this.ws?.send(JSON.stringify({ type: 'input:type-done', sessionId })))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
@@ -945,13 +930,13 @@ export class IOSAgent implements DeviceAgent {
             // yet. Pressing before it does lets the first poll read the PRE-sentinel value,
             // decide it is not a sentinel, and return it as "what the app copied" — the exact
             // staleness this whole mechanism exists to prevent. Mirrors the Android read path.
-            const applied = Date.now() + WRITE_DEADLINE_MS
+            const applied = Date.now() + CLIPBOARD_WRITE_DEADLINE_MS
             while ((await this.simctl.getPasteboard(state.deviceId)) !== sentinel) {
               if (Date.now() >= applied) throw new PlatformError('The device clipboard did not respond')
               await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
             }
             state.touchHelper.sendKey(KEY_CODE_MAP[press === 'cut' ? 'KeyX' : 'KeyC'], MODIFIER_BITS['MetaLeft'])
-            const deadline = Date.now() + COPY_DEADLINE_MS
+            const deadline = Date.now() + CLIPBOARD_COPY_DEADLINE_MS
             do {
               let now: string
               try {
@@ -979,7 +964,7 @@ export class IOSAgent implements DeviceAgent {
             // and wipes the user's device clipboard. Mirrors the Android read path.
             if (copied === null) {
               await this.simctl.setPasteboard(state.deviceId, before).catch(() => {})
-              const restored = Date.now() + WRITE_DEADLINE_MS
+              const restored = Date.now() + CLIPBOARD_WRITE_DEADLINE_MS
               while ((await this.simctl.getPasteboard(state.deviceId).catch(() => before)) !== before) {
                 if (Date.now() >= restored) break   // best effort; the error is already going out
                 await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
@@ -987,7 +972,7 @@ export class IOSAgent implements DeviceAgent {
             }
           }
         }
-        this.runExclusively(state.deviceId, read)
+        this.clipboardQueue(state.deviceId, read)
           .then((text) => this.ws?.send(JSON.stringify({ type: 'clipboard:data', sessionId, requestId, payload: { text } })))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
@@ -1020,7 +1005,7 @@ export class IOSAgent implements DeviceAgent {
           // Confirm the pasteboard really holds it before pressing paste; otherwise the device
           // could paste whatever was there before. (On Android the same call is documented as
           // asynchronous, so this is not iOS paranoia — it is the same failure on both sides.)
-          const deadline = Date.now() + WRITE_DEADLINE_MS
+          const deadline = Date.now() + CLIPBOARD_WRITE_DEADLINE_MS
           while ((await this.simctl.getPasteboard(state.deviceId).catch(() => null)) !== wanted) {
             if (Date.now() >= deadline) throw new PlatformError('The device clipboard did not accept the text')
             await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
@@ -1033,7 +1018,7 @@ export class IOSAgent implements DeviceAgent {
           state.touchHelper.sendKey(KEY_CODE_MAP['KeyV'], MODIFIER_BITS['MetaLeft'])
         }
         // Ack only once the write (and the paste, when asked for) actually landed.
-        this.runExclusively(state.deviceId, write)
+        this.clipboardQueue(state.deviceId, write)
           .then(() => this.ws?.send(JSON.stringify({ type: 'clipboard:write-done', sessionId, requestId })))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
