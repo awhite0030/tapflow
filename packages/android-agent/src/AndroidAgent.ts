@@ -6,7 +6,7 @@ import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-c
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
-  CLIPBOARD_COPY_DEADLINE_MS, CLIPBOARD_WRITE_DEADLINE_MS, CLIPBOARD_POLL_MS,
+  CLIPBOARD_COPY_DEADLINE_MS, CLIPBOARD_WRITE_DEADLINE_MS, CLIPBOARD_RESTORE_DEADLINE_MS, CLIPBOARD_POLL_MS,
   createKeyedSerialQueue,
   type AgentCapability,
 } from '@tapflowio/agent-core'
@@ -192,7 +192,6 @@ export interface AndroidAgentOptions {
   /** Handshake(연결~agent:registered) 타임아웃 ms. 기본 10초, 테스트용 주입 가능. */
   handshakeTimeoutMs?: number
 }
-
 
 // Everything inside the per-device clipboard section must be bounded, or one stuck call wedges
 // every later copy/paste on that device. gRPC carries its own deadline; adb does not (and a
@@ -478,7 +477,6 @@ export class AndroidAgent implements DeviceAgent {
     if (state.scrcpySession) return state.scrcpySession.control
     return null
   }
-
 
   // Clipboard work parks a sentinel on the device while it waits, so two operations on the same
   // device must not interleave — each would read the other's marker instead of the real
@@ -1249,7 +1247,7 @@ export class AndroidAgent implements DeviceAgent {
               // wipes the user's device clipboard.
               if (copied === null) {
                 await client.setClipboard(before).catch(() => {})
-                const restored = Date.now() + CLIPBOARD_WRITE_DEADLINE_MS
+                const restored = Date.now() + CLIPBOARD_RESTORE_DEADLINE_MS
                 while ((await client.getClipboard().catch(() => before)) !== before) {
                   if (Date.now() >= restored) break   // best effort; the error is already going out
                   await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))

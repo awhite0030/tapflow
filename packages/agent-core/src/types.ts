@@ -102,12 +102,21 @@ export const isClipboardSentinel = (value: string): boolean =>
 export const CLIPBOARD_COPY_DEADLINE_MS = 2_000
 /** Confirm a write became visible on the device within this. */
 export const CLIPBOARD_WRITE_DEADLINE_MS = 1_000
+/** Confirming the post-failure restore is best-effort — the error is already on its way — so it
+ *  gets a tighter bound than a write the caller is waiting on. It still runs inside the round
+ *  trip (a `finally`, before the rejection surfaces), so it has to be counted below. */
+export const CLIPBOARD_RESTORE_DEADLINE_MS = 500
 /** Floor between confirm reads — never busy-spin on a fast backend. */
 export const CLIPBOARD_POLL_MS = 20
 /** Slowest observed `simctl pbpaste`/`pbcopy` under load; the read path makes several calls. */
 export const CLIPBOARD_DEVICE_CALL_MS = 300
 
-/** Longest an agent can legitimately take to answer a clipboard read: confirm the sentinel,
- *  press, watch for the change, restore — plus the device calls each of those costs. */
+/** Longest an agent can legitimately take to answer a clipboard read. The slow path is the one
+ *  that produces the useful message ("did not copy anything — is something selected?"), and it
+ *  spends THREE deadline windows, not two: confirm the sentinel applied, watch for the copy,
+ *  then confirm the restore in `finally` — which is inside the round trip. Plus the device
+ *  calls each step costs. Missing the restore window is what once left the browser giving up
+ *  first on exactly the path this budget exists to protect. */
 export const CLIPBOARD_AGENT_WORST_MS =
-  CLIPBOARD_WRITE_DEADLINE_MS + CLIPBOARD_COPY_DEADLINE_MS + 4 * CLIPBOARD_DEVICE_CALL_MS
+  CLIPBOARD_WRITE_DEADLINE_MS + CLIPBOARD_COPY_DEADLINE_MS + CLIPBOARD_RESTORE_DEADLINE_MS
+  + 4 * CLIPBOARD_DEVICE_CALL_MS

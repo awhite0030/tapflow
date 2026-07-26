@@ -6,6 +6,9 @@ const logger = createLogger('ios-agent:simctl')
 
 const execFileAsync = promisify(execFile)
 
+// stderr is only ever read to build an error message, so a runaway one is pure waste.
+const MAX_STDERR_CHARS = 64 * 1024
+
 function isCoreSimulatorVersionMismatch(err: unknown): boolean {
   const msg = (err as { stderr?: string; message?: string }).stderr
     ?? (err as { message?: string }).message ?? ''
@@ -55,10 +58,17 @@ function coreSimServiceError(): Error {
 function runWithOpts(opts: SimctlExecOpts, args: string[]): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const proc = spawn('xcrun', ['simctl', ...args])
-    let stdout = ''
+    // Accumulate BYTES and decode once at the end. Decoding each chunk as it arrives splits
+    // multi-byte characters at pipe boundaries and turns them into U+FFFD — execFile avoided
+    // that by running stdout through a StringDecoder, and this path has to reproduce it.
+    // Keeping bytes also makes the maxBuffer accounting exact instead of measuring a string
+    // that may already contain replacement characters.
+    const chunks: Buffer[] = []
+    let bytes = 0
     let stderr = ''
     let over = false
     let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
     const finish = (err?: Error, out?: string) => {
       if (settled) return
       settled = true
@@ -66,24 +76,30 @@ function runWithOpts(opts: SimctlExecOpts, args: string[]): Promise<string> {
       if (err) reject(err)
       else resolve(out ?? '')
     }
-    const timer = opts.timeoutMs
-      ? setTimeout(() => { proc.kill('SIGKILL'); finish(new Error(`simctl ${args[0]} timed out`)) }, opts.timeoutMs)
-      : (undefined as unknown as ReturnType<typeof setTimeout>)
 
     proc.stdout?.on('data', (d: Buffer) => {
-      stdout += d.toString()
-      if (opts.maxBuffer && Buffer.byteLength(stdout, 'utf8') > opts.maxBuffer) {
+      chunks.push(d)
+      bytes += d.length
+      if (opts.maxBuffer && bytes > opts.maxBuffer) {
         over = true
         proc.kill('SIGKILL')
         finish(new Error('stdout maxBuffer length exceeded'))
       }
     })
-    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+    // Bounded like stdout was under execFile; a runaway stderr must not grow without limit.
+    proc.stderr?.on('data', (d: Buffer) => {
+      if (stderr.length < MAX_STDERR_CHARS) stderr += d.toString()
+    })
     proc.on('error', (e) => finish(e))
     proc.on('close', (code) => {
       if (over) return
+      const stdout = Buffer.concat(chunks).toString('utf8')
       finish(code === 0 ? undefined : new Error(stderr.trim() || `simctl ${args[0]} exited ${code}`), stdout)
     })
+
+    if (opts.timeoutMs) {
+      timer = setTimeout(() => { proc.kill('SIGKILL'); finish(new Error(`simctl ${args[0]} timed out`)) }, opts.timeoutMs)
+    }
 
     if (opts.input !== undefined) {
       // An unhandled stream 'error' would take the process down, so route it to the promise.

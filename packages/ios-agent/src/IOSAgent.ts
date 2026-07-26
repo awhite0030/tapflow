@@ -46,7 +46,7 @@ import { SimctlWrapper, isDeviceMissingError } from './SimctlWrapper.js'
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
-  CLIPBOARD_COPY_DEADLINE_MS, CLIPBOARD_WRITE_DEADLINE_MS, CLIPBOARD_POLL_MS,
+  CLIPBOARD_COPY_DEADLINE_MS, CLIPBOARD_WRITE_DEADLINE_MS, CLIPBOARD_RESTORE_DEADLINE_MS, CLIPBOARD_POLL_MS,
   createKeyedSerialQueue,
   type AgentCapability,
 } from '@tapflowio/agent-core'
@@ -59,7 +59,6 @@ import { TouchHelper } from './TouchHelper.js'
 import { XCUITreeReader } from './XCUITreeReader.js'
 import { DeviceChromeLoader, type ChromeData } from './DeviceChromeLoader.js'
 import { KEY_CODE_MAP, MODIFIER_BITS } from './KeyCodeMap.js'
-
 
 // whole-sim audio: how often to re-enumerate the simulator's process tree for new audio-producing
 // processes (launched apps, WebKit WebContent). Short enough that a tab's audio starts promptly,
@@ -545,7 +544,6 @@ export class IOSAgent implements DeviceAgent {
         logger.error('syncKeyboardsFromLanguages failed:', e)
       })
 
-
     } catch (e) {
       if (seq !== state.bootSeq) return
       const message = e instanceof Error ? e.message : String(e)
@@ -964,7 +962,7 @@ export class IOSAgent implements DeviceAgent {
             // and wipes the user's device clipboard. Mirrors the Android read path.
             if (copied === null) {
               await this.simctl.setPasteboard(state.deviceId, before).catch(() => {})
-              const restored = Date.now() + CLIPBOARD_WRITE_DEADLINE_MS
+              const restored = Date.now() + CLIPBOARD_RESTORE_DEADLINE_MS
               while ((await this.simctl.getPasteboard(state.deviceId).catch(() => before)) !== before) {
                 if (Date.now() >= restored) break   // best effort; the error is already going out
                 await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))

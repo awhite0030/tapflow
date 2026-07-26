@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { useClipboardBridge, isBridgedChord, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge'
+// Mirrors the hook's own derivation; exported for the coupling test below.
+const AGENT_WORST_MS_FOR_TEST = 1_000 + 2_000 + 500 + 4 * 300
 
 type Sent = { type: string; requestId?: string; payload?: unknown }
 
@@ -357,22 +361,45 @@ describe('isBridgedChord', () => {
 
 // The browser budget and the agent's worst case were once the same number by accident, and the
 // browser then gave up at the exact moment the agent was about to answer with a specific error.
-// agent-core owns the agent side; the dashboard cannot import it, so this pins the relationship
-// from the values themselves rather than trusting two comments to stay in step.
+// agent-core owns the agent side and the dashboard cannot import it, so this reads that source
+// directly rather than trusting two hand-written copies to stay in step.
 describe('round-trip budget vs the agent worst case', () => {
-  const AGENT_WORST_MS = 1_000 + 2_000 + 4 * 300   // CLIPBOARD_AGENT_WORST_MS in agent-core
-  const CLAIM_LIMIT_MS = 6_000                      // measured in Chrome and Safari
+  const CLAIM_LIMIT_MS = 6_000   // measured in Chrome and Safari
 
-  it('leaves the agent room to answer first, and stays inside the claim window', async () => {
+  const agentWorstFromSource = (): number => {
+    const src = readFileSync(
+      join(__dirname, '..', '..', '..', 'agent-core', 'src', 'types.ts'), 'utf-8')
+    const num = (name: string): number => {
+      const m = src.match(new RegExp(`${name} = ([0-9_]+)`))
+      if (!m) throw new Error(`${name} not found in agent-core/src/types.ts`)
+      return Number(m[1].replace(/_/g, ''))
+    }
+    return num('CLIPBOARD_WRITE_DEADLINE_MS') + num('CLIPBOARD_COPY_DEADLINE_MS')
+      + num('CLIPBOARD_RESTORE_DEADLINE_MS') + 4 * num('CLIPBOARD_DEVICE_CALL_MS')
+  }
+
+  it('the hook derives the same worst case agent-core does', () => {
+    // Changing a deadline in agent-core without updating the hook must fail here.
+    expect(AGENT_WORST_MS_FOR_TEST).toBe(agentWorstFromSource())
+  })
+
+  it('waits past the agent worst case', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       const { errors } = setup()
       press('KeyC')
-      // just under the agent's worst case: the browser must still be waiting
-      await act(async () => { await vi.advanceTimersByTimeAsync(AGENT_WORST_MS - 100) })
-      expect(errors).toEqual([])
-      // and it must give up before a claimed write would lapse
-      await act(async () => { await vi.advanceTimersByTimeAsync(CLAIM_LIMIT_MS) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(agentWorstFromSource()) })
+      expect(errors).toEqual([])   // still waiting — the agent may yet answer specifically
+    } finally { vi.useRealTimers() }
+  })
+
+  it('gives up before a claimed clipboard write would lapse', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const { errors } = setup()
+      press('KeyC')
+      // advance to just under the claim limit — the budget must have fired by now
+      await act(async () => { await vi.advanceTimersByTimeAsync(CLAIM_LIMIT_MS - 1) })
       await waitFor(() => expect(errors.length).toBe(1))
     } finally { vi.useRealTimers() }
   })

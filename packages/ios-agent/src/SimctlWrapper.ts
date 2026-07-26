@@ -172,13 +172,6 @@ export class SimctlWrapper {
     await this.runner.exec('openurl', deviceId, url)
   }
 
-  // Set the device pasteboard from stdin. Not routed through SimctlRunner
-  // because pbcopy reads text from stdin, which the exec(...args) contract
-  // doesn't carry — same exception as the osascript call in boot(). Used by
-  // IOSAgent for input:type (pbcopy → Cmd+V paste).
-  // Set the device pasteboard. Routed through the runner like every other simctl call, so it
-  // gets the CoreSimulatorService version-mismatch recovery too — `pbcopy` takes its payload on
-  // stdin, which is why the runner needed an options-carrying shape at all.
   async setPasteboard(deviceId: string, text: string): Promise<void> {
     try {
       await this.runner.execWithOpts(

@@ -80,8 +80,15 @@ describe('defaultRunner — CoreSimulatorService 자동 복구', () => {
 // one path that could not heal from a service version mismatch.
 describe('defaultRunner.execWithOpts', () => {
   /** Minimal ChildProcess stand-in: emits the given stdout/stderr, then closes with `code`. */
-  function fakeProc(opts: { stdout?: string; stderr?: string; code?: number } = {}) {
-    const emit = (cb: (b: Buffer) => void, text?: string) => { if (text) queueMicrotask(() => cb(Buffer.from(text))) }
+  function fakeProc(opts: { stdout?: string; stderr?: string; code?: number; splitAt?: number } = {}) {
+    const emit = (cb: (b: Buffer) => void, text?: string) => {
+      if (!text) return
+      const buf = Buffer.from(text)
+      // splitAt models what a pipe actually does: hand over arbitrary byte boundaries, which
+      // can land in the middle of a multi-byte character.
+      const parts = opts.splitAt ? [buf.subarray(0, opts.splitAt), buf.subarray(opts.splitAt)] : [buf]
+      queueMicrotask(() => parts.forEach((p) => cb(p)))
+    }
     return {
       stdout: { on: (ev: string, cb: (b: Buffer) => void) => { if (ev === 'data') emit(cb, opts.stdout) } },
       stderr: { on: (ev: string, cb: (b: Buffer) => void) => { if (ev === 'data') emit(cb, opts.stderr) } },
@@ -157,6 +164,35 @@ describe('defaultRunner.execWithOpts', () => {
     await expect(defaultRunner.execWithOpts({ timeoutMs: 20 }, 'pbpaste', 'UDID'))
       .rejects.toThrow(/timed out/)
     expect(proc.kill).toHaveBeenCalledWith('SIGKILL')
+  })
+
+  // execFile ran stdout through a StringDecoder, which holds back a partial multi-byte
+  // sequence until the next chunk. Decoding per chunk instead turns any character straddling a
+  // pipe boundary into U+FFFD — and the size ceiling admits payloads many chunks long, so a
+  // few tens of thousands of CJK characters would arrive silently mangled.
+  it('keeps multi-byte output intact across a chunk boundary', async () => {
+    const text = '가나다라마'
+    spawnMock.mockReturnValue(fakeProc({ stdout: text, splitAt: 7 }))   // mid-character
+    await expect(defaultRunner.execWithOpts({}, 'pbpaste', 'UDID')).resolves.toBe(text)
+  })
+
+  it('counts the ceiling in bytes, not decoded characters', async () => {
+    // 4 three-byte characters = 12 bytes; a 10-byte ceiling must reject.
+    spawnMock.mockReturnValue(fakeProc({ stdout: '가나다라', splitAt: 5 }))
+    await expect(defaultRunner.execWithOpts({ maxBuffer: 10 }, 'pbpaste', 'UDID'))
+      .rejects.toThrow(/maxBuffer/)
+  })
+
+  // A dropped clearTimeout leaves a live 5s timer per clipboard call, and it fires against an
+  // already-settled promise — invisible unless something watches for the kill it would trigger.
+  it('does not kill the process after it already finished', async () => {
+    restoreTimeout()   // this one needs real timers: the eager stub cannot be cleared
+    const proc = fakeProc({ stdout: 'ok' })
+    spawnMock.mockReturnValue(proc)
+
+    await expect(defaultRunner.execWithOpts({ timeoutMs: 20 }, 'pbpaste', 'UDID')).resolves.toBe('ok')
+    await new Promise((r) => setTimeout(r, 60))   // well past the timeout
+    expect(proc.kill).not.toHaveBeenCalled()
   })
 
   it('reports the command stderr on a non-zero exit', async () => {
