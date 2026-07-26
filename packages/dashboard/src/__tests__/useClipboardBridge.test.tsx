@@ -4,7 +4,7 @@ import { useClipboardBridge, isBridgedChord, type ClipboardMessageHandler } from
 
 type Sent = { type: string; requestId?: string; payload?: unknown }
 
-function setup(opts: { active?: boolean } = {}) {
+function setup(opts: { active?: boolean; supported?: boolean } = {}) {
   const sent: Sent[] = []
   const chords: Array<[string, number]> = []
   const errors: string[] = []
@@ -14,6 +14,7 @@ function setup(opts: { active?: boolean } = {}) {
     sessionId: 's1',
     send: (m) => sent.push(m as Sent),
     active: opts.active ?? true,
+    supported: opts.supported ?? true,
     handlerRef,
     sendChord: (code, mods) => chords.push([code, mods]),
     onError: (m) => errors.push(m),
@@ -151,17 +152,31 @@ describe('useClipboardBridge', () => {
 
   // A timeout is NOT a failure — the agent is still mid-copy and already pressed the chord
   // itself. Pressing again here would copy twice.
-  // An agent that predates the bridge has no clipboard:read case and never replies. The
-  // viewers no longer forward the chord themselves, so silence here would lose the keystroke
-  // outright — worse than before the bridge existed.
-  it('presses the chord when the agent never answers (older agent)', async () => {
+  // An agent that does not advertise the capability is left entirely alone: the bridge sends
+  // nothing and the viewers keep forwarding the chords, which is what happened before it
+  // existed. Inferring this from a timeout instead once produced a double paste on a merely
+  // slow agent, and could blind-paste a read's sentinel into the app.
+  it('stays inert against an agent without the capability', async () => {
+    const { sent, chords, errors } = setup({ supported: false })
+    press('KeyC')
+    press('KeyX')
+    pastes('anything')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(sent).toEqual([])
+    expect(chords).toEqual([])   // the viewer forwards them, not the bridge
+    expect(errors).toEqual([])
+  })
+
+  // A timeout from a capable agent is a fault, not a version signal — it already pressed the
+  // chord, so pressing again would copy twice.
+  it('does not press the chord when a capable agent is slow', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       const { chords, errors } = setup()
       press('KeyC')
       await act(async () => { await vi.advanceTimersByTimeAsync(3_500) })
       await waitFor(() => expect(errors.length).toBe(1))
-      expect(chords).toEqual([['KeyC', 0x08]])
+      expect(chords).toEqual([])
     } finally { vi.useRealTimers() }
   })
 
@@ -210,13 +225,14 @@ describe('useClipboardBridge', () => {
 
   // On a timeout the agent is still writing and will press paste itself once it lands —
   // pressing here too would paste the text twice.
-  it('presses paste when the agent never answers (older agent)', async () => {
+  // Same reasoning on the write side: a slow-but-capable agent presses paste itself.
+  it('does not press paste when a capable agent is slow', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       const { chords } = setup()
       pastes('slow one')
       await act(async () => { await vi.advanceTimersByTimeAsync(3_500) })
-      await waitFor(() => expect(chords).toEqual([['KeyV', 0x08]]))
+      expect(chords).toEqual([])
     } finally { vi.useRealTimers() }
   })
 

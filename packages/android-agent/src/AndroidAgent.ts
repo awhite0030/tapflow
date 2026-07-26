@@ -4,6 +4,10 @@ import { WebSocket } from 'ws'
 import type { AndroidButton, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
 import {
+  MAX_CLIPBOARD_BYTES, clipboardByteLength,
+  CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
+} from '@tapflowio/agent-core'
+import {
   createResourceSampler,
   registerStreamWs,
   disableNagle,
@@ -183,9 +187,6 @@ export interface AndroidAgentOptions {
   handshakeTimeoutMs?: number
 }
 
-// Clipboard payload ceiling, both directions — large text shares the WebSocket with video,
-// so an unbounded payload would stall the stream on backpressure.
-const MAX_CLIPBOARD_BYTES = 1024 * 1024
 // How long to watch the guest clipboard for an injected chord to take effect before giving up.
 // The browser gives up on its own, shorter budget and degrades the UX; the agent's job is to
 // answer correctly or not at all.
@@ -194,11 +195,19 @@ const COPY_DEADLINE_MS = 2_000
 const WRITE_DEADLINE_MS = 1_000
 // gRPC calls are cheap compared to simctl, so pace the poll instead of spinning on it.
 const CLIPBOARD_POLL_MS = 20
-// Marker parked on the device while the read waits for the copy. Must be recognisable so two
-// overlapping reads cannot hand each other's marker back as if it were the user's text.
-const SENTINEL_PREFIX = '\u200Btapflow-clipboard-'
-const isSentinel = (v: string): boolean => v.startsWith(SENTINEL_PREFIX)
-const clipboardByteLength = (text: string): number => Buffer.byteLength(text, 'utf8')
+
+// Everything inside the per-device clipboard section must be bounded, or one stuck call wedges
+// every later copy/paste on that device. gRPC carries its own deadline; adb does not (and a
+// blanket AdbRunner timeout would break legitimately slow calls like app install), so bound it
+// here. The child process may outlive this — the point is to release the queue.
+function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  return Promise.race([
+    work,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new PlatformError(`${what} timed out after ${ms}ms`)), ms)),
+  ])
+}
+const ADB_KEYEVENT_TIMEOUT_MS = 5_000
 
 export class AndroidAgent implements DeviceAgent {
   private readonly adb: AdbWrapper
@@ -260,6 +269,9 @@ export class AndroidAgent implements DeviceAgent {
         ws.send(JSON.stringify({
           type: 'agent:register',
           platform: 'android',
+          // Lets a viewer tell a clipboard-capable agent from one that predates the
+          // feature, instead of inferring it from silence. See agent-core AgentCapability.
+          capabilities: ['clipboard'],
           agentId: getMachineId(),
           agentName: os.hostname(),
           devices: devices.map((d) => ({
@@ -1206,19 +1218,37 @@ export class AndroidAgent implements DeviceAgent {
                 if (Date.now() >= applied) throw new PlatformError('The device clipboard did not respond')
                 await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
               }
-              await this.adb.sendKeyEvent(serial, press === 'cut' ? 'KEYCODE_CUT' : 'KEYCODE_COPY')
+              await bounded(
+                this.adb.sendKeyEvent(serial, press === 'cut' ? 'KEYCODE_CUT' : 'KEYCODE_COPY'),
+                ADB_KEYEVENT_TIMEOUT_MS, 'copy keyevent')
               const deadline = Date.now() + COPY_DEADLINE_MS
               do {
                 const now = await client.getClipboard()
                 // A sentinel is never a copy result: ours means "not yet", another one means a
                 // concurrent operation slipped in and must not be handed to the user.
-                if (!isSentinel(now)) { copied = now; return now }
+                if (!isSentinel(now)) {
+                  copied = now
+                  if (clipboardByteLength(now) > MAX_CLIPBOARD_BYTES) {
+                    throw new PlatformError(`The device clipboard is too large to send (max ${Math.floor(MAX_CLIPBOARD_BYTES / 1024)} KB)`)
+                  }
+                  return now
+                }
                 await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
               } while (Date.now() < deadline)
               throw new PlatformError('The device did not copy anything — is something selected?')
             } finally {
               // Restore only if nothing was copied; otherwise this would clobber the capture.
-              if (copied === null) await client.setClipboard(before).catch(() => {})
+              // And wait for it to APPLY, not just schedule: releasing the queue early lets the
+              // next operation read the sentinel as the original — which then becomes '' and
+              // wipes the user's device clipboard.
+              if (copied === null) {
+                await client.setClipboard(before).catch(() => {})
+                const restored = Date.now() + WRITE_DEADLINE_MS
+                while ((await client.getClipboard().catch(() => before)) !== before) {
+                  if (Date.now() >= restored) break   // best effort; the error is already going out
+                  await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
+                }
+              }
             }
           }
           this.runExclusively(state.deviceId, read)
@@ -1242,7 +1272,8 @@ export class AndroidAgent implements DeviceAgent {
               if (Date.now() >= deadline) throw new PlatformError('The device clipboard did not accept the text')
               await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
             }
-            await this.adb.sendKeyEvent(serial, 'KEYCODE_PASTE')
+            await bounded(this.adb.sendKeyEvent(serial, 'KEYCODE_PASTE'),
+              ADB_KEYEVENT_TIMEOUT_MS, 'paste keyevent')
           }
           // Ack only once the write (and the paste, when asked for) actually landed.
           this.runExclusively(state.deviceId, write)

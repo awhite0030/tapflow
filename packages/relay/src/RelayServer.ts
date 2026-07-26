@@ -701,9 +701,9 @@ export class RelayServer {
         }
         break
       }
-      // Kept out of the input:* chain above: these need their own error type, and the
-      // caller is waiting on a short deadline (the browser has to finish inside Safari's
-      // user-activation window), so an undeliverable request fails now rather than hanging.
+      // Kept out of the input:* chain above: these need their own error type, and the caller
+      // is waiting on a bounded deadline, so an undeliverable request fails now rather than
+      // hanging until the browser gives up.
       case 'clipboard:read':
       case 'clipboard:write': {
         const session = this.sessions.get(msg.sessionId!)
@@ -773,7 +773,7 @@ export class RelayServer {
         old.terminate()
       }
     }
-    const sessionIds = this.sessions.create(ws, msg.devices ?? [], msg.agentName, msg.platform, msg.agentId)
+    const sessionIds = this.sessions.create(ws, msg.devices ?? [], msg.agentName, msg.platform, msg.agentId, msg.capabilities)
     const registeredSessions = (msg.devices ?? []).map((d, i) => ({
       deviceId: d.id,
       sessionId: sessionIds[i],
@@ -801,7 +801,12 @@ export class RelayServer {
       ws.send(JSON.stringify({ type: 'error', message: 'Session busy' }))
       return
     }
-    ws.send(JSON.stringify({ type: 'session:joined', sessionId: msg.sessionId }))
+    // Include the agent's capabilities so the viewer knows up front what is implemented on
+    // the other end — an agent that predates a feature omits it, and the dashboard degrades
+    // deliberately instead of inferring anything from a timeout.
+    ws.send(JSON.stringify({
+      type: 'session:joined', sessionId: msg.sessionId, capabilities: session.agentCapabilities ?? [],
+    }))
     if (session.chromeData) {
       ws.send(JSON.stringify({ type: 'session:chrome', payload: session.chromeData }))
     }

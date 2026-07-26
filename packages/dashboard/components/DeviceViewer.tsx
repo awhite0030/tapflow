@@ -56,6 +56,9 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const [installError, setInstallError] = useState<string | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
+  // What the agent on the other end implements. Absent ⇒ an agent predating the capability,
+  // so the viewer degrades on purpose rather than inferring anything from a timeout.
+  const [agentCapabilities, setAgentCapabilities] = useState<string[]>([]);
   const [swKeyboardVisible, setSwKeyboardVisible] = useState(false);
   const [swKeyboardPending, setSwKeyboardPending] = useState(false);
 
@@ -75,6 +78,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const handleMessage = useCallback((msg: RelayMessage) => {
     if (msg.type === 'session:joined') {
       setJoined(true);
+      setAgentCapabilities(msg.capabilities ?? []);
       // Tell the agent up front whether this browser can decode H.264 so it picks the
       // codec accordingly; false (old/unsupported browser) → agent streams JPEG.
       // secureContext (localhost/HTTPS) → the agent can stream full res (WebCodecs hw-decodes it);
@@ -162,6 +166,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     launching, setLaunching,
     binaryFrameHandlerRef,
     clipboardHandlerRef,
+    clipboardSupported: agentCapabilities.includes('clipboard'),
     onRecordingUploaded,
     swKeyboardVisible, swKeyboardPending, onKbdToggle,
   };

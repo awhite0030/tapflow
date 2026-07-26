@@ -132,7 +132,7 @@ export interface ReleaseGroup {
 
 export type RelayMessage =
   | { type: 'agents:listed'; sessions: SessionInfo[] }
-  | { type: 'session:joined'; sessionId: string }
+  | { type: 'session:joined'; sessionId: string; capabilities?: string[] }
   | { type: 'session:chrome'; payload: ChromeData | { buttons: AndroidButton[]; streamType: 'h264' } }
   | { type: 'session:deviceInfo'; payload: DeviceInfo }
   | { type: 'device:boot'; sessionId: string; payload: { deviceId: string; resetMode?: 'app-only' | 'full-erase'; acceptH264?: boolean } }

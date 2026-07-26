@@ -4,7 +4,7 @@ import { promisify } from 'util'
 import { promises as fs } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { PlatformError } from '@tapflowio/agent-core'
+import { PlatformError, MAX_CLIPBOARD_BYTES } from '@tapflowio/agent-core'
 
 const execFileAsync = promisify(execFile)
 const ROTATION_HELPER  = join(import.meta.dirname, '..', 'bin', 'rotation-helper')
@@ -32,11 +32,6 @@ function langToKeyboard(lang: string): string {
   return LANG_KEYBOARD_MAP[code] ?? 'en_US@sw=QWERTY;hw=Automatic'
 }
 
-// Clipboard payload ceiling, both directions. Large text shares the WebSocket with video,
-// so an unbounded payload would stall the stream on backpressure. Measured in UTF-8 bytes —
-// counting UTF-16 code units would let ~4x that through for emoji-heavy text.
-export const MAX_CLIPBOARD_BYTES = 1024 * 1024
-export const clipboardByteLength = (text: string): number => Buffer.byteLength(text, 'utf8')
 
 // A hung pasteboard call must not strand the caller: the read path holds a sentinel on the
 // device until it finishes, so "never returns" would leave the device clipboard destroyed.

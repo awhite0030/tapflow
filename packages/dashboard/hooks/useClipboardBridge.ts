@@ -15,6 +15,8 @@ interface Options {
   send: (msg: object) => void
   /** Only hijack the chords while the viewer owns the keyboard. */
   active: boolean
+  /** Does the connected agent implement the clipboard protocol (from session:joined)? */
+  supported: boolean
   /** DeviceViewer routes `clipboard:*` here; the bridge registers itself on mount. */
   handlerRef: MutableRefObject<ClipboardMessageHandler | undefined>
   /** Press a chord on the device via the plain input:key path — the fallback when the bridge fails. */
@@ -22,9 +24,9 @@ interface Options {
   onError?: (message: string) => void
 }
 
-// How long to wait for the agent before telling the user it did not answer. This is no longer
-// tied to a user-activation window: the clipboard is claimed up front and filled late (see
-// claimClipboard), so the only thing this bounds is how long a silent failure can look busy.
+// How long to wait for the agent before calling it a fault. Not a user-activation window: the
+// clipboard is claimed up front and filled late (see claimClipboard). Only reached when a
+// capable agent is genuinely stuck, since an agent without the capability never gets a request.
 const ROUND_TRIP_BUDGET_MS = 3_000
 
 // The device chord is always the Cmd/meta one regardless of what the viewer pressed: iOS
@@ -108,7 +110,7 @@ function inTextField(): boolean {
  * actually lands (a visible software keyboard makes it await hideSoftwareKeyboard first), and
  * reading too early returns the previous clipboard — a stale value nobody would notice.
  */
-export function useClipboardBridge({ sessionId, send, active, handlerRef, sendChord, onError }: Options) {
+export function useClipboardBridge({ sessionId, send, active, supported, handlerRef, sendChord, onError }: Options) {
   const pending = useRef(new Map<string, (msg: ClipboardBridgeMessage) => void>())
   const lastError = useRef<string | null>(null)
   const onErrorRef = useRef(onError)
@@ -148,7 +150,10 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
   }, [send, sessionId])
 
   useEffect(() => {
-    if (!active) return
+    // An agent that does not advertise the capability never replies to these messages, so the
+    // bridge stays out of the way entirely and the viewers keep forwarding the chords
+    // themselves — exactly the behaviour that predates this hook.
+    if (!active || !supported) return
 
     const onKeyDown = async (e: KeyboardEvent) => {
       // KeyV is claimed by isBridgedChord for the viewers' benefit but handled in `paste`.
@@ -188,12 +193,11 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
       const reply = await request('clipboard:read', { press: isCut ? 'cut' : 'copy' })
       if (!reply) {
         fail(new ClaimCancelled('timeout'))
-        // Silence here would be a regression: an agent that predates the bridge has no
-        // clipboard:read case and never replies, and the viewers no longer forward the chord
-        // themselves — the keystroke would simply vanish. A current agent answers well inside
-        // the budget, so a timeout means the chord did not reach the device.
-        sendChord(isCut ? 'KeyX' : 'KeyC', META)
-        report('The device did not answer — copied on the device only')
+        // Do NOT press the chord here. The agent advertised the capability, so it received the
+        // request and pressed the chord itself; pressing again would copy twice — and while a
+        // read is in flight the device clipboard may hold that read's sentinel, which a blind
+        // paste would then put into the app under test.
+        report('The device is taking too long — try again')
         return
       }
       if (reply.type === 'clipboard:error') {
@@ -223,12 +227,12 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
       if (byteLength(text) > MAX_CLIPBOARD_BYTES) { report('That text is too large to send to the device'); return }
       request('clipboard:write', { text, pasteAfter: true }).then((reply) => {
         if (reply?.type === 'clipboard:write-done') { lastError.current = null; return }
-        // Nothing was pasted on either path, so press the chord to at least paste the device's
-        // own clipboard — an agent that predates the bridge never replies at all, and the
-        // viewers no longer forward Cmd+V themselves.
+        // Only an explicit error means nothing was written and nothing was pressed; then the
+        // plain chord at least pastes the device's own clipboard. A timeout means the agent is
+        // still mid-write and will press paste itself — doing it here too pastes twice.
+        if (!reply) { report('The device is taking too long — try again'); return }
         sendChord('KeyV', META)
-        if (reply?.type === 'clipboard:error') report(reply.message ?? 'Clipboard write failed')
-        else report('The device did not answer — pasted its own clipboard instead')
+        report(reply.message ?? 'Clipboard write failed')
       })
     }
 
@@ -238,5 +242,5 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
       document.removeEventListener('keydown', onKeyDown)
       document.removeEventListener('paste', onPaste)
     }
-  }, [active, request, sendChord, report])
+  }, [active, supported, request, sendChord, report])
 }

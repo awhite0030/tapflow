@@ -8,6 +8,14 @@ export type {
   UIElement,
   UIElementFrame,
   UIElementRole,
+  AgentCapability,
+} from './types.js'
+export {
+  hasCapability,
+  MAX_CLIPBOARD_BYTES,
+  clipboardByteLength,
+  CLIPBOARD_SENTINEL_PREFIX,
+  isClipboardSentinel,
 } from './types.js'
 export type { DeviceAgent, DeviceAgentConstructor } from './DeviceAgent.js'
 export { hasAudioCapability } from './AudioStreamCapability.js'

@@ -41,6 +41,7 @@ interface IOSViewerProps {
   chrome: ChromeData;
   binaryFrameHandlerRef: React.MutableRefObject<BinaryFrameHandler | undefined>;
   clipboardHandlerRef: React.MutableRefObject<ClipboardMessageHandler | undefined>;
+  clipboardSupported: boolean;
   onRecordingUploaded?: () => void;
   swKeyboardVisible: boolean;
   swKeyboardPending: boolean;
@@ -52,7 +53,7 @@ export function IOSViewer({
   sessionId, buildId, send, connected, joined,
   deviceReady, installing, installed, installError, bootError,
   launching, setLaunching, chrome,
-  binaryFrameHandlerRef, clipboardHandlerRef, onRecordingUploaded,
+  binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, onRecordingUploaded,
   swKeyboardVisible, swKeyboardPending, onKbdToggle,
   perfHookRef,
 }: IOSViewerProps) {
@@ -292,8 +293,8 @@ export function IOSViewer({
     send({ type: 'input:key', sessionId, payload: { code, modifiers } })
   }, [send, sessionId])
   useClipboardBridge({
-    sessionId, send, active: keyboardActive, handlerRef: clipboardHandlerRef, sendChord,
-    onError: (m) => toast.error(m),
+    sessionId, send, active: keyboardActive, supported: clipboardSupported,
+    handlerRef: clipboardHandlerRef, sendChord, onError: (m) => toast.error(m),
   })
 
   // ── Keyboard forwarding ───────────────────────────────────────────────────
@@ -314,9 +315,10 @@ export function IOSViewer({
       }
       if (!keyboardActive) return
       if (MODIFIER_CODES.has(e.code)) return
-      // The clipboard bridge owns the copy/cut/paste chords — the agent presses them on
-      // the device itself, so forwarding here too would double-send.
-      if (isBridgedChord(e)) return
+      // The clipboard bridge owns the copy/cut/paste chords when the agent implements them —
+      // the agent presses them on the device itself, so forwarding here too would double-send.
+      // Against an agent without the capability the bridge is inert and these fall through.
+      if (clipboardSupported && isBridgedChord(e)) return
       e.preventDefault()
       const modifiers = (e.shiftKey ? 0x02 : 0) | (e.ctrlKey ? 0x01 : 0) | (e.metaKey ? 0x08 : 0)
       send({ type: 'input:key', sessionId, payload: { code: e.code, modifiers } })

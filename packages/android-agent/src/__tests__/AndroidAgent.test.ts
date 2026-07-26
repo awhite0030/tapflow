@@ -1122,13 +1122,17 @@ describe('AndroidAgent', () => {
           if (m.type === 'clipboard:data') seen.push(`${m.requestId}:${(m.payload as { text: string }).text}`)
           if (m.type === 'clipboard:error') seen.push(`${m.requestId}:ERR`)
         })
+        // The guest applies a scheduled setClipboard late, so releasing the queue before the
+        // restore lands lets the next read see the sentinel as "the original" — and then wipe it.
+        grpcClipboardApplyDelayMs = 120
+
         browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'P1', payload: { press: 'copy' } }))
         browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'P2', payload: { press: 'copy' } }))
         await vi.waitFor(() => expect(seen.length).toBe(2), { timeout: 9000 })
 
         // Neither may report a sentinel as the copied text, and the original must survive.
         expect(seen).toEqual(['P1:ERR', 'P2:ERR'])
-        expect(grpcClipboardText).toBe('ORIGINAL')
+        await vi.waitFor(() => expect(grpcClipboardText).toBe('ORIGINAL'), { timeout: 2000 })
       }, 15_000)
 
       it('fails and restores the original when the device never copies', async () => {

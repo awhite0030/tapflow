@@ -39,7 +39,11 @@ import {
   sendAudioYieldingToVideo,
 } from '@tapflowio/agent-core/utils'
 import type { AudioFrame } from '@tapflowio/agent-core'
-import { SimctlWrapper, isDeviceMissingError, MAX_CLIPBOARD_BYTES, clipboardByteLength } from './SimctlWrapper.js'
+import { SimctlWrapper, isDeviceMissingError } from './SimctlWrapper.js'
+import {
+  MAX_CLIPBOARD_BYTES, clipboardByteLength,
+  CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
+} from '@tapflowio/agent-core'
 import { ScreenCaptureStreamer, type StreamFrame } from './ScreenCaptureStreamer.js'
 import { AudioCaptureStreamer, readSimVolume, applyGain } from './AudioCaptureStreamer.js'
 import { ensureHelperApp, launchAudioHelper, isAudioSupported } from '@tapflowio/audiotap-helper'
@@ -59,11 +63,6 @@ const COPY_DEADLINE_MS = 2_000
 const WRITE_DEADLINE_MS = 1_000
 // Floor between confirm reads. simctl already costs ~110ms, but never busy-spin.
 const CLIPBOARD_POLL_MS = 20
-// Marker for the value the read path parks on the device while it waits for the copy. Must be
-// recognisable: if two reads ever overlap, one must not mistake the other's marker for the
-// user's text and hand a UUID to their OS clipboard.
-const SENTINEL_PREFIX = '\u200Btapflow-clipboard-'
-const isSentinel = (v: string): boolean => v.startsWith(SENTINEL_PREFIX)
 
 // whole-sim audio: how often to re-enumerate the simulator's process tree for new audio-producing
 // processes (launched apps, WebKit WebContent). Short enough that a tab's audio starts promptly,
@@ -198,6 +197,9 @@ export class IOSAgent implements DeviceAgent {
         ws.send(JSON.stringify({
           type: 'agent:register',
           platform: 'ios',
+          // Lets a viewer tell a clipboard-capable agent from one that predates the
+          // feature, instead of inferring it from silence. See agent-core AgentCapability.
+          capabilities: ['clipboard'],
           agentId: getMachineId(),
           agentName: os.hostname(),
           devices: devices.map((d) => ({
@@ -947,7 +949,14 @@ export class IOSAgent implements DeviceAgent {
               const now = await this.simctl.getPasteboard(state.deviceId)
               // A sentinel is never a copy result — ours means "not yet", any other means a
               // concurrent operation slipped in and its marker must not be handed to the user.
-              if (!isSentinel(now)) { copied = now; return now }
+              if (!isSentinel(now)) {
+                copied = now
+                // Cap this direction too: clipboard JSON shares the socket with video.
+                if (clipboardByteLength(now) > MAX_CLIPBOARD_BYTES) {
+                  throw new PlatformError(`The device clipboard is too large to send (max ${Math.floor(MAX_CLIPBOARD_BYTES / 1024)} KB)`)
+                }
+                return now
+              }
               await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
             } while (Date.now() < deadline)
             throw new PlatformError('The device did not copy anything — is something selected?')
