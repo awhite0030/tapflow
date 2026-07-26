@@ -87,6 +87,12 @@ export function isBridgedChord(
 const MAX_CLIPBOARD_BYTES = 1024 * 1024
 const byteLength = (s: string): number => new TextEncoder().encode(s).length
 
+/** True when the agent said this backend has no clipboard channel at all. It can therefore
+ *  never have a sentinel parked on the device, which makes pressing the plain chord safe —
+ *  the one error where falling back is provably harmless rather than a gamble. */
+const isUnsupportedBackend = (msg: ClipboardBridgeMessage): boolean =>
+  !!(msg.payload as { unsupported?: boolean } | undefined)?.unsupported
+
 /** Is the user selecting text in the dashboard itself rather than driving the device? */
 function hasDocumentSelection(): boolean {
   const sel = window.getSelection()
@@ -203,8 +209,8 @@ export function useClipboardBridge({ sessionId, send, active, supported, handler
       if (reply.type === 'clipboard:error') {
         fail(new ClaimCancelled(reply.message ?? 'read failed'))
         report(reply.message ?? 'Clipboard read failed')
-        // Bridge unavailable (old agent, backend without a clipboard channel): press the chord
-        // so the copy at least lands on the DEVICE's own clipboard, as it did before the bridge.
+        // The copy still has to happen on the device. Safe here for the same reason as paste
+        // below: an errored read never leaves a sentinel behind.
         sendChord(isCut ? 'KeyX' : 'KeyC', META)
         return
       }
@@ -231,10 +237,12 @@ export function useClipboardBridge({ sessionId, send, active, supported, handler
         // plain chord at least pastes the device's own clipboard. A timeout means the agent is
         // still mid-write and will press paste itself — doing it here too pastes twice.
         if (!reply) { report('The device is taking too long — try again'); return }
-        // Report only. A blind chord here goes through input:key, which bypasses the agent's
-        // per-device clipboard queue — and a concurrent read (another session, or MCP) may have
-        // its sentinel parked on the device, which the chord would paste into the app.
         report(reply.message ?? 'Clipboard write failed')
+        // Normally we do NOT press here: the chord goes through input:key, bypassing the agent's
+        // per-device queue, and a concurrent read may have its sentinel parked on the device —
+        // which the chord would paste into the app. That risk cannot exist on a backend with no
+        // clipboard channel, and without this the shortcut would do nothing at all there.
+        if (isUnsupportedBackend(reply)) sendChord('KeyV', META)
       })
     }
 

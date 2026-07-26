@@ -6,6 +6,7 @@ import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-c
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
+  type AgentCapability,
 } from '@tapflowio/agent-core'
 import {
   createResourceSampler,
@@ -39,6 +40,9 @@ import { discoverGrpcPort, isTcpPortFree } from './emulator/discovery.js'
 import { EmulatorVideo } from './emulator/EmulatorVideo.js'
 
 const logger = createLogger('android-agent')
+
+// Typed so a typo cannot ship silently — the viewer gates the whole clipboard bridge on this.
+const AGENT_CAPABILITIES: AgentCapability[] = ['clipboard']
 
 // Parse H.264 SPS NAL unit to extract frame dimensions.
 // scrcpy sends a new SPS (inside an IDR keyframe) whenever the capture size changes —
@@ -276,7 +280,7 @@ export class AndroidAgent implements DeviceAgent {
           platform: 'android',
           // Lets a viewer tell a clipboard-capable agent from one that predates the
           // feature, instead of inferring it from silence. See agent-core AgentCapability.
-          capabilities: ['clipboard'],
+          capabilities: AGENT_CAPABILITIES,
           agentId: getMachineId(),
           agentName: os.hostname(),
           devices: devices.map((d) => ({
@@ -1186,12 +1190,18 @@ export class AndroidAgent implements DeviceAgent {
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
-        const fail = (message: string) =>
-          this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message }))
+        const fail = (message: string, unsupported = false) =>
+          this.ws?.send(JSON.stringify({
+            type: 'clipboard:error', sessionId, requestId, message, payload: { unsupported },
+          }))
         // Distinguish the three ways this can be unavailable — they need different fixes.
         if (!state || !serial) { fail('No booted device'); break }
         if (!state.grpcClient) {
-          fail('Clipboard needs the emulator gRPC backend — it is not available on this device')
+          // `unsupported` means this backend has no clipboard channel at all, so it can never
+          // park a sentinel — which makes it the one error where the viewer may safely press
+          // the plain chord. Without that the shortcut would silently do nothing here, which
+          // is worse than the behaviour that predates this feature.
+          fail('Clipboard needs the emulator gRPC backend — this device pastes on-device only', true)
           break
         }
         const client = state.grpcClient

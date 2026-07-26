@@ -227,6 +227,19 @@ describe('useClipboardBridge', () => {
     expect(chords).toEqual([])
   })
 
+  // ...except on a backend with no clipboard channel at all (Android on scrcpy). It can never
+  // park a sentinel, so the chord is provably safe — and without it Cmd+V would silently do
+  // nothing on those devices, which is worse than the behaviour predating this feature.
+  it('does press paste when the backend has no clipboard channel', async () => {
+    const { chords, reply } = setup()
+    pastes('x')
+    reply({
+      type: 'clipboard:error', message: 'this device pastes on-device only',
+      payload: { unsupported: true },
+    }, 'clipboard:write')
+    await waitFor(() => expect(chords).toEqual([['KeyV', 0x08]]))
+  })
+
   // On a timeout the agent is still writing and will press paste itself once it lands —
   // pressing here too would paste the text twice.
   // Same reasoning on the write side: a slow-but-capable agent presses paste itself.

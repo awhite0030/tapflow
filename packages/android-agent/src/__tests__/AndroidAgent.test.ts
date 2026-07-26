@@ -1250,6 +1250,9 @@ describe('AndroidAgent', () => {
         const err = await waitForType(browser, 'clipboard:error')
         expect(err.requestId).toBe('a9')
         expect(err.message).toContain('UNAVAILABLE')
+        // A transient gRPC fault is NOT "unsupported" — a sentinel may well be parked, so the
+        // viewer must not press a blind chord here.
+        expect((err.payload as { unsupported: boolean }).unsupported).toBe(false)
       })
 
       // R8: the scrcpy backend (real devices, and the gRPC fallback) has no clipboard
@@ -1266,6 +1269,9 @@ describe('AndroidAgent', () => {
         expect(err.requestId).toBe('a10')
         expect(err.message).toMatch(/gRPC backend/i)
         expect(err.message).not.toMatch(/no booted device/i)
+        // Flagged so the viewer can safely press the plain chord: a backend without a
+        // clipboard channel can never leave a sentinel on the device.
+        expect((err.payload as { unsupported: boolean }).unsupported).toBe(true)
       })
     })
 

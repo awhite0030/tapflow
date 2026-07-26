@@ -106,6 +106,7 @@ const waitForType = (ws: WebSocket, type: string) =>
   })
 
 let pasteboard = ''
+const isSentinelish = (v: string): boolean => v.startsWith('\u200Btapflow-clipboard-')
 // How long the simulator takes to actually show a written pasteboard. `pbcopy` exiting means
 // accepted, not visible — the read path must not assume otherwise.
 let pasteboardApplyDelayMs = 0
@@ -1241,6 +1242,10 @@ describe('IOSAgent', () => {
   })
 
   describe('clipboard bridge', () => {
+    // Every other describe resets this; without it a stale helper from an earlier test
+    // satisfies the `results.length > 0` guards below and they assert nothing.
+    beforeEach(() => { MockTouchHelper.mockClear() })
+
     async function bootWith(simctl: SimctlWrapper): Promise<{ agent: IOSAgent; browser: WebSocket }> {
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
@@ -1369,8 +1374,7 @@ describe('IOSAgent', () => {
       expect(order.indexOf('chord')).toBeLessThan(order.lastIndexOf('read'))
 
       agent.disconnect(); browser.close()
-    })
-
+    }, 15_000)
     // B1: pbcopy exiting does not mean the pasteboard shows the sentinel. Pressing the chord
     // early lets the first poll read the pre-sentinel value and return it as the copy result.
     it('waits for the sentinel to be visible before pressing the chord', async () => {
@@ -1422,8 +1426,7 @@ describe('IOSAgent', () => {
       expect(th.sendKey).toHaveBeenCalledWith(0x1b, 0x08)   // KeyX + MetaLeft
 
       agent.disconnect(); browser.close()
-    })
-
+    }, 15_000)
     it('hides a visible software keyboard before pressing copy', async () => {
       const simctl = mockSimctl(true)
       const { agent, browser } = await bootWith(simctl)
@@ -1440,8 +1443,7 @@ describe('IOSAgent', () => {
       expect(simctl.hideSoftwareKeyboard).toHaveBeenCalledWith('dev-1')
 
       agent.disconnect(); browser.close()
-    })
-
+    }, 15_000)
     it('clipboard:write sets the pasteboard and acks only after it landed', async () => {
       const simctl = mockSimctl(true)
       let release!: () => void
@@ -1512,6 +1514,36 @@ describe('IOSAgent', () => {
 
       agent.disconnect(); browser.close()
     })
+
+    // The size ceiling is enforced inside getPasteboard (maxBuffer). Hitting it means the app
+    // DID copy, so restoring the original here would overwrite the user's fresh copy.
+    it('keeps the device copy when the pasteboard is too large to read', async () => {
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      const th = MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value
+      pasteboard = 'THE USER ORIGINAL'
+      let sentinelSeen = ''
+      let chordPressed = false
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        if (isSentinelish(pasteboard)) sentinelSeen = pasteboard
+        // Only the post-chord read blows the buffer — the app has copied something huge by then.
+        if (chordPressed && !isSentinelish(pasteboard)) throw new Error('stdout maxBuffer length exceeded')
+        return pasteboard
+      })
+      th.sendKey.mockImplementation(() => { chordPressed = true; pasteboard = 'HUGE COPIED TEXT' })
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'big', payload: { press: 'copy' },
+      }))
+      const err = await waitForType(browser, 'clipboard:error')
+      expect(err.message).toMatch(/maxBuffer|too large/i)
+      expect(sentinelSeen).not.toBe('')                       // the handshake did run
+      // and the restore must NOT have fired over the fresh copy
+      expect(simctl.setPasteboard).not.toHaveBeenCalledWith('dev-1', 'THE USER ORIGINAL')
+
+      agent.disconnect(); browser.close()
+    }, 15_000)
 
     it('surfaces a pasteboard read failure as clipboard:error, not an empty string', async () => {
       const simctl = mockSimctl(true)

@@ -37,13 +37,14 @@ function langToKeyboard(lang: string): string {
 // device until it finishes, so "never returns" would leave the device clipboard destroyed.
 const CLIPBOARD_CMD_TIMEOUT_MS = 5_000
 
-// simctl errors are multi-line and their first line is Node's "Command failed: <abs path>",
-// which leaks the Xcode path and says nothing. Prefer the first line that is neither, since
-// this text ends up in a user-facing toast.
+// simctl failures reach a user-facing toast. Node's first line is "Command failed: <argv>",
+// which says nothing and echoes the device UDID, so prefer any other line. When there is none
+// (e.g. the timeout path, where stderr is empty) fall back to a plain description rather than
+// the argv line this exists to drop.
 function firstLine(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e)
   const lines = msg.split('\n').map((l) => l.trim()).filter(Boolean)
-  return lines.find((l) => !l.startsWith('Command failed:')) ?? lines[0] ?? msg
+  return lines.find((l) => !l.startsWith('Command failed:')) ?? 'the simulator did not respond'
 }
 import type { Device, DeviceStatus } from '@tapflowio/agent-core'
 import { defaultRunner, type SimctlRunner } from './simctl.js'
@@ -209,9 +210,10 @@ export class SimctlWrapper {
     }
   }
 
-  // Read the device pasteboard. Returned verbatim — no trim, since a trailing newline can
-  // be part of the copied text. `maxBuffer` bounds a hostile/huge pasteboard: exceeding it
-  // rejects rather than buffering unboundedly. simctl's own failures are noisy multi-line
+  // Read the device pasteboard. Returned verbatim — no trim, since a trailing newline can be
+  // part of the copied text. `maxBuffer` is where the clipboard size ceiling is actually
+  // enforced for iOS: exceeding it rejects rather than buffering unboundedly, so callers do
+  // not re-check the length (a second check there would be unreachable). simctl's own failures are noisy multi-line
   // strings that end up in a user-facing toast, so they are condensed here.
   async getPasteboard(deviceId: string): Promise<string> {
     try {

@@ -10,6 +10,9 @@ import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-c
 
 const logger = createLogger('ios-agent')
 
+// Typed so a typo cannot ship silently — the viewer gates the whole clipboard bridge on this.
+const AGENT_CAPABILITIES: AgentCapability[] = ['clipboard']
+
 // Cross-platform button name → iOS device-chrome button name. Chrome uses
 // hyphens and "power" (not "lock"); MCP's vocabulary uses underscores. Names
 // not listed here (incl. the raw chrome names the dashboard sends) pass through.
@@ -43,6 +46,7 @@ import { SimctlWrapper, isDeviceMissingError } from './SimctlWrapper.js'
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
+  type AgentCapability,
 } from '@tapflowio/agent-core'
 import { ScreenCaptureStreamer, type StreamFrame } from './ScreenCaptureStreamer.js'
 import { AudioCaptureStreamer, readSimVolume, applyGain } from './AudioCaptureStreamer.js'
@@ -199,7 +203,7 @@ export class IOSAgent implements DeviceAgent {
           platform: 'ios',
           // Lets a viewer tell a clipboard-capable agent from one that predates the
           // feature, instead of inferring it from silence. See agent-core AgentCapability.
-          capabilities: ['clipboard'],
+          capabilities: AGENT_CAPABILITIES,
           agentId: getMachineId(),
           agentName: os.hostname(),
           devices: devices.map((d) => ({
@@ -535,12 +539,6 @@ export class IOSAgent implements DeviceAgent {
       }
 
       this.startBinaryStream(state, streamWs)
-      // Warm the input channel now rather than on the first keypress: spawning touch-helper
-      // and letting it resolve its CoreSimulator symbols costs ~600ms, and paying that inside
-      // a clipboard copy pushes it past the browser's user-activation budget. Still lazy
-      // elsewhere (a boot-less session sets it up on first input), this just front-loads the
-      // common path. Fire-and-forget — it never gates the stream.
-      this.ensureTouchHelper(state)
       // Opt-in audio output: stand up the loopback server and start the whole-sim tap now. Best-effort
       // — never blocks/affects the video path.
       if (this.audioEnabled()) this.startAudioCapture(state, streamWs, deviceId)
@@ -955,17 +953,21 @@ export class IOSAgent implements DeviceAgent {
             state.touchHelper.sendKey(KEY_CODE_MAP[press === 'cut' ? 'KeyX' : 'KeyC'], MODIFIER_BITS['MetaLeft'])
             const deadline = Date.now() + COPY_DEADLINE_MS
             do {
-              const now = await this.simctl.getPasteboard(state.deviceId)
+              let now: string
+              try {
+                now = await this.simctl.getPasteboard(state.deviceId)
+              } catch (e) {
+                // The size ceiling is enforced by getPasteboard's maxBuffer, and hitting it
+                // means the app DID copy — we just cannot carry it. Mark the device as changed
+                // so the restore below is skipped: restoring here would overwrite the very text
+                // the user just copied. (Android reaches the same state by assigning `copied`
+                // before it throws.)
+                copied = ''
+                throw e
+              }
               // A sentinel is never a copy result — ours means "not yet", any other means a
               // concurrent operation slipped in and its marker must not be handed to the user.
-              if (!isSentinel(now)) {
-                copied = now
-                // Cap this direction too: clipboard JSON shares the socket with video.
-                if (clipboardByteLength(now) > MAX_CLIPBOARD_BYTES) {
-                  throw new PlatformError(`The device clipboard is too large to send (max ${Math.floor(MAX_CLIPBOARD_BYTES / 1024)} KB)`)
-                }
-                return now
-              }
+              if (!isSentinel(now)) { copied = now; return now }
               await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
             } while (Date.now() < deadline)
             throw new PlatformError('The device did not copy anything — is something selected?')
