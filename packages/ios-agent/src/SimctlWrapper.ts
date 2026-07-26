@@ -33,8 +33,14 @@ function langToKeyboard(lang: string): string {
 }
 
 // Clipboard payload ceiling, both directions. Large text shares the WebSocket with video,
-// so an unbounded payload would stall the stream on backpressure.
+// so an unbounded payload would stall the stream on backpressure. Measured in UTF-8 bytes —
+// counting UTF-16 code units would let ~4x that through for emoji-heavy text.
 export const MAX_CLIPBOARD_BYTES = 1024 * 1024
+export const clipboardByteLength = (text: string): number => Buffer.byteLength(text, 'utf8')
+
+// A hung pasteboard call must not strand the caller: the read path holds a sentinel on the
+// device until it finishes, so "never returns" would leave the device clipboard destroyed.
+const CLIPBOARD_CMD_TIMEOUT_MS = 5_000
 
 // simctl errors are multi-line and their first line is Node's "Command failed: <abs path>",
 // which leaks the Xcode path and says nothing. Prefer the first line that is neither, since
@@ -175,16 +181,37 @@ export class SimctlWrapper {
   // doesn't carry — same exception as the osascript call in boot(). Used by
   // IOSAgent for input:type (pbcopy → Cmd+V paste).
   async setPasteboard(deviceId: string, text: string): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn('xcrun', ['simctl', 'pbcopy', deviceId])
-      proc.on('error', reject)
-      // stdin can emit its own 'error' if the spawn fails mid-write — an
-      // unhandled stream 'error' would crash the agent, so reject instead.
-      proc.stdin.on('error', reject)
-      proc.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`simctl pbcopy exited ${code}`))))
-      proc.stdin.write(text)
-      proc.stdin.end()
-    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn('xcrun', ['simctl', 'pbcopy', deviceId])
+        let stderr = ''
+        // Bounded for the same reason as the read: the clipboard bridge cannot be left hanging
+        // with a sentinel on the device.
+        const timer = setTimeout(() => {
+          proc.kill('SIGKILL')
+          reject(new Error('simctl pbcopy timed out'))
+        }, CLIPBOARD_CMD_TIMEOUT_MS)
+        const done = (e?: Error) => {
+          clearTimeout(timer)
+          if (e) reject(e)
+          else resolve()
+        }
+        proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+        proc.on('error', done)
+        // stdin can emit its own 'error' if the spawn fails mid-write — an
+        // unhandled stream 'error' would crash the agent, so reject instead.
+        proc.stdin.on('error', done)
+        proc.on('close', (code) => done(
+          code === 0 ? undefined : new Error(stderr.trim() || `simctl pbcopy exited ${code}`),
+        ))
+        proc.stdin.write(text)
+        proc.stdin.end()
+      })
+    } catch (e) {
+      // Same reasoning as getPasteboard: this reaches a user-facing toast, and the raw text is
+      // multi-line and embeds the absolute Xcode path.
+      throw new PlatformError(`Could not write the device clipboard: ${firstLine(e)}`)
+    }
   }
 
   // Read the device pasteboard. Returned verbatim — no trim, since a trailing newline can
@@ -194,7 +221,7 @@ export class SimctlWrapper {
   async getPasteboard(deviceId: string): Promise<string> {
     try {
       const { stdout } = await execFileAsync('xcrun', ['simctl', 'pbpaste', deviceId], {
-        maxBuffer: MAX_CLIPBOARD_BYTES, encoding: 'utf-8',
+        maxBuffer: MAX_CLIPBOARD_BYTES, encoding: 'utf-8', timeout: CLIPBOARD_CMD_TIMEOUT_MS,
       })
       return stdout
     } catch (e) {

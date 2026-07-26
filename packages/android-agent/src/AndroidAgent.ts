@@ -194,6 +194,11 @@ const COPY_DEADLINE_MS = 2_000
 const WRITE_DEADLINE_MS = 1_000
 // gRPC calls are cheap compared to simctl, so pace the poll instead of spinning on it.
 const CLIPBOARD_POLL_MS = 20
+// Marker parked on the device while the read waits for the copy. Must be recognisable so two
+// overlapping reads cannot hand each other's marker back as if it were the user's text.
+const SENTINEL_PREFIX = '\u200Btapflow-clipboard-'
+const isSentinel = (v: string): boolean => v.startsWith(SENTINEL_PREFIX)
+const clipboardByteLength = (text: string): number => Buffer.byteLength(text, 'utf8')
 
 export class AndroidAgent implements DeviceAgent {
   private readonly adb: AdbWrapper
@@ -457,6 +462,18 @@ export class AndroidAgent implements DeviceAgent {
     if (state.grpcClient) return state.grpcClient
     if (state.scrcpySession) return state.scrcpySession.control
     return null
+  }
+
+  // Clipboard operations park a sentinel on the device, so two must never interleave on the
+  // same device — each would read the other's marker instead of the real clipboard. Keyed by
+  // device: several sessions (and MCP) can address the same emulator.
+  private clipboardQueue = new Map<string, Promise<unknown>>()
+
+  private runExclusively<T>(deviceId: string, fn: () => Promise<T>): Promise<T> {
+    const next = (this.clipboardQueue.get(deviceId) ?? Promise.resolve()).then(fn, fn)
+    // Park a non-rejecting tail so one failure cannot poison the queue for later callers.
+    this.clipboardQueue.set(deviceId, next.then(() => {}, () => {}))
+    return next
   }
 
   // Fire-and-forget a pointer call: gRPC methods are async (swallow rejection), scrcpy sync (no-op).
@@ -1171,16 +1188,21 @@ export class AndroidAgent implements DeviceAgent {
             // it to change. A fixed delay can only guess whether the app has copied yet, and
             // guessing wrong hands back the PREVIOUS clipboard with no error. The sentinel also
             // covers re-copying identical text, where a plain value-change watch never fires.
-            const before = await client.getClipboard().catch(() => '')
-            const sentinel = `\u200Btapflow-clipboard-${randomUUID()}`
-            await client.setClipboard(sentinel)
+            const raw = await client.getClipboard().catch(() => '')
+            const before = isSentinel(raw) ? '' : raw
+            const sentinel = `${SENTINEL_PREFIX}${randomUUID()}`
             let copied: string | null = null
             try {
+              // Inside the try: setClipboard only schedules the change, so a rejection can
+              // still leave it applied — the restore below has to run either way.
+              await client.setClipboard(sentinel)
               await this.adb.sendKeyEvent(serial, press === 'cut' ? 'KEYCODE_CUT' : 'KEYCODE_COPY')
               const deadline = Date.now() + COPY_DEADLINE_MS
               do {
                 const now = await client.getClipboard()
-                if (now !== sentinel) { copied = now; return now }
+                // A sentinel is never a copy result: ours means "not yet", another one means a
+                // concurrent operation slipped in and must not be handed to the user.
+                if (!isSentinel(now)) { copied = now; return now }
                 await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
               } while (Date.now() < deadline)
               throw new PlatformError('The device did not copy anything — is something selected?')
@@ -1189,12 +1211,12 @@ export class AndroidAgent implements DeviceAgent {
               if (copied === null) await client.setClipboard(before).catch(() => {})
             }
           }
-          read()
+          this.runExclusively(state.deviceId, read)
             .then((text) => this.ws?.send(JSON.stringify({ type: 'clipboard:data', sessionId, requestId, payload: { text } })))
             .catch(onError)
         } else {
           const { text, pasteAfter } = (msg.payload ?? {}) as { text?: string; pasteAfter?: boolean }
-          if ((text ?? '').length > MAX_CLIPBOARD_BYTES) {
+          if (clipboardByteLength(text ?? '') > MAX_CLIPBOARD_BYTES) {
             fail(`Clipboard is too large (max ${Math.floor(MAX_CLIPBOARD_BYTES / 1024)} KB)`)
             break
           }
@@ -1213,7 +1235,7 @@ export class AndroidAgent implements DeviceAgent {
             await this.adb.sendKeyEvent(serial, 'KEYCODE_PASTE')
           }
           // Ack only once the write (and the paste, when asked for) actually landed.
-          write()
+          this.runExclusively(state.deviceId, write)
             .then(() => this.ws?.send(JSON.stringify({ type: 'clipboard:write-done', sessionId, requestId })))
             .catch(onError)
         }

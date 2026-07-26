@@ -38,11 +38,34 @@ const pastes = (text: string) => act(() => {
 })
 
 describe('useClipboardBridge', () => {
-  let execCommand: ReturnType<typeof vi.fn>
+  // Captures what was handed to navigator.clipboard.write so a test can await the value the
+  // promise-backed ClipboardItem eventually resolves to.
+  let written: Array<Promise<string>>
+  let writeCalls: number
+
+  const secureContext = (on: boolean) =>
+    Object.defineProperty(window, 'isSecureContext', { value: on, writable: true, configurable: true })
 
   beforeEach(() => {
-    execCommand = vi.fn().mockReturnValue(true)
-    Object.defineProperty(document, 'execCommand', { value: execCommand, writable: true, configurable: true })
+    written = []
+    writeCalls = 0
+    secureContext(true)
+    // jsdom ships neither of these.
+    ;(globalThis as unknown as { ClipboardItem: unknown }).ClipboardItem =
+      class { constructor(public items: Record<string, Promise<Blob>>) {} }
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        write: vi.fn(async (items: Array<{ items: Record<string, Promise<Blob>> }>) => {
+          writeCalls++
+          const blob = items[0].items['text/plain']
+          const text = blob.then((b) => b.text())
+          void text.catch(() => {})   // tests opt in to the rejection; don't leak it
+          written.push(text)
+          await blob
+        }),
+      },
+    })
   })
 
   afterEach(() => { vi.restoreAllMocks() })
@@ -65,39 +88,49 @@ describe('useClipboardBridge', () => {
     expect((sent[0].payload as { press: string }).press).toBe('cut')
   })
 
-  it('writes the returned text to the user clipboard', async () => {
+  // The claim goes out inside the keydown, before the device has answered — that is what keeps
+  // the write inside the user activation while the value arrives ~780ms later.
+  it('claims the clipboard up front and fills it when the device answers', async () => {
     const { reply, errors } = setup()
     press('KeyC')
-    await waitFor(() => expect(execCommand).not.toHaveBeenCalled())
-    reply({ type: 'clipboard:data', payload: { text: '한글 テスト 🎉' } }, 'clipboard:read')
+    await waitFor(() => expect(writeCalls).toBe(1))
 
-    await waitFor(() => expect(execCommand).toHaveBeenCalledWith('copy'))
+    reply({ type: 'clipboard:data', payload: { text: '한글 テスト 🎉' } }, 'clipboard:read')
+    await expect(written[0]).resolves.toBe('한글 テスト 🎉')
     expect(errors).toEqual([])
   })
 
-  // Safari loses user activation past ~500ms, so a late reply must not be written — it would
-  // silently no-op while the user believes the copy worked.
-  it('gives up when the agent misses the round-trip budget', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
+  // Plain-HTTP LAN: no promise-backed write exists and execCommand cannot bridge a ~780ms
+  // round trip. Say so rather than fail silently — and still copy on the device.
+  it('reports the HTTPS requirement instead of failing silently on plain HTTP', async () => {
+    secureContext(false)
+    const { sent, chords, errors } = setup()
+    press('KeyC')
+    await waitFor(() => expect(errors.length).toBe(1))
+    expect(errors[0]).toMatch(/HTTPS/i)
+    expect(chords).toEqual([['KeyC', 0x08]])
+    expect(sent).toEqual([])
+  })
+
+  it('does not overwrite the clipboard when the device clipboard is empty', async () => {
     const { reply, errors } = setup()
     press('KeyC')
-    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
-
-    await waitFor(() => expect(errors.length).toBe(1))
-    expect(errors[0]).toMatch(/again/i)
-
-    reply({ type: 'clipboard:data', payload: { text: 'too late' } }, 'clipboard:read')
-    expect(execCommand).not.toHaveBeenCalled()
-    vi.useRealTimers()
+    await waitFor(() => expect(writeCalls).toBe(1))
+    const claim = written[0].catch(() => 'cancelled')
+    reply({ type: 'clipboard:data', payload: { text: '' } }, 'clipboard:read')
+    await expect(claim).resolves.toBe('cancelled')
+    expect(errors).toEqual([])
   })
+
 
   it('surfaces an agent-side error instead of writing', async () => {
     const { reply, errors } = setup()
     press('KeyC')
+    const claim = written[0].catch(() => 'cancelled')
     reply({ type: 'clipboard:error', message: 'Clipboard needs the emulator gRPC backend' }, 'clipboard:read')
 
     await waitFor(() => expect(errors[0]).toMatch(/gRPC/i))
-    expect(execCommand).not.toHaveBeenCalled()
+    await expect(claim).resolves.toBe('cancelled')
   })
 
   // The bridge must never make copy worse than it was. On an explicit failure the chord still
@@ -122,27 +155,12 @@ describe('useClipboardBridge', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const { chords, errors } = setup()
     press('KeyC')
-    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_500) })
     await waitFor(() => expect(errors.length).toBe(1))
     expect(chords).toEqual([])
     vi.useRealTimers()
   })
 
-  // A reply that misses the budget cannot be written (the activation is gone), so it is kept
-  // for the next press — which is exactly what the user was told to do.
-  it('stashes a late value and writes it on the next press', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const { reply, errors } = setup()
-    press('KeyC')
-    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
-    await waitFor(() => expect(errors.length).toBe(1))
-
-    reply({ type: 'clipboard:data', payload: { text: 'arrived late' } }, 'clipboard:read')
-    vi.useRealTimers()
-
-    press('KeyC')
-    await waitFor(() => expect(execCommand).toHaveBeenCalledWith('copy'))
-  })
 
   // A backend with no clipboard channel answers every press identically; one toast is
   // information, one per keypress is noise.
@@ -192,7 +210,7 @@ describe('useClipboardBridge', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const { chords } = setup()
     pastes('slow one')
-    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_500) })
     expect(chords).toEqual([])
     vi.useRealTimers()
   })

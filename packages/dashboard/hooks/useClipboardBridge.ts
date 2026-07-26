@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { MutableRefObject } from 'react'
 
 export interface ClipboardBridgeMessage {
@@ -22,36 +22,39 @@ interface Options {
   onError?: (message: string) => void
 }
 
-// Safari drops user activation for execCommand somewhere between 500ms and 1s (measured:
-// 500ms works, 1000ms does not — while userActivation.isActive still reads true, so it
-// cannot be trusted). Budget the round trip well inside that, and give up rather than fire
-// a call we know will silently fail.
-const ROUND_TRIP_BUDGET_MS = 400
+// How long to wait for the agent before telling the user it did not answer. This is no longer
+// tied to a user-activation window: the clipboard is claimed up front and filled late (see
+// claimClipboard), so the only thing this bounds is how long a silent failure can look busy.
+const ROUND_TRIP_BUDGET_MS = 3_000
 
 // The device chord is always the Cmd/meta one regardless of what the viewer pressed: iOS
 // only understands Cmd+C, and Android treats meta and ctrl alike. A Windows viewer pressing
 // Ctrl+C must still send Cmd+C to the device.
 const META = 0x08
 
-/** Write to the user's OS clipboard. Prefers the async API on secure contexts and falls
- *  back to execCommand, which is deprecated but the only path that works on plain-HTTP LAN. */
-async function writeToUserClipboard(text: string): Promise<boolean> {
-  if (window.isSecureContext && navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text)
-      return true
-    } catch { /* fall through — permission denied or document not focused */ }
-  }
-  const ta = document.createElement('textarea')
-  ta.value = text
-  ta.setAttribute('readonly', '')
-  ta.style.cssText = 'position:fixed;top:-1000px;opacity:0'
-  document.body.appendChild(ta)
-  ta.select()
-  let ok = false
-  try { ok = document.execCommand('copy') } catch { ok = false }
-  document.body.removeChild(ta)
-  return ok
+/** True when the browser can write the clipboard from a value that arrives later. */
+export function canWriteClipboardLate(): boolean {
+  return window.isSecureContext && typeof ClipboardItem !== 'undefined' && !!navigator.clipboard?.write
+}
+
+/**
+ * Claim the clipboard NOW, fill it when the device answers.
+ *
+ * `navigator.clipboard.write()` is called synchronously inside the keydown handler, holding a
+ * ClipboardItem whose payload is still a pending promise. Both engines honour that: measured on
+ * a secure context, the promise may settle 6s later and the write still lands. Compare
+ * `writeText` after the fact — Safari rejects it past ~1.5s (NotAllowedError) — and execCommand,
+ * which needs the value synchronously and so cannot express this at all.
+ *
+ * This is what makes a one-press copy possible: the device round trip (~780ms, and it must
+ * *prove* the copy landed) no longer has to fit inside a user-activation budget.
+ */
+/** Cancelling our own claim (nothing to copy, device errored) is not a browser failure. */
+class ClaimCancelled extends Error {}
+
+function claimClipboard(pending: Promise<string>): Promise<void> {
+  const blob = pending.then((text) => new Blob([text], { type: 'text/plain' }))
+  return navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })])
 }
 
 // crypto.randomUUID is secure-context only and LAN deployments are plain HTTP, so build the
@@ -82,10 +85,6 @@ export function isBridgedChord(
 const MAX_CLIPBOARD_BYTES = 1024 * 1024
 const byteLength = (s: string): number => new TextEncoder().encode(s).length
 
-// How long a value captured after a missed budget stays usable on the next press. Long enough
-// for "press again", short enough that it cannot be mistaken for a later, different selection.
-const STASH_TTL_MS = 10_000
-
 /** Is the user selecting text in the dashboard itself rather than driving the device? */
 function hasDocumentSelection(): boolean {
   const sel = window.getSelection()
@@ -101,8 +100,9 @@ function inTextField(): boolean {
  * Bridges the viewer's copy/cut/paste chords to the device clipboard.
  *
  * Copy cannot be served from the browser's `copy` event — that handler needs its data
- * synchronously while the agent round trip is async — so the chord is intercepted in keydown
- * and the value is written when it comes back, inside the activation budget above.
+ * synchronously while the agent round trip is async. Instead the chord is taken in keydown and
+ * the clipboard is *claimed* there (see claimClipboard), then filled once the device answers.
+ * That needs a secure context; on plain HTTP the copy stays on the device and we say so.
  *
  * The agent presses the device-side chord, not this hook: only the agent knows when the key
  * actually lands (a visible software keyboard makes it await hideSoftwareKeyboard first), and
@@ -111,10 +111,8 @@ function inTextField(): boolean {
 export function useClipboardBridge({ sessionId, send, active, handlerRef, sendChord, onError }: Options) {
   const pending = useRef(new Map<string, (msg: ClipboardBridgeMessage) => void>())
   const lastError = useRef<string | null>(null)
-  // Value that arrived after its request's budget expired, kept for the user's next press.
-  const stashed = useRef<{ text: string; at: number } | null>(null)
   const onErrorRef = useRef(onError)
-  onErrorRef.current = onError
+  useLayoutEffect(() => { onErrorRef.current = onError })
 
   // Backends without a clipboard channel (Android real devices) answer every single press
   // with the same error; a toast per keypress is noise, so only the first one shows.
@@ -124,31 +122,16 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
     onErrorRef.current?.(message)
   }, [])
 
-  const stash = useCallback((text: string) => { stashed.current = { text, at: Date.now() } }, [])
-  const takeStash = useCallback((): string | null => {
-    const s = stashed.current
-    stashed.current = null
-    return s && Date.now() - s.at < STASH_TTL_MS ? s.text : null
-  }, [])
-
   useEffect(() => {
     handlerRef.current = (msg) => {
       if (!msg.requestId) return
       const resolve = pending.current.get(msg.requestId)
-      if (!resolve) {
-        // Its budget already expired, so it cannot be written now (the user activation is
-        // gone). Keep it for the next press instead of dropping the work on the floor.
-        if (msg.type === 'clipboard:data') {
-          const { text } = (msg.payload ?? {}) as { text?: string }
-          if (text) stash(text)
-        }
-        return
-      }
+      if (!resolve) return    // already settled or abandoned
       pending.current.delete(msg.requestId)
       resolve(msg)
     }
     return () => { handlerRef.current = undefined }
-  }, [handlerRef, stash])
+  }, [handlerRef])
 
   // Resolves with the reply, or null if the budget ran out. A late reply is dropped by the
   // handler above rather than acted on, so a slow agent can never write a stale value.
@@ -178,24 +161,38 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
       // Held keys repeat on Windows/Linux; each repeat would spawn another device round trip.
       if (e.repeat) return
 
-      // A value the device sent after a previous press missed the budget. The user was told to
-      // press again, and this is that press — write it while the activation is fresh. Bounded by
-      // age so an old capture can never masquerade as the current selection.
-      const stashed = takeStash()
-      if (stashed !== null) {
-        lastError.current = null
-        if (!(await writeToUserClipboard(stashed))) report('Your browser blocked the clipboard write')
+      // Proving a copy landed on the device takes ~780ms, which no plain-HTTP path can bridge:
+      // execCommand needs the value synchronously. Say so instead of failing silently, and
+      // still press the chord so the copy lands on the DEVICE's own clipboard.
+      if (!canWriteClipboardLate()) {
+        sendChord(isCut ? 'KeyX' : 'KeyC', META)
+        report('Copied on the device. Serving the dashboard over HTTPS also brings it to your clipboard.')
         return
       }
 
+      // Claim the clipboard inside this keydown and let the device fill it. Rejecting the
+      // pending promise cancels the claim cleanly — the OS clipboard is left untouched.
+      let settle!: (text: string) => void
+      let fail!: (e: Error) => void
+      const value = new Promise<string>((res, rej) => { settle = res; fail = rej })
+      // The claim chain below consumes this, but the bare promise also needs a handler or a
+      // cancellation surfaces as an unhandled rejection.
+      void value.catch(() => {})
+      const claimed = claimClipboard(value).catch((e: unknown) => {
+        if (e instanceof ClaimCancelled) return   // we released it on purpose; already reported
+        report(e instanceof Error && e.name === 'NotAllowedError'
+          ? 'Your browser blocked the clipboard write'
+          : 'Could not write to your clipboard')
+      })
+
       const reply = await request('clipboard:read', { press: isCut ? 'cut' : 'copy' })
       if (!reply) {
-        // No answer inside the budget. The agent is still working and its late reply will be
-        // stashed. Do NOT press the chord here — the agent already pressed it.
-        report('Still copying — press again in a moment')
+        fail(new ClaimCancelled('timeout'))
+        report('The device did not answer — press again')
         return
       }
       if (reply.type === 'clipboard:error') {
+        fail(new ClaimCancelled(reply.message ?? 'read failed'))
         report(reply.message ?? 'Clipboard read failed')
         // Bridge unavailable (old agent, backend without a clipboard channel): press the chord
         // so the copy at least lands on the DEVICE's own clipboard, as it did before the bridge.
@@ -204,11 +201,11 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
       }
       const { text } = (reply.payload ?? {}) as { text?: string }
       lastError.current = null
-      if (!text) return   // an empty device clipboard is a fact, not a failure
-      if (!(await writeToUserClipboard(text))) {
-        stash(text)
-        report('Copied on the device — press again to put it on your clipboard')
-      }
+      // An empty device clipboard is a fact, not a failure — but do not overwrite the user's
+      // clipboard with nothing.
+      if (!text) { fail(new ClaimCancelled('empty')); return }
+      settle(text)
+      await claimed
     }
 
     const onPaste = (e: ClipboardEvent) => {
@@ -236,5 +233,5 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
       document.removeEventListener('keydown', onKeyDown)
       document.removeEventListener('paste', onPaste)
     }
-  }, [active, request, sendChord, report, stash, takeStash])
+  }, [active, request, sendChord, report])
 }
