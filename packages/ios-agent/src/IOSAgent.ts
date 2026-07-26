@@ -943,6 +943,15 @@ export class IOSAgent implements DeviceAgent {
             // Inside the try: if this rejects *after* the device applied it, the restore below
             // still runs. Outside, a leaked sentinel would sit on the device permanently.
             await this.simctl.setPasteboard(state.deviceId, sentinel)
+            // `pbcopy` exiting means the write was accepted, not that the pasteboard shows it
+            // yet. Pressing before it does lets the first poll read the PRE-sentinel value,
+            // decide it is not a sentinel, and return it as "what the app copied" — the exact
+            // staleness this whole mechanism exists to prevent. Mirrors the Android read path.
+            const applied = Date.now() + WRITE_DEADLINE_MS
+            while ((await this.simctl.getPasteboard(state.deviceId)) !== sentinel) {
+              if (Date.now() >= applied) throw new PlatformError('The device clipboard did not respond')
+              await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
+            }
             state.touchHelper.sendKey(KEY_CODE_MAP[press === 'cut' ? 'KeyX' : 'KeyC'], MODIFIER_BITS['MetaLeft'])
             const deadline = Date.now() + COPY_DEADLINE_MS
             do {
@@ -963,7 +972,17 @@ export class IOSAgent implements DeviceAgent {
           } finally {
             // Only restore when the copy never happened; otherwise this would overwrite the
             // value we just captured. A leaked sentinel would be worse than the original bug.
-            if (copied === null) await this.simctl.setPasteboard(state.deviceId, before).catch(() => {})
+            // Wait for the restore to be visible, not merely accepted: releasing the queue early
+            // lets the next operation read the sentinel as "the original", which then becomes ''
+            // and wipes the user's device clipboard. Mirrors the Android read path.
+            if (copied === null) {
+              await this.simctl.setPasteboard(state.deviceId, before).catch(() => {})
+              const restored = Date.now() + WRITE_DEADLINE_MS
+              while ((await this.simctl.getPasteboard(state.deviceId).catch(() => before)) !== before) {
+                if (Date.now() >= restored) break   // best effort; the error is already going out
+                await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
+              }
+            }
           }
         }
         this.runExclusively(state.deviceId, read)

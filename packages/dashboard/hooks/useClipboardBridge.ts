@@ -231,7 +231,9 @@ export function useClipboardBridge({ sessionId, send, active, supported, handler
         // plain chord at least pastes the device's own clipboard. A timeout means the agent is
         // still mid-write and will press paste itself — doing it here too pastes twice.
         if (!reply) { report('The device is taking too long — try again'); return }
-        sendChord('KeyV', META)
+        // Report only. A blind chord here goes through input:key, which bypasses the agent's
+        // per-device clipboard queue — and a concurrent read (another session, or MCP) may have
+        // its sentinel parked on the device, which the chord would paste into the app.
         report(reply.message ?? 'Clipboard write failed')
       })
     }

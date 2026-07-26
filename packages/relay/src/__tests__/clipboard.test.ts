@@ -64,6 +64,44 @@ describe('clipboard bridge relay routing', () => {
     return { agent, browser, sessionId }
   }
 
+  // The whole gate rests on this hop: an agent advertises what it implements, and the viewer
+  // is told before it sends anything. Without it the dashboard would be back to inferring
+  // support from silence, which cannot distinguish an old agent from a slow one.
+  it('echoes the agent capabilities on session:joined', async () => {
+    const agent = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(agent)
+    agent.send(JSON.stringify({
+      type: 'agent:register',
+      capabilities: ['clipboard'],
+      devices: [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }],
+    }))
+    const reply = await waitForType(agent, 'agent:registered')
+    const sessionId = reply.registeredSessions![0].sessionId
+
+    const browser = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(browser)
+    browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+    const joined = await waitForType(browser, 'session:joined')
+    expect((joined as unknown as { capabilities: string[] }).capabilities).toEqual(['clipboard'])
+
+    agent.close(); browser.close()
+  })
+
+  // An agent that predates the field omits it. Absent must mean "not supported", not "unknown" —
+  // that is what lets the viewer degrade deliberately instead of guessing.
+  it('reports an empty capability list for an agent that advertises none', async () => {
+    const { agent, browser, sessionId } = await setup()   // registers without capabilities
+    browser.close()
+
+    const b2 = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(b2)
+    b2.send(JSON.stringify({ type: 'session:start', sessionId }))
+    const joined = await waitForType(b2, 'session:joined')
+    expect((joined as unknown as { capabilities: string[] }).capabilities).toEqual([])
+
+    agent.close(); b2.close()
+  })
+
   it('forwards clipboard:read to the agent and clipboard:data back, preserving requestId', async () => {
     const { agent, browser, sessionId } = await setup()
 

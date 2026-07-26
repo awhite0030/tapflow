@@ -11,7 +11,6 @@ export type {
   AgentCapability,
 } from './types.js'
 export {
-  hasCapability,
   MAX_CLIPBOARD_BYTES,
   clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX,

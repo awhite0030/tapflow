@@ -216,11 +216,15 @@ describe('useClipboardBridge', () => {
     expect(chords).toEqual([['KeyV', 0x08]])
   })
 
-  it('falls back to the plain chord when the bridge write fails', async () => {
-    const { chords, reply } = setup()
+  // A blind chord goes through input:key, bypassing the agent's per-device clipboard queue —
+  // a concurrent read may have its sentinel parked on the device, which the chord would paste
+  // into the app under test. Report instead.
+  it('does not fire a blind chord when the bridge write fails', async () => {
+    const { chords, errors, reply } = setup()
     pastes('x')
     reply({ type: 'clipboard:error', message: 'agent offline' }, 'clipboard:write')
-    await waitFor(() => expect(chords).toEqual([['KeyV', 0x08]]))
+    await waitFor(() => expect(errors).toEqual(['agent offline']))
+    expect(chords).toEqual([])
   })
 
   // On a timeout the agent is still writing and will press paste itself once it lands —

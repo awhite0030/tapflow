@@ -71,15 +71,9 @@ export interface UIElement {
 // it, so `undefined`/absent means "not supported" — no version parsing, and nothing
 // has to be inferred from a timeout (guessing that way once produced a double paste
 // on a merely-slow agent, and a lost keystroke on an old one).
+// The dashboard cannot import from here (it has no agent-core dependency), so this stays a
+// plain string list on the wire rather than a helper nobody on the reading side can call.
 export type AgentCapability = 'clipboard'
-
-/** Does this agent advertise the capability? Absent list ⇒ pre-capability agent ⇒ false. */
-export function hasCapability(
-  capabilities: string[] | undefined,
-  capability: AgentCapability,
-): boolean {
-  return !!capabilities?.includes(capability)
-}
 
 // ── Clipboard bridge shared contract ────────────────────────────────────────
 // Both agents implement the same protocol, so the limits and the sentinel vocabulary

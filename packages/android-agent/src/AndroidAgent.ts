@@ -201,11 +201,16 @@ const CLIPBOARD_POLL_MS = 20
 // blanket AdbRunner timeout would break legitimately slow calls like app install), so bound it
 // here. The child process may outlive this — the point is to release the queue.
 function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>
   return Promise.race([
+    // The adb child is not killed — `input keyevent` is idempotent for our purposes and killing
+    // it mid-write could leave the guest in a worse state. What matters is releasing the section
+    // so one stuck call cannot wedge every later clipboard op on this device.
     work,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new PlatformError(`${what} timed out after ${ms}ms`)), ms)),
-  ])
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new PlatformError(`${what} timed out after ${ms}ms`)), ms)
+    }),
+  ]).finally(() => clearTimeout(timer))
 }
 const ADB_KEYEVENT_TIMEOUT_MS = 5_000
 

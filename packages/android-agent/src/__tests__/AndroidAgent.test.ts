@@ -1038,6 +1038,15 @@ describe('AndroidAgent', () => {
       beforeEach(() => { grpcClipboardText = ''; grpcClipboardError = null; grpcClipboardApplyDelayMs = 0 })
       afterEach(() => { grpcClipboardError = null; grpcClipboardApplyDelayMs = 0 })
 
+      // Same gate as iOS: the viewer only enables the bridge when this arrives.
+      it('advertises the clipboard capability all the way to the viewer', async () => {
+        browser = new WebSocket(`ws://localhost:${port}`)
+        await waitForOpen(browser)
+        browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+        const joined = await waitForType(browser, 'session:joined')
+        expect((joined as unknown as { capabilities: string[] }).capabilities).toContain('clipboard')
+      })
+
       it('clipboard:read returns the guest clipboard as clipboard:data', async () => {
         grpcClipboardText = '한글 テスト 🎉\nline2'
         await bootDevice()

@@ -271,7 +271,7 @@ export function AndroidViewer({
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)
     }
-  }, [keyboardActive, send, sessionId, handleScreenshot, handleRecordToggle, handleRotate])
+  }, [keyboardActive, clipboardSupported, send, sessionId, handleScreenshot, handleRecordToggle, handleRotate])
 
   useEffect(() => {
     if (!keyboardActive) return
