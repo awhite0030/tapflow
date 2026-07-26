@@ -1232,6 +1232,19 @@ describe('AndroidAgent', () => {
         expect(client.setClipboard).not.toHaveBeenCalled()
       })
 
+      // The press-less read forwarded whatever the guest held straight to the relay. iOS is
+      // bounded by getPasteboard's maxBuffer; Android had nothing, so a multi-MB guest
+      // clipboard could land on the socket the video stream shares.
+      it('caps a press-less read too, not just the sentinel path', async () => {
+        grpcClipboardText = 'x'.repeat(1024 * 1024 + 1)
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+
+        browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'cap' }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.message).toMatch(/too large/i)
+      })
+
       it('an empty clipboard is data, not an error', async () => {
         await bootDevice()
         await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })

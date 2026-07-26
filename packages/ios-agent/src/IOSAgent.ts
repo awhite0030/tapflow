@@ -606,6 +606,12 @@ export class IOSAgent implements DeviceAgent {
   }
 
   // Lazily set up the touch channel: a reconnect re-issues the session with touchHelper=null while the sim stays booted, so input self-heals without a fresh device:boot. Sync so a tap's start+end stay paired (async would drop touchEnd → stuck finger).
+  private ensureTouchHelper(state: DeviceState): void {
+    if (state.touchHelper) return
+    state.touchHelper = new TouchHelper(state.deviceId)
+    state.touchHelper.start()
+  }
+
   // Clipboard operations park a sentinel on the device, so two of them must never interleave
   // on the same device — the second would read the first's sentinel as "the original" and the
   // first would read the second's as "what the app copied". Keyed by device, not session:
@@ -617,12 +623,6 @@ export class IOSAgent implements DeviceAgent {
     // Park a non-rejecting tail so one failure cannot poison the queue for later callers.
     this.clipboardQueue.set(deviceId, next.then(() => {}, () => {}))
     return next
-  }
-
-  private ensureTouchHelper(state: DeviceState): void {
-    if (state.touchHelper) return
-    state.touchHelper = new TouchHelper(state.deviceId)
-    state.touchHelper.start()
   }
 
   // Ack a terminal input: input:done = dispatched to a booted device (not a landing guarantee — HID is fire-and-forget); input:error = no live channel / not booted. Off the sync inject path, so start/end pairing is unaffected.
