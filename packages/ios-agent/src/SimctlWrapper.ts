@@ -32,14 +32,17 @@ function langToKeyboard(lang: string): string {
   return LANG_KEYBOARD_MAP[code] ?? 'en_US@sw=QWERTY;hw=Automatic'
 }
 
-// Resolve simctl's absolute path once so latency-sensitive calls can skip the `xcrun`
-// lookup. Falls back to going through xcrun if the lookup itself fails.
-let simctlPathOnce: Promise<string | null> | null = null
-function resolveSimctl(args: string[]): Promise<[string, string[]]> {
-  simctlPathOnce ??= execFileAsync('xcrun', ['--find', 'simctl'])
-    .then(({ stdout }) => stdout.trim() || null)
-    .catch(() => null)
-  return simctlPathOnce.then((p) => (p ? [p, args] : ['xcrun', ['simctl', ...args]]))
+// Clipboard payload ceiling, both directions. Large text shares the WebSocket with video,
+// so an unbounded payload would stall the stream on backpressure.
+export const MAX_CLIPBOARD_BYTES = 1024 * 1024
+
+// simctl errors are multi-line and their first line is Node's "Command failed: <abs path>",
+// which leaks the Xcode path and says nothing. Prefer the first line that is neither, since
+// this text ends up in a user-facing toast.
+function firstLine(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e)
+  const lines = msg.split('\n').map((l) => l.trim()).filter(Boolean)
+  return lines.find((l) => !l.startsWith('Command failed:')) ?? lines[0] ?? msg
 }
 import type { Device, DeviceStatus } from '@tapflowio/agent-core'
 import { defaultRunner, type SimctlRunner } from './simctl.js'
@@ -184,16 +187,19 @@ export class SimctlWrapper {
     })
   }
 
-  // Read the device pasteboard. Not routed through SimctlRunner for the same reason as
-  // setPasteboard, and it deliberately spawns the resolved simctl binary instead of `xcrun`:
-  // the xcrun lookup costs ~150ms per call (measured 263ms vs 115ms), and this read has to
-  // land inside the browser's user-activation window (Safari's is ~500ms) for the copy
-  // shortcut to complete in one press. Output is returned verbatim — no trim, since a
-  // trailing newline can be part of the copied text.
+  // Read the device pasteboard. Returned verbatim — no trim, since a trailing newline can
+  // be part of the copied text. `maxBuffer` bounds a hostile/huge pasteboard: exceeding it
+  // rejects rather than buffering unboundedly. simctl's own failures are noisy multi-line
+  // strings that end up in a user-facing toast, so they are condensed here.
   async getPasteboard(deviceId: string): Promise<string> {
-    const [cmd, argv] = await resolveSimctl(['pbpaste', deviceId])
-    const { stdout } = await execFileAsync(cmd, argv, { maxBuffer: 8 * 1024 * 1024, encoding: 'utf-8' })
-    return stdout
+    try {
+      const { stdout } = await execFileAsync('xcrun', ['simctl', 'pbpaste', deviceId], {
+        maxBuffer: MAX_CLIPBOARD_BYTES, encoding: 'utf-8',
+      })
+      return stdout
+    } catch (e) {
+      throw new PlatformError(`Could not read the device clipboard: ${firstLine(e)}`)
+    }
   }
 
   async screenshot(format: 'png' | 'jpeg' = 'png'): Promise<Buffer> {

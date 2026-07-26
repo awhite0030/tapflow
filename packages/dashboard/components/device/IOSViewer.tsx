@@ -16,7 +16,7 @@ import { useDecoderStream } from '@/hooks/useDecoderStream';
 import type { BinaryFrameHandler } from '@/lib/envelope';
 import type { MutableRefObject } from 'react';
 import type { PerfHook } from '@/components/perf/types';
-import { useClipboardBridge, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
+import { useClipboardBridge, isBridgedChord, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
 import { toast } from 'sonner';
 
 const CURSOR_RING_R = 13;
@@ -288,7 +288,7 @@ export function IOSViewer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const sendChord = useCallback((code: 'KeyC' | 'KeyV', modifiers: number) => {
+  const sendChord = useCallback((code: 'KeyC' | 'KeyV' | 'KeyX', modifiers: number) => {
     send({ type: 'input:key', sessionId, payload: { code, modifiers } })
   }, [send, sessionId])
   useClipboardBridge({
@@ -314,9 +314,9 @@ export function IOSViewer({
       }
       if (!keyboardActive) return
       if (MODIFIER_CODES.has(e.code)) return
-      // The clipboard bridge owns the copy/paste chords — it presses them on the device
-      // itself, so forwarding here too would double-send.
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.code === 'KeyC' || e.code === 'KeyV')) return
+      // The clipboard bridge owns the copy/cut/paste chords — the agent presses them on
+      // the device itself, so forwarding here too would double-send.
+      if (isBridgedChord(e)) return
       e.preventDefault()
       const modifiers = (e.shiftKey ? 0x02 : 0) | (e.ctrlKey ? 0x01 : 0) | (e.metaKey ? 0x08 : 0)
       send({ type: 'input:key', sessionId, payload: { code: e.code, modifiers } })

@@ -39,7 +39,7 @@ import {
   sendAudioYieldingToVideo,
 } from '@tapflowio/agent-core/utils'
 import type { AudioFrame } from '@tapflowio/agent-core'
-import { SimctlWrapper, isDeviceMissingError } from './SimctlWrapper.js'
+import { SimctlWrapper, isDeviceMissingError, MAX_CLIPBOARD_BYTES } from './SimctlWrapper.js'
 import { ScreenCaptureStreamer, type StreamFrame } from './ScreenCaptureStreamer.js'
 import { AudioCaptureStreamer, readSimVolume, applyGain } from './AudioCaptureStreamer.js'
 import { ensureHelperApp, launchAudioHelper, isAudioSupported } from '@tapflowio/audiotap-helper'
@@ -49,6 +49,9 @@ import { TouchHelper } from './TouchHelper.js'
 import { XCUITreeReader } from './XCUITreeReader.js'
 import { DeviceChromeLoader, type ChromeData } from './DeviceChromeLoader.js'
 import { KEY_CODE_MAP, MODIFIER_BITS } from './KeyCodeMap.js'
+
+// Let the injected copy chord reach the foreground app before reading the pasteboard back.
+const COPY_SETTLE_MS = 120
 
 // whole-sim audio: how often to re-enumerate the simulator's process tree for new audio-producing
 // processes (launched apps, WebKit WebContent). Short enough that a tab's audio starts promptly,
@@ -865,8 +868,10 @@ export class IOSAgent implements DeviceAgent {
           })
         break
       }
-      // Clipboard bridge. Read/write only — pressing Cmd+C / Cmd+V stays with the viewer,
-      // so these compose with the existing input:key path instead of duplicating it.
+      // Clipboard bridge. The chord is pressed HERE rather than by the viewer: the browser
+      // cannot know when the key actually lands (a visible software keyboard makes this path
+      // await hideSoftwareKeyboard first), and reading too early returns the PREVIOUS
+      // pasteboard — a stale value the user would never notice.
       case 'clipboard:read': {
         const { requestId } = msg as unknown as { requestId?: string }
         const sessionId = msg.sessionId
@@ -875,7 +880,23 @@ export class IOSAgent implements DeviceAgent {
           this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message: 'No booted device' }))
           break
         }
-        this.simctl.getPasteboard(state.deviceId)
+        const { press } = (msg.payload ?? {}) as { press?: 'copy' | 'cut' }
+        const read = async (): Promise<string> => {
+          if (press) {
+            this.ensureTouchHelper(state)
+            // Without a helper the chord silently does nothing and the read below would hand
+            // back whatever was on the pasteboard before. Fail rather than return a stale value.
+            if (!state.touchHelper) throw new PlatformError('Cannot press copy — no input channel to the device')
+            if (state.softKeyboardVisible) {
+              state.softKeyboardVisible = false
+              await this.simctl.hideSoftwareKeyboard(state.deviceId).catch(() => {})
+            }
+            state.touchHelper.sendKey(KEY_CODE_MAP[press === 'cut' ? 'KeyX' : 'KeyC'], MODIFIER_BITS['MetaLeft'])
+            await new Promise((r) => setTimeout(r, COPY_SETTLE_MS))
+          }
+          return this.simctl.getPasteboard(state.deviceId)
+        }
+        read()
           .then((text) => this.ws?.send(JSON.stringify({ type: 'clipboard:data', sessionId, requestId, payload: { text } })))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
@@ -891,9 +912,28 @@ export class IOSAgent implements DeviceAgent {
           this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message: 'No booted device' }))
           break
         }
-        const { text } = (msg.payload ?? {}) as { text?: string }
-        // Ack only once the write landed — the caller sends Cmd+V on receiving it.
-        this.simctl.setPasteboard(state.deviceId, text ?? '')
+        const { text, pasteAfter } = (msg.payload ?? {}) as { text?: string; pasteAfter?: boolean }
+        if ((text ?? '').length > MAX_CLIPBOARD_BYTES) {
+          this.ws?.send(JSON.stringify({
+            type: 'clipboard:error', sessionId, requestId,
+            message: `Clipboard is too large (max ${Math.floor(MAX_CLIPBOARD_BYTES / 1024)} KB)`,
+          }))
+          break
+        }
+        const write = async (): Promise<void> => {
+          await this.simctl.setPasteboard(state.deviceId, text ?? '')
+          if (!pasteAfter) return
+          this.ensureTouchHelper(state)
+          if (!state.touchHelper) throw new PlatformError('Cannot press paste — no input channel to the device')
+          // Same guard as input:key — skipping it desyncs the hardware keyboard context.
+          if (state.softKeyboardVisible) {
+            state.softKeyboardVisible = false
+            await this.simctl.hideSoftwareKeyboard(state.deviceId).catch(() => {})
+          }
+          state.touchHelper.sendKey(KEY_CODE_MAP['KeyV'], MODIFIER_BITS['MetaLeft'])
+        }
+        // Ack only once the write (and the paste, when asked for) actually landed.
+        write()
           .then(() => this.ws?.send(JSON.stringify({ type: 'clipboard:write-done', sessionId, requestId })))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)

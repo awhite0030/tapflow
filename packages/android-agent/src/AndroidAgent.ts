@@ -182,6 +182,12 @@ export interface AndroidAgentOptions {
   handshakeTimeoutMs?: number
 }
 
+// Clipboard payload ceiling, both directions — large text shares the WebSocket with video,
+// so an unbounded payload would stall the stream on backpressure.
+const MAX_CLIPBOARD_BYTES = 1024 * 1024
+// Let the injected copy keyevent reach the foreground app before reading the clipboard back.
+const COPY_SETTLE_MS = 120
+
 export class AndroidAgent implements DeviceAgent {
   private readonly adb: AdbWrapper
   private readonly launcher: EmulatorLauncher
@@ -1130,34 +1136,52 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       // Clipboard bridge. Emulator-only: it rides the gRPC EmulatorController, since the
-      // AVD images have no `adb shell cmd clipboard`. On the scrcpy backend (real devices,
-      // and the gRPC fallback) it reports unsupported rather than doing nothing.
+      // AVD images have no `adb shell cmd clipboard`. The chord is pressed HERE, not by the
+      // viewer — the browser cannot know when the key lands, and reading too early returns
+      // the PREVIOUS clipboard, a stale value the user would never notice.
       case 'clipboard:read':
       case 'clipboard:write': {
         const { requestId } = msg as unknown as { requestId?: string }
         const sessionId = msg.sessionId
-        const client = this.deviceStates.get(sessionId!)?.grpcClient
-        if (!client) {
-          this.ws?.send(JSON.stringify({
-            type: 'clipboard:error', sessionId, requestId,
-            message: 'Clipboard is not supported on this backend (emulator gRPC only)',
-          }))
+        const state = this.deviceStates.get(sessionId!)
+        const serial = state ? this.adb.getSerial(state.deviceId) : undefined
+        const fail = (message: string) =>
+          this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message }))
+        // Distinguish the three ways this can be unavailable — they need different fixes.
+        if (!state || !serial) { fail('No booted device'); break }
+        if (!state.grpcClient) {
+          fail('Clipboard needs the emulator gRPC backend — it is not available on this device')
           break
         }
-        const fail = (e: unknown) => {
-          const message = e instanceof Error ? e.message : String(e)
-          this.ws?.send(JSON.stringify({ type: 'clipboard:error', sessionId, requestId, message }))
-        }
+        const client = state.grpcClient
+        const onError = (e: unknown) => fail(e instanceof Error ? e.message : String(e))
+
         if (msg.type === 'clipboard:read') {
-          client.getClipboard()
+          const { press } = (msg.payload ?? {}) as { press?: 'copy' | 'cut' }
+          const read = async (): Promise<string> => {
+            if (press) {
+              await this.adb.sendKeyEvent(serial, press === 'cut' ? 'KEYCODE_CUT' : 'KEYCODE_COPY')
+              await new Promise((r) => setTimeout(r, COPY_SETTLE_MS))
+            }
+            return client.getClipboard()
+          }
+          read()
             .then((text) => this.ws?.send(JSON.stringify({ type: 'clipboard:data', sessionId, requestId, payload: { text } })))
-            .catch(fail)
+            .catch(onError)
         } else {
-          const { text } = (msg.payload ?? {}) as { text?: string }
-          // Ack only once the write landed — the caller sends Cmd+V on receiving it.
-          client.setClipboard(text ?? '')
+          const { text, pasteAfter } = (msg.payload ?? {}) as { text?: string; pasteAfter?: boolean }
+          if ((text ?? '').length > MAX_CLIPBOARD_BYTES) {
+            fail(`Clipboard is too large (max ${Math.floor(MAX_CLIPBOARD_BYTES / 1024)} KB)`)
+            break
+          }
+          const write = async (): Promise<void> => {
+            await client.setClipboard(text ?? '')
+            if (pasteAfter) await this.adb.sendKeyEvent(serial, 'KEYCODE_PASTE')
+          }
+          // Ack only once the write (and the paste, when asked for) actually landed.
+          write()
             .then(() => this.ws?.send(JSON.stringify({ type: 'clipboard:write-done', sessionId, requestId })))
-            .catch(fail)
+            .catch(onError)
         }
         break
       }

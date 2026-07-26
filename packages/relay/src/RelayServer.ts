@@ -624,12 +624,22 @@ export class RelayServer {
       case 'input:type-error':
       case 'input:done':
       case 'input:error':
-      case 'clipboard:data':
-      case 'clipboard:write-done':
-      case 'clipboard:error':
       case 'keyboard:toggled': {
         const session = this.sessions.get(msg.sessionId!)
         if (session?.browserSocket?.readyState === WebSocket.OPEN) {
+          session.browserSocket.send(JSON.stringify(msg))
+        }
+        break
+      }
+      // Bound to the session's own agent socket, unlike the replies above: this payload
+      // lands on the viewer's host OS clipboard, so a second agent (another Mac on the
+      // same relay) must not be able to address someone else's session.
+      case 'clipboard:data':
+      case 'clipboard:write-done':
+      case 'clipboard:error': {
+        const session = this.sessions.get(msg.sessionId!)
+        if (session?.agentSocket !== ws) break
+        if (session.browserSocket?.readyState === WebSocket.OPEN) {
           session.browserSocket.send(JSON.stringify(msg))
         }
         break

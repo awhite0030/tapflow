@@ -167,21 +167,56 @@ describe('clipboard bridge relay routing', () => {
     browser.close()
   })
 
-  // clipboard:data carries the simulator's clipboard, so a browser must never be able
-  // to inject it — it is agent-authenticated, like ui:tree:response.
-  it('ignores clipboard:data sent by a browser socket', async () => {
+  // clipboard:data lands on the viewer's host OS clipboard, so injection is the thing
+  // to guard. Assert on what the VICTIM BROWSER receives — asserting that the agent
+  // socket saw nothing would pass even with the protection removed.
+  it('a browser socket cannot inject clipboard:data into its own viewer', async () => {
     const { agent, browser, sessionId } = await setup()
 
-    const agentSaw: string[] = []
-    agent.on('message', (d) => agentSaw.push((JSON.parse(d.toString()) as RelayMessage).type))
+    const got: RelayMessage[] = []
+    browser.on('message', (d) => got.push(JSON.parse(d.toString()) as RelayMessage))
+    const closed = new Promise<number>((r) => browser.on('close', (code) => r(code)))
 
     browser.send(JSON.stringify({
       type: 'clipboard:data', sessionId, requestId: 'spoof', payload: { text: 'injected' },
     }))
-    await new Promise((r) => setTimeout(r, 100))
-    expect(agentSaw).not.toContain('clipboard:data')
+    // an agent-only type from a browser role is a protocol violation → 1008
+    const code = await Promise.race([closed, new Promise<number>((r) => setTimeout(() => r(0), 1_000))])
+    expect(code).toBe(1008)
+    expect(got.filter((m) => m.type === 'clipboard:data')).toEqual([])
 
     agent.close()
-    browser.close()
+  })
+
+  // A second agent (another Mac on the same relay, or any holder of an agent PAT) must
+  // not be able to address a session it does not own — agents:list hands out every id.
+  it('another agent cannot inject clipboard:data into someone else\'s session', async () => {
+    const { agent, browser, sessionId } = await setup()
+
+    const rogue = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(rogue)
+    rogue.send(JSON.stringify({
+      type: 'agent:register',
+      devices: [{ id: 'rogue-1', name: 'Rogue', platform: 'ios', status: 'booted' }],
+    }))
+    await waitForType(rogue, 'agent:registered')
+
+    const got: RelayMessage[] = []
+    browser.on('message', (d) => got.push(JSON.parse(d.toString()) as RelayMessage))
+
+    rogue.send(JSON.stringify({
+      type: 'clipboard:data', sessionId, requestId: 'clip-1', payload: { text: 'ATTACKER' },
+    }))
+    await new Promise((r) => setTimeout(r, 200))
+    expect(got.filter((m) => m.type === 'clipboard:data')).toEqual([])
+
+    // and the session's own agent still gets through, so the guard is not just "drop everything"
+    agent.send(JSON.stringify({
+      type: 'clipboard:data', sessionId, requestId: 'clip-1', payload: { text: 'legit' },
+    }))
+    const data = await waitForType(browser, 'clipboard:data')
+    expect((data.payload as { text: string }).text).toBe('legit')
+
+    rogue.close(); agent.close(); browser.close()
   })
 })
