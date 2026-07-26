@@ -77,6 +77,15 @@ export function isBridgedChord(
   return !e.shiftKey && (e.code === 'KeyC' || e.code === 'KeyX')
 }
 
+// Payload ceiling, measured in UTF-8 bytes to match the agents (a counted-by-code-unit cap
+// would let ~4MB of emoji through a limit that exists to protect the shared video socket).
+const MAX_CLIPBOARD_BYTES = 1024 * 1024
+const byteLength = (s: string): number => new TextEncoder().encode(s).length
+
+// How long a value captured after a missed budget stays usable on the next press. Long enough
+// for "press again", short enough that it cannot be mistaken for a later, different selection.
+const STASH_TTL_MS = 10_000
+
 /** Is the user selecting text in the dashboard itself rather than driving the device? */
 function hasDocumentSelection(): boolean {
   const sel = window.getSelection()
@@ -102,6 +111,8 @@ function inTextField(): boolean {
 export function useClipboardBridge({ sessionId, send, active, handlerRef, sendChord, onError }: Options) {
   const pending = useRef(new Map<string, (msg: ClipboardBridgeMessage) => void>())
   const lastError = useRef<string | null>(null)
+  // Value that arrived after its request's budget expired, kept for the user's next press.
+  const stashed = useRef<{ text: string; at: number } | null>(null)
   const onErrorRef = useRef(onError)
   onErrorRef.current = onError
 
@@ -113,16 +124,31 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
     onErrorRef.current?.(message)
   }, [])
 
+  const stash = useCallback((text: string) => { stashed.current = { text, at: Date.now() } }, [])
+  const takeStash = useCallback((): string | null => {
+    const s = stashed.current
+    stashed.current = null
+    return s && Date.now() - s.at < STASH_TTL_MS ? s.text : null
+  }, [])
+
   useEffect(() => {
     handlerRef.current = (msg) => {
       if (!msg.requestId) return
       const resolve = pending.current.get(msg.requestId)
-      if (!resolve) return          // already timed out — its budget was spent
+      if (!resolve) {
+        // Its budget already expired, so it cannot be written now (the user activation is
+        // gone). Keep it for the next press instead of dropping the work on the floor.
+        if (msg.type === 'clipboard:data') {
+          const { text } = (msg.payload ?? {}) as { text?: string }
+          if (text) stash(text)
+        }
+        return
+      }
       pending.current.delete(msg.requestId)
       resolve(msg)
     }
     return () => { handlerRef.current = undefined }
-  }, [handlerRef])
+  }, [handlerRef, stash])
 
   // Resolves with the reply, or null if the budget ran out. A late reply is dropped by the
   // handler above rather than acted on, so a slow agent can never write a stale value.
@@ -152,13 +178,35 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
       // Held keys repeat on Windows/Linux; each repeat would spawn another device round trip.
       if (e.repeat) return
 
+      // A value the device sent after a previous press missed the budget. The user was told to
+      // press again, and this is that press — write it while the activation is fresh. Bounded by
+      // age so an old capture can never masquerade as the current selection.
+      const stashed = takeStash()
+      if (stashed !== null) {
+        lastError.current = null
+        if (!(await writeToUserClipboard(stashed))) report('Your browser blocked the clipboard write')
+        return
+      }
+
       const reply = await request('clipboard:read', { press: isCut ? 'cut' : 'copy' })
-      if (!reply) { report('Device did not answer in time — press again'); return }
-      if (reply.type === 'clipboard:error') { report(reply.message ?? 'Clipboard read failed'); return }
+      if (!reply) {
+        // No answer inside the budget. The agent is still working and its late reply will be
+        // stashed. Do NOT press the chord here — the agent already pressed it.
+        report('Still copying — press again in a moment')
+        return
+      }
+      if (reply.type === 'clipboard:error') {
+        report(reply.message ?? 'Clipboard read failed')
+        // Bridge unavailable (old agent, backend without a clipboard channel): press the chord
+        // so the copy at least lands on the DEVICE's own clipboard, as it did before the bridge.
+        sendChord(isCut ? 'KeyX' : 'KeyC', META)
+        return
+      }
       const { text } = (reply.payload ?? {}) as { text?: string }
-      if (!text) { report('Nothing was copied on the device'); return }
       lastError.current = null
+      if (!text) return   // an empty device clipboard is a fact, not a failure
       if (!(await writeToUserClipboard(text))) {
+        stash(text)
         report('Copied on the device — press again to put it on your clipboard')
       }
     }
@@ -170,10 +218,13 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
       // No text to send (an image or file is on the clipboard, or it is empty): fall back to
       // the plain chord so the DEVICE's own clipboard still pastes, as it did before this hook.
       if (!text) { sendChord('KeyV', META); return }
+      if (byteLength(text) > MAX_CLIPBOARD_BYTES) { report('That text is too large to send to the device'); return }
       request('clipboard:write', { text, pasteAfter: true }).then((reply) => {
         if (reply?.type === 'clipboard:write-done') { lastError.current = null; return }
-        // Bridge unavailable (old agent, unsupported backend, timeout): press paste anyway so
-        // the device pastes its own clipboard — never worse than before the bridge existed.
+        // On an explicit error nothing was pasted, so press the chord to at least paste the
+        // device's own clipboard. On a TIMEOUT the agent is still mid-write and presses paste
+        // itself once it lands — pressing here too would paste twice.
+        if (!reply) return
         sendChord('KeyV', META)
         if (reply?.type === 'clipboard:error') report(reply.message ?? 'Clipboard write failed')
       })
@@ -185,5 +236,5 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
       document.removeEventListener('keydown', onKeyDown)
       document.removeEventListener('paste', onPaste)
     }
-  }, [active, request, sendChord, report])
+  }, [active, request, sendChord, report, stash, takeStash])
 }

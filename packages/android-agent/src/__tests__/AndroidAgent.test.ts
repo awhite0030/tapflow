@@ -1045,25 +1045,62 @@ describe('AndroidAgent', () => {
 
       // The agent owns the chord: the browser cannot know when the keyevent lands, and
       // reading before it does returns the PREVIOUS clipboard.
-      it('press:copy sends KEYCODE_COPY and only then reads', async () => {
+      it('press:copy sends KEYCODE_COPY before it reads', async () => {
         await bootDevice()
         await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
         const order: string[] = []
-        vi.spyOn(adb, 'sendKeyEvent').mockImplementation(async (_s, k) => { order.push(String(k)) })
+        // the guest "copies" when the keyevent lands
+        vi.spyOn(adb, 'sendKeyEvent').mockImplementation(async (_s, k) => {
+          order.push(String(k)); grpcClipboardText = 'copied'
+        })
         const client = getState().grpcClient as unknown as { getClipboard: ReturnType<typeof vi.fn> }
-        client.getClipboard.mockImplementation(async () => { order.push('read'); return 'copied' })
+        const realGet = client.getClipboard.getMockImplementation()!
+        client.getClipboard.mockImplementation(async () => { order.push('read'); return realGet() })
 
         browser.send(JSON.stringify({
           type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a2', payload: { press: 'copy' },
         }))
-        await waitForType(browser, 'clipboard:data')
-        expect(order).toEqual(['KEYCODE_COPY', 'read'])
+        const data = await waitForType(browser, 'clipboard:data')
+        expect((data.payload as { text: string }).text).toBe('copied')
+        expect(order.indexOf('KEYCODE_COPY')).toBeLessThan(order.lastIndexOf('read'))
       })
+
+      // The core guarantee: no answer until the guest clipboard actually changed.
+      it('keeps watching until the clipboard actually changes', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        let reads = 0
+        const client = getState().grpcClient as unknown as { getClipboard: ReturnType<typeof vi.fn> }
+        const realGet = client.getClipboard.getMockImplementation()!
+        client.getClipboard.mockImplementation(async () => (++reads <= 3 ? realGet() : 'what the app copied'))
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a2b', payload: { press: 'copy' },
+        }))
+        const data = await waitForType(browser, 'clipboard:data')
+        expect((data.payload as { text: string }).text).toBe('what the app copied')
+        expect(reads).toBeGreaterThan(2)   // a fixed delay would have answered on the first read
+      })
+
+      it('fails and restores the original when the device never copies', async () => {
+        grpcClipboardText = 'untouched original'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)   // the guest ignores it
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a2c', payload: { press: 'copy' },
+        }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.message).toMatch(/did not copy/i)
+        expect(grpcClipboardText).toBe('untouched original')   // no sentinel left behind
+      }, 10_000)
 
       it('press:cut sends KEYCODE_CUT instead', async () => {
         await bootDevice()
         await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
-        const keys = vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)
+        const keys = vi.spyOn(adb, 'sendKeyEvent').mockImplementation(async () => { grpcClipboardText = 'cut text' })
 
         browser.send(JSON.stringify({
           type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a3', payload: { press: 'cut' },

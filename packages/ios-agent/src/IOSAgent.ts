@@ -50,8 +50,15 @@ import { XCUITreeReader } from './XCUITreeReader.js'
 import { DeviceChromeLoader, type ChromeData } from './DeviceChromeLoader.js'
 import { KEY_CODE_MAP, MODIFIER_BITS } from './KeyCodeMap.js'
 
-// Let the injected copy chord reach the foreground app before reading the pasteboard back.
-const COPY_SETTLE_MS = 120
+// How long to watch the pasteboard for the injected chord to take effect before giving up.
+// Generous on purpose: a cold touch-helper spawn alone costs ~600ms, and simctl pbpaste is
+// 146-300ms per call under load. The browser gives up on its own, shorter budget and degrades
+// the UX; the agent's job is to answer correctly or not at all.
+const COPY_DEADLINE_MS = 2_000
+// Same idea for the write side: confirm the pasteboard took the text before pressing paste.
+const WRITE_DEADLINE_MS = 1_000
+// Floor between confirm reads. simctl already costs ~110ms, but never busy-spin.
+const CLIPBOARD_POLL_MS = 20
 
 // whole-sim audio: how often to re-enumerate the simulator's process tree for new audio-producing
 // processes (launched apps, WebKit WebContent). Short enough that a tab's audio starts promptly,
@@ -521,6 +528,12 @@ export class IOSAgent implements DeviceAgent {
       }
 
       this.startBinaryStream(state, streamWs)
+      // Warm the input channel now rather than on the first keypress: spawning touch-helper
+      // and letting it resolve its CoreSimulator symbols costs ~600ms, and paying that inside
+      // a clipboard copy pushes it past the browser's user-activation budget. Still lazy
+      // elsewhere (a boot-less session sets it up on first input), this just front-loads the
+      // common path. Fire-and-forget — it never gates the stream.
+      this.ensureTouchHelper(state)
       // Opt-in audio output: stand up the loopback server and start the whole-sim tap now. Best-effort
       // — never blocks/affects the video path.
       if (this.audioEnabled()) this.startAudioCapture(state, streamWs, deviceId)
@@ -882,19 +895,38 @@ export class IOSAgent implements DeviceAgent {
         }
         const { press } = (msg.payload ?? {}) as { press?: 'copy' | 'cut' }
         const read = async (): Promise<string> => {
-          if (press) {
-            this.ensureTouchHelper(state)
-            // Without a helper the chord silently does nothing and the read below would hand
-            // back whatever was on the pasteboard before. Fail rather than return a stale value.
-            if (!state.touchHelper) throw new PlatformError('Cannot press copy — no input channel to the device')
-            if (state.softKeyboardVisible) {
-              state.softKeyboardVisible = false
-              await this.simctl.hideSoftwareKeyboard(state.deviceId).catch(() => {})
-            }
-            state.touchHelper.sendKey(KEY_CODE_MAP[press === 'cut' ? 'KeyX' : 'KeyC'], MODIFIER_BITS['MetaLeft'])
-            await new Promise((r) => setTimeout(r, COPY_SETTLE_MS))
+          if (!press) return this.simctl.getPasteboard(state.deviceId)
+
+          this.ensureTouchHelper(state)
+          if (!state.touchHelper) throw new PlatformError('Cannot press copy — no input channel to the device')
+          if (state.softKeyboardVisible) {
+            state.softKeyboardVisible = false
+            await this.simctl.hideSoftwareKeyboard(state.deviceId).catch(() => {})
           }
-          return this.simctl.getPasteboard(state.deviceId)
+
+          // Overwrite the pasteboard with a value only we could have written, then press the
+          // chord and wait for it to change. Without this there is no way to tell "the app
+          // copied" from "the app has not copied yet" — a fixed delay guesses, and guessing
+          // wrong hands the PREVIOUS clipboard to the user with no error. The sentinel also
+          // covers re-copying the identical text, where a plain value-change watch never fires.
+          const before = await this.simctl.getPasteboard(state.deviceId).catch(() => '')
+          const sentinel = `​tapflow-clipboard-${randomUUID()}`
+          await this.simctl.setPasteboard(state.deviceId, sentinel)
+          let copied: string | null = null
+          try {
+            state.touchHelper.sendKey(KEY_CODE_MAP[press === 'cut' ? 'KeyX' : 'KeyC'], MODIFIER_BITS['MetaLeft'])
+            const deadline = Date.now() + COPY_DEADLINE_MS
+            do {
+              const now = await this.simctl.getPasteboard(state.deviceId)
+              if (now !== sentinel) { copied = now; return now }
+              await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
+            } while (Date.now() < deadline)
+            throw new PlatformError('The device did not copy anything — is something selected?')
+          } finally {
+            // Only restore when the copy never happened; otherwise this would overwrite the
+            // value we just captured. A leaked sentinel would be worse than the original bug.
+            if (copied === null) await this.simctl.setPasteboard(state.deviceId, before).catch(() => {})
+          }
         }
         read()
           .then((text) => this.ws?.send(JSON.stringify({ type: 'clipboard:data', sessionId, requestId, payload: { text } })))
@@ -921,10 +953,19 @@ export class IOSAgent implements DeviceAgent {
           break
         }
         const write = async (): Promise<void> => {
-          await this.simctl.setPasteboard(state.deviceId, text ?? '')
+          const wanted = text ?? ''
+          await this.simctl.setPasteboard(state.deviceId, wanted)
           if (!pasteAfter) return
           this.ensureTouchHelper(state)
           if (!state.touchHelper) throw new PlatformError('Cannot press paste — no input channel to the device')
+          // Confirm the pasteboard really holds it before pressing paste; otherwise the device
+          // could paste whatever was there before. (On Android the same call is documented as
+          // asynchronous, so this is not iOS paranoia — it is the same failure on both sides.)
+          const deadline = Date.now() + WRITE_DEADLINE_MS
+          while ((await this.simctl.getPasteboard(state.deviceId).catch(() => null)) !== wanted) {
+            if (Date.now() >= deadline) throw new PlatformError('The device clipboard did not accept the text')
+            await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
+          }
           // Same guard as input:key — skipping it desyncs the hardware keyboard context.
           if (state.softKeyboardVisible) {
             state.softKeyboardVisible = false

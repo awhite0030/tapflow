@@ -1,4 +1,5 @@
 import os from 'os'
+import { randomUUID } from 'crypto'
 import { WebSocket } from 'ws'
 import type { AndroidButton, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
@@ -185,8 +186,14 @@ export interface AndroidAgentOptions {
 // Clipboard payload ceiling, both directions — large text shares the WebSocket with video,
 // so an unbounded payload would stall the stream on backpressure.
 const MAX_CLIPBOARD_BYTES = 1024 * 1024
-// Let the injected copy keyevent reach the foreground app before reading the clipboard back.
-const COPY_SETTLE_MS = 120
+// How long to watch the guest clipboard for an injected chord to take effect before giving up.
+// The browser gives up on its own, shorter budget and degrades the UX; the agent's job is to
+// answer correctly or not at all.
+const COPY_DEADLINE_MS = 2_000
+// Same idea on the write side — setClipboard only schedules the change (see the proto).
+const WRITE_DEADLINE_MS = 1_000
+// gRPC calls are cheap compared to simctl, so pace the poll instead of spinning on it.
+const CLIPBOARD_POLL_MS = 20
 
 export class AndroidAgent implements DeviceAgent {
   private readonly adb: AdbWrapper
@@ -1159,11 +1166,28 @@ export class AndroidAgent implements DeviceAgent {
         if (msg.type === 'clipboard:read') {
           const { press } = (msg.payload ?? {}) as { press?: 'copy' | 'cut' }
           const read = async (): Promise<string> => {
-            if (press) {
+            if (!press) return client.getClipboard()
+            // Overwrite with a value only we could have written, press the chord, then wait for
+            // it to change. A fixed delay can only guess whether the app has copied yet, and
+            // guessing wrong hands back the PREVIOUS clipboard with no error. The sentinel also
+            // covers re-copying identical text, where a plain value-change watch never fires.
+            const before = await client.getClipboard().catch(() => '')
+            const sentinel = `\u200Btapflow-clipboard-${randomUUID()}`
+            await client.setClipboard(sentinel)
+            let copied: string | null = null
+            try {
               await this.adb.sendKeyEvent(serial, press === 'cut' ? 'KEYCODE_CUT' : 'KEYCODE_COPY')
-              await new Promise((r) => setTimeout(r, COPY_SETTLE_MS))
+              const deadline = Date.now() + COPY_DEADLINE_MS
+              do {
+                const now = await client.getClipboard()
+                if (now !== sentinel) { copied = now; return now }
+                await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
+              } while (Date.now() < deadline)
+              throw new PlatformError('The device did not copy anything — is something selected?')
+            } finally {
+              // Restore only if nothing was copied; otherwise this would clobber the capture.
+              if (copied === null) await client.setClipboard(before).catch(() => {})
             }
-            return client.getClipboard()
           }
           read()
             .then((text) => this.ws?.send(JSON.stringify({ type: 'clipboard:data', sessionId, requestId, payload: { text } })))
@@ -1175,8 +1199,18 @@ export class AndroidAgent implements DeviceAgent {
             break
           }
           const write = async (): Promise<void> => {
-            await client.setClipboard(text ?? '')
-            if (pasteAfter) await this.adb.sendKeyEvent(serial, 'KEYCODE_PASTE')
+            const wanted = text ?? ''
+            await client.setClipboard(wanted)
+            if (!pasteAfter) return
+            // setClipboard is explicitly asynchronous in the proto ("executed on the emulator's
+            // main looper ... returns OK upon successful asynchronous scheduling"), so a resolved
+            // promise means scheduled, not applied. Pasting now would paste the old clipboard.
+            const deadline = Date.now() + WRITE_DEADLINE_MS
+            while ((await client.getClipboard().catch(() => null)) !== wanted) {
+              if (Date.now() >= deadline) throw new PlatformError('The device clipboard did not accept the text')
+              await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
+            }
+            await this.adb.sendKeyEvent(serial, 'KEYCODE_PASTE')
           }
           // Ack only once the write (and the paste, when asked for) actually landed.
           write()

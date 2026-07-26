@@ -105,7 +105,13 @@ const waitForType = (ws: WebSocket, type: string) =>
     ws.on('message', listener)
   })
 
+let pasteboard = ''
+/** Simulate the app reacting to an injected copy chord by writing to the pasteboard. */
+const copyOnChord = (th: { sendKey: ReturnType<typeof vi.fn> }, text = 'copied text') =>
+  th.sendKey.mockImplementation(() => { pasteboard = text })
+
 function mockSimctl(booted = false): SimctlWrapper {
+  pasteboard = ''
   return {
     listDevices: vi.fn().mockResolvedValue([
       { id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: booted ? 'booted' : 'shutdown', osVersion: 'iOS 18.3' },
@@ -120,8 +126,10 @@ function mockSimctl(booted = false): SimctlWrapper {
     syncKeyboardsFromLanguages: vi.fn().mockResolvedValue(undefined),
     showSoftwareKeyboard: vi.fn().mockResolvedValue(undefined),
     hideSoftwareKeyboard: vi.fn().mockResolvedValue(undefined),
-    setPasteboard: vi.fn().mockResolvedValue(undefined),
-    getPasteboard: vi.fn().mockResolvedValue(''),
+    // Stateful pasteboard: the agent confirms a write by reading it back, so a mock that
+    // always answers '' would never converge.
+    setPasteboard: vi.fn(async function (this: void, _d: string, t: string) { pasteboard = t }),
+    getPasteboard: vi.fn(async () => pasteboard),
     stopKeyboardDaemon: vi.fn(),
   } as unknown as SimctlWrapper
 }
@@ -1247,8 +1255,71 @@ describe('IOSAgent', () => {
       agent.disconnect(); browser.close()
     })
 
-    // The agent owns the chord: the browser cannot know when the key lands, and reading
-    // before it does returns the PREVIOUS pasteboard — a stale value nobody would notice.
+    // The core guarantee: the agent must not answer until the device clipboard actually
+    // changed. A fixed delay cannot tell "copied" from "not copied yet"; the sentinel can.
+    it('keeps watching until the pasteboard actually changes', async () => {
+      const simctl = mockSimctl(true)
+      let sentinel = ''
+      let reads = 0
+      ;(simctl.setPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async (_d: string, t: string) => { sentinel = t })
+      // The app has not processed the chord yet on the first two reads.
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async () =>
+        ++reads <= 3 ? sentinel : 'what the app copied')
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'p1', payload: { press: 'copy' },
+      }))
+      const data = await waitForType(browser, 'clipboard:data')
+      expect((data.payload as { text: string }).text).toBe('what the app copied')
+      expect(reads).toBeGreaterThan(2)   // a fixed delay would have answered on the first read
+
+      agent.disconnect(); browser.close()
+    })
+
+    // Re-copying the same text produces no value change at all, which is why a plain
+    // value-change watch cannot work and the sentinel has to be written first.
+    it('handles re-copying the identical text', async () => {
+      const simctl = mockSimctl(true)
+      let current = 'same text'
+      ;(simctl.setPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async (_d: string, t: string) => { current = t })
+      let reads = 0
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        // after the chord, the app writes the very same text back over the sentinel
+        if (++reads > 2) current = 'same text'
+        return current
+      })
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'p2', payload: { press: 'copy' },
+      }))
+      const data = await waitForType(browser, 'clipboard:data')
+      expect((data.payload as { text: string }).text).toBe('same text')
+
+      agent.disconnect(); browser.close()
+    })
+
+    it('fails and restores the original when the device never copies', async () => {
+      const simctl = mockSimctl(true)
+      let current = 'untouched original'
+      const original = current
+      ;(simctl.setPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async (_d: string, t: string) => { current = t })
+      ;(simctl.getPasteboard as ReturnType<typeof vi.fn>).mockImplementation(async () => current)
+      const { agent, browser } = await bootWith(simctl)
+
+      browser.send(JSON.stringify({
+        type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'p3', payload: { press: 'copy' },
+      }))
+      const err = await waitForType(browser, 'clipboard:error')
+      expect(err.message).toMatch(/did not copy/i)
+      // the sentinel must not be left behind on the device
+      expect(simctl.setPasteboard).toHaveBeenLastCalledWith('dev-1', original)
+      expect(current).toBe(original)
+
+      agent.disconnect(); browser.close()
+    }, 10_000)
+
     it('press:copy sends Cmd+C and only then reads the pasteboard', async () => {
       const simctl = mockSimctl(true)
       const order: string[] = []
@@ -1265,7 +1336,8 @@ describe('IOSAgent', () => {
       }))
       await waitForType(browser, 'clipboard:data')
       expect(th.sendKey).toHaveBeenCalledWith(0x06, 0x08)   // KeyC + MetaLeft
-      expect(order).toEqual(['chord', 'read'])
+      // reads the current value, writes the sentinel, presses, then polls
+      expect(order.indexOf('chord')).toBeLessThan(order.lastIndexOf('read'))
 
       agent.disconnect(); browser.close()
     })
@@ -1276,6 +1348,7 @@ describe('IOSAgent', () => {
       await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
       const th = MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value
       th.sendKey.mockClear()
+      copyOnChord(th)
 
       browser.send(JSON.stringify({
         type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r3', payload: { press: 'cut' },
@@ -1292,6 +1365,8 @@ describe('IOSAgent', () => {
       browser.send(JSON.stringify({ type: 'input:keyboard:toggle', sessionId: agent.sessionId }))
       await waitForType(browser, 'keyboard:toggled')
       ;(simctl.hideSoftwareKeyboard as ReturnType<typeof vi.fn>).mockClear()
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      copyOnChord(MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value)
 
       browser.send(JSON.stringify({
         type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'r4', payload: { press: 'copy' },

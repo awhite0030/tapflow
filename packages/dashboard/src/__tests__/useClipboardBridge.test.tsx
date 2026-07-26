@@ -100,6 +100,50 @@ describe('useClipboardBridge', () => {
     expect(execCommand).not.toHaveBeenCalled()
   })
 
+  // The bridge must never make copy worse than it was. On an explicit failure the chord still
+  // goes to the device so the copy at least lands on the device's own clipboard.
+  it('falls back to the plain chord when the bridge cannot copy', async () => {
+    const { chords, reply } = setup()
+    press('KeyC')
+    reply({ type: 'clipboard:error', message: 'not supported' }, 'clipboard:read')
+    await waitFor(() => expect(chords).toEqual([['KeyC', 0x08]]))
+  })
+
+  it('falls back with the cut chord for Cmd+X', async () => {
+    const { chords, reply } = setup()
+    press('KeyX')
+    reply({ type: 'clipboard:error', message: 'not supported' }, 'clipboard:read')
+    await waitFor(() => expect(chords).toEqual([['KeyX', 0x08]]))
+  })
+
+  // A timeout is NOT a failure — the agent is still mid-copy and already pressed the chord
+  // itself. Pressing again here would copy twice.
+  it('does not press the chord when the read merely times out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { chords, errors } = setup()
+    press('KeyC')
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    await waitFor(() => expect(errors.length).toBe(1))
+    expect(chords).toEqual([])
+    vi.useRealTimers()
+  })
+
+  // A reply that misses the budget cannot be written (the activation is gone), so it is kept
+  // for the next press — which is exactly what the user was told to do.
+  it('stashes a late value and writes it on the next press', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { reply, errors } = setup()
+    press('KeyC')
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    await waitFor(() => expect(errors.length).toBe(1))
+
+    reply({ type: 'clipboard:data', payload: { text: 'arrived late' } }, 'clipboard:read')
+    vi.useRealTimers()
+
+    press('KeyC')
+    await waitFor(() => expect(execCommand).toHaveBeenCalledWith('copy'))
+  })
+
   // A backend with no clipboard channel answers every press identically; one toast is
   // information, one per keypress is noise.
   it('reports a repeated identical error only once', async () => {
@@ -140,6 +184,17 @@ describe('useClipboardBridge', () => {
     pastes('x')
     reply({ type: 'clipboard:error', message: 'agent offline' }, 'clipboard:write')
     await waitFor(() => expect(chords).toEqual([['KeyV', 0x08]]))
+  })
+
+  // On a timeout the agent is still writing and will press paste itself once it lands —
+  // pressing here too would paste the text twice.
+  it('does not press paste when the write merely times out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { chords } = setup()
+    pastes('slow one')
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    expect(chords).toEqual([])
+    vi.useRealTimers()
   })
 
   // A Windows viewer sends Ctrl+C, but iOS only understands Cmd — the device chord is
