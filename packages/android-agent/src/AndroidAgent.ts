@@ -1188,7 +1188,9 @@ export class AndroidAgent implements DeviceAgent {
             // it to change. A fixed delay can only guess whether the app has copied yet, and
             // guessing wrong hands back the PREVIOUS clipboard with no error. The sentinel also
             // covers re-copying identical text, where a plain value-change watch never fires.
-            const raw = await client.getClipboard().catch(() => '')
+            // Read the original first. If we cannot, do NOT continue: parking a sentinel we are
+            // unable to undo would destroy whatever the user had on the device clipboard.
+            const raw = await client.getClipboard()
             const before = isSentinel(raw) ? '' : raw
             const sentinel = `${SENTINEL_PREFIX}${randomUUID()}`
             let copied: string | null = null
@@ -1196,6 +1198,14 @@ export class AndroidAgent implements DeviceAgent {
               // Inside the try: setClipboard only schedules the change, so a rejection can
               // still leave it applied — the restore below has to run either way.
               await client.setClipboard(sentinel)
+              // ...and a resolved setClipboard means *scheduled*, not applied (see the proto).
+              // Pressing before it lands would let the first poll read the pre-sentinel value
+              // and return it as "what the app copied" — the exact staleness this guards.
+              const applied = Date.now() + WRITE_DEADLINE_MS
+              while ((await client.getClipboard()) !== sentinel) {
+                if (Date.now() >= applied) throw new PlatformError('The device clipboard did not respond')
+                await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
+              }
               await this.adb.sendKeyEvent(serial, press === 'cut' ? 'KEYCODE_CUT' : 'KEYCODE_COPY')
               const deadline = Date.now() + COPY_DEADLINE_MS
               do {

@@ -54,7 +54,13 @@ interface MouseEventMsg { x: number; y: number; buttons: number; display: number
 interface WheelEventMsg { dx: number; dy: number; display: number }
 
 type UnaryCb = (err: Error | null) => void
+interface CallOptions { deadline: number }
 interface ClipDataMsg { text: string }
+
+// Clipboard calls run inside a per-device critical section on the agent: one that never
+// settles would wedge every later copy/paste on that device, so they all carry a deadline.
+// (The video/audio streams deliberately have none — they are long-lived by design.)
+const CLIPBOARD_DEADLINE_MS = 5_000
 type ClipCb = (err: Error | null, res?: ClipDataMsg) => void
 
 /** The subset of the generated EmulatorController stub we use. Injectable for tests. */
@@ -65,8 +71,8 @@ export interface RawEmulatorController {
   sendKey(event: KeyboardEventMsg, cb: UnaryCb): void
   sendMouse(event: MouseEventMsg, cb: UnaryCb): void
   sendWheel(event: WheelEventMsg, cb: UnaryCb): void
-  getClipboard(empty: Record<string, never>, cb: ClipCb): void
-  setClipboard(clip: ClipDataMsg, cb: UnaryCb): void
+  getClipboard(empty: Record<string, never>, options: CallOptions, cb: ClipCb): void
+  setClipboard(clip: ClipDataMsg, options: CallOptions, cb: UnaryCb): void
   close(): void
 }
 
@@ -209,13 +215,15 @@ export class EmulatorGrpcClient {
   // byte-for-byte. `ClipData` carries a single `text` field.
   getClipboard(): Promise<string> {
     return new Promise((resolve, reject) => {
-      this.raw.getClipboard({}, (err, res) => (err ? reject(err) : resolve(res?.text ?? '')))
+      this.raw.getClipboard({}, { deadline: Date.now() + CLIPBOARD_DEADLINE_MS },
+        (err, res) => (err ? reject(err) : resolve(res?.text ?? '')))
     })
   }
 
   setClipboard(text: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.raw.setClipboard({ text }, (err) => (err ? reject(err) : resolve()))
+      this.raw.setClipboard({ text }, { deadline: Date.now() + CLIPBOARD_DEADLINE_MS },
+        (err) => (err ? reject(err) : resolve()))
     })
   }
 

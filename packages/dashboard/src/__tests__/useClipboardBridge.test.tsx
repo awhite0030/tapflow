@@ -151,14 +151,18 @@ describe('useClipboardBridge', () => {
 
   // A timeout is NOT a failure — the agent is still mid-copy and already pressed the chord
   // itself. Pressing again here would copy twice.
-  it('does not press the chord when the read merely times out', async () => {
+  // An agent that predates the bridge has no clipboard:read case and never replies. The
+  // viewers no longer forward the chord themselves, so silence here would lose the keystroke
+  // outright — worse than before the bridge existed.
+  it('presses the chord when the agent never answers (older agent)', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    const { chords, errors } = setup()
-    press('KeyC')
-    await act(async () => { await vi.advanceTimersByTimeAsync(3_500) })
-    await waitFor(() => expect(errors.length).toBe(1))
-    expect(chords).toEqual([])
-    vi.useRealTimers()
+    try {
+      const { chords, errors } = setup()
+      press('KeyC')
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_500) })
+      await waitFor(() => expect(errors.length).toBe(1))
+      expect(chords).toEqual([['KeyC', 0x08]])
+    } finally { vi.useRealTimers() }
   })
 
 
@@ -206,13 +210,27 @@ describe('useClipboardBridge', () => {
 
   // On a timeout the agent is still writing and will press paste itself once it lands —
   // pressing here too would paste the text twice.
-  it('does not press paste when the write merely times out', async () => {
+  it('presses paste when the agent never answers (older agent)', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    const { chords } = setup()
-    pastes('slow one')
-    await act(async () => { await vi.advanceTimersByTimeAsync(3_500) })
-    expect(chords).toEqual([])
-    vi.useRealTimers()
+    try {
+      const { chords } = setup()
+      pastes('slow one')
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_500) })
+      await waitFor(() => expect(chords).toEqual([['KeyV', 0x08]]))
+    } finally { vi.useRealTimers() }
+  })
+
+  // M5: copy needs a secure context, paste never did. A LAN deployment must keep pasting.
+  it('paste still works on plain HTTP', async () => {
+    secureContext(false)
+    const { sent, chords, reply } = setup()
+    pastes('from my mac')
+    const write = sent.find((s) => s.type === 'clipboard:write')
+    expect((write?.payload as { text: string }).text).toBe('from my mac')
+
+    reply({ type: 'clipboard:write-done' }, 'clipboard:write')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(chords).toEqual([])   // the agent pressed paste itself
   })
 
   // A Windows viewer sends Ctrl+C, but iOS only understands Cmd — the device chord is

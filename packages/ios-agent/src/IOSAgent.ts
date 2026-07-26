@@ -790,7 +790,9 @@ export class IOSAgent implements DeviceAgent {
         }
         // Ack on completion so a following input step (e.g. pressKey Enter) is
         // only sent after the paste has actually landed.
-        doType()
+        // Shares the clipboard queue: this writes the pasteboard, so running it alongside a
+        // clipboard:read would overwrite that read's sentinel and be returned as "copied".
+        this.runExclusively(state.deviceId, doType)
           .then(() => this.ws?.send(JSON.stringify({ type: 'input:type-done', sessionId })))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
@@ -927,7 +929,10 @@ export class IOSAgent implements DeviceAgent {
           // copied" from "the app has not copied yet" — a fixed delay guesses, and guessing
           // wrong hands the PREVIOUS clipboard to the user with no error. The sentinel also
           // covers re-copying the identical text, where a plain value-change watch never fires.
-          const raw = await this.simctl.getPasteboard(state.deviceId).catch(() => '')
+          // Read the original first. If we cannot (a hung simctl, or a pasteboard past
+          // maxBuffer), do NOT continue: parking a sentinel we are unable to undo would
+          // destroy whatever the user had on the device clipboard.
+          const raw = await this.simctl.getPasteboard(state.deviceId)
           // Never restore someone else's marker as if it were the user's text.
           const before = isSentinel(raw) ? '' : raw
           const sentinel = `${SENTINEL_PREFIX}${randomUUID()}`

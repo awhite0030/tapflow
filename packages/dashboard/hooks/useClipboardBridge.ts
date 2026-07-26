@@ -188,7 +188,12 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
       const reply = await request('clipboard:read', { press: isCut ? 'cut' : 'copy' })
       if (!reply) {
         fail(new ClaimCancelled('timeout'))
-        report('The device did not answer — press again')
+        // Silence here would be a regression: an agent that predates the bridge has no
+        // clipboard:read case and never replies, and the viewers no longer forward the chord
+        // themselves — the keystroke would simply vanish. A current agent answers well inside
+        // the budget, so a timeout means the chord did not reach the device.
+        sendChord(isCut ? 'KeyX' : 'KeyC', META)
+        report('The device did not answer — copied on the device only')
         return
       }
       if (reply.type === 'clipboard:error') {
@@ -218,12 +223,12 @@ export function useClipboardBridge({ sessionId, send, active, handlerRef, sendCh
       if (byteLength(text) > MAX_CLIPBOARD_BYTES) { report('That text is too large to send to the device'); return }
       request('clipboard:write', { text, pasteAfter: true }).then((reply) => {
         if (reply?.type === 'clipboard:write-done') { lastError.current = null; return }
-        // On an explicit error nothing was pasted, so press the chord to at least paste the
-        // device's own clipboard. On a TIMEOUT the agent is still mid-write and presses paste
-        // itself once it lands — pressing here too would paste twice.
-        if (!reply) return
+        // Nothing was pasted on either path, so press the chord to at least paste the device's
+        // own clipboard — an agent that predates the bridge never replies at all, and the
+        // viewers no longer forward Cmd+V themselves.
         sendChord('KeyV', META)
         if (reply?.type === 'clipboard:error') report(reply.message ?? 'Clipboard write failed')
+        else report('The device did not answer — pasted its own clipboard instead')
       })
     }
 
