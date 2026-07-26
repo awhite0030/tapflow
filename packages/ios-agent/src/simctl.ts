@@ -94,7 +94,13 @@ function runWithOpts(opts: SimctlExecOpts, args: string[]): Promise<string> {
     })
     // Same treatment as stdout: keep bytes, decode once. Bounded like execFile bounded it.
     proc.stderr?.on('data', (d: Buffer) => {
-      if (stderrBytes < MAX_STDERR_BYTES) { stderrChunks.push(d); stderrBytes += d.length }
+      if (stderrBytes >= MAX_STDERR_BYTES) return
+      // Slice to the remaining budget: testing before pushing the WHOLE chunk let a single
+      // `data` event carry the total past the ceiling the constant names.
+      const room = MAX_STDERR_BYTES - stderrBytes
+      const slice = d.length > room ? d.subarray(0, room) : d
+      stderrChunks.push(slice)
+      stderrBytes += slice.length
     })
     proc.on('error', (e) => finish(e))
     proc.on('close', (code) => {
@@ -129,8 +135,12 @@ export const defaultRunner: SimctlRunner = {
       try {
         const { stdout } = await execFileAsync('xcrun', ['simctl', ...args])
         return stdout
-      } catch {
-        throw coreSimServiceError()
+      } catch (retryErr) {
+        // Only claim the version mismatch if that is still what failed. Reporting it for an
+        // unrelated failure hides the real cause — and erases `OutputTooLargeError`, which
+        // `getPasteboard` needs to distinguish "the app copied something too big to carry"
+        // from "the read failed", the two having opposite recovery.
+        throw isCoreSimulatorVersionMismatch(retryErr) ? coreSimServiceError() : retryErr
       }
     }
   },
@@ -145,8 +155,12 @@ export const defaultRunner: SimctlRunner = {
       await restartCoreSimulatorService()
       try {
         return await runWithOpts(opts, args)
-      } catch {
-        throw coreSimServiceError()
+      } catch (retryErr) {
+        // Only claim the version mismatch if that is still what failed. Reporting it for an
+        // unrelated failure hides the real cause — and erases `OutputTooLargeError`, which
+        // `getPasteboard` needs to distinguish "the app copied something too big to carry"
+        // from "the read failed", the two having opposite recovery.
+        throw isCoreSimulatorVersionMismatch(retryErr) ? coreSimServiceError() : retryErr
       }
     }
   },
@@ -161,8 +175,12 @@ export const defaultRunner: SimctlRunner = {
       try {
         const { stdout } = await execFileAsync('xcrun', ['simctl', ...args], { encoding: 'buffer' })
         return stdout
-      } catch {
-        throw coreSimServiceError()
+      } catch (retryErr) {
+        // Only claim the version mismatch if that is still what failed. Reporting it for an
+        // unrelated failure hides the real cause — and erases `OutputTooLargeError`, which
+        // `getPasteboard` needs to distinguish "the app copied something too big to carry"
+        // from "the read failed", the two having opposite recovery.
+        throw isCoreSimulatorVersionMismatch(retryErr) ? coreSimServiceError() : retryErr
       }
     }
   },

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const { execFileMock, spawnMock } = vi.hoisted(() => ({ execFileMock: vi.fn(), spawnMock: vi.fn() }))
 vi.mock('child_process', () => ({ execFile: execFileMock, spawn: spawnMock }))
 
-import { defaultRunner } from '../simctl'
+import { defaultRunner, OutputTooLargeError } from '../simctl'
 
 const VERSION_MISMATCH_ERR = Object.assign(new Error('simctl failed'), {
   stderr: 'CoreSimulator.framework was changed while the process was running. Service version (1051.50) does not match expected service version (1051.54).',
@@ -131,6 +131,38 @@ describe('defaultRunner.execWithOpts', () => {
 
     await expect(defaultRunner.execWithOpts({}, 'pbpaste', 'UDID')).resolves.toBe('recovered')
     expect(execFileMock.mock.calls.some((c: unknown[]) => (c as [string])[0] === 'killall')).toBe(true)
+  })
+
+  // A retry that fails for a DIFFERENT reason must surface that reason. Reporting the version
+  // mismatch regardless erased OutputTooLargeError, and getPasteboard needs that type to tell
+  // "the app copied something too big to carry" from "the read failed" — the two have opposite
+  // recovery, and getting it wrong restores over the user's fresh copy.
+  it('propagates the real error when the retry fails for an unrelated reason', async () => {
+    execFileMock.mockImplementation((_cmd: string, _args: string[], ...rest: unknown[]) => {
+      const cb = rest[rest.length - 1] as (e: Error | null, r?: { stdout: string }) => void
+      cb(null, { stdout: '' })
+      return { on: vi.fn() }
+    })
+    let call = 0
+    spawnMock.mockImplementation(() => (++call === 1
+      ? fakeProc({ stderr: VERSION_MISMATCH_ERR.stderr, code: 1 })
+      : fakeProc({ stdout: 'x'.repeat(200) })))
+
+    const run = defaultRunner.execWithOpts({ maxBuffer: 10 }, 'pbpaste', 'UDID')
+    await expect(run).rejects.toBeInstanceOf(OutputTooLargeError)
+    await expect(run).rejects.not.toThrow(/killall -9/)
+  })
+
+  it('caps stderr at the ceiling instead of one chunk past it', async () => {
+    const huge = 'e'.repeat(200 * 1024)
+    spawnMock.mockImplementation(() => fakeProc({ stderr: huge, code: 1 }))
+
+    // The message is the captured stderr, so its length is what the cap actually bought.
+    await expect(defaultRunner.execWithOpts({}, 'pbpaste', 'UDID'))
+      .rejects.toThrow(expect.objectContaining({ message: expect.stringMatching(/^e+$/) }))
+    await defaultRunner.execWithOpts({}, 'pbpaste', 'UDID').catch((e: Error) => {
+      expect(e.message.length).toBe(64 * 1024)
+    })
   })
 
   it('surfaces the documented guidance when recovery fails too', async () => {
