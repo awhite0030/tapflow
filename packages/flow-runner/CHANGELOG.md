@@ -1,5 +1,11 @@
 # @tapflowio/flow-runner
 
+## 0.17.0
+
+### Patch Changes
+
+- @tapflowio/agent-core@0.17.0
+
 ## 0.16.0
 
 ### Minor Changes
