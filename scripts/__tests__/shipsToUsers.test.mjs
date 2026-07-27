@@ -2,7 +2,7 @@
 // this predicate missed while it was an allowlist over `src/**.ts`, and it then went a round with
 // no tests at all — the twenty-line rule that had been wrong six ways was the one thing unchecked.
 import { describe, it, expect } from 'vitest'
-import { shipsToUsers } from '../check-changeset.mjs'
+import { shipsToUsers, isReleaseBranch } from '../check-changeset.mjs'
 
 describe('shipsToUsers — files a released tapflow puts in front of users', () => {
   const SHIPS = [
@@ -64,4 +64,30 @@ describe('shipsToUsers — files that change nothing a user can observe', () => 
   for (const f of DOES_NOT_SHIP) {
     it(`does not require a changeset for ${f}`, () => expect(shipsToUsers(f)).toBe(false))
   }
+})
+
+// `pnpm changeset version` bumps every packages/*/package.json and DELETES the changesets it
+// consumed. A gate that only looks for ADDED changesets therefore fails the release PR — and with
+// the check required on `protect-main`, that blocks the release permanently. This is the one path
+// that is exercised once per release and cannot be discovered gradually.
+describe('isReleaseBranch — the shape `changeset version` produces', () => {
+  it('recognises consumed changesets plus written changelogs', () => {
+    expect(isReleaseBranch(
+      ['.changeset/clipboard-bridge.md'],
+      ['packages/relay/package.json', 'packages/relay/CHANGELOG.md', 'packages/cli/package.json'],
+    )).toBe(true)
+  })
+
+  it('does not fire when a changeset is deleted without a changelog being written', () => {
+    // Someone dropping a changeset they decided against is not a release.
+    expect(isReleaseBranch(['.changeset/oops.md'], ['packages/relay/src/RelayServer.ts'])).toBe(false)
+  })
+
+  it('does not fire on a changelog edit alone', () => {
+    expect(isReleaseBranch([], ['packages/relay/CHANGELOG.md', 'packages/relay/src/x.ts'])).toBe(false)
+  })
+
+  it('does not fire on an ordinary branch', () => {
+    expect(isReleaseBranch([], ['packages/ios-agent/src/IOSAgent.ts'])).toBe(false)
+  })
 })

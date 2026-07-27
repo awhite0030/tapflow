@@ -38,6 +38,17 @@ const EXEMPT = [
 ]
 
 const PACKAGE_FILE = /^packages\/([^/]+)\//
+/**
+ * Is this the branch `pnpm changeset version` produces? It consumes (deletes) the changesets it
+ * folds into the changelogs, so a gate looking for ADDED ones fails the release PR — which, with
+ * the check required, blocks the release itself. Both halves are needed: deleting a changeset
+ * you decided against is not a release. Exported for the tests.
+ */
+export function isReleaseBranch(consumedChangesets, changedFiles) {
+  if (consumedChangesets.length === 0) return false
+  return changedFiles.some((f) => /(^|\/)CHANGELOG\.md$/.test(f))
+}
+
 /** Would a user of a released tapflow notice this file changing? Exported for the tests. */
 export function shipsToUsers(f) {
   const pkg = f.match(PACKAGE_FILE)?.[1]
@@ -153,6 +164,18 @@ function main() {
   const added = git('diff', '--name-only', '--diff-filter=A', `${mergeBase}...HEAD`)
     .split('\n')
     .filter((f) => /^\.changeset\/.+\.md$/.test(f) && !/^\.changeset\/README\.md$/i.test(f))
+
+  // A `changeset version` branch bumps every `packages/*/package.json` and DELETES the
+  // changesets it consumed, so it trips a gate that only looks for added ones — with the check
+  // required, that blocks the release PR permanently. Recognise it by its signature: changesets
+  // removed plus changelogs written. Verified against a real `pnpm changeset version` run.
+  const consumed = git('diff', '--name-only', '--diff-filter=D', `${mergeBase}...HEAD`)
+    .split('\n')
+    .filter((f) => /^\.changeset\/.+\.md$/.test(f))
+  if (isReleaseBranch(consumed, changed)) {
+    console.log(`Release branch: ${consumed.length} changeset(s) consumed into a changelog.`)
+    process.exit(0)
+  }
 
   if (added.length > 0) {
     console.log(`Published source changed and ${added.length} changeset(s) added:`)
