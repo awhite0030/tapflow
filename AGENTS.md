@@ -82,6 +82,17 @@ The authoring session inherits its own assumptions, so before creating a PR the 
 - **Record**: write findings + dispositions (fixed, or skipped with a reason) to `.work/reviews/<branch>.md` (slashes → `__`), including the **full 40-character HEAD hash** (`git rev-parse HEAD` — an abbreviated hash will not pass the gate). Mention the review in the PR body.
 - **Enforcement**: the PreToolUse hook `.claude/hooks/adversarial-review-gate.sh` blocks PR creation unless that record exists and references the current HEAD — any commit after the review invalidates the record until it is refreshed against the new diff.
 
+#### Keeping a review affordable
+
+Review wall-clock is dominated by **what the reviewer has to execute**, not by how hard it thinks. Measured across one session: a read-and-probe review of a protocol change took 11 minutes at 93k tokens; a review of ~590 lines of tooling took **106 minutes at only 134k tokens** — fewer tokens, 10× the time, because it spent that time on `pnpm install`, `pnpm build`, starting real dev servers and waiting out sleeps.
+
+- **Only use an isolated worktree when the reviewer must edit files.** A fresh worktree has no `node_modules` and no `dist`, so it pays 8–10 minutes of install and build before it can run anything — and a reviewer that does not know this reports results from commands that silently did nothing (`vitest: command not found` swallowed by a shell exit). A read-only lens (contract, compatibility, documentation) can work against the primary checkout, which is already built.
+- **Say what to install.** When a worktree is required, the prompt must open with `pnpm install --frozen-lockfile && pnpm build`, or the first `pnpm test` result is meaningless.
+- **Do the mutation testing yourself, then hand over the list.** Ask the reviewer to find what your mutations *missed*, not to redo them. Every surviving mutation found so far came from someone imagining a different way to break a test — never from running more of them.
+- **No blanket "run it 10 times".** Repeat runs have found zero flakes across two rounds; they cost 4+ minutes each time. Ask for 3 runs, and only for tests that use timers or real sleeps.
+- **Split by lens and run the lenses in parallel.** Wall-clock is then the slowest lens, not the sum. Two channels on the same commit took 11 and 40 minutes concurrently, against 51 serially.
+- **Some cost is irreducible.** Verifying code that kills processes means starting and killing processes, with real waits. Budget for it and say so up front, rather than discovering it at 100 minutes.
+
 ### Before Implementing — cross-cutting features
 
 Applies when a change spans **two or more packages, or both platforms**. Skip it for work inside one package.
