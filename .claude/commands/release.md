@@ -48,13 +48,7 @@ model: claude-opus-4-8
 
 ## 7. 이 레포 전용 수동 단계 (놓치기 가장 쉬움)
 
-- **mcp-server·flow-runner는 2026-07 graduation 이후 fixed 그룹의 정규 멤버다** — experimental 접미사 수동 변경 절차는 폐기됐다. 되살리지 말 것.
-- **flow-runner 첫 발행 전제(1회성, v0.14.0 이전에만 해당)**: `@tapflowio/flow-runner`는 npm에 존재하지 않아 OIDC trusted publishing으로 첫 publish가 불가하다(신규 패키지에는 trusted publisher를 등록할 수 없음). **태그 push 전에** 반드시:
-  1. 로컬에서 seed publish — **반드시 pnpm 경로로**: `pnpm --filter @tapflowio/flow-runner publish --access public --no-git-checks` (raw `npm publish`는 `workspace:*`를 치환하지 않아 설치 불가 tarball이 나간다)
-  2. npmjs.com 패키지 설정에서 trusted publisher 등록: repo `jo-duchan/tapflow`, workflow `release.yml`
-  3. 이걸 건너뛰고 태그를 밀면: 다른 패키지는 발행되고 flow-runner만 실패 → exact pin 의존 때문에 **`npm i tapflow`가 전 사용자에게 깨진다** (복구: 태그 커밋에서 flow-runner 수동 pnpm publish 후 잡 재실행)
-- **graduation 릴리즈(v0.14.0) 태그 전제**: MCP 안정화(Track A — press_key/press_button 수정 + 툴 전수 검증) 머지 완료. `.work/2026-07-05-mcp-followups-plan.md` 확인.
-- **릴리즈 후 1회성**: 구 `experimental` dist-tag가 0.13.0-experimental.1에 고정돼 있어 `@experimental`로 설치한 기존 사용자는 업데이트가 끊긴다 → `npm dist-tag add @tapflowio/mcp-server@X.Y.Z experimental` 로 당겨주거나 태그 제거를 안내한다.
+- **`@experimental` dist-tag**: `@tapflowio/mcp-server`에 `experimental` dist-tag가 남아 있고 **`latest`를 따라가지 않는다**. 2026-07 기준 `experimental: 0.14.0` / `latest: 0.16.0` — 한 번 당겨준 뒤 멈췄다. 그 태그로 설치한 사용자는 업데이트가 끊긴 상태다. 매 릴리즈마다 `npm dist-tag add @tapflowio/mcp-server@X.Y.Z experimental`로 당기거나, 태그를 없애고(`npm dist-tag rm`) 안내하거나 — 둘 중 하나를 정해야 한다. 현재 상태는 "정하지 않음"이고 그게 가장 나쁘다.
 - **루트 `CHANGELOG.md`**: changeset 관리 밖(Keep a Changelog 수동) → `[Unreleased]`를 `[X.Y.Z] - YYYY-MM-DD`(오늘 날짜)로 승격하고 Added/Changed/Fixed를 채운다.
   - **하단 compare 링크도 함께 갱신**(놓치기 쉬움): `[Unreleased]`를 `vX.Y.Z...HEAD`로 바꾸고, `[X.Y.Z]: .../compare/v{직전}...vX.Y.Z` 링크를 새로 추가한다. 직전 릴리즈 링크가 빠져 있으면 이번에 함께 메운다.
 - **dashboard**: private + `ignore` → 건드리지 않는다.
