@@ -48,7 +48,11 @@ model: claude-opus-4-8
 
 ## 7. 이 레포 전용 수동 단계 (놓치기 가장 쉬움)
 
-- **`@experimental` dist-tag**: `@tapflowio/mcp-server`에 `experimental` dist-tag가 남아 있고 **`latest`를 따라가지 않는다**. 2026-07 기준 `experimental: 0.14.0` / `latest: 0.16.0` — 한 번 당겨준 뒤 멈췄다. 그 태그로 설치한 사용자는 업데이트가 끊긴 상태다. 매 릴리즈마다 `npm dist-tag add @tapflowio/mcp-server@X.Y.Z experimental`로 당기거나, 태그를 없애고(`npm dist-tag rm`) 안내하거나 — 둘 중 하나를 정해야 한다. 현재 상태는 "정하지 않음"이고 그게 가장 나쁘다.
+- **`@experimental` dist-tag 정리**: `@tapflowio/mcp-server`는 v0.14.0 graduation 전까지 `X.Y.Z-experimental.N`으로 20개를 발행했고 그 채널이 `experimental` dist-tag였다. graduation 이후 prerelease는 한 번도 나오지 않았다 — **개념은 사라졌고 npm 태그만 남았다.**
+  - 당시 절차는 "새 버전으로 당기거나, 제거를 안내하거나"였고 앞쪽만 수행돼 태그가 `0.14.0`을 가리킨다. **그 1회성 조치가 문제를 재생산했다**: `latest`가 0.16.0으로 가는 동안 태그는 그대로라, 문서가 진단했던 "업데이트가 끊긴다"가 한 버전 뒤에서 그대로 반복됐다. 1회성으로 설계한 것이 원인이지 누가 빠뜨린 것이 아니다.
+  - 지금 태그는 두 가지로 틀렸다: 이름이 가리키는 `0.14.0`은 실험판이 아니라 정식 릴리즈이고, `latest`보다 뒤처져 "최신 실험판"도 아니다.
+  - **제거가 맞다.** 가리킬 prerelease 스트림이 없고, `latest`와 동기화해 유지하면 순수한 별칭이라 잊어버릴 거리만 늘린다. 제거하면 `@experimental` 설치가 소리내어 실패해 사용자가 `latest`로 옮길 신호를 받는다 — 3주 지난 버전을 조용히 설치하는 것보다 낫다.
+  - 사용자에게 영향이 가므로 **실행 전 확인**을 받는다: `npm dist-tag rm @tapflowio/mcp-server experimental`
 - **루트 `CHANGELOG.md`**: changeset 관리 밖(Keep a Changelog 수동) → `[Unreleased]`를 `[X.Y.Z] - YYYY-MM-DD`(오늘 날짜)로 승격하고 Added/Changed/Fixed를 채운다.
   - **하단 compare 링크도 함께 갱신**(놓치기 쉬움): `[Unreleased]`를 `vX.Y.Z...HEAD`로 바꾸고, `[X.Y.Z]: .../compare/v{직전}...vX.Y.Z` 링크를 새로 추가한다. 직전 릴리즈 링크가 빠져 있으면 이번에 함께 메운다.
 - **dashboard**: private + `ignore` → 건드리지 않는다.
