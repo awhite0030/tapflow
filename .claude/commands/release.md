@@ -13,6 +13,7 @@ model: claude-opus-4-8
 - `git log v{latest}..HEAD --oneline`(머지 포함/제외 각각) — feat / fix / perf / breaking 분류
 - 열린 PR: `gh pr list`
 - 대기 중인 changeset: `.changeset/*.md`
+- **누락된 changeset 감사**: `pnpm changeset:audit` — 마지막 태그 이후 머지 중 배포 소스를 바꿨는데 changeset이 없는 것을 나열한다. PR 게이트(CI `changeset` job)는 새 PR만 막으므로 **이미 머지된 것은 여기서만 잡힌다.** v0.17.0 준비 때 이 누락(#410~#413)을 수작업으로 발견한 것이 이 감사를 만든 계기다. 나오면 릴리즈 전에 백필한다
 - `.changeset/config.json`의 `fixed` / `ignore` 그룹 재확인
 
 ## 2. bump 레벨 추천 → 사용자 합의
