@@ -62,6 +62,55 @@ describe('isDevProcess — must never select anything else', () => {
   }
 })
 
+describe('isDevProcess — the role and the repo must be the SAME argument', () => {
+  // Each of these supplies "inside the repo" from one argument and "looks like a dev process"
+  // from another. Checking the two independently made all four kill targets.
+  const SPLIT_EVIDENCE = {
+    'in-repo tsx running an out-of-repo script':
+      `node ${ROOT}/node_modules/.bin/tsx --conditions=source /Users/dev/side/relay.ts`,
+    'foreign tsx, repo path in an unrelated flag':
+      `node /usr/local/lib/tsx/cli.mjs --conditions=source relay.ts --cwd ${ROOT}/x`,
+    'foreign vite, repo path as data':
+      `node /other/node_modules/vite/bin/vite.js --port 3001 --root ${ROOT}/packages`,
+    'a repo script with a vite-ish word and a bare 3001':
+      `node ${ROOT}/scripts/foo.mjs vite 3001`,
+  }
+
+  for (const [name, command] of Object.entries(SPLIT_EVIDENCE)) {
+    it(`does not select: ${name}`, () => {
+      expect(isDevProcess(command, ROOT)).toBe(false)
+    })
+  }
+})
+
+describe('isDevProcess — a checkout path containing spaces', () => {
+  // Splitting the command on whitespace shredded such a path, so nothing matched: `dev:down`
+  // reported "no dev processes" and exited 0 while the relay still held the port — the exact
+  // confusion the tool exists to remove, delivered as a success.
+  const SPACED = '/Users/dev/My Projects/tapflow'
+
+  it('still selects the relay', () => {
+    expect(isDevProcess(
+      `node ${SPACED}/playground/node_modules/.bin/../tsx/dist/cli.mjs --conditions=source relay.ts`,
+      SPACED,
+    )).toBe(true)
+  })
+
+  it('still selects vite', () => {
+    expect(isDevProcess(
+      `node ${SPACED}/packages/dashboard/node_modules/.bin/../vite/bin/vite.js --port 3001`,
+      SPACED,
+    )).toBe(true)
+  })
+
+  it('still refuses a sibling checkout', () => {
+    expect(isDevProcess(
+      `node ${SPACED}-fork/packages/dashboard/node_modules/vite/bin/vite.js --port 3001`,
+      SPACED,
+    )).toBe(false)
+  })
+})
+
 describe('isDevProcess — the individual conditions', () => {
   it('requires the executable to be node, not merely a mention of it', () => {
     expect(isDevProcess(`sh -c "node ${ROOT}/playground/x --conditions=source relay.ts"`, ROOT))

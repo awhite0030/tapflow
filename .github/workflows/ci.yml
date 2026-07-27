@@ -39,7 +39,12 @@ jobs:
     # Dependabot cannot write the opt-out marker into its own PR body, and a dependency bump is
     # already surfaced by the bot and the lockfile. Blocking those would only teach people to
     # ignore this job.
-    if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+    # `pull_request.user.login` is the PR's author. `github.actor` is whoever triggered the run,
+    # so a maintainer pushing to a bot's branch would lose the exemption — and a bot cannot write
+    # the opt-out marker into its own body.
+    if: >-
+      github.event_name == 'pull_request' &&
+      !endsWith(github.event.pull_request.user.login, '[bot]')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,4 +62,6 @@ jobs:
           # fence, which sed cannot express — and a body is untrusted input, so it never reaches
           # a shell command line.
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: node scripts/check-changeset.mjs "origin/${{ github.base_ref }}"
+          # Via env, not interpolated into the command: a branch name may contain shell syntax.
+          BASE_REF: ${{ github.base_ref }}
+        run: node scripts/check-changeset.mjs "origin/$BASE_REF"

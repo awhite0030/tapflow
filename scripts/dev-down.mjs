@@ -6,9 +6,20 @@
 // way and cost a debugging session — the failure it produced named neither the port nor the pid.
 import { findDevProcesses, listenersOn, REPO_ROOT, DEV_PORTS } from './dev-ports.mjs'
 
+// Reported before the early exit: "nothing of ours is running" and "the port is free" are
+// different facts, and the case that needs both stated is exactly the one that returned early.
+function reportForeignHolders() {
+  for (const { port, what } of DEV_PORTS) {
+    if (listenersOn(port).length > 0) {
+      console.log(`\n  Note: :${port} (${what}) is still held, by something that is not a tapflow dev process.`)
+    }
+  }
+}
+
 const targets = findDevProcesses()
 if (targets.length === 0) {
   console.log(`No tapflow dev processes running for ${REPO_ROOT}`)
+  reportForeignHolders()
   process.exit(0)
 }
 
@@ -35,12 +46,6 @@ if (stillThere.length > 0) {
   process.exit(1)
 }
 
-// Honours the PORT override the same way the preflight does; hardcoding 4000 made this note
-// meaningless whenever the relay was started on another port.
-for (const { port, what } of DEV_PORTS) {
-  if (listenersOn(port).length > 0) {
-    console.log(`\n  Note: :${port} (${what}) is still held, by something that is not a tapflow dev process.`)
-  }
-}
+reportForeignHolders()
 
 console.log('\nStopped.')

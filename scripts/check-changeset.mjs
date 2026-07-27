@@ -13,13 +13,14 @@
 // decision someone writes down, not something that happens by forgetting.
 import { execFileSync } from 'child_process'
 import { pathToFileURL } from 'url'
+import { realpathSync } from 'fs'
 
-// Published to npm, plus `dashboard`: it is `private`, but it is built into the relay's
-// `public/` and shipped inside that package — it is tapflow's primary user surface.
-const SHIPPED_PACKAGES = [
-  'agent-core', 'ios-agent', 'android-agent', 'relay', 'cli', 'mcp-server', 'flow-runner',
-  'audiotap-helper', 'dashboard',
-]
+// Inverted on purpose: everything under `packages/` ships unless named here. Listing what
+// ships instead left a NEW published package invisible to the gate — the case that most needs
+// a release note — while the comment below claimed the opposite. `dashboard` is deliberately
+// absent from this list: it is `private`, but it is built into the relay's `public/` and
+// shipped inside that package, and it is tapflow's primary user surface.
+const NOT_SHIPPED_PACKAGES = ['docs', 'playground']
 
 // Deny by default. An earlier version listed what ships — `src/**` with a TypeScript extension —
 // and so ignored `.sql` migrations, `bin/`, `proto/`, `schema/`, `xctest-runner/`, the dashboard
@@ -27,14 +28,22 @@ const SHIPPED_PACKAGES = [
 // directory errs toward asking for a changeset, which is the harmless direction to be wrong in.
 const EXEMPT = [
   /(^|\/)__tests__\//,
+  /(^|\/)__fixtures__\//,
   /\.(test|spec)\.[cm]?[jt]sx?$/,
+  /Test\.swift$/,                                  // the XCUITest runner's own test target
   /(^|\/)dist\//,
-  /(^|\/)(README|LICENSE|CHANGELOG|AGENTS|CLAUDE)(\.md)?$/i,
+  /(^|\/)\.(gitignore|env[^/]*)$/,
+  /(^|\/)(README|LICENSE|CHANGELOG|AGENTS|CLAUDE|DESIGN)(\.md)?$/i,
   /(^|\/)(tsconfig[^/]*\.json|vitest\.config\.[^/]+|eslint\.config\.[^/]+|\.npmignore)$/,
 ]
 
-const PACKAGE_FILE = new RegExp(`^packages/(${SHIPPED_PACKAGES.join('|')})/`)
-const shipsToUsers = (f) => PACKAGE_FILE.test(f) && !EXEMPT.some((re) => re.test(f))
+const PACKAGE_FILE = /^packages\/([^/]+)\//
+/** Would a user of a released tapflow notice this file changing? Exported for the tests. */
+export function shipsToUsers(f) {
+  const pkg = f.match(PACKAGE_FILE)?.[1]
+  if (!pkg || NOT_SHIPPED_PACKAGES.includes(pkg)) return false
+  return !EXEMPT.some((re) => re.test(f))
+}
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim()
 
@@ -67,9 +76,16 @@ function main() {
   // time, from /release step 1.
   if (process.argv.includes('--audit')) {
     const i = process.argv.indexOf('--audit')
-    const since = process.argv[i + 1] && !process.argv[i + 1].startsWith('--')
-      ? process.argv[i + 1]
-      : git('describe', '--tags', '--abbrev=0')
+    const after = process.argv[i + 1]
+    let since = after && !after.startsWith('-') ? after : null
+    if (!since) {
+      try {
+        since = git('describe', '--tags', '--abbrev=0')
+      } catch {
+        console.error('No tags here — pass an explicit revision: pnpm changeset:audit <ref>')
+        process.exit(2)
+      }
+    }
 
     const merges = git('log', `${since}..HEAD`, '--merges', '--format=%H %s').split('\n').filter(Boolean)
     const gaps = []
@@ -78,7 +94,10 @@ function main() {
       const subject = rest.join(' ')
       const files = git('diff', '--name-only', `${sha}^1`, sha).split('\n').filter(Boolean)
       const shipped = files.filter((f) => shipsToUsers(f))
-      const cs = files.filter((f) => /^\.changeset\/.+\.md$/.test(f) && !/README/i.test(f))
+      const cs = files.filter((f) => /^\.changeset\/.+\.md$/.test(f) && !/^\.changeset\/README\.md$/i.test(f))
+      // Same exemption the CI job makes. Without it the audit reports a bot's dependency bump as
+      // a permanent gap: the gate never asked for that changeset, so nobody can ever close it.
+      if (/dependabot|renovate/i.test(subject)) continue
       if (shipped.length > 0 && cs.length === 0) gaps.push({ subject, shipped })
     }
 
@@ -100,11 +119,18 @@ function main() {
     process.exit(1)
   }
 
-  const base = process.argv[2] ?? 'origin/main'
-  const reasonFlag = process.argv.indexOf('--reason')
-  const reason = reasonFlag > -1
-    ? (process.argv[reasonFlag + 1] ?? '').trim()
-    : extractReason(process.env.PR_BODY ?? '')
+  // Parse rather than index. Reading `argv[2]` blindly handed `--reason` itself to
+  // `git merge-base`; skipping only dash-prefixed words then handed it the reason TEXT.
+  const argv = process.argv.slice(2)
+  const positional = []
+  let reasonArg = null
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--reason') { reasonArg = argv[++i] ?? ''; continue }
+    if (argv[i] === '--audit') { i++; continue }        // its value is read in the audit branch
+    if (!argv[i].startsWith('-')) positional.push(argv[i])
+  }
+  const base = positional[0] ?? 'origin/main'
+  const reason = reasonArg !== null ? reasonArg.trim() : extractReason(process.env.PR_BODY ?? '')
 
   let mergeBase
   try {
@@ -126,7 +152,7 @@ function main() {
   // "a changeset exists" is true on every branch and would never fail.
   const added = git('diff', '--name-only', '--diff-filter=A', `${mergeBase}...HEAD`)
     .split('\n')
-    .filter((f) => /^\.changeset\/.+\.md$/.test(f) && !/README/i.test(f))
+    .filter((f) => /^\.changeset\/.+\.md$/.test(f) && !/^\.changeset\/README\.md$/i.test(f))
 
   if (added.length > 0) {
     console.log(`Published source changed and ${added.length} changeset(s) added:`)
@@ -158,4 +184,6 @@ function main() {
 }
 
 // Only when run directly: the tests import `extractReason` from here.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main()
+// `realpathSync`: `import.meta.url` is already resolved, `argv[1]` is not, so invoking
+// through a symlink skipped `main()` entirely and the gate reported success having done nothing.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main()

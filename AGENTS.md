@@ -130,7 +130,7 @@ pnpm dev:down          # stops relay / agents / vite for THIS checkout
 `concurrently -k` cleans up on a normal exit, not when the terminal goes away or the machine sleeps.
 
 ### Changesets
-A PR that changes published source needs a changeset. CI enforces it (`changeset` job). Opt out only by writing the reason in the PR body, on its own line:
+A PR that changes published source needs a changeset. The CI `changeset` job fails without one — it only *blocks* a merge if it is a required check in branch protection. Opt out only by writing the reason in the PR body, on its own line:
 ```
 <!-- no-changeset: comment-only follow-up to #123 -->
 ```

@@ -15,7 +15,7 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 /** Agent worktrees live under the repo. They are separate checkouts and are never ours to kill. */
 const NESTED_CHECKOUTS = '/.claude/worktrees/'
 
-export const RELAY_PORT = Number(process.env.PORT ?? 4000)
+export const RELAY_PORT = Number(process.env.PORT || 4000)   // `||`: PORT="" is not port 0
 export const DASHBOARD_PORT = 3001
 export const DEV_PORTS = [
   { port: RELAY_PORT, what: 'relay' },
@@ -23,6 +23,7 @@ export const DEV_PORTS = [
 ]
 
 const isNode = (argv0) => basename(argv0 ?? '') === 'node'
+const escapeRe = (v) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 /**
  * Does this command line belong to a dev process of the checkout at `root`?
@@ -40,22 +41,30 @@ export function isDevProcess(command, root = REPO_ROOT) {
   const argv = command.split(/\s+/).filter(Boolean)
   if (!isNode(argv[0])) return false
 
-  const inRepo = argv.some(
-    (a) => a.startsWith(`${root}/`) && !a.startsWith(`${root}${NESTED_CHECKOUTS}`),
-  )
-  if (!inRepo) return false
+  // The path that establishes the ROLE must itself be the one inside the repo. Testing those two
+  // things independently let `--root <repo>/packages` or `--cwd <repo>/x` supply the "in repo"
+  // half while a foreign vite or a foreign script supplied the role — and `dev-down` SIGKILLs
+  // what this returns.
+  //
+  // Matched against the raw command rather than a token, so a checkout path containing a space
+  // still works: `root` is embedded literally and only the remainder is space-free.
+  const under = (suffix) =>
+    new RegExp(`${escapeRe(root)}/(?!${escapeRe(NESTED_CHECKOUTS.slice(1, -1))}/)\\S*${suffix}`)
+      .test(command)
 
-  // tsx launcher and the child it spawns — the child is the one holding the relay port.
+  // The tsx launcher, and the child it spawns — the child holds the relay port. The child names
+  // its script relatively, so what anchors it to this checkout is the tsx loader path.
   const isTsxDev =
     argv.includes('--conditions=source') &&
-    argv.some((a) => /(^|\/)(relay|ios-agent|android-agent|multi-agent)\.ts$/.test(a))
+    argv.some((a) => /(^|\/)(relay|ios-agent|android-agent|multi-agent)\.ts$/.test(a)) &&
+    !argv.some((a) => a.startsWith('/') && /(relay|ios-agent|android-agent|multi-agent)\.ts$/.test(a)
+      && !a.startsWith(`${root}/`)) &&
+    under('tsx/[^\\s]*')
   // `node …/vite/bin/vite.js --port 3001`
-  const isVite =
-    argv.some((a) => /(^|\/)vite(\.js)?$/.test(a)) && argv.includes(String(DASHBOARD_PORT))
+  const isVite = under('vite(\\.js)?(\\s|$)') && argv.includes(String(DASHBOARD_PORT))
   // `node …/concurrently.js -k -n relay,dashboard,ios,android …`
   const isSupervisor =
-    argv.some((a) => /(^|\/)concurrently(\.js)?$/.test(a)) &&
-    argv.some((a) => a.startsWith('relay,'))
+    under('concurrently(\\.js)?(\\s|$)') && argv.some((a) => a.startsWith('relay,'))
 
   return isTsxDev || isVite || isSupervisor
 }
