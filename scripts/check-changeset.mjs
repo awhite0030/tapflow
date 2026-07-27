@@ -39,6 +39,34 @@ const EXEMPT = [
 
 const PACKAGE_FILE = /^packages\/([^/]+)\//
 /**
+ * PR number of a merge commit, from its subject. `null` for anything else (a hand-made merge,
+ * a squash). Exported for the tests.
+ */
+export function prNumberOf(subject) {
+  const m = /^Merge pull request #(\d+) /.exec(subject)
+  return m ? Number(m[1]) : null
+}
+
+/**
+ * PR numbers a changeset declares it is writing release notes for, from a `Backfills: #1, #2`
+ * line. Exported for the tests.
+ *
+ * Why this exists: the audit judges each merge on its own, so a changeset added by a LATER PR to
+ * cover an earlier one never clears it. During the v0.17.0 cycle four merges were reported as
+ * gaps for a week after they had in fact been covered, and the only way to know was to match
+ * them up by hand on every run. A backfill now says which merges it answers for.
+ */
+export function parseBackfills(body) {
+  const out = []
+  for (const line of body.split(/\r?\n/)) {
+    const m = /^\s*Backfills:\s*(.+?)\s*$/i.exec(line)
+    if (!m) continue
+    for (const ref of m[1].matchAll(/#(\d+)/g)) out.push(Number(ref[1]))
+  }
+  return out
+}
+
+/**
  * Is this the branch `pnpm changeset version` produces? It consumes (deletes) the changesets it
  * folds into the changelogs, so a gate looking for ADDED ones fails the release PR — which, with
  * the check required, blocks the release itself. Both halves are needed: deleting a changeset
@@ -99,17 +127,39 @@ function main() {
     }
 
     const merges = git('log', `${since}..HEAD`, '--merges', '--format=%H %s').split('\n').filter(Boolean)
-    const gaps = []
-    for (const line of merges) {
+    const isChangeset = (f) => /^\.changeset\/.+\.md$/.test(f) && !/^\.changeset\/README\.md$/i.test(f)
+
+    // First pass: which merges does a later changeset claim to cover? Each changeset is read at
+    // the merge that ADDED it — by release time they have been consumed and are gone from HEAD.
+    const backfilled = new Set()
+    const perMerge = merges.map((line) => {
       const [sha, ...rest] = line.split(' ')
-      const subject = rest.join(' ')
-      const files = git('diff', '--name-only', `${sha}^1`, sha).split('\n').filter(Boolean)
-      const shipped = files.filter((f) => shipsToUsers(f))
-      const cs = files.filter((f) => /^\.changeset\/.+\.md$/.test(f) && !/^\.changeset\/README\.md$/i.test(f))
+      const changed = (filter) =>
+        git('diff', '--name-only', `--diff-filter=${filter}`, `${sha}^1`, sha)
+          .split('\n').filter(Boolean)
+      const files = changed('ACMR')
+      // Added or amended, never deleted. A release merge lists the changesets it consumed, and
+      // reading those at that commit fails — they are gone by then. Amendments count: a PR that
+      // extends an existing entry rather than writing a new one is still writing release notes,
+      // which is exactly what #420 did to the clipboard changeset.
+      const touched = changed('AM').filter(isChangeset)
+      for (const f of touched) {
+        for (const pr of parseBackfills(git('show', `${sha}:${f}`))) backfilled.add(pr)
+      }
+      return { subject: rest.join(' '), files, touched, consumed: changed('D').filter(isChangeset) }
+    })
+
+    const gaps = []
+    for (const { subject, files, touched, consumed } of perMerge) {
       // Same exemption the CI job makes. Without it the audit reports a bot's dependency bump as
       // a permanent gap: the gate never asked for that changeset, so nobody can ever close it.
       if (/dependabot|renovate/i.test(subject)) continue
-      if (shipped.length > 0 && cs.length === 0) gaps.push({ subject, shipped })
+      // The release merge itself bumps every package.json while consuming changesets, not adding.
+      if (isReleaseBranch(consumed, files)) continue
+      const pr = prNumberOf(subject)
+      if (pr !== null && backfilled.has(pr)) continue
+      const shipped = files.filter((f) => shipsToUsers(f))
+      if (shipped.length > 0 && touched.length === 0) gaps.push({ subject, shipped })
     }
 
     console.log(`Merges since ${since}: ${merges.length}`)
@@ -124,8 +174,11 @@ function main() {
       if (shipped.length > 5) console.log(`      …and ${shipped.length - 5} more`)
     }
     console.log(`
-    These will be missing from the changelog. Either backfill a changeset for each, or
-    confirm the change is genuinely not worth a release note.
+    These will be missing from the changelog. Either confirm the change is not worth a
+    release note, or backfill one — and name what it covers, so a later run stops
+    reporting a gap that has already been filled:
+
+        Backfills: #413
   `)
     process.exit(1)
   }
