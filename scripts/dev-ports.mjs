@@ -72,7 +72,10 @@ export function isDevProcess(command, root = REPO_ROOT) {
 /** `ps` output as {pid, command}. Empty if ps is unavailable — never a reason to block. */
 export function listProcesses() {
   try {
-    return execFileSync('ps', ['-Ao', 'pid=,command='], { encoding: 'utf8' })
+    // `-ww`: do not let `ps` bound the command column. Not reproducible on this macOS — a
+    // 1929-char line survives a pipe intact — but a truncated line makes `isDevProcess` miss a
+    // real process, and this tool's worst failure is reporting success having stopped nothing.
+    return execFileSync('ps', ['-Awwo', 'pid=,command='], { encoding: 'utf8' })
       .split('\n')
       .map((line) => {
         const m = line.match(/^\s*(\d+)\s+(.*)$/)
@@ -102,6 +105,18 @@ export function listenersOn(port) {
     // "nothing to report" — a preflight that cannot look must not stop the dev server.
     return []
   }
+}
+
+/**
+ * Which ports a caller wants checked. Throws on a name that matches nothing: an empty selection
+ * would make the preflight exit 0 having looked at nothing, which is the one outcome a tool
+ * against silent success must not produce. Exported for the tests.
+ */
+export function selectPorts(wanted) {
+  if (wanted.length === 0) return DEV_PORTS
+  const unknown = wanted.filter((w) => !DEV_PORTS.some(({ what }) => what.startsWith(w)))
+  if (unknown.length > 0) throw new Error(`Unknown dev-preflight target: ${unknown.join(', ')}`)
+  return DEV_PORTS.filter(({ what }) => wanted.some((w) => what.startsWith(w)))
 }
 
 export const commandFor = (pid) =>

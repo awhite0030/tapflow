@@ -4,7 +4,7 @@
 // written from memory. The first version of this matcher was written from memory and selected
 // none of the three roles while selecting `grep`, `less` and sibling checkouts instead.
 import { describe, it, expect } from 'vitest'
-import { isDevProcess } from '../dev-ports.mjs'
+import { isDevProcess, selectPorts, DEV_PORTS } from '../dev-ports.mjs'
 
 const ROOT = '/Users/dev/projects/tapflow'
 const NODE = '/Users/dev/.nvm/versions/node/v24.15.0/bin/node'
@@ -135,5 +135,24 @@ describe('isDevProcess — the individual conditions', () => {
   it('does not treat a docs or playground concurrently run as the dev supervisor', () => {
     expect(isDevProcess(`node ${ROOT}/node_modules/.bin/concurrently -n docs,api "a" "b"`, ROOT))
       .toBe(false)
+  })
+})
+
+// `pnpm dev:pool` runs no dashboard, so callers name the ports they need. A name that matches
+// nothing must not quietly select none: the preflight would then exit 0 having looked at nothing,
+// which is precisely the silent success this tool exists to prevent.
+describe('selectPorts', () => {
+  it('returns every port when nothing is named', () => {
+    expect(selectPorts([])).toEqual(DEV_PORTS)
+  })
+
+  it('selects by prefix, so "dashboard" matches "dashboard (vite)"', () => {
+    expect(selectPorts(['dashboard']).map((p) => p.what)).toEqual(['dashboard (vite)'])
+    expect(selectPorts(['relay']).map((p) => p.what)).toEqual(['relay'])
+  })
+
+  it('throws on a name that matches nothing rather than selecting none', () => {
+    expect(() => selectPorts(['relayy'])).toThrow(/Unknown dev-preflight target: relayy/)
+    expect(() => selectPorts(['relay', 'typo'])).toThrow(/typo/)
   })
 })

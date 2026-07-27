@@ -6,14 +6,17 @@
 // It reports and stops. It does NOT kill anything: a dev server you started deliberately in
 // another terminal is indistinguishable from a leftover, and killing the wrong one is the more
 // expensive mistake. `pnpm dev:down` is the deliberate version.
-import { DEV_PORTS, listenersOn, commandFor, findDevProcesses } from './dev-ports.mjs'
+import { selectPorts, listenersOn, commandFor, findDevProcesses } from './dev-ports.mjs'
 
 // `pnpm dev:pool` runs no dashboard, so blocking it on :3001 would refuse a start for a port it
 // never wanted. Callers name what they need: `dev-preflight.mjs relay dashboard`.
-const wanted = process.argv.slice(2)
-const ports = wanted.length
-  ? DEV_PORTS.filter(({ what }) => wanted.some((w) => what.startsWith(w)))
-  : DEV_PORTS
+let ports
+try {
+  ports = selectPorts(process.argv.slice(2))
+} catch (e) {
+  console.error(`\n  ${e.message}\n`)
+  process.exit(2)
+}
 
 const held = ports.map(({ port, what }) => ({ port, what, pids: listenersOn(port) })).filter(
   (p) => p.pids.length > 0,
