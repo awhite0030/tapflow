@@ -49,6 +49,7 @@ playground/       ← local integration test environment
 
 - `main` is always deployable. Direct commits are not allowed. Start work on a `feature/{topic}` branch → PR → merge.
 - Always create new branches from `origin/main` (`git fetch origin && git checkout -b feature/{topic} origin/main`). Your local `main` may be behind.
+- **Every PR that changes published source needs a changeset.** The CI `changeset` job fails otherwise (it blocks a merge only once it is a required status check on the `protect-main` ruleset); `pnpm changeset:check` runs the same check locally against committed work. Skip it only by stating why in the PR body, on a line of its own: `<!-- no-changeset: reason -->` (quoting it inside a code block does not count). A comment-only or test-only change is a fair skip — the point is that it is a decision, not an omission.
 - Releases are driven by [changesets](https://github.com/changesets/changesets). A tag push triggers GitHub Actions → npm publish + GitHub Release. Merging to main does not auto-publish.
 - Never publish with raw `npm publish` — it does not rewrite `workspace:*` dependencies between packages; the changesets → pnpm publish path does.
 
