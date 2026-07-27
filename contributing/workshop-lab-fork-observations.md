@@ -82,13 +82,17 @@ adding unrequested features is against our roadmap discipline.
 - **The security finding** as an action item. The report warns that a simulator uses
   the host's network stack, so an attendee can pivot from the workshop app to Safari
   and reach host-local / private-LAN services that app-level auth does not contain.
-  That is real, but it is a *containment* concern that only bites when the actor is
-  **untrusted**. tapflow's model is a trusted team on a LAN, gated twice (LAN
-  reachability + id/pw), where a logged-in teammate already has that LAN access
-  anyway — so there is nothing new to contain. The lesson only re-activates if we
-  expose tapflow to untrusted actors over a public tunnel, at which point the LAN
-  gate is gone and id/pw is the only gate left. A one-line note belongs in the
-  eventual public-exposure / HTTPS-tunnel docs, not in the code.
+  That is real, and it splits in two. The private-LAN half is genuinely contained by
+  the current model: tapflow is a trusted team on a LAN, gated twice (LAN reachability
+  + id/pw), and a logged-in teammate already reaches those services from their own
+  machine. The host-local half is not. A simulator sharing the host's network stack
+  reaches services bound to the agent Mac's loopback, which a teammate on the LAN
+  cannot — so it does hand out reach that did not exist before, trusted actor or not.
+  Under the trusted-team model we accept that rather than contain it, and the
+  difference matters: accepted is not the same as absent. Both halves change if
+  tapflow is exposed to untrusted actors over a public tunnel, where the LAN gate is
+  gone and id/pw is the only one left. A note belongs in the eventual public-exposure
+  / HTTPS-tunnel docs, not in the code.
 
 ## Related
 
