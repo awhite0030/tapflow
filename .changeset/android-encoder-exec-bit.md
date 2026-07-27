@@ -2,7 +2,7 @@
 "@tapflowio/android-agent": patch
 ---
 
-Fix missing Android audio, and the emulator's sound playing out of the agent Mac instead.
+Fix missing Android audio in the dashboard, and the emulator's sound playing out of the agent Mac's speakers instead.
 
 On a fresh install the bundled `emulator-encoder` binary lost its executable bit, so spawning it failed and the agent fell back from the emulator's gRPC backend to scrcpy. Audio capture and the host-mute tap only exist on the gRPC path, so that fallback silently took both: the dashboard got no audio, and the Mac running the agent played the emulator's audio out loud.
 
