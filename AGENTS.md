@@ -134,7 +134,7 @@ A PR that changes published source needs a changeset. The CI `changeset` job fai
 ```
 <!-- no-changeset: comment-only follow-up to #123 -->
 ```
-`pnpm changeset:check` runs the same check locally, against committed work. That gate cannot see anything already on main, so `/release` audits the merges too (`pnpm changeset:audit`) — four merged PRs once got as far as release preparation with no changelog entry between them, and only the audit would have caught it.
+`pnpm changeset:check` runs the same check locally, against committed work. A changeset written for an EARLIER PR must say so — `Backfills: #413` on its own line — or the audit keeps reporting that merge for the rest of the cycle. That gate cannot see anything already on main, so `/release` audits the merges too (`pnpm changeset:audit`) — four merged PRs once got as far as release preparation with no changelog entry between them, and only the audit would have caught it.
 
 ---
 
