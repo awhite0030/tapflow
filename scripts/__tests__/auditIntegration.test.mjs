@@ -124,6 +124,78 @@ describe('audit --audit against real git history', () => {
     expect(out).not.toMatch(/fatal|does not exist/)
   })
 
+  // Removing a shipped file is the highest-consequence change there is. Narrowing the file list
+  // to added/changed dropped deletions from the check, and every test still passed.
+  it('reports a merge that DELETES published source without a changeset', () => {
+    mergePr(101, 'add-b', {
+      'packages/relay/src/b.ts': 'export const b = 1\n',
+      '.changeset/add-b.md': CHANGESET('Adds b.'),
+    })
+    git('checkout', '-q', '-b', 'rip')
+    rmSync(join(repo, 'packages/relay/src/b.ts'))
+    git('add', '-A')
+    git('commit', '-q', '-m', 'remove b')
+    git('checkout', '-q', 'main')
+    git('merge', '--no-ff', '-q', 'rip', '-m', 'Merge pull request #201 from me/rip')
+
+    const { code, out } = audit()
+    expect(code).toBe(1)
+    expect(out).toContain('#201')
+  })
+
+  // The marker switches a gate off, and every doc in this repo prints it verbatim. A changeset
+  // that documents the convention must not clear whatever number the example names.
+  it('ignores a backfill claim quoted inside a code fence', () => {
+    mergePr(101, 'fix-a', { 'packages/relay/src/a.ts': 'export const a = 1\n' })
+    mergePr(102, 'docs', {
+      '.changeset/late.md': CHANGESET('Explains the rule:\n\n```\nBackfills: #101\n```\n'),
+    })
+    const { code, out } = audit()
+    expect(code).toBe(1)
+    expect(out).toContain('#101')
+  })
+
+  // A claim can only speak for what already happened.
+  it('does not let a claim pre-clear a merge that lands after it', () => {
+    mergePr(102, 'early-claim', { '.changeset/early.md': CHANGESET('Later.\n\nBackfills: #101') })
+    mergePr(101, 'fix-a', { 'packages/relay/src/a.ts': 'export const a = 1\n' })
+    const { code, out } = audit()
+    expect(code).toBe(1)
+    expect(out).toContain('#101')
+  })
+
+  // Claim it, then think better of it: nothing reaches the changelog, so the gap is real again.
+  it('stops honouring a claim whose changeset was dropped afterwards', () => {
+    mergePr(101, 'fix-a', { 'packages/relay/src/a.ts': 'export const a = 1\n' })
+    mergePr(102, 'backfill', { '.changeset/late.md': CHANGESET('Fixes a.\n\nBackfills: #101') })
+    git('checkout', '-q', '-b', 'undo')
+    rmSync(join(repo, '.changeset', 'late.md'))
+    git('add', '-A')
+    git('commit', '-q', '-m', 'drop it')
+    git('checkout', '-q', 'main')
+    git('merge', '--no-ff', '-q', 'undo', '-m', 'Merge pull request #103 from me/undo')
+
+    const { code, out } = audit()
+    expect(code).toBe(1)
+    expect(out).toContain('#101')
+  })
+
+  it('counts a renamed changeset, which is still a changeset', () => {
+    mergePr(101, 'first', {
+      'packages/relay/src/a.ts': 'export const a = 1\n',
+      '.changeset/old-name.md': CHANGESET('Fixes a.'),
+    })
+    git('checkout', '-q', '-b', 'rename')
+    git('mv', '.changeset/old-name.md', '.changeset/new-name.md')
+    writeFileSync(join(repo, 'packages/relay/src/a.ts'), 'export const a = 2\n')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'rename and edit')
+    git('checkout', '-q', 'main')
+    git('merge', '--no-ff', '-q', 'rename', '-m', 'Merge pull request #102 from me/rename')
+
+    expect(audit().code).toBe(0)
+  })
+
   it('ignores a bot merge, which can never carry a changeset', () => {
     mergePr(104, 'dependabot/npm/foo', { 'packages/relay/package.json': '{"a":1}\n' })
     expect(audit().code).toBe(0)
