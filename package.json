@@ -10,15 +10,16 @@
   },
   "scripts": {
     "build": "pnpm --filter @tapflowio/agent-core build && pnpm --filter @tapflowio/dashboard build && pnpm --filter @tapflowio/flow-runner build && pnpm --filter @tapflowio/relay build && pnpm --filter @tapflowio/ios-agent build && pnpm --filter @tapflowio/android-agent build && pnpm --filter tapflow build && pnpm --filter @tapflowio/mcp-server build",
-    "test": "pnpm -r test --if-present",
-    "lint": "pnpm -r --if-present lint",
+    "test": "vitest run --config scripts/vitest.config.mjs && pnpm -r test --if-present",
+    "lint": "eslint scripts && pnpm -r --if-present lint",
     "typecheck": "tsc -b && pnpm --filter @tapflowio/dashboard --filter @tapflowio/mcp-server typecheck",
     "prepare": "lefthook install || true",
-    "dev": "concurrently -k -n relay,dashboard,ios,android -c cyan,magenta,green,yellow \"pnpm dev:relay\" \"pnpm --filter @tapflowio/dashboard dev\" \"pnpm dev:ios\" \"pnpm dev:android\"",
-    "dev:pool": "concurrently -k -n relay,ios,mocks -c cyan,green,yellow \"pnpm dev:relay\" \"pnpm dev:ios\" \"pnpm --filter @tapflowio/playground mock-agents\"",
+    "dev": "node scripts/dev-preflight.mjs relay dashboard && concurrently -k -n relay,dashboard,ios,android -c cyan,magenta,green,yellow \"pnpm dev:relay\" \"pnpm --filter @tapflowio/dashboard dev\" \"pnpm dev:ios\" \"pnpm dev:android\"",
+    "dev:pool": "node scripts/dev-preflight.mjs relay && concurrently -k -n relay,ios,mocks -c cyan,green,yellow \"pnpm dev:relay\" \"pnpm dev:ios\" \"pnpm --filter @tapflowio/playground mock-agents\"",
     "dev:relay": "pnpm --filter @tapflowio/playground relay",
     "dev:ios": "pnpm --filter @tapflowio/playground ios-agent",
     "dev:android": "pnpm --filter @tapflowio/playground android-agent",
+    "dev:down": "node scripts/dev-down.mjs",
     "seed": "pnpm --filter @tapflowio/playground seed",
     "seed:demo": "pnpm --filter @tapflowio/playground demo-seed",
     "doctor": "pnpm --filter @tapflowio/playground doctor",
@@ -29,6 +30,8 @@
     "docs:build": "pnpm --filter @tapflowio/docs build",
     "docs:preview": "pnpm --filter @tapflowio/docs preview",
     "changeset": "changeset",
+    "changeset:check": "node scripts/check-changeset.mjs",
+    "changeset:audit": "node scripts/check-changeset.mjs --audit",
     "version": "changeset version",
     "release": "pnpm build && changeset publish"
   },
@@ -40,7 +43,8 @@
     "eslint": "^10.7.0",
     "globals": "^17.7.0",
     "lefthook": "^2.1.10",
-    "typescript-eslint": "^8.65.0"
+    "typescript-eslint": "^8.65.0",
+    "vitest": "^4.1.10"
   },
   "pnpm": {
     "overrides": {

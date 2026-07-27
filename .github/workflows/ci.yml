@@ -32,3 +32,29 @@ jobs:
       - run: pnpm --filter tapflow --filter @tapflowio/mcp-server build
 
       - run: pnpm test
+
+  changeset:
+    # A PR that changes shipped code must say what a user gets. Separate job so it reports on its
+    # own rather than hiding inside a build failure.
+    # Dependabot cannot write the opt-out marker into its own PR body, and a dependency bump is
+    # already surfaced by the bot and the lockfile. Blocking those would only teach people to
+    # ignore this job.
+    if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the check diffs against the merge base
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Require a changeset for published source changes
+        env:
+          # `<!-- no-changeset: reason -->` in the PR body is the documented opt-out. Parsed by
+          # the script, not by shell: the marker only counts on its own line and outside a code
+          # fence, which sed cannot express — and a body is untrusted input, so it never reaches
+          # a shell command line.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node scripts/check-changeset.mjs "origin/${{ github.base_ref }}"

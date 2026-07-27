@@ -82,6 +82,15 @@ The authoring session inherits its own assumptions, so before creating a PR the 
 - **Record**: write findings + dispositions (fixed, or skipped with a reason) to `.work/reviews/<branch>.md` (slashes → `__`), including the **full 40-character HEAD hash** (`git rev-parse HEAD` — an abbreviated hash will not pass the gate). Mention the review in the PR body.
 - **Enforcement**: the PreToolUse hook `.claude/hooks/adversarial-review-gate.sh` blocks PR creation unless that record exists and references the current HEAD — any commit after the review invalidates the record until it is refreshed against the new diff.
 
+### Before Implementing — cross-cutting features
+
+Applies when a change spans **two or more packages, or both platforms**. Skip it for work inside one package.
+
+1. **Write the invariant table first** — one row per path or state, one column per platform, and what the *user* observes. Put it in the plan document. The clipboard bridge took eleven review rounds largely because this table was never written: the same class of defect (one platform fixed, the other not) was found five separate times, each by a reviewer rather than by looking.
+2. **Review the design before the code.** One adversarial pass over the plan and that table, before implementing. The expensive rounds on a multi-package feature are the ones where the mechanism itself was wrong, and a wrong mechanism is cheapest to find on paper. This is in addition to the pre-PR review below, not instead of it.
+3. **A design-level review finding means replan, not patch.** If a reviewer says the *shape* is wrong — wrong scope for a flag, wrong owner for a decision — stop and redo that part. Patching a design finding produced the next design finding three times in a row on the clipboard branch.
+4. **Mutate the guards too.** A test written to catch drift or protect an invariant is itself untested until you break the thing it guards and watch it fail — and until you run it **alone**. Three separate guards on the clipboard branch had the very hole they were written to close, including one that only worked because a sibling `describe` leaked its environment.
+
 ### Design Principles (SOLID — priority subset)
 
 - **OCP**: New platforms and features are added without modifying existing code — platforms register via `AgentRegistry.register()` only; relay and dashboard code stay unchanged.
@@ -99,6 +108,22 @@ ps aux | grep vitest | grep -v grep
 pkill -f "vitest"
 ```
 Zombie worker processes accumulate silently from `pnpm test` loops and consume memory. Kill them before starting new test runs.
+
+### Dev Server Hygiene
+Same rule, different processes. **Anything you start with `pnpm dev` you stop before the session ends:**
+```bash
+pnpm dev:down          # stops relay / agents / vite for THIS checkout
+```
+`pnpm dev` refuses to start when :4000 or :3001 is already held, and names the pid — because the failure it produces otherwise mentions neither. A relay left running once survived a day and cost a debugging session: it failed with `EADDRINUSE`, `concurrently` SIGTERMed the dashboard and both agents, and the visible symptom was four processes dying for no stated reason.
+
+`concurrently -k` cleans up on a normal exit, not when the terminal goes away or the machine sleeps.
+
+### Changesets
+A PR that changes published source needs a changeset. CI enforces it (`changeset` job). Opt out only by writing the reason in the PR body, on its own line:
+```
+<!-- no-changeset: comment-only follow-up to #123 -->
+```
+`pnpm changeset:check` runs the same check locally, against committed work. That gate cannot see anything already on main, so `/release` audits the merges too (`pnpm changeset:audit`) — four merged PRs once got as far as release preparation with no changelog entry between them, and only the audit would have caught it.
 
 ---
 
