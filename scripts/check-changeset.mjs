@@ -240,6 +240,8 @@ function main() {
       if (shipped.length > 0 && touched.length === 0) gaps.push({ subject, shipped })
     }
 
+    // stdout carries the verdict, stderr the diagnosis — so `2>/dev/null` leaves a caller with
+    // the answer and nothing else. The guidance block below broke that by staying on stdout.
     console.error(`Merges since ${since}: ${merges.length}`)
     if (gaps.length === 0) {
       console.log('Every merge that changed published source carries a changeset.')
@@ -251,7 +253,7 @@ function main() {
       for (const f of shipped.slice(0, 5)) console.error(`      ${f}`)
       if (shipped.length > 5) console.error(`      …and ${shipped.length - 5} more`)
     }
-    console.log(`
+    console.error(`
     These will be missing from the changelog. Either confirm the change is not worth a
     release note, or backfill one — and name what it covers, so a later run stops
     reporting a gap that has already been filled:

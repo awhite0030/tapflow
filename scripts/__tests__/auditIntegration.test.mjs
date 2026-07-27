@@ -27,12 +27,18 @@ function mergePr(number, branch, files) {
   git('merge', '--no-ff', '-q', branch, '-m', `Merge pull request #${number} from me/${branch}`)
 }
 
-/** Runs the audit; returns {code, out} rather than throwing, since a gap exits 1. */
+/**
+ * Runs the audit; returns {code, out, stdout, stderr} rather than throwing, since a gap exits 1.
+ * `out` is both streams joined — most assertions only care that a number was mentioned.
+ */
 function audit(since = 'v0') {
+  const opts = { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
   try {
-    return { code: 0, out: execFileSync('node', [SCRIPT, '--audit', since], { cwd: repo, encoding: 'utf8' }) }
+    const stdout = execFileSync('node', [SCRIPT, '--audit', since], opts)
+    return { code: 0, stdout, stderr: '', out: stdout }
   } catch (e) {
-    return { code: e.status, out: (e.stdout ?? '') + (e.stderr ?? '') }
+    const stdout = e.stdout ?? '', stderr = e.stderr ?? ''
+    return { code: e.status, stdout, stderr, out: stdout + stderr }
   }
 }
 
@@ -194,6 +200,27 @@ describe('audit --audit against real git history', () => {
     git('merge', '--no-ff', '-q', 'rename', '-m', 'Merge pull request #102 from me/rename')
 
     expect(audit().code).toBe(0)
+  })
+
+  // stdout carries the verdict, stderr the diagnosis, so `2>/dev/null` leaves a caller with the
+  // answer and nothing else. One line of the guidance block stayed on stdout and broke that.
+  it('keeps stdout empty when there are gaps, and puts the whole report on stderr', () => {
+    mergePr(101, 'fix-a', { 'packages/relay/src/a.ts': 'export const a = 1\n' })
+    const { code, stdout, stderr } = audit()
+    expect(code).toBe(1)
+    expect(stdout).toBe('')
+    expect(stderr).toContain('#101')
+    expect(stderr).toContain('Backfills:')          // the guidance block travels with it
+  })
+
+  it('puts only the verdict on stdout when there is nothing to report', () => {
+    mergePr(101, 'fix-a', {
+      'packages/relay/src/a.ts': 'export const a = 1\n',
+      '.changeset/fix-a.md': CHANGESET('Fixes a.'),
+    })
+    const { code, stdout } = audit()
+    expect(code).toBe(0)
+    expect(stdout.trim()).toBe('Every merge that changed published source carries a changeset.')
   })
 
   it('ignores a bot merge, which can never carry a changeset', () => {
