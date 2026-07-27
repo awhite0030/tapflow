@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-27
+
+### Added
+
+- **Copy and paste now cross between the dashboard and the device.** Cmd/Ctrl+V sends your clipboard to the simulator or emulator and pastes it there; Cmd/Ctrl+C brings what you copied on the device to your own clipboard in one press. Previously neither direction existed, so accounts, tokens and deep links had to be retyped by hand. Paste works everywhere including plain-HTTP LAN; copy needs the dashboard over HTTPS or localhost, because proving the copy actually landed takes a round trip and no clipboard API available on plain HTTP accepts a value arriving that late — on plain HTTP the copy still reaches the device and the dashboard says why it stopped there. The agent presses the device-side chord itself and confirms the clipboard changed before answering, so a slow device cannot hand back its previous contents as if freshly copied.
+- MCP `tap`, `swipe`, `press_key` and `press_button` report what actually happened instead of always reporting success. They were fire-and-forget: against a session whose device was not booted the input was dropped and still answered `{tapped: true}`, which also made parallel test results untrustworthy.
+
+### Fixed
+
+- Cmd/Ctrl+C, +V and +X on Android typed the letter into the app instead of copying, pasting or cutting. The key handler ignored the Ctrl/Meta modifier; a chord is now a command, not text.
+- No audio from Android in the dashboard, with the emulator's sound coming out of the agent Mac's speakers instead. The bundled encoder binary lost its executable bit on a fresh install, so the agent fell back from the emulator's gRPC backend to scrcpy — and audio capture and host-mute only exist on the gRPC path. Only visible with the dashboard and the agent on separate Macs.
+- iOS sessions silently dropped every tap, swipe and keystroke after an agent reconnect. The input channel was created only during `device:boot`, so a session that came back without one discarded input with no error — and the device looked responsive because screenshots and UI-tree reads travel a different path.
+
+### Changed
+
+- Agents advertise what they implement in `agent:register`, and the relay echoes it to the viewer on `session:joined`. Absent means unsupported, so an agent older than a capability keeps working untouched rather than being probed by timeout.
+
 ## [0.16.0] - 2026-07-22
 
 ### Added
@@ -306,7 +323,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Automatic `tapflow.config.json` creation as a side effect of `tapflow start` / `tapflow relay start`.
 
-[Unreleased]: https://github.com/jo-duchan/tapflow/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/jo-duchan/tapflow/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/jo-duchan/tapflow/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/jo-duchan/tapflow/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/jo-duchan/tapflow/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/jo-duchan/tapflow/compare/v0.13.0...v0.14.0
