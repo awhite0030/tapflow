@@ -14,7 +14,7 @@ status: living
 
 `@tapflowio/mcp-server`: bridges tapflow to LLM agents via the [Model Context Protocol](https://modelcontextprotocol.io).
 
-Published on the standard npm channel and versioned by changesets in the repo-wide fixed group (graduated from the `experimental` dist-tag in 2026-07). Never publish with raw `npm publish` — it does not rewrite `workspace:*` dependencies (the package depends on `@tapflowio/flow-runner`); the changesets → pnpm publish path does.
+Published on the standard npm channel and versioned by changesets in the repo-wide fixed group (graduated from the `experimental` dist-tag in 2026-07). Publish only via the changesets flow — see [CONTRIBUTING.md § Branches & releases](../../CONTRIBUTING.md#branches--releases).
 
 Connects to the relay over WebSocket + REST (`TapflowClient`), registers MCP tools, and exposes them to any MCP-compatible client (Claude Code, Codex, Cursor, etc.) via stdio transport.
 
@@ -25,9 +25,9 @@ Connects to the relay over WebSocket + REST (`TapflowClient`), registers MCP too
 - Tools: `src/tools.ts` — all MCP tool definitions. One `registerTools(server, client)` call registers everything.
 - Screenshots are saved to a temp file and returned as MCP `image` content with base64 encoding.
 
-### Available tools
+### Tool semantics (non-obvious)
 
-`list_devices`, `connect_device`, `disconnect_device`, `boot_device`, `screenshot`, `query_ui_tree`, `run_flow`, `tap`, `swipe`, `type_text`, `press_key`, `press_button`, `install_app`, `launch_app`, `list_builds`
+`disconnect_device` only leaves the session (`session:leave`) — the device stays booted. `shutdown_device` powers the device down (`device:shutdown` → agent runs simctl/adb shutdown → `device:shutdown-done`); use it to free resources or force a cold boot.
 
 `run_flow` replays a `@tapflowio/flow-runner` YAML flow deterministically (no LLM at replay time) over this process's existing relay connection — it shares the session joined via `connect_device`, so it never opens a second WebSocket or hits "Session busy".
 

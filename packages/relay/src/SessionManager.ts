@@ -9,6 +9,7 @@ export interface Session {
   agentId?: string
   agentName?: string
   agentPlatform?: string
+  agentCapabilities?: string[]
   agentSocket: WebSocket
   browserSocket: WebSocket | null
   streamSocket: WebSocket | null
@@ -38,7 +39,7 @@ export class SessionManager {
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   }
 
-  create(agentSocket: WebSocket, devices: RawDevice[] = [], agentName?: string, agentPlatform?: string, agentId?: string): string[] {
+  create(agentSocket: WebSocket, devices: RawDevice[] = [], agentName?: string, agentPlatform?: string, agentId?: string, agentCapabilities?: string[]): string[] {
     const agentIds = this.agentSocketIndex.get(agentSocket) ?? new Set<string>()
     return devices.map((d) => {
       const id = randomUUID()
@@ -47,6 +48,7 @@ export class SessionManager {
         agentId,
         agentName,
         agentPlatform,
+        agentCapabilities,
         agentSocket,
         browserSocket: null,
         streamSocket: null,

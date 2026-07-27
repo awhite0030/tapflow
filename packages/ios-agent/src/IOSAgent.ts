@@ -5,10 +5,13 @@ import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { spawnSync } from 'child_process'
 import { WebSocket } from 'ws'
-import type { Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
+import type { ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
 
 const logger = createLogger('ios-agent')
+
+// Typed so a typo cannot ship silently — the viewer gates the whole clipboard bridge on this.
+const AGENT_CAPABILITIES: AgentCapability[] = ['clipboard']
 
 // Cross-platform button name → iOS device-chrome button name. Chrome uses
 // hyphens and "power" (not "lock"); MCP's vocabulary uses underscores. Names
@@ -39,7 +42,14 @@ import {
   sendAudioYieldingToVideo,
 } from '@tapflowio/agent-core/utils'
 import type { AudioFrame } from '@tapflowio/agent-core'
-import { SimctlWrapper, isDeviceMissingError } from './SimctlWrapper.js'
+import { SimctlWrapper, isDeviceMissingError, ClipboardTooLargeError } from './SimctlWrapper.js'
+import {
+  MAX_CLIPBOARD_BYTES, clipboardByteLength,
+  CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
+  CLIPBOARD_COPY_DEADLINE_MS, CLIPBOARD_WRITE_DEADLINE_MS, CLIPBOARD_RESTORE_DEADLINE_MS, CLIPBOARD_POLL_MS,
+  createKeyedSerialQueue,
+  type AgentCapability,
+} from '@tapflowio/agent-core'
 import { ScreenCaptureStreamer, type StreamFrame } from './ScreenCaptureStreamer.js'
 import { AudioCaptureStreamer, readSimVolume, applyGain } from './AudioCaptureStreamer.js'
 import { ensureHelperApp, launchAudioHelper, isAudioSupported } from '@tapflowio/audiotap-helper'
@@ -76,6 +86,8 @@ interface DeviceState {
   sessionId: string
   deviceId: string
   touchHelper: TouchHelper | null
+  // Device-booted flag for truthful input acks — set on device:boot, cleared on shutdown; false after a reconnect until the ack path re-verifies once via simctl.
+  booted: boolean
   streamWs: WebSocket | null
   streamReader: ReadableStreamDefaultReader<StreamFrame> | null
   // Current capture streamer (ScreenCaptureStreamer path only) — lets the relay
@@ -181,6 +193,9 @@ export class IOSAgent implements DeviceAgent {
         ws.send(JSON.stringify({
           type: 'agent:register',
           platform: 'ios',
+          // Lets a viewer tell a clipboard-capable agent from one that predates the
+          // feature, instead of inferring it from silence. See agent-core AgentCapability.
+          capabilities: AGENT_CAPABILITIES,
           agentId: getMachineId(),
           agentName: os.hostname(),
           devices: devices.map((d) => ({
@@ -255,6 +270,7 @@ export class IOSAgent implements DeviceAgent {
         sessionId,
         deviceId,
         touchHelper: null,
+        booted: false,
         streamWs: null,
         streamReader: null,
         captureStreamer: null,
@@ -347,6 +363,7 @@ export class IOSAgent implements DeviceAgent {
     state.audioPids = null
     state.touchHelper?.stop()
     state.touchHelper = null
+    state.booted = false
     state.streamWs?.close()
     state.streamWs = null
   }
@@ -478,6 +495,7 @@ export class IOSAgent implements DeviceAgent {
     state.captureStreamer = null // reader.cancel() kills the helper proc; drop the ref so a stale requestKeyframe() no-ops
     state.touchHelper?.stop()
     state.touchHelper = null
+    state.booted = false
     state.streamWs?.close()
     state.streamWs = null
 
@@ -516,6 +534,7 @@ export class IOSAgent implements DeviceAgent {
       // Opt-in audio output: stand up the loopback server and start the whole-sim tap now. Best-effort
       // — never blocks/affects the video path.
       if (this.audioEnabled()) this.startAudioCapture(state, streamWs, deviceId)
+      state.booted = true
       this.ws?.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId } }))
 
       // Sync AppleKeyboards after ready — fire-and-forget so streaming isn't delayed.
@@ -524,7 +543,6 @@ export class IOSAgent implements DeviceAgent {
       this.simctl.syncKeyboardsFromLanguages(deviceId).catch((e) => {
         logger.error('syncKeyboardsFromLanguages failed:', e)
       })
-
 
     } catch (e) {
       if (seq !== state.bootSeq) return
@@ -557,6 +575,7 @@ export class IOSAgent implements DeviceAgent {
     state.captureStreamer = null // reader.cancel() kills the helper proc; drop the ref so a stale requestKeyframe() no-ops
     state.touchHelper?.stop()
     state.touchHelper = null
+    state.booted = false
     state.streamWs?.close()
     state.streamWs = null
     this.lastBundleIds.delete(deviceId)
@@ -575,6 +594,52 @@ export class IOSAgent implements DeviceAgent {
       const message = e instanceof Error ? e.message : String(e)
       logger.error('shutdown failed:', message)
     }
+  }
+
+  // Lazily set up the touch channel: a reconnect re-issues the session with touchHelper=null while the sim stays booted, so input self-heals without a fresh device:boot. Sync so a tap's start+end stay paired (async would drop touchEnd → stuck finger).
+  private ensureTouchHelper(state: DeviceState): void {
+    if (state.touchHelper) return
+    state.touchHelper = new TouchHelper(state.deviceId)
+    state.touchHelper.start()
+  }
+
+  // Clipboard work parks a sentinel on the device while it waits, so two operations on the same
+  // device must not interleave — each would read the other's marker instead of the real
+  // clipboard. Keyed by device, not session: several sessions (and MCP) can address one device.
+  private readonly clipboardQueue = createKeyedSerialQueue()
+  // Device-scoped, not operation-scoped. Several sessions (and MCP) can address one simulator,
+  // so an operation that fails before parking anything may still be answering while ANOTHER
+  // holds a marker down. The viewer decides from this whether pressing the plain chord is safe,
+  // and that chord travels as `input:key` — outside this queue — so the answer has to describe
+  // the device rather than the caller.
+  private readonly parkedSentinels = new Map<string, number>()
+
+  private markSentinel(deviceId: string, delta: 1 | -1): void {
+    const n = (this.parkedSentinels.get(deviceId) ?? 0) + delta
+    if (n > 0) this.parkedSentinels.set(deviceId, n)
+    else this.parkedSentinels.delete(deviceId)
+  }
+
+  private sentinelParked(deviceId: string): boolean {
+    return (this.parkedSentinels.get(deviceId) ?? 0) > 0
+  }
+
+  // Ack a terminal input: input:done = dispatched to a booted device (not a landing guarantee — HID is fire-and-forget); input:error = no live channel / not booted. Off the sync inject path, so start/end pairing is unaffected.
+  private async ackInput(state: DeviceState, dispatched: boolean): Promise<void> {
+    const booted = dispatched && (state.booted || (await this.isBooted(state.deviceId)))
+    if (booted) state.booted = true // cache the post-reconnect verify so later inputs skip simctl
+    this.ws?.send(JSON.stringify(
+      booted
+        ? { type: 'input:done', sessionId: state.sessionId }
+        : { type: 'input:error', sessionId: state.sessionId, message: dispatched ? 'device not booted' : 'input channel not ready' },
+    ))
+  }
+
+  private async isBooted(deviceId: string): Promise<boolean> {
+    try {
+      const devices = await this.simctl.listDevices()
+      return devices.find((d) => d.id === deviceId)?.status === 'booted'
+    } catch { return false }
   }
 
   private handleRelayMessage(msg: { type: string; sessionId?: string; payload?: unknown }): void {
@@ -624,9 +689,10 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:touch:start': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state?.touchHelper) { logger.error('touch:start — touchHelper not ready'); break }
+        if (!state) break
+        this.ensureTouchHelper(state)
         const { x, y } = msg.payload as { x: number; y: number }
-        state.touchHelper.touchStart(x, y)
+        state.touchHelper?.touchStart(x, y)
         break
       }
       case 'input:touch:move': {
@@ -638,14 +704,17 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:touch:end': {
         const state = this.deviceStates.get(msg.sessionId!)
-        state?.touchHelper?.touchEnd()
+        if (!state) break
+        state.touchHelper?.touchEnd()
+        void this.ackInput(state, state.touchHelper !== null) // terminal of a tap/swipe → ack the gesture
         break
       }
       case 'input:pinch:start': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state?.touchHelper) break
+        if (!state) break
+        this.ensureTouchHelper(state)
         const { f0, f1 } = msg.payload as { f0: { x: number; y: number }; f1: { x: number; y: number } }
-        state.touchHelper.pinchStart(f0.x, f0.y, f1.x, f1.y)
+        state.touchHelper?.pinchStart(f0.x, f0.y, f1.x, f1.y)
         break
       }
       case 'input:pinch:move': {
@@ -657,8 +726,9 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:pinch:end': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state?.touchHelper) break
-        state.touchHelper.pinchEnd()
+        if (!state) break
+        state.touchHelper?.pinchEnd()
+        void this.ackInput(state, state.touchHelper !== null)
         break
       }
       case 'input:rotate': {
@@ -696,6 +766,7 @@ export class IOSAgent implements DeviceAgent {
       case 'input:type': {
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
+        if (state) this.ensureTouchHelper(state)
         const { text } = (msg.payload ?? {}) as { text?: string }
         if (!state?.touchHelper) {
           this.ws?.send(JSON.stringify({ type: 'input:type-error', sessionId, message: 'No booted device' }))
@@ -718,7 +789,9 @@ export class IOSAgent implements DeviceAgent {
         }
         // Ack on completion so a following input step (e.g. pressKey Enter) is
         // only sent after the paste has actually landed.
-        doType()
+        // Shares the clipboard queue: this writes the pasteboard, so running it alongside a
+        // clipboard:read would overwrite that read's sentinel and be returned as "copied".
+        this.clipboardQueue(state.deviceId, doType)
           .then(() => this.ws?.send(JSON.stringify({ type: 'input:type-done', sessionId })))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
@@ -729,10 +802,14 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:key': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state?.touchHelper) break
+        if (!state) break
+        this.ensureTouchHelper(state)
         const { code, modifiers } = msg.payload as { code: string; modifiers?: number }
         const usage = KEY_CODE_MAP[code]
-        if (usage === undefined) break
+        if (usage === undefined) {
+          this.ws?.send(JSON.stringify({ type: 'input:error', sessionId: msg.sessionId, message: `unknown key code: ${code}` }))
+          break
+        }
         if (state.softKeyboardVisible) {
           // Hide the SW keyboard first so iOS re-initialises the HW keyboard
           // context. Skipping this causes input-source desync (qks / ㅂㅏㄴ symptoms).
@@ -744,13 +821,15 @@ export class IOSAgent implements DeviceAgent {
               state.touchHelper?.sendKey(usage, modifiers ?? 0)
             })
         } else {
-          state.touchHelper.sendKey(usage, modifiers ?? 0)
+          state.touchHelper?.sendKey(usage, modifiers ?? 0)
         }
+        void this.ackInput(state, state.touchHelper !== null)
         break
       }
       case 'input:button': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state?.touchHelper) break
+        if (!state) break
+        this.ensureTouchHelper(state)
         const { name, phase } = msg.payload as { name: string; phase?: 'down' | 'up' }
         // Map the cross-platform button vocabulary (used by MCP) onto this
         // device's actual chrome button names. Dashboard already sends the raw
@@ -759,15 +838,16 @@ export class IOSAgent implements DeviceAgent {
         if (chromeName === 'home') {
           // Home has no HID down/up split — always a single legacy press. Send once on release
           // (or on a phase-less legacy message) so a down+up pair doesn't fire it twice.
-          if (phase !== 'down') state.touchHelper.pressLegacyButton(0)
+          if (phase !== 'down') state.touchHelper?.pressLegacyButton(0)
         } else {
           const btn = state.loadedChrome?.buttons.find((b) => b.name === chromeName)
           if (btn && btn.usagePage > 0 && btn.usage > 0) {
-            if (phase === 'down') state.touchHelper.pressButtonDown(btn.usagePage, btn.usage)
-            else if (phase === 'up') state.touchHelper.pressButtonUp(btn.usagePage, btn.usage)
-            else state.touchHelper.pressButton(btn.usagePage, btn.usage)
+            if (phase === 'down') state.touchHelper?.pressButtonDown(btn.usagePage, btn.usage)
+            else if (phase === 'up') state.touchHelper?.pressButtonUp(btn.usagePage, btn.usage)
+            else state.touchHelper?.pressButton(btn.usagePage, btn.usage)
           }
         }
+        void this.ackInput(state, state.touchHelper !== null)
         break
       }
       case 'open-url': {
@@ -817,6 +897,187 @@ export class IOSAgent implements DeviceAgent {
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
             this.ws?.send(JSON.stringify({ type: 'app:clear-state-error', sessionId, message }))
+          })
+        break
+      }
+      // Clipboard bridge. The chord is pressed HERE rather than by the viewer: the browser
+      // cannot know when the key actually lands (a visible software keyboard makes this path
+      // await hideSoftwareKeyboard first), and reading too early returns the PREVIOUS
+      // pasteboard — a stale value the user would never notice.
+      case 'clipboard:read': {
+        const { requestId } = msg as unknown as { requestId?: string }
+        const sessionId = msg.sessionId
+        const state = this.deviceStates.get(sessionId!)
+        if (!state) {
+          this.ws?.send(JSON.stringify({
+            type: 'clipboard:error', sessionId, requestId, message: 'No booted device',
+            payload: { sentinelParked: false } satisfies ClipboardErrorPayload,
+          }))
+          break
+        }
+        const { press } = (msg.payload ?? {}) as { press?: 'copy' | 'cut' }
+        // Answering is separate from cleaning up. The restore below runs in a `finally`, which
+        // executes AFTER this — so the viewer hears back as soon as the outcome is known and
+        // does not wait out the restore window. The queue is still held until the restore
+        // finishes, which is what actually matters: the next operation must not see a sentinel.
+        const respond = (body: object) =>
+          this.ws?.send(JSON.stringify({ sessionId, requestId, ...body }))
+        const read = async (): Promise<void> => {
+          if (!press) {
+            respond({ type: 'clipboard:data', payload: { text: await this.simctl.getPasteboard(state.deviceId) } })
+            return
+          }
+
+          this.ensureTouchHelper(state)
+          if (!state.touchHelper) throw new PlatformError('Cannot press copy — no input channel to the device')
+          if (state.softKeyboardVisible) {
+            state.softKeyboardVisible = false
+            await this.simctl.hideSoftwareKeyboard(state.deviceId).catch(() => {})
+          }
+
+          // Overwrite the pasteboard with a value only we could have written, then press the
+          // chord and wait for it to change. Without this there is no way to tell "the app
+          // copied" from "the app has not copied yet" — a fixed delay guesses, and guessing
+          // wrong hands the PREVIOUS clipboard to the user with no error. The sentinel also
+          // covers re-copying the identical text, where a plain value-change watch never fires.
+          // Read the original first. If we cannot (a hung simctl, or a pasteboard past
+          // maxBuffer), do NOT continue: parking a sentinel we are unable to undo would
+          // destroy whatever the user had on the device clipboard.
+          const raw = await this.simctl.getPasteboard(state.deviceId)
+          // Never restore someone else's marker as if it were the user's text.
+          const before = isSentinel(raw) ? '' : raw
+          const sentinel = `${SENTINEL_PREFIX}${randomUUID()}`
+          let copied: string | null = null
+          // Counted before the call: setPasteboard can reject after the device took the value,
+          // so anything from here until the restore has to be treated as parked.
+          this.markSentinel(state.deviceId, 1)
+          try {
+            // Inside the try: if this rejects *after* the device applied it, the restore below
+            // still runs. Outside, a leaked sentinel would sit on the device permanently.
+            await this.simctl.setPasteboard(state.deviceId, sentinel)
+            // `pbcopy` exiting means the write was accepted, not that the pasteboard shows it
+            // yet. Pressing before it does lets the first poll read the PRE-sentinel value,
+            // decide it is not a sentinel, and return it as "what the app copied" — the exact
+            // staleness this whole mechanism exists to prevent. Mirrors the Android read path.
+            const applied = Date.now() + CLIPBOARD_WRITE_DEADLINE_MS
+            while ((await this.simctl.getPasteboard(state.deviceId)) !== sentinel) {
+              if (Date.now() >= applied) throw new PlatformError('The device clipboard did not respond')
+              await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
+            }
+            state.touchHelper.sendKey(KEY_CODE_MAP[press === 'cut' ? 'KeyX' : 'KeyC'], MODIFIER_BITS['MetaLeft'])
+            const deadline = Date.now() + CLIPBOARD_COPY_DEADLINE_MS
+            do {
+              let now: string
+              try {
+                now = await this.simctl.getPasteboard(state.deviceId)
+              } catch (e) {
+                // ONLY the size ceiling means the app copied — we just cannot carry it — so the
+                // restore below must be skipped or it would overwrite the very text the user
+                // copied. Every other failure here (a hung or timed-out pbpaste) says nothing
+                // about the device, and skipping the restore for those left the sentinel parked
+                // for good: the user's clipboard destroyed, and a zero-width marker pasted into
+                // the app under test. Android reaches the same two states, by assigning `copied`
+                // before it throws for the over-sized case and not otherwise.
+                if (e instanceof ClipboardTooLargeError) copied = ''
+                throw e
+              }
+              // A sentinel is never a copy result — ours means "not yet", any other means a
+              // concurrent operation slipped in and its marker must not be handed to the user.
+              if (!isSentinel(now)) {
+                copied = now
+                respond({ type: 'clipboard:data', payload: { text: now } })
+                return
+              }
+              await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
+            } while (Date.now() < deadline)
+            throw new PlatformError('The device did not copy anything — is something selected?')
+          } catch (e: unknown) {
+            // Reply here rather than letting this propagate: a rejection would surface only
+            // after `finally` had finished restoring, putting that window inside the round trip.
+            respond({
+              type: 'clipboard:error', message: e instanceof Error ? e.message : String(e),
+              // A sentinel may be on the device: setPasteboard can reject after the device took
+              // it. The viewer must not press the chord — the restore would overwrite the copy.
+              payload: { sentinelParked: this.sentinelParked(state.deviceId) } satisfies ClipboardErrorPayload,
+            })
+          } finally {
+            // Only restore when the copy never happened; otherwise this would overwrite the
+            // value we just captured. A leaked sentinel would be worse than the original bug.
+            // Wait for the restore to be visible, not merely accepted: releasing the queue early
+            // lets the next operation read the sentinel as "the original", which then becomes ''
+            // and wipes the user's device clipboard. Mirrors the Android read path.
+            if (copied === null) {
+              await this.simctl.setPasteboard(state.deviceId, before).catch(() => {})
+              const restored = Date.now() + CLIPBOARD_RESTORE_DEADLINE_MS
+              while ((await this.simctl.getPasteboard(state.deviceId).catch(() => before)) !== before) {
+                if (Date.now() >= restored) break   // best effort; the error is already going out
+                await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
+              }
+            }
+            this.markSentinel(state.deviceId, -1)
+          }
+        }
+        // `read` answers for itself once the sentinel is in play. This catches only what can
+        // throw BEFORE that — the press-less branch, a missing input channel, and the failed
+        // read of the original — so nothing is parked and the viewer's chord fallback is safe.
+        this.clipboardQueue(state.deviceId, read).catch((e: unknown) => {
+          respond({
+            type: 'clipboard:error', message: e instanceof Error ? e.message : String(e),
+            payload: { sentinelParked: this.sentinelParked(state.deviceId) } satisfies ClipboardErrorPayload,
+          })
+        })
+        break
+      }
+      case 'clipboard:write': {
+        const { requestId } = msg as unknown as { requestId?: string }
+        const sessionId = msg.sessionId
+        const state = this.deviceStates.get(sessionId!)
+        if (!state) {
+          this.ws?.send(JSON.stringify({
+            type: 'clipboard:error', sessionId, requestId, message: 'No booted device',
+            payload: { sentinelParked: false } satisfies ClipboardErrorPayload,
+          }))
+          break
+        }
+        const { text, pasteAfter } = (msg.payload ?? {}) as { text?: string; pasteAfter?: boolean }
+        if (clipboardByteLength(text ?? '') > MAX_CLIPBOARD_BYTES) {
+          this.ws?.send(JSON.stringify({
+            type: 'clipboard:error', sessionId, requestId,
+            message: `Clipboard is too large (max ${Math.floor(MAX_CLIPBOARD_BYTES / 1024)} KB)`,
+            payload: { sentinelParked: this.sentinelParked(state.deviceId) } satisfies ClipboardErrorPayload,
+          }))
+          break
+        }
+        const write = async (): Promise<void> => {
+          const wanted = text ?? ''
+          await this.simctl.setPasteboard(state.deviceId, wanted)
+          if (!pasteAfter) return
+          this.ensureTouchHelper(state)
+          if (!state.touchHelper) throw new PlatformError('Cannot press paste — no input channel to the device')
+          // Confirm the pasteboard really holds it before pressing paste; otherwise the device
+          // could paste whatever was there before. (On Android the same call is documented as
+          // asynchronous, so this is not iOS paranoia — it is the same failure on both sides.)
+          const deadline = Date.now() + CLIPBOARD_WRITE_DEADLINE_MS
+          while ((await this.simctl.getPasteboard(state.deviceId).catch(() => null)) !== wanted) {
+            if (Date.now() >= deadline) throw new PlatformError('The device clipboard did not accept the text')
+            await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
+          }
+          // Same guard as input:key — skipping it desyncs the hardware keyboard context.
+          if (state.softKeyboardVisible) {
+            state.softKeyboardVisible = false
+            await this.simctl.hideSoftwareKeyboard(state.deviceId).catch(() => {})
+          }
+          state.touchHelper.sendKey(KEY_CODE_MAP['KeyV'], MODIFIER_BITS['MetaLeft'])
+        }
+        // Ack only once the write (and the paste, when asked for) actually landed.
+        this.clipboardQueue(state.deviceId, write)
+          .then(() => this.ws?.send(JSON.stringify({ type: 'clipboard:write-done', sessionId, requestId })))
+          .catch((e: unknown) => {
+            const message = e instanceof Error ? e.message : String(e)
+            this.ws?.send(JSON.stringify({
+              type: 'clipboard:error', sessionId, requestId, message,
+              payload: { sentinelParked: this.sentinelParked(state.deviceId) } satisfies ClipboardErrorPayload,
+            }))
           })
         break
       }

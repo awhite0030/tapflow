@@ -35,7 +35,8 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
 - The agent connects to the relay via outbound WebSocket first (the key to NAT traversal).
 - **Auth boundary**: connections from `localhost` are unauthenticated; every other origin must authenticate — browsers by JWT cookie / PAT, agents by a PAT with the `agent` scope (`Authorization: Bearer`). The role (browser / agent / stream) is decided in `classifyConnection` (`lib/connectionAuth.ts`); a `browser`-role socket that sends an agent-only message (`AGENT_MSG_TYPES`, which includes `stream:register`) is closed with 1008.
 - JSON messages and binary frames share the same WebSocket connection, branched by the `isBinary` flag.
-- Control message protocol: `input:touch:*`, `input:pinch:*`, `input:button`, `input:key`, `input:type`, `input:rotate`, `input:keyboard:toggle`, `device:boot`, `device:shutdown`, `session:start`, `session:end`.
+- Control message protocol: `input:touch:*`, `input:pinch:*`, `input:button`, `input:key`, `input:type`, `input:rotate`, `input:keyboard:toggle`, `device:boot`, `device:shutdown`, `session:start`, `session:end`, `clipboard:read`, `clipboard:write`.
+- **Clipboard bridge** (`clipboard:*`): browser→agent `clipboard:read` (`payload.press`: `'copy' | 'cut'` presses that chord on the device first) and `clipboard:write` (`payload.text`, `payload.pasteAfter`); agent→browser `clipboard:data` / `clipboard:write-done` / `clipboard:error`, correlated by `requestId`. Unlike the other agent→browser replies these are **bound to the session's own `agentSocket`** — their payload lands on the viewer's host OS clipboard, so a second agent must not be able to address someone else's session. An undeliverable request answers `clipboard:error` immediately rather than letting the caller's deadline expire. Agents advertise `capabilities: ['clipboard']` in `agent:register`; the relay echoes them on `session:joined` so a viewer can tell a capable agent from one that predates the feature instead of inferring it from silence.
 - JWTs are issued based on team invite links.
 - Serves the `public/` directory as HTTP static files (dashboard build output).
 - The relay does not buffer stream data — it forwards immediately on arrival.
@@ -44,18 +45,7 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
 
 ### API Endpoints (builds / apps)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/v1/apps` | App list (with latest_build summary) |
-| `POST` | `/api/v1/apps` | Create an app entry |
-| `PATCH` | `/api/v1/apps/:id` | Manually rename an app (Admin/Developer) |
-| `DELETE` | `/api/v1/apps/:id` | Delete an app (and its builds) |
-| `POST` | `/api/v1/builds` | Upload a build (`.app.zip` / `.tar.gz` / `.tgz` / `.apk`) |
-| `GET` | `/api/v1/builds` | Build list (filterable by `app_id`) |
-| `GET` | `/api/v1/builds/:id` | Single build |
-| `PATCH` | `/api/v1/builds/:id` | Update `status_label` / `version_label` |
-| `POST` | `/api/v1/builds/:id/schedule-deletion` | Put the build on the deletion clock (`delete_after = now + TTL`) |
-| `DELETE` | `/api/v1/builds/:id/schedule-deletion` | Cancel a scheduled deletion |
+Routes are registered in `RelayServer.ts`; user-facing reference: [`docs/reference/api.md`](../../docs/reference/api.md).
 
 > **Deletion lifecycle (issue #258)**: review status and deletion are orthogonal. `status_label` (incl. `Done`) is a pure review state and never schedules deletion; purge keys off `delete_after` only, which is set by the explicit schedule-deletion action. `completed_at` is informational.
 

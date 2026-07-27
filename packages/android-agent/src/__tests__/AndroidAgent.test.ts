@@ -73,12 +73,30 @@ vi.mock('@tapflowio/audiotap-helper', () => ({
 let grpcStartError: Error | null = null
 let grpcFramesController: ReadableStreamDefaultController<ScrcpyFrame> | null = null
 
+// Guest clipboard the mocked emulator reports back (clipboard bridge tests drive these).
+let grpcClipboardText = ''
+let grpcClipboardError: Error | null = null
+// How long the emulator takes to actually apply a setClipboard (the proto says it is scheduled
+// on the main looper, so "resolved" != "applied").
+let grpcClipboardApplyDelayMs = 0
+
 vi.mock('../emulator/EmulatorGrpcClient', () => ({
   EmulatorGrpcClient: vi.fn(function () { return ({
     close: vi.fn(),
     touchDown: vi.fn(), touchMove: vi.fn(), touchUp: vi.fn(),
     pinchStart: vi.fn(), pinchMove: vi.fn(), pinchEnd: vi.fn(),
     streamAudio: vi.fn(() => ({ frames: () => new ReadableStream({ start() {} }), cancel: vi.fn() })), // AudioStream shape: { frames, cancel }
+    getClipboard: vi.fn(() => grpcClipboardError
+      ? Promise.reject(grpcClipboardError)
+      : Promise.resolve(grpcClipboardText)),
+    setClipboard: vi.fn(async (text: string) => {
+      if (grpcClipboardError) throw grpcClipboardError
+      // The proto documents this as scheduling, not applying — model that so the read path
+      // cannot get away with assuming the sentinel is visible the moment this resolves.
+      const apply = () => { grpcClipboardText = text }
+      if (grpcClipboardApplyDelayMs > 0) setTimeout(apply, grpcClipboardApplyDelayMs)
+      else apply()
+    }),
   }) }),
 }))
 
@@ -731,6 +749,14 @@ describe('AndroidAgent', () => {
         // last px from start: 0.1*1080 = 108, 0.2*2400 = 480
         expect(control.touchUp).toHaveBeenCalledWith(0, 108, 480)
       })
+
+      // followups H-F: touch:end acks input:done when dispatched to a booted device (pointer channel present + adb reports booted).
+      it('acks input:done on touch:end for a booted session', async () => {
+        const done = waitForType(browser, 'input:done')
+        browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+        browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+        expect((await done).sessionId).toBe(agent.sessionId)
+      })
     })
 
     describe('input — pinch', () => {
@@ -825,6 +851,40 @@ describe('AndroidAgent', () => {
         const inputSpy = vi.spyOn(adb, 'sendInput')
         inject({ type: 'input:key', payload: { code: 'Digit1', modifiers: 0x02 } })
         expect(inputSpy).toHaveBeenCalledWith('emulator-5554', 'text', '!')
+      })
+
+      // followups M1: a Cmd/Ctrl chord used to be typed as the raw letter (Cmd+C → 'c'), so
+      // copy/paste both silently failed. They must map to the dedicated keycodes instead.
+      it('maps Cmd+C (meta) to KEYCODE_COPY, not a typed "c"', () => {
+        const keyEvSpy = vi.spyOn(adb, 'sendKeyEvent')
+        const inputSpy = vi.spyOn(adb, 'sendInput')
+        inject({ type: 'input:key', payload: { code: 'KeyC', modifiers: 0x08 } })
+        expect(keyEvSpy).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_COPY')
+        expect(inputSpy).not.toHaveBeenCalled()
+      })
+
+      it('maps Cmd+V to KEYCODE_PASTE and Ctrl+X to KEYCODE_CUT', () => {
+        const keyEvSpy = vi.spyOn(adb, 'sendKeyEvent')
+        const inputSpy = vi.spyOn(adb, 'sendInput')
+        inject({ type: 'input:key', payload: { code: 'KeyV', modifiers: 0x08 } })
+        inject({ type: 'input:key', payload: { code: 'KeyX', modifiers: 0x01 } })
+        expect(keyEvSpy).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_PASTE')
+        expect(keyEvSpy).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_CUT')
+        expect(inputSpy).not.toHaveBeenCalled()
+      })
+
+      it('does not type the raw letter for a non-clipboard chord (Cmd+A)', () => {
+        const keyEvSpy = vi.spyOn(adb, 'sendKeyEvent')
+        const inputSpy = vi.spyOn(adb, 'sendInput')
+        inject({ type: 'input:key', payload: { code: 'KeyA', modifiers: 0x08 } })
+        expect(inputSpy).not.toHaveBeenCalled()
+        expect(keyEvSpy).not.toHaveBeenCalled()
+      })
+
+      it('still types a plain letter with no chord modifier (regression)', () => {
+        const inputSpy = vi.spyOn(adb, 'sendInput')
+        inject({ type: 'input:key', payload: { code: 'KeyC', modifiers: 0 } })
+        expect(inputSpy).toHaveBeenCalledWith('emulator-5554', 'text', 'c')
       })
 
       it('keyboard:toggle is a client-side no-op (no adb side effect, no throw)', () => {
@@ -970,6 +1030,363 @@ describe('AndroidAgent', () => {
       // native screen size from adb drives the touch-mapping dimensions
       expect(getState().videoWidth).toBe(1080)
       expect(getState().videoHeight).toBe(2400)
+    })
+
+    // Clipboard bridge — the emulator gRPC controller exposes get/setClipboard, so the
+    // Android side needs no adb (`cmd clipboard` is not implemented on the AVD images).
+    describe('clipboard bridge', () => {
+      beforeEach(() => { grpcClipboardText = ''; grpcClipboardError = null; grpcClipboardApplyDelayMs = 0 })
+      afterEach(() => { grpcClipboardError = null; grpcClipboardApplyDelayMs = 0 })
+
+      // Same gate as iOS: the viewer only enables the bridge when this arrives.
+      it('advertises the clipboard capability all the way to the viewer', async () => {
+        browser = new WebSocket(`ws://localhost:${port}`)
+        await waitForOpen(browser)
+        browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+        const joined = await waitForType(browser, 'session:joined')
+        expect((joined as unknown as { capabilities: string[] }).capabilities).toContain('clipboard')
+      })
+
+      it('clipboard:read returns the guest clipboard as clipboard:data', async () => {
+        grpcClipboardText = '한글 テスト 🎉\nline2'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+
+        browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a1' }))
+        const data = await waitForType(browser, 'clipboard:data')
+        expect(data.requestId).toBe('a1')
+        expect((data.payload as { text: string }).text).toBe('한글 テスト 🎉\nline2')
+      })
+
+      // The agent owns the chord: the browser cannot know when the keyevent lands, and
+      // reading before it does returns the PREVIOUS clipboard.
+      it('press:copy sends KEYCODE_COPY before it reads', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        const order: string[] = []
+        // the guest "copies" when the keyevent lands
+        vi.spyOn(adb, 'sendKeyEvent').mockImplementation(async (_s, k) => {
+          order.push(String(k)); grpcClipboardText = 'copied'
+        })
+        const client = getState().grpcClient as unknown as { getClipboard: ReturnType<typeof vi.fn> }
+        const realGet = client.getClipboard.getMockImplementation()!
+        client.getClipboard.mockImplementation(async () => { order.push('read'); return realGet() })
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a2', payload: { press: 'copy' },
+        }))
+        const data = await waitForType(browser, 'clipboard:data')
+        expect((data.payload as { text: string }).text).toBe('copied')
+        expect(order.indexOf('KEYCODE_COPY')).toBeLessThan(order.lastIndexOf('read'))
+      })
+
+      // The core guarantee: no answer until the guest clipboard actually changed.
+      it('keeps watching until the clipboard actually changes', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        let reads = 0
+        const client = getState().grpcClient as unknown as { getClipboard: ReturnType<typeof vi.fn> }
+        const realGet = client.getClipboard.getMockImplementation()!
+        client.getClipboard.mockImplementation(async () => (++reads <= 3 ? realGet() : 'what the app copied'))
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a2b', payload: { press: 'copy' },
+        }))
+        const data = await waitForType(browser, 'clipboard:data')
+        expect((data.payload as { text: string }).text).toBe('what the app copied')
+        expect(reads).toBeGreaterThan(2)   // a fixed delay would have answered on the first read
+      })
+
+      // B1: setClipboard only *schedules* the change. If the chord is pressed before the
+      // sentinel is visible, the first poll reads the pre-sentinel value and returns it as the
+      // copy result — the exact stale value the sentinel exists to prevent.
+      it('waits for the sentinel to be applied before pressing the chord', async () => {
+        grpcClipboardText = 'ORIGINAL'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        grpcClipboardApplyDelayMs = 60          // the guest lags behind the resolved call
+        vi.spyOn(adb, 'sendKeyEvent').mockImplementation(async () => {
+          setTimeout(() => { grpcClipboardText = 'WHAT THE APP COPIED' }, 60)
+        })
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'b1', payload: { press: 'copy' },
+        }))
+        const data = await waitForType(browser, 'clipboard:data')
+        expect((data.payload as { text: string }).text).toBe('WHAT THE APP COPIED')
+      }, 10_000)
+
+      // M2: without the per-device queue, two reads trade sentinels — one returns the other's
+      // marker and a sentinel is left on the device.
+      // Mirror of the iOS test of the same name. Reverting Android to reply-after-restore
+      // previously broke nothing here, so the platform's half of the ordering was unguarded.
+      it('answers before it restores, and still restores before releasing the device', async () => {
+        grpcClipboardText = 'ORIGINAL'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)   // the guest never copies
+        const client = getState().grpcClient as unknown as { setClipboard: ReturnType<typeof vi.fn> }
+        const realSet = client.setClipboard.getMockImplementation()
+        let restoreDone = false
+        // Make the restore slow enough that "reply first" cannot be a scheduling artefact.
+        client.setClipboard.mockImplementation(async (text: string) => {
+          if (text === 'ORIGINAL') {
+            await new Promise((r) => setTimeout(r, 400))
+            restoreDone = true
+          }
+          return realSet?.(text)
+        })
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'ord', payload: { press: 'copy' },
+        }))
+        await waitForType(browser, 'clipboard:error')
+        expect(restoreDone).toBe(false)   // answered while the restore was still in flight
+        await vi.waitFor(() => expect(restoreDone).toBe(true), { timeout: 3000 })
+      }, 15_000)
+
+      it('reports a parked sentinel when the copy failed after the marker went down', async () => {
+        grpcClipboardText = 'ORIGINAL'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'sp1', payload: { press: 'copy' },
+        }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect((err.payload as { sentinelParked: boolean }).sentinelParked).toBe(true)
+      }, 10_000)
+
+      // The flag describes the DEVICE, not the operation that answers: the chord the viewer would
+      // press in response travels as `input:key`, outside the queue that keeps operations apart.
+      it('reports a sentinel parked by a different in-flight operation', async () => {
+        grpcClipboardText = 'ORIGINAL'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'hold', payload: { press: 'copy' },
+        }))
+        await vi.waitFor(() => expect(grpcClipboardText.startsWith('\u200Btapflow-clipboard-')).toBe(true), { timeout: 2000 })
+
+        // Rejected up front, before the queue — so it answers while the read above still holds.
+        browser.send(JSON.stringify({
+          type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'big',
+          payload: { text: 'x'.repeat(1024 * 1024 + 1) },   // MAX_CLIPBOARD_BYTES + 1
+        }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.requestId).toBe('big')
+        expect((err.payload as { sentinelParked: boolean }).sentinelParked).toBe(true)
+
+        // Let the read finish before leaving: it still holds the device queue, and the next test
+        // would otherwise wait out its deadline and restore.
+        await vi.waitFor(() => expect(grpcClipboardText).toBe('ORIGINAL'), { timeout: 5000 })
+      }, 20_000)
+
+      // Only reachable if the per-device queue fails, but the queue is the sole thing standing
+      // between these and a corrupted clipboard, so the discrimination itself is pinned.
+      it('never hands a foreign sentinel back as copied text', async () => {
+        grpcClipboardText = 'ORIGINAL'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockImplementation(async () => {
+          grpcClipboardText = '\u200Btapflow-clipboard-someone-else'   // another operation's marker
+        })
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'f1', payload: { press: 'copy' },
+        }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.message).toMatch(/did not copy/i)   // not clipboard:data carrying the marker
+      }, 10_000)
+
+      it('does not restore a foreign sentinel as if it were the user text', async () => {
+        grpcClipboardText = '\u200Btapflow-clipboard-someone-else'   // already parked on arrival
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)   // the guest never copies
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'f2', payload: { press: 'copy' },
+        }))
+        await waitForType(browser, 'clipboard:error')
+        // Restoring it would leave it for the NEXT read to mistake for the original.
+        await vi.waitFor(() => expect(grpcClipboardText).toBe(''), { timeout: 2000 })
+      }, 10_000)
+
+      it('serialises overlapping reads so they cannot trade sentinels', async () => {
+        grpcClipboardText = 'ORIGINAL'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)   // the guest never copies
+
+        const seen: string[] = []
+        browser.on('message', (d) => {
+          const m = JSON.parse(d.toString()) as RelayMessage
+          if (m.type === 'clipboard:data') seen.push(`${m.requestId}:${(m.payload as { text: string }).text}`)
+          if (m.type === 'clipboard:error') seen.push(`${m.requestId}:ERR`)
+        })
+        // The guest applies a scheduled setClipboard late, so releasing the queue before the
+        // restore lands lets the next read see the sentinel as "the original" — and then wipe it.
+        grpcClipboardApplyDelayMs = 120
+
+        browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'P1', payload: { press: 'copy' } }))
+        browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'P2', payload: { press: 'copy' } }))
+        await vi.waitFor(() => expect(seen.length).toBe(2), { timeout: 9000 })
+
+        // Neither may report a sentinel as the copied text, and the original must survive.
+        expect(seen).toEqual(['P1:ERR', 'P2:ERR'])
+        await vi.waitFor(() => expect(grpcClipboardText).toBe('ORIGINAL'), { timeout: 2000 })
+      }, 15_000)
+
+      it('fails and restores the original when the device never copies', async () => {
+        grpcClipboardText = 'untouched original'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)   // the guest ignores it
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a2c', payload: { press: 'copy' },
+        }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.message).toMatch(/did not copy/i)
+        expect(grpcClipboardText).toBe('untouched original')   // no sentinel left behind
+      }, 10_000)
+
+      it('press:cut sends KEYCODE_CUT instead', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        const keys = vi.spyOn(adb, 'sendKeyEvent').mockImplementation(async () => { grpcClipboardText = 'cut text' })
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a3', payload: { press: 'cut' },
+        }))
+        await waitForType(browser, 'clipboard:data')
+        expect(keys).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_CUT')
+      })
+
+      it('clipboard:write sets the guest clipboard and acks only after it landed', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        const client = getState().grpcClient as unknown as { setClipboard: ReturnType<typeof vi.fn> }
+        let release!: () => void
+        const gate = new Promise<void>((r) => { release = r })
+        client.setClipboard.mockReturnValue(gate)
+
+        let acked = false
+        waitForType(browser, 'clipboard:write-done').then(() => { acked = true })
+        browser.send(JSON.stringify({
+          type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'a4', payload: { text: 'pasted' },
+        }))
+        await vi.waitFor(() => expect(client.setClipboard).toHaveBeenCalledWith('pasted'))
+        await new Promise((r) => setTimeout(r, 50))
+        expect(acked).toBe(false)
+        release()
+        await vi.waitFor(() => expect(acked).toBe(true))
+      })
+
+      it('pasteAfter sends KEYCODE_PASTE after the write', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        const keys = vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)
+
+        const done = waitForType(browser, 'clipboard:write-done')
+        browser.send(JSON.stringify({
+          type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'a5', payload: { text: 'x', pasteAfter: true },
+        }))
+        await done
+        expect(keys).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_PASTE')
+        expect(grpcClipboardText).toBe('x')
+      })
+
+      it('does not press paste when pasteAfter is not asked for', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        const keys = vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)
+
+        const done = waitForType(browser, 'clipboard:write-done')
+        browser.send(JSON.stringify({
+          type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'a6', payload: { text: 'x' },
+        }))
+        await done
+        expect(keys).not.toHaveBeenCalled()
+      })
+
+      it('rejects an oversized clipboard instead of forwarding it', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        const client = getState().grpcClient as unknown as { setClipboard: ReturnType<typeof vi.fn> }
+        client.setClipboard.mockClear()
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'a7',
+          payload: { text: 'x'.repeat(1024 * 1024 + 1) },
+        }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.message).toMatch(/too large/i)
+        expect(client.setClipboard).not.toHaveBeenCalled()
+      })
+
+      // The press-less read forwarded whatever the guest held straight to the relay. iOS is
+      // bounded by getPasteboard's maxBuffer; Android had nothing, so a multi-MB guest
+      // clipboard could land on the socket the video stream shares.
+      it('caps a press-less read too, not just the sentinel path', async () => {
+        grpcClipboardText = 'x'.repeat(1024 * 1024 + 1)
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+
+        browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'cap' }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.message).toMatch(/too large/i)
+      })
+
+      it('an empty clipboard is data, not an error', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+
+        browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a8' }))
+        const data = await waitForType(browser, 'clipboard:data')
+        expect((data.payload as { text: string }).text).toBe('')
+      })
+
+      it('surfaces a gRPC failure as clipboard:error', async () => {
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        grpcClipboardError = new Error('UNAVAILABLE: no connection')
+
+        browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a9' }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.requestId).toBe('a9')
+        expect(err.message).toContain('UNAVAILABLE')
+        // A transient gRPC fault is NOT "unsupported": the backend has a clipboard channel, it
+        // just failed this time. This request carries no `press`, so nothing was ever parked and
+        // the viewer is free to fall back to the chord.
+        const payload = err.payload as { unsupported: boolean; sentinelParked: boolean }
+        expect(payload.unsupported).toBe(false)
+        expect(payload.sentinelParked).toBe(false)
+      })
+
+      // R8: the scrcpy backend (real devices, and the gRPC fallback) has no clipboard
+      // channel. It must say so — and say something DIFFERENT from "not booted", since
+      // the two need different fixes.
+      it('reports the backend limitation on scrcpy, distinctly from a missing device', async () => {
+        grpcStartError = new Error('emulator -grpc not available')
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().scrcpySession).not.toBeNull(), { timeout: 1000 })
+        expect(getState().grpcClient).toBeNull()
+
+        browser.send(JSON.stringify({ type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'a10' }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.requestId).toBe('a10')
+        expect(err.message).toMatch(/gRPC backend/i)
+        expect(err.message).not.toMatch(/no booted device/i)
+        // Flagged so the viewer can safely press the plain chord: a backend without a
+        // clipboard channel can never leave a sentinel on the device.
+        expect((err.payload as { unsupported: boolean }).unsupported).toBe(true)
+      })
     })
 
     it('falls back to scrcpy when the gRPC video stream fails to start', async () => {

@@ -9,7 +9,20 @@ const commonRules = {
 }
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/*.js', '**/*.mjs', '**/*.cjs', '**/__tests__/**'] },
+  // `!scripts/**` re-includes: a global ignore cannot be undone by a later `files` entry, so the
+  // negation has to live here.
+  { ignores: ['**/dist/**', '**/node_modules/**', '**/*.js', '**/*.mjs', '**/*.cjs', '**/__tests__/**', '!scripts/**'] },
+
+  // Repo tooling under scripts/ is .mjs, which the blanket ignore above covers. It is opted back
+  // in because `dev-down` sends SIGKILL to processes it selects — the most destructive code in
+  // the repo should not also be the only code nothing checks.
+  {
+    files: ['scripts/**/*.mjs'],
+    ignores: [],
+    extends: [tseslint.configs.recommended],
+    languageOptions: { globals: globals.node, sourceType: 'module' },
+    rules: commonRules,
+  },
 
   // Node.js packages — .ts files (excludes dashboard)
   {

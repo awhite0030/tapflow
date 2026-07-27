@@ -49,7 +49,10 @@ playground/       ← local integration test environment
 
 - `main` is always deployable. Direct commits are not allowed. Start work on a `feature/{topic}` branch → PR → merge.
 - Always create new branches from `origin/main` (`git fetch origin && git checkout -b feature/{topic} origin/main`). Your local `main` may be behind.
+- **Backfilling a changeset for an earlier PR?** Name what it covers, on its own line: `Backfills: #413` (quoting it inside a code block does not count, same as the marker below). The release-time audit judges each merge on its own, so without that line it keeps reporting the original merge as a gap for the rest of the cycle — and the only way to tell a real gap from a filled one is to match them up by hand.
+- **Every PR that changes published source needs a changeset.** The CI `changeset` job fails otherwise (it blocks a merge only once it is a required status check on the `protect-main` ruleset); `pnpm changeset:check` runs the same check locally against committed work. Skip it only by stating why in the PR body, on a line of its own: `<!-- no-changeset: reason -->` (quoting it inside a code block does not count). A comment-only or test-only change is a fair skip — the point is that it is a decision, not an omission.
 - Releases are driven by [changesets](https://github.com/changesets/changesets). A tag push triggers GitHub Actions → npm publish + GitHub Release. Merging to main does not auto-publish.
+- Never publish with raw `npm publish` — it does not rewrite `workspace:*` dependencies between packages; the changesets → pnpm publish path does.
 
 ### Versioning (Semver)
 
@@ -59,7 +62,7 @@ Versions follow `MAJOR.MINOR.PATCH`. Determine the bump from the commits since t
 |------|------|
 | `patch` | `fix`, `perf`, `docs`, `chore`, `refactor` — no API change |
 | `minor` | `feat` — new functionality, backward-compatible |
-| `major` | Any breaking change (see [AGENTS.md](./AGENTS.md) Principle 4 for scope) |
+| `major` | Any breaking change (see [AGENTS.md](./AGENTS.md) Core Principles for scope) |
 
 **Before `v1.0.0`:** breaking changes may land in `minor` versions. Once `v1.0.0` is tagged, the table above is strictly enforced.
 

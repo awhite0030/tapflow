@@ -133,6 +133,28 @@ export function registerTools(server: McpServer, client: TapflowClient): void {
   )
 
   server.registerTool(
+    'shutdown_device',
+    {
+      description:
+        'Shut the session\'s booted simulator/emulator down — powers the device off to free resources or force a ' +
+        'cold boot next time. Unlike disconnect_device (which only leaves the session, leaving the device running), ' +
+        'this actually stops the device. Requires connect_device first. Waits up to 30 seconds.',
+      inputSchema: {
+        sessionId: z.string().describe('Session ID from list_devices'),
+        deviceId: z.string().describe('Device ID from list_devices'),
+      },
+    },
+    async ({ sessionId, deviceId }) => {
+      try {
+        await client.shutdownDevice(sessionId, deviceId)
+        return ok(JSON.stringify({ shutdown: true, sessionId, deviceId }))
+      } catch (e) {
+        return err(`shutdown_device failed: ${(e as Error).message}`)
+      }
+    },
+  )
+
+  server.registerTool(
     'query_ui_tree',
     {
       description:
@@ -163,15 +185,18 @@ export function registerTools(server: McpServer, client: TapflowClient): void {
         'tapping step by step: author the flow once, then replay it idempotently. Pass the YAML inline via "flow", or a ' +
         'file path via "path" (resolved from the MCP server process cwd). Steps: clearState / launchApp / tapOn / ' +
         'inputText / pressKey / swipe / scroll / openUrl / assertVisible / assertNotVisible. launchApp launches the ' +
-        'buildId argument. Returns per-step results; on failure a screenshot is saved to a temp file.',
+        'buildId argument. When buildId is set, the build is installed before replaying (like `tapflow flow run --build`) ' +
+        'so clearState/launchApp have the app present — pass install:false to skip. Returns per-step results; on failure ' +
+        'a screenshot is saved to a temp file.',
       inputSchema: {
         sessionId: z.string().describe('Session ID from list_devices (connect_device first)'),
         flow: z.string().optional().describe('Flow YAML content (inline)'),
         path: z.string().optional().describe('Path to a flow YAML file (alternative to "flow")'),
-        buildId: z.number().optional().describe('Build under test for the launchApp step (from list_builds)'),
+        buildId: z.number().int().optional().describe('Build under test — installed before replay and launched by the launchApp step (from list_builds)'),
+        install: z.boolean().optional().describe('Install buildId before replaying (default: true when buildId is set)'),
       },
     },
-    async ({ sessionId, flow, path: flowPath, buildId }) => {
+    async ({ sessionId, flow, path: flowPath, buildId, install }) => {
       try {
         if ((flow === undefined) === (flowPath === undefined)) {
           return err('run_flow needs exactly one of "flow" (inline YAML) or "path"')
@@ -189,6 +214,10 @@ export function registerTools(server: McpServer, client: TapflowClient): void {
           yamlText = fs.readFileSync(resolved, 'utf-8')
         }
         const parsed = parseFlow(yamlText, flowPath ?? 'inline-flow.yaml')
+        // Install the build before replaying (mirrors `flow run --build`) so clearState/launchApp find the app present; skip with install:false.
+        if (buildId !== undefined && install !== false) {
+          await client.installApp(sessionId, buildId)
+        }
         const driver = makeFlowDriver(client, sessionId, buildId)
         const result = await runFlow(parsed, driver)
 
@@ -257,7 +286,7 @@ export function registerTools(server: McpServer, client: TapflowClient): void {
     },
     async ({ sessionId, x, y, screenshotWidth, screenshotHeight }) => {
       try {
-        client.tap(sessionId, x / screenshotWidth, y / screenshotHeight)
+        await client.tap(sessionId, x / screenshotWidth, y / screenshotHeight)
         return ok(JSON.stringify({ tapped: true, x, y }))
       } catch (e) {
         return err(`tap failed: ${(e as Error).message}`)
@@ -332,7 +361,7 @@ export function registerTools(server: McpServer, client: TapflowClient): void {
     },
     async ({ sessionId, key }) => {
       try {
-        client.pressKey(sessionId, key)
+        await client.pressKey(sessionId, key)
         return ok(JSON.stringify({ pressed: true, key }))
       } catch (e) {
         return err(`press_key failed: ${(e as Error).message}`)
@@ -354,7 +383,7 @@ export function registerTools(server: McpServer, client: TapflowClient): void {
     },
     async ({ sessionId, button }) => {
       try {
-        client.pressButton(sessionId, button)
+        await client.pressButton(sessionId, button)
         return ok(JSON.stringify({ pressed: true, button }))
       } catch (e) {
         return err(`press_button failed: ${(e as Error).message}`)
