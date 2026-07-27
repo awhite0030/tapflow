@@ -1,11 +1,13 @@
 import os from 'os'
 import { randomUUID } from 'crypto'
 import { WebSocket } from 'ws'
-import type { AndroidButton, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
+import type { AndroidButton, ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
+  CLIPBOARD_COPY_DEADLINE_MS, CLIPBOARD_WRITE_DEADLINE_MS, CLIPBOARD_RESTORE_DEADLINE_MS, CLIPBOARD_POLL_MS,
+  createKeyedSerialQueue,
   type AgentCapability,
 } from '@tapflowio/agent-core'
 import {
@@ -190,15 +192,6 @@ export interface AndroidAgentOptions {
   /** Handshake(연결~agent:registered) 타임아웃 ms. 기본 10초, 테스트용 주입 가능. */
   handshakeTimeoutMs?: number
 }
-
-// How long to watch the guest clipboard for an injected chord to take effect before giving up.
-// The browser gives up on its own, shorter budget and degrades the UX; the agent's job is to
-// answer correctly or not at all.
-const COPY_DEADLINE_MS = 2_000
-// Same idea on the write side — setClipboard only schedules the change (see the proto).
-const WRITE_DEADLINE_MS = 1_000
-// gRPC calls are cheap compared to simctl, so pace the poll instead of spinning on it.
-const CLIPBOARD_POLL_MS = 20
 
 // Everything inside the per-device clipboard section must be bounded, or one stuck call wedges
 // every later copy/paste on that device. gRPC carries its own deadline; adb does not (and a
@@ -485,16 +478,25 @@ export class AndroidAgent implements DeviceAgent {
     return null
   }
 
-  // Clipboard operations park a sentinel on the device, so two must never interleave on the
-  // same device — each would read the other's marker instead of the real clipboard. Keyed by
-  // device: several sessions (and MCP) can address the same emulator.
-  private clipboardQueue = new Map<string, Promise<unknown>>()
+  // Clipboard work parks a sentinel on the device while it waits, so two operations on the same
+  // device must not interleave — each would read the other's marker instead of the real
+  // clipboard. Keyed by device, not session: several sessions (and MCP) can address one device.
+  private readonly clipboardQueue = createKeyedSerialQueue()
+  // Device-scoped, not operation-scoped. Several sessions (and MCP) can address one emulator, so
+  // an operation that fails before parking anything may still be answering while ANOTHER holds a
+  // marker down. The viewer decides from this whether pressing the plain chord is safe, and that
+  // chord travels as `input:key` — outside this queue — so the answer has to describe the device
+  // rather than the caller. Mirrors the iOS agent.
+  private readonly parkedSentinels = new Map<string, number>()
 
-  private runExclusively<T>(deviceId: string, fn: () => Promise<T>): Promise<T> {
-    const next = (this.clipboardQueue.get(deviceId) ?? Promise.resolve()).then(fn, fn)
-    // Park a non-rejecting tail so one failure cannot poison the queue for later callers.
-    this.clipboardQueue.set(deviceId, next.then(() => {}, () => {}))
-    return next
+  private markSentinel(deviceId: string, delta: 1 | -1): void {
+    const n = (this.parkedSentinels.get(deviceId) ?? 0) + delta
+    if (n > 0) this.parkedSentinels.set(deviceId, n)
+    else this.parkedSentinels.delete(deviceId)
+  }
+
+  private sentinelParked(deviceId: string): boolean {
+    return (this.parkedSentinels.get(deviceId) ?? 0) > 0
   }
 
   // Fire-and-forget a pointer call: gRPC methods are async (swallow rejection), scrcpy sync (no-op).
@@ -1190,9 +1192,16 @@ export class AndroidAgent implements DeviceAgent {
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
+        // Every caller of `fail` gave up before parking anything itself, but another operation
+        // on the same device may still hold a marker — and the chord the viewer would press in
+        // response does not go through the queue. So report the device, not the caller.
         const fail = (message: string, unsupported = false) =>
           this.ws?.send(JSON.stringify({
-            type: 'clipboard:error', sessionId, requestId, message, payload: { unsupported },
+            type: 'clipboard:error', sessionId, requestId, message,
+            payload: {
+              unsupported,
+              sentinelParked: state ? this.sentinelParked(state.deviceId) : false,
+            } satisfies ClipboardErrorPayload,
           }))
         // Distinguish the three ways this can be unavailable — they need different fixes.
         if (!state || !serial) { fail('No booted device'); break }
@@ -1209,6 +1218,12 @@ export class AndroidAgent implements DeviceAgent {
 
         if (msg.type === 'clipboard:read') {
           const { press } = (msg.payload ?? {}) as { press?: 'copy' | 'cut' }
+          // Answering is separate from cleaning up: the restore is a `finally`, which runs after
+          // the `catch` that replies, so the viewer hears back as soon as the outcome is known.
+          // The queue is still held until the restore lands — that is what stops the next
+          // operation seeing a sentinel. Mirrors the iOS read path.
+          const respond = (body: object) =>
+            this.ws?.send(JSON.stringify({ sessionId, requestId, ...body }))
           // The ceiling applies to whatever leaves the device, not just the sentinel path —
           // iOS gets this from getPasteboard's maxBuffer, so Android is the only side that
           // could put a multi-MB guest clipboard on the socket the video shares.
@@ -1218,8 +1233,11 @@ export class AndroidAgent implements DeviceAgent {
             }
             return text
           }
-          const read = async (): Promise<string> => {
-            if (!press) return capped(await client.getClipboard())
+          const read = async (): Promise<void> => {
+            if (!press) {
+              respond({ type: 'clipboard:data', payload: { text: capped(await client.getClipboard()) } })
+              return
+            }
             // Overwrite with a value only we could have written, press the chord, then wait for
             // it to change. A fixed delay can only guess whether the app has copied yet, and
             // guessing wrong hands back the PREVIOUS clipboard with no error. The sentinel also
@@ -1230,6 +1248,9 @@ export class AndroidAgent implements DeviceAgent {
             const before = isSentinel(raw) ? '' : raw
             const sentinel = `${SENTINEL_PREFIX}${randomUUID()}`
             let copied: string | null = null
+            // Counted before the call: setClipboard only schedules, so a rejection can still
+            // leave the marker applied — everything from here to the restore counts as parked.
+            this.markSentinel(state.deviceId, 1)
             try {
               // Inside the try: setClipboard only schedules the change, so a rejection can
               // still leave it applied — the restore below has to run either way.
@@ -1237,7 +1258,7 @@ export class AndroidAgent implements DeviceAgent {
               // ...and a resolved setClipboard means *scheduled*, not applied (see the proto).
               // Pressing before it lands would let the first poll read the pre-sentinel value
               // and return it as "what the app copied" — the exact staleness this guards.
-              const applied = Date.now() + WRITE_DEADLINE_MS
+              const applied = Date.now() + CLIPBOARD_WRITE_DEADLINE_MS
               while ((await client.getClipboard()) !== sentinel) {
                 if (Date.now() >= applied) throw new PlatformError('The device clipboard did not respond')
                 await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
@@ -1245,15 +1266,29 @@ export class AndroidAgent implements DeviceAgent {
               await bounded(
                 this.adb.sendKeyEvent(serial, press === 'cut' ? 'KEYCODE_CUT' : 'KEYCODE_COPY'),
                 ADB_KEYEVENT_TIMEOUT_MS, 'copy keyevent')
-              const deadline = Date.now() + COPY_DEADLINE_MS
+              const deadline = Date.now() + CLIPBOARD_COPY_DEADLINE_MS
               do {
                 const now = await client.getClipboard()
                 // A sentinel is never a copy result: ours means "not yet", another one means a
                 // concurrent operation slipped in and must not be handed to the user.
-                if (!isSentinel(now)) { copied = now; return capped(now) }
+                if (!isSentinel(now)) {
+                  copied = now
+                  respond({ type: 'clipboard:data', payload: { text: capped(now) } })
+                  return
+                }
                 await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
               } while (Date.now() < deadline)
               throw new PlatformError('The device did not copy anything — is something selected?')
+            } catch (e) {
+              // Reply here rather than letting this propagate: a rejection would surface only
+              // after `finally` had restored, putting that window inside the round trip.
+              respond({
+                type: 'clipboard:error', message: e instanceof Error ? e.message : String(e),
+                // setClipboard only schedules, so a rejection can still leave the marker applied.
+                payload: {
+                  unsupported: false, sentinelParked: this.sentinelParked(state.deviceId),
+                } satisfies ClipboardErrorPayload,
+              })
             } finally {
               // Restore only if nothing was copied; otherwise this would clobber the capture.
               // And wait for it to APPLY, not just schedule: releasing the queue early lets the
@@ -1261,17 +1296,17 @@ export class AndroidAgent implements DeviceAgent {
               // wipes the user's device clipboard.
               if (copied === null) {
                 await client.setClipboard(before).catch(() => {})
-                const restored = Date.now() + WRITE_DEADLINE_MS
+                const restored = Date.now() + CLIPBOARD_RESTORE_DEADLINE_MS
                 while ((await client.getClipboard().catch(() => before)) !== before) {
                   if (Date.now() >= restored) break   // best effort; the error is already going out
                   await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
                 }
               }
+              this.markSentinel(state.deviceId, -1)
             }
           }
-          this.runExclusively(state.deviceId, read)
-            .then((text) => this.ws?.send(JSON.stringify({ type: 'clipboard:data', sessionId, requestId, payload: { text } })))
-            .catch(onError)
+          // `read` answers for itself; this only catches what the press-less branch can throw.
+          this.clipboardQueue(state.deviceId, read).catch(onError)
         } else {
           const { text, pasteAfter } = (msg.payload ?? {}) as { text?: string; pasteAfter?: boolean }
           if (clipboardByteLength(text ?? '') > MAX_CLIPBOARD_BYTES) {
@@ -1285,7 +1320,7 @@ export class AndroidAgent implements DeviceAgent {
             // setClipboard is explicitly asynchronous in the proto ("executed on the emulator's
             // main looper ... returns OK upon successful asynchronous scheduling"), so a resolved
             // promise means scheduled, not applied. Pasting now would paste the old clipboard.
-            const deadline = Date.now() + WRITE_DEADLINE_MS
+            const deadline = Date.now() + CLIPBOARD_WRITE_DEADLINE_MS
             while ((await client.getClipboard().catch(() => null)) !== wanted) {
               if (Date.now() >= deadline) throw new PlatformError('The device clipboard did not accept the text')
               await new Promise((r) => setTimeout(r, CLIPBOARD_POLL_MS))
@@ -1294,7 +1329,7 @@ export class AndroidAgent implements DeviceAgent {
               ADB_KEYEVENT_TIMEOUT_MS, 'paste keyevent')
           }
           // Ack only once the write (and the paste, when asked for) actually landed.
-          this.runExclusively(state.deviceId, write)
+          this.clipboardQueue(state.deviceId, write)
             .then(() => this.ws?.send(JSON.stringify({ type: 'clipboard:write-done', sessionId, requestId })))
             .catch(onError)
         }

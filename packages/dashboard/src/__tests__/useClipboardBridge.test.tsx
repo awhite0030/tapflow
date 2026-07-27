@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
-import { useClipboardBridge, isBridgedChord, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge'
+import { readFileSync } from 'fs'
+import { join } from 'path'
+import { useClipboardBridge, isBridgedChord, AGENT_WORST_MS, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge'
 
 type Sent = { type: string; requestId?: string; payload?: unknown }
 
@@ -38,39 +40,43 @@ const pastes = (text: string) => act(() => {
   document.dispatchEvent(e)
 })
 
-describe('useClipboardBridge', () => {
-  // Captures what was handed to navigator.clipboard.write so a test can await the value the
-  // promise-backed ClipboardItem eventually resolves to.
-  let written: Array<Promise<string>>
-  let writeCalls: number
+// Captures what was handed to navigator.clipboard.write so a test can await the value the
+// promise-backed ClipboardItem eventually resolves to.
+let written: Array<Promise<string>>
+let writeCalls: number
 
-  const secureContext = (on: boolean) =>
-    Object.defineProperty(window, 'isSecureContext', { value: on, writable: true, configurable: true })
+const secureContext = (on: boolean) =>
+  Object.defineProperty(window, 'isSecureContext', { value: on, writable: true, configurable: true })
 
-  beforeEach(() => {
-    written = []
-    writeCalls = 0
-    secureContext(true)
-    // jsdom ships neither of these.
-    ;(globalThis as unknown as { ClipboardItem: unknown }).ClipboardItem =
-      class { constructor(public items: Record<string, Promise<Blob>>) {} }
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: {
-        write: vi.fn(async (items: Array<{ items: Record<string, Promise<Blob>> }>) => {
-          writeCalls++
-          const blob = items[0].items['text/plain']
-          const text = blob.then((b) => b.text())
-          void text.catch(() => {})   // tests opt in to the rejection; don't leak it
-          written.push(text)
-          await blob
-        }),
-      },
-    })
+// File-level, not inside the first describe. It used to live there, and the budget describe below
+// — a sibling — silently relied on `defineProperty` and `vi.fn` surviving `restoreAllMocks` and
+// leaking forward. Running that block alone (`vitest -t`, `.only`) then took the plain-HTTP branch
+// and every timing assertion passed vacuously.
+beforeEach(() => {
+  written = []
+  writeCalls = 0
+  secureContext(true)
+  // jsdom ships neither of these.
+  ;(globalThis as unknown as { ClipboardItem: unknown }).ClipboardItem =
+    class { constructor(public items: Record<string, Promise<Blob>>) {} }
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      write: vi.fn(async (items: Array<{ items: Record<string, Promise<Blob>> }>) => {
+        writeCalls++
+        const blob = items[0].items['text/plain']
+        const text = blob.then((b) => b.text())
+        void text.catch(() => {})   // tests opt in to the rejection; don't leak it
+        written.push(text)
+        await blob
+      }),
+    },
   })
+})
 
-  afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => { vi.restoreAllMocks() })
 
+describe('useClipboardBridge', () => {
   // The agent presses the device chord, not the hook — only it knows when the key landed.
   it('Cmd+C asks the agent to press copy and read, without pressing the chord itself', async () => {
     const { sent, chords } = setup()
@@ -134,20 +140,54 @@ describe('useClipboardBridge', () => {
     await expect(claim).resolves.toBe('cancelled')
   })
 
-  // The bridge must never make copy worse than it was. On an explicit failure the chord still
-  // goes to the device so the copy at least lands on the device's own clipboard.
-  it('falls back to the plain chord when the bridge cannot copy', async () => {
+  // A backend with no clipboard channel never wrote a sentinel, so the chord is safe there —
+  // and it is the only way the copy happens at all.
+  it('falls back to the plain chord when the backend has no clipboard channel', async () => {
     const { chords, reply } = setup()
     press('KeyC')
-    reply({ type: 'clipboard:error', message: 'not supported' }, 'clipboard:read')
+    reply({ type: 'clipboard:error', message: 'not supported', payload: { unsupported: true, sentinelParked: false } }, 'clipboard:read')
     await waitFor(() => expect(chords).toEqual([['KeyC', 0x08]]))
   })
 
   it('falls back with the cut chord for Cmd+X', async () => {
     const { chords, reply } = setup()
     press('KeyX')
-    reply({ type: 'clipboard:error', message: 'not supported' }, 'clipboard:read')
+    reply({ type: 'clipboard:error', message: 'not supported', payload: { unsupported: true, sentinelParked: false } }, 'clipboard:read')
     await waitFor(() => expect(chords).toEqual([['KeyX', 0x08]]))
+  })
+
+  // The agent replies before it restores, so with a sentinel still parked a chord here would
+  // copy and the restore would overwrite that with the pre-read value — handing the user a stale
+  // clipboard, which is what the sentinel prevents.
+  it('does not press the chord when a sentinel is still parked', async () => {
+    const { chords, errors, reply } = setup()
+    press('KeyC')
+    reply({ type: 'clipboard:error', message: 'did not copy anything', payload: { sentinelParked: true } }, 'clipboard:read')
+    await waitFor(() => expect(errors).toEqual(['did not copy anything']))
+    expect(chords).toEqual([])
+  })
+
+  // Failing before the sentinel goes down is not the same thing. iOS never reports `unsupported`
+  // at all, so gating on that alone made the fallback dead code there — the user lost the
+  // on-device copy they used to get whenever reading the original failed.
+  it('falls back when the agent got nowhere near parking a sentinel', async () => {
+    const { chords, reply } = setup()
+    press('KeyC')
+    reply({
+      type: 'clipboard:error', message: 'Cannot press copy — no input channel to the device',
+      payload: { sentinelParked: false },
+    }, 'clipboard:read')
+    await waitFor(() => expect(chords).toEqual([['KeyC', 0x08]]))
+  })
+
+  // An agent from before the field cannot tell us, and a silent stale paste is worse than a copy
+  // that did not happen.
+  it('assumes a sentinel is parked when the agent does not say', async () => {
+    const { chords, errors, reply } = setup()
+    press('KeyC')
+    reply({ type: 'clipboard:error', message: 'read failed' }, 'clipboard:read')
+    await waitFor(() => expect(errors).toEqual(['read failed']))
+    expect(chords).toEqual([])
   })
 
   // A timeout is NOT a failure — the agent is still mid-copy and already pressed the chord
@@ -174,7 +214,7 @@ describe('useClipboardBridge', () => {
     try {
       const { chords, errors } = setup()
       press('KeyC')
-      await act(async () => { await vi.advanceTimersByTimeAsync(3_500) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(6_000) })   // past the budget
       await waitFor(() => expect(errors.length).toBe(1))
       expect(chords).toEqual([])
     } finally { vi.useRealTimers() }
@@ -248,7 +288,7 @@ describe('useClipboardBridge', () => {
     try {
       const { chords } = setup()
       pastes('slow one')
-      await act(async () => { await vi.advanceTimersByTimeAsync(3_500) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(6_000) })   // past the budget
       expect(chords).toEqual([])
     } finally { vi.useRealTimers() }
   })
@@ -352,5 +392,67 @@ describe('isBridgedChord', () => {
     expect(isBridgedChord(ev({ code: 'KeyC' }))).toBe(false)
     expect(isBridgedChord(ev({ code: 'KeyC', metaKey: true, altKey: true }))).toBe(false)
     expect(isBridgedChord(ev({ code: 'KeyA', metaKey: true }))).toBe(false)
+  })
+})
+
+// The browser budget and the agent's worst case were once the same number by accident, and the
+// browser then gave up at the exact moment the agent was about to answer with a specific error.
+// agent-core owns the agent side and the dashboard cannot import it, so this reads that source
+// directly rather than trusting two hand-written copies to stay in step.
+describe('round-trip budget vs the agent worst case', () => {
+  const CLAIM_LIMIT_MS = 6_000   // measured in Chrome and Safari
+
+  const agentWorstFromSource = (): number => {
+    const src = readFileSync(
+      join(__dirname, '..', '..', '..', 'agent-core', 'src', 'types.ts'), 'utf-8')
+    const num = (name: string): number => {
+      const m = src.match(new RegExp(`^export const ${name} = ([0-9_]+)`, 'm'))
+      if (!m) throw new Error(`${name} not found in agent-core/src/types.ts`)
+      return Number(m[1].replace(/_/g, ''))
+    }
+    // Evaluate agent-core's own expression rather than restating it here. Restating it meant a
+    // formula change there — dropping a device call, say — left this passing, which is exactly
+    // the drift this test exists to catch.
+    // Take the WHOLE statement, continuation lines included. The declaration already wraps, so
+    // adding a term on a following line is the natural way to extend it — and reading only the
+    // first line left such a term invisible here while agent-core's real value moved.
+    const lines = src.split('\n')
+    const at = lines.findIndex((l) => l.startsWith('export const CLIPBOARD_AGENT_WORST_MS ='))
+    if (at < 0) throw new Error('CLIPBOARD_AGENT_WORST_MS not found in agent-core/src/types.ts')
+    const parts = [lines[at].slice(lines[at].indexOf('=') + 1)]
+    for (let i = at + 1; i < lines.length && /^\s+\S/.test(lines[i]); i++) parts.push(lines[i])
+    const expr = parts.join(' ').trim()
+    const resolved = expr.replace(/\s+/g, ' ').replace(/[A-Z_]{4,}/g, (name) => String(num(name)))
+    if (!/^[0-9+*\s]+$/.test(resolved)) throw new Error(`unexpected expression: ${expr}`)
+    return Number(new Function(`return ${resolved}`)())
+  }
+
+  it('the hook derives the same worst case agent-core does', () => {
+    // Changing a deadline in agent-core without updating the hook must fail here.
+    // The hook's own constant, not a third copy — changing either side must fail here.
+    expect(AGENT_WORST_MS).toBe(agentWorstFromSource())
+  })
+
+  it('waits past the agent worst case', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const { errors } = setup()
+      press('KeyC')
+      await act(async () => { await vi.advanceTimersByTimeAsync(AGENT_WORST_MS) })
+      expect(errors).toEqual([])   // still waiting — the agent may yet answer specifically
+    } finally { vi.useRealTimers() }
+  })
+
+  it('gives up before a claimed clipboard write would lapse', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const { errors } = setup()
+      press('KeyC')
+      // Advance to just under the claim limit — the budget must have fired by now. Asserted
+      // directly, not through `waitFor`: under `shouldAdvanceTime` its polling keeps pushing the
+      // fake clock forward, which handed the budget over a second of slack it should not get.
+      await act(async () => { await vi.advanceTimersByTimeAsync(CLAIM_LIMIT_MS - 1) })
+      expect(errors.length).toBe(1)
+    } finally { vi.useRealTimers() }
   })
 })

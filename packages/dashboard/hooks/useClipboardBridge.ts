@@ -24,10 +24,23 @@ interface Options {
   onError?: (message: string) => void
 }
 
-// How long to wait for the agent before calling it a fault. Not a user-activation window: the
-// clipboard is claimed up front and filled late (see claimClipboard). Only reached when a
-// capable agent is genuinely stuck, since an agent without the capability never gets a request.
-const ROUND_TRIP_BUDGET_MS = 3_000
+// How long to wait for the agent before calling it a fault.
+//
+// This must exceed the agent's own worst case, or the browser gives up first and replaces the
+// agent's specific message ("did not copy anything — is something selected?") with a generic
+// one — which is what happened when both numbers were 3000ms by coincidence. Mirrors
+// agent-core's CLIPBOARD_AGENT_WORST_MS. The dashboard has no dependency on that package, so
+// the derivation is written out here and a test reads agent-core's source to keep the two in
+// step — an earlier version of this comment silently drifted.
+//
+// Two deadline windows are inside the answer (confirm the sentinel applied, watch for the copy);
+// the restore is not — the agent replies from its `catch` and restores in the `finally` after.
+// Five device calls, because each windowed loop can overrun by one.
+//
+// Upper bound: a claimed clipboard write was measured holding for 6s in Chrome and Safari, so
+// staying under that keeps the one-press copy intact.
+export const AGENT_WORST_MS = 1_000 + 2_000 + 5 * 300   // write + copy + device calls
+const ROUND_TRIP_BUDGET_MS = AGENT_WORST_MS + 500       // 5s — above the agent, 1s below the claim limit
 
 // The device chord is always the Cmd/meta one regardless of what the viewer pressed: iOS
 // only understands Cmd+C, and Android treats meta and ctrl alike. A Windows viewer pressing
@@ -92,6 +105,19 @@ const byteLength = (s: string): number => new TextEncoder().encode(s).length
  *  the one error where falling back is provably harmless rather than a gamble. */
 const isUnsupportedBackend = (msg: ClipboardBridgeMessage): boolean =>
   !!(msg.payload as { unsupported?: boolean } | undefined)?.unsupported
+
+/** May the viewer press the plain chord after a failed bridged copy? Only when the agent says
+ *  no sentinel is on the device. If one is, the agent's restore lands right after and overwrites
+ *  whatever the chord copies, so the user pastes a stale value. Absent means assume parked —
+ *  an agent that predates the field cannot tell us, and a silent stale paste is the worse half
+ *  of the trade. See ClipboardErrorPayload in agent-core. */
+const noSentinelParked = (msg: ClipboardBridgeMessage): boolean => {
+  const p = msg.payload as { unsupported?: boolean; sentinelParked?: boolean } | undefined
+  // `unsupported` implies it: a backend with no clipboard channel cannot park anything. Accepting
+  // it keeps `{ unsupported: true }` alone — the natural encoding, and what a third-party agent
+  // would most likely send — from silently costing the user their fallback copy.
+  return p?.sentinelParked === false || p?.unsupported === true
+}
 
 /** Is the user selecting text in the dashboard itself rather than driving the device? */
 function hasDocumentSelection(): boolean {
@@ -209,9 +235,11 @@ export function useClipboardBridge({ sessionId, send, active, supported, handler
       if (reply.type === 'clipboard:error') {
         fail(new ClaimCancelled(reply.message ?? 'read failed'))
         report(reply.message ?? 'Clipboard read failed')
-        // The copy still has to happen on the device. Safe here for the same reason as paste
-        // below: an errored read never leaves a sentinel behind.
-        sendChord(isCut ? 'KeyX' : 'KeyC', META)
+        // The agent replies before it restores, so a chord pressed while its sentinel is still
+        // parked gets overwritten by that restore. Ask the agent directly rather than inferring
+        // it from the error: a backend with no clipboard channel is not the only path that never
+        // parked one — a missing input channel and a failed read of the original are too.
+        if (noSentinelParked(reply)) sendChord(isCut ? 'KeyX' : 'KeyC', META)
         return
       }
       const { text } = (reply.payload ?? {}) as { text?: string }

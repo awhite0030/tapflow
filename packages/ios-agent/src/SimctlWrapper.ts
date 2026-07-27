@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { execFile, spawn } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { promises as fs } from 'fs'
 import { tmpdir } from 'os'
@@ -47,7 +47,7 @@ function firstLine(e: unknown): string {
   return lines.find((l) => !l.startsWith('Command failed:')) ?? 'the simulator did not respond'
 }
 import type { Device, DeviceStatus } from '@tapflowio/agent-core'
-import { defaultRunner, type SimctlRunner } from './simctl.js'
+import { defaultRunner, OutputTooLargeError, type SimctlRunner } from './simctl.js'
 import { KeyboardHelperDaemon } from './KeyboardHelperDaemon.js'
 
 interface SimctlDevice {
@@ -84,6 +84,10 @@ export function isDeviceMissingError(err: unknown): boolean {
   const text = [e.message, e.stderr].filter((s): s is string => typeof s === 'string').join(' ')
   return /cannot be located on disk|data is no longer present/i.test(text)
 }
+
+/** The device clipboard held more than `MAX_CLIPBOARD_BYTES`. The app did copy — we just cannot
+ *  carry it — so a caller mid-handshake must NOT restore over it. */
+export class ClipboardTooLargeError extends PlatformError {}
 
 export class SimctlWrapper {
   private readonly kbd = new KeyboardHelperDaemon()
@@ -172,40 +176,14 @@ export class SimctlWrapper {
     await this.runner.exec('openurl', deviceId, url)
   }
 
-  // Set the device pasteboard from stdin. Not routed through SimctlRunner
-  // because pbcopy reads text from stdin, which the exec(...args) contract
-  // doesn't carry — same exception as the osascript call in boot(). Used by
-  // IOSAgent for input:type (pbcopy → Cmd+V paste).
   async setPasteboard(deviceId: string, text: string): Promise<void> {
     try {
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn('xcrun', ['simctl', 'pbcopy', deviceId])
-        let stderr = ''
-        // Bounded for the same reason as the read: the clipboard bridge cannot be left hanging
-        // with a sentinel on the device.
-        const timer = setTimeout(() => {
-          proc.kill('SIGKILL')
-          reject(new Error('simctl pbcopy timed out'))
-        }, CLIPBOARD_CMD_TIMEOUT_MS)
-        const done = (e?: Error) => {
-          clearTimeout(timer)
-          if (e) reject(e)
-          else resolve()
-        }
-        proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
-        proc.on('error', done)
-        // stdin can emit its own 'error' if the spawn fails mid-write — an
-        // unhandled stream 'error' would crash the agent, so reject instead.
-        proc.stdin.on('error', done)
-        proc.on('close', (code) => done(
-          code === 0 ? undefined : new Error(stderr.trim() || `simctl pbcopy exited ${code}`),
-        ))
-        proc.stdin.write(text)
-        proc.stdin.end()
-      })
+      await this.runner.execWithOpts(
+        { input: text, timeoutMs: CLIPBOARD_CMD_TIMEOUT_MS },
+        'pbcopy', deviceId,
+      )
     } catch (e) {
-      // Same reasoning as getPasteboard: this reaches a user-facing toast, and the raw text is
-      // multi-line and embeds the absolute Xcode path.
+      // This reaches a user-facing toast, and the raw text is multi-line and echoes the argv.
       throw new PlatformError(`Could not write the device clipboard: ${firstLine(e)}`)
     }
   }
@@ -217,12 +195,15 @@ export class SimctlWrapper {
   // strings that end up in a user-facing toast, so they are condensed here.
   async getPasteboard(deviceId: string): Promise<string> {
     try {
-      const { stdout } = await execFileAsync('xcrun', ['simctl', 'pbpaste', deviceId], {
-        maxBuffer: MAX_CLIPBOARD_BYTES, encoding: 'utf-8', timeout: CLIPBOARD_CMD_TIMEOUT_MS,
-      })
-      return stdout
+      // `maxBuffer` is where the clipboard size ceiling is actually enforced for iOS: exceeding
+      // it rejects rather than buffering without bound, so callers do not re-check the length.
+      return await this.runner.execWithOpts(
+        { timeoutMs: CLIPBOARD_CMD_TIMEOUT_MS, maxBuffer: MAX_CLIPBOARD_BYTES },
+        'pbpaste', deviceId,
+      )
     } catch (e) {
-      throw new PlatformError(`Could not read the device clipboard: ${firstLine(e)}`)
+      const message = `Could not read the device clipboard: ${firstLine(e)}`
+      throw e instanceof OutputTooLargeError ? new ClipboardTooLargeError(message) : new PlatformError(message)
     }
   }
 

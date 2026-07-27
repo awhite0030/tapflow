@@ -35,3 +35,4 @@ export {
   rewriteLowLatencySpsInFrame,
 } from './sps.js'
 export type { SpsVuiInfo } from './sps.js'
+export { createKeyedSerialQueue } from './serialQueue.js'

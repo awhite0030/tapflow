@@ -168,5 +168,5 @@ export type RelayMessage =
   // agent → browser
   | { type: 'clipboard:data'; sessionId: string; requestId: string; payload: { text: string } }
   | { type: 'clipboard:write-done'; sessionId: string; requestId: string }
-  | { type: 'clipboard:error'; sessionId: string; requestId: string; message: string; payload?: { unsupported?: boolean } }
+  | { type: 'clipboard:error'; sessionId: string; requestId: string; message: string; payload?: { unsupported?: boolean; sentinelParked?: boolean } }
   | { type: 'error'; message: string }

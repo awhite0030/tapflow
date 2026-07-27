@@ -1119,6 +1119,104 @@ describe('AndroidAgent', () => {
 
       // M2: without the per-device queue, two reads trade sentinels — one returns the other's
       // marker and a sentinel is left on the device.
+      // Mirror of the iOS test of the same name. Reverting Android to reply-after-restore
+      // previously broke nothing here, so the platform's half of the ordering was unguarded.
+      it('answers before it restores, and still restores before releasing the device', async () => {
+        grpcClipboardText = 'ORIGINAL'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)   // the guest never copies
+        const client = getState().grpcClient as unknown as { setClipboard: ReturnType<typeof vi.fn> }
+        const realSet = client.setClipboard.getMockImplementation()
+        let restoreDone = false
+        // Make the restore slow enough that "reply first" cannot be a scheduling artefact.
+        client.setClipboard.mockImplementation(async (text: string) => {
+          if (text === 'ORIGINAL') {
+            await new Promise((r) => setTimeout(r, 400))
+            restoreDone = true
+          }
+          return realSet?.(text)
+        })
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'ord', payload: { press: 'copy' },
+        }))
+        await waitForType(browser, 'clipboard:error')
+        expect(restoreDone).toBe(false)   // answered while the restore was still in flight
+        await vi.waitFor(() => expect(restoreDone).toBe(true), { timeout: 3000 })
+      }, 15_000)
+
+      it('reports a parked sentinel when the copy failed after the marker went down', async () => {
+        grpcClipboardText = 'ORIGINAL'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'sp1', payload: { press: 'copy' },
+        }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect((err.payload as { sentinelParked: boolean }).sentinelParked).toBe(true)
+      }, 10_000)
+
+      // The flag describes the DEVICE, not the operation that answers: the chord the viewer would
+      // press in response travels as `input:key`, outside the queue that keeps operations apart.
+      it('reports a sentinel parked by a different in-flight operation', async () => {
+        grpcClipboardText = 'ORIGINAL'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'hold', payload: { press: 'copy' },
+        }))
+        await vi.waitFor(() => expect(grpcClipboardText.startsWith('\u200Btapflow-clipboard-')).toBe(true), { timeout: 2000 })
+
+        // Rejected up front, before the queue — so it answers while the read above still holds.
+        browser.send(JSON.stringify({
+          type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'big',
+          payload: { text: 'x'.repeat(1024 * 1024 + 1) },   // MAX_CLIPBOARD_BYTES + 1
+        }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.requestId).toBe('big')
+        expect((err.payload as { sentinelParked: boolean }).sentinelParked).toBe(true)
+
+        // Let the read finish before leaving: it still holds the device queue, and the next test
+        // would otherwise wait out its deadline and restore.
+        await vi.waitFor(() => expect(grpcClipboardText).toBe('ORIGINAL'), { timeout: 5000 })
+      }, 20_000)
+
+      // Only reachable if the per-device queue fails, but the queue is the sole thing standing
+      // between these and a corrupted clipboard, so the discrimination itself is pinned.
+      it('never hands a foreign sentinel back as copied text', async () => {
+        grpcClipboardText = 'ORIGINAL'
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockImplementation(async () => {
+          grpcClipboardText = '\u200Btapflow-clipboard-someone-else'   // another operation's marker
+        })
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'f1', payload: { press: 'copy' },
+        }))
+        const err = await waitForType(browser, 'clipboard:error')
+        expect(err.message).toMatch(/did not copy/i)   // not clipboard:data carrying the marker
+      }, 10_000)
+
+      it('does not restore a foreign sentinel as if it were the user text', async () => {
+        grpcClipboardText = '\u200Btapflow-clipboard-someone-else'   // already parked on arrival
+        await bootDevice()
+        await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
+        vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)   // the guest never copies
+
+        browser.send(JSON.stringify({
+          type: 'clipboard:read', sessionId: agent.sessionId, requestId: 'f2', payload: { press: 'copy' },
+        }))
+        await waitForType(browser, 'clipboard:error')
+        // Restoring it would leave it for the NEXT read to mistake for the original.
+        await vi.waitFor(() => expect(grpcClipboardText).toBe(''), { timeout: 2000 })
+      }, 10_000)
+
       it('serialises overlapping reads so they cannot trade sentinels', async () => {
         grpcClipboardText = 'ORIGINAL'
         await bootDevice()
@@ -1263,9 +1361,12 @@ describe('AndroidAgent', () => {
         const err = await waitForType(browser, 'clipboard:error')
         expect(err.requestId).toBe('a9')
         expect(err.message).toContain('UNAVAILABLE')
-        // A transient gRPC fault is NOT "unsupported" — a sentinel may well be parked, so the
-        // viewer must not press a blind chord here.
-        expect((err.payload as { unsupported: boolean }).unsupported).toBe(false)
+        // A transient gRPC fault is NOT "unsupported": the backend has a clipboard channel, it
+        // just failed this time. This request carries no `press`, so nothing was ever parked and
+        // the viewer is free to fall back to the chord.
+        const payload = err.payload as { unsupported: boolean; sentinelParked: boolean }
+        expect(payload.unsupported).toBe(false)
+        expect(payload.sentinelParked).toBe(false)
       })
 
       // R8: the scrcpy backend (real devices, and the gRPC fallback) has no clipboard
