@@ -40,7 +40,7 @@
 
 <p align="center"><em>Streams over H.264 with a zero-buffer decoder (no MSE) — <a href="contributing/streaming-latency-log.md">latency measurements ↗</a></em></p>
 
-> **v0.x, actively developed** — backward-compatible by default; breaking changes are rare and always noted in the [changelog](CHANGELOG.md). [Roadmap →](./ROADMAP.md)
+> **v0.x, actively developed** — backward-compatible by default; breaking changes are rare and always noted in the [changelog](CHANGELOG.md). [Roadmap →](ROADMAP.md)
 
 ---
 
@@ -178,7 +178,7 @@ tapflow is self-hosted by design — build files, device streams, and session re
 - **Authenticated by default off-host** — the relay accepts unauthenticated connections only from its own machine (`localhost`). Browsers reaching it from elsewhere sign in; agents on another machine present an `agent`-scope token.
 - **PAT + roles** — Personal Access Tokens carry scopes (`builds:write` for CI uploads, `agent` for remote agents), and team roles (Admin / Developer / QA / Viewer) govern dashboard access.
 
-Found a vulnerability? See [SECURITY.md](SECURITY.md). For the full model, read [Security & Privacy](https://www.tapflow.dev/guide/security).
+Found a vulnerability? See [SECURITY.md](SECURITY.md). For the full model, read [Security & Privacy](https://www.tapflow.dev/reference/security).
 
 ## Self-Hosting
 
@@ -226,8 +226,8 @@ Full reference → [CLI docs](https://www.tapflow.dev/reference/cli)
 
 Full docs: **[www.tapflow.dev](https://www.tapflow.dev)**
 
-- **Guides** — [Quick Start](https://www.tapflow.dev/guide/getting-started) · [Environment Setup](https://www.tapflow.dev/guide/environment-setup) · [Self-Hosting](https://www.tapflow.dev/guide/self-hosting) · [Security & Privacy](https://www.tapflow.dev/guide/security) · [Uploading Builds (CI/CD)](https://www.tapflow.dev/guide/upload-builds) · [Troubleshooting](https://www.tapflow.dev/guide/troubleshooting)
-- **Reference** — [CLI](https://www.tapflow.dev/reference/cli) · [Configuration](https://www.tapflow.dev/reference/configuration) · [REST API](https://www.tapflow.dev/reference/api)
+- **Guides** — [Quick Start](https://www.tapflow.dev/guide/getting-started) · [Environment Setup](https://www.tapflow.dev/guide/environment-setup) · [Self-Hosting](https://www.tapflow.dev/guide/self-hosting) · [Uploading Builds (CI/CD)](https://www.tapflow.dev/guide/upload-builds) · [Troubleshooting](https://www.tapflow.dev/guide/troubleshooting)
+- **Reference** — [CLI](https://www.tapflow.dev/reference/cli) · [Configuration](https://www.tapflow.dev/reference/configuration) · [REST API](https://www.tapflow.dev/reference/api) · [Security & Privacy](https://www.tapflow.dev/reference/security)
 - **AI Agent** — [MCP Server](https://www.tapflow.dev/guide/mcp-server)
 
 ## Contributing

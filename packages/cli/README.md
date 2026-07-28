@@ -37,7 +37,7 @@
 </div>
 
 <div align="center">
-  <a href="https://github.com/user-attachments/assets/01914ed2-f35c-4230-ae01-166ffe6af395" target="_blank" rel="noopener noreferrer">
+  <a href="https://github.com/user-attachments/assets/dbba8bde-74b6-4fb9-bdb6-3919bc4295c4" target="_blank" rel="noopener noreferrer">
     <img src="https://raw.githubusercontent.com/jo-duchan/tapflow/main/docs/public/demo-thumbnail.png" alt="tapflow demo — click to play" width="100%" />
   </a>
   <p><em>Click to play</em></p>
@@ -77,7 +77,7 @@ We hit this exact problem, so we built tapflow.
 tapflow connects three parts:
 
 1. A **self-hosted relay** (Linux or Mac) — also serves the dashboard on the same port, so there's no separate web server.
-2. A **macOS agent** that drives the iOS Simulator and Android emulator — it connects _outbound_ to the relay (no inbound firewall rules) and injects iOS touch directly, without WebDriverAgent.
+2. A **macOS agent** that drives the iOS Simulator and Android emulator — it connects *outbound* to the relay (no inbound firewall rules) and injects iOS touch directly, without WebDriverAgent.
 3. A **browser dashboard** for the rest of the team — pick an available device and interact with it in real time while the simulators keep running on your Macs.
 
 ```text
@@ -88,6 +88,8 @@ Browser (your team)  ←─ WebSocket ─→  Relay Server  ←─ WebSocket (ou
 ## What tapflow is not
 
 tapflow doesn't replace native mobile development tools. Mobile developers still use Xcode, Android Studio, and their build tooling. tapflow makes the *running* simulators and emulators accessible to the rest of the team through a browser, and it is not a device farm. It does have an automated QA axis — a deterministic flow runner and an MCP server for LLM agents — but wiring in external automation frameworks like WebDriverAgent or Appium is out of scope; tapflow ships its own minimal runner instead.
+
+Where this is heading is laid out in [VISION.md](https://github.com/jo-duchan/tapflow/blob/main/VISION.md): growing manual QA into automation, only when you need it.
 
 ## Quick Start
 
@@ -181,7 +183,7 @@ tapflow is self-hosted by design — build files, device streams, and session re
 - **Authenticated by default off-host** — the relay accepts unauthenticated connections only from its own machine (`localhost`). Browsers reaching it from elsewhere sign in; agents on another machine present an `agent`-scope token.
 - **PAT + roles** — Personal Access Tokens carry scopes (`builds:write` for CI uploads, `agent` for remote agents), and team roles (Admin / Developer / QA / Viewer) govern dashboard access.
 
-Found a vulnerability? See [SECURITY.md](https://github.com/jo-duchan/tapflow/blob/main/SECURITY.md). For the full model, read [Security & Privacy](https://www.tapflow.dev/guide/security).
+Found a vulnerability? See [SECURITY.md](https://github.com/jo-duchan/tapflow/blob/main/SECURITY.md). For the full model, read [Security & Privacy](https://www.tapflow.dev/reference/security).
 
 ## Self-Hosting
 
@@ -229,13 +231,13 @@ Full reference → [CLI docs](https://www.tapflow.dev/reference/cli)
 
 Full docs: **[www.tapflow.dev](https://www.tapflow.dev)**
 
-- **Guides** — [Quick Start](https://www.tapflow.dev/guide/getting-started) · [Environment Setup](https://www.tapflow.dev/guide/environment-setup) · [Self-Hosting](https://www.tapflow.dev/guide/self-hosting) · [Security & Privacy](https://www.tapflow.dev/guide/security) · [Uploading Builds (CI/CD)](https://www.tapflow.dev/guide/upload-builds) · [Troubleshooting](https://www.tapflow.dev/guide/troubleshooting)
-- **Reference** — [CLI](https://www.tapflow.dev/reference/cli) · [Configuration](https://www.tapflow.dev/reference/configuration) · [REST API](https://www.tapflow.dev/reference/api)
+- **Guides** — [Quick Start](https://www.tapflow.dev/guide/getting-started) · [Environment Setup](https://www.tapflow.dev/guide/environment-setup) · [Self-Hosting](https://www.tapflow.dev/guide/self-hosting) · [Uploading Builds (CI/CD)](https://www.tapflow.dev/guide/upload-builds) · [Troubleshooting](https://www.tapflow.dev/guide/troubleshooting)
+- **Reference** — [CLI](https://www.tapflow.dev/reference/cli) · [Configuration](https://www.tapflow.dev/reference/configuration) · [REST API](https://www.tapflow.dev/reference/api) · [Security & Privacy](https://www.tapflow.dev/reference/security)
 - **AI Agent** — [MCP Server](https://www.tapflow.dev/guide/mcp-server)
 
 ## Contributing
 
-tapflow is actively developed and PRs are welcome — see [CONTRIBUTING.md](https://github.com/jo-duchan/tapflow/blob/main/CONTRIBUTING.md) for branch strategy, commit conventions, and an architecture overview.
+tapflow is actively developed and PRs are welcome — see [CONTRIBUTING.md](https://github.com/jo-duchan/tapflow/blob/main/CONTRIBUTING.md) for branch strategy, commit conventions, and an architecture overview. For deep dives, the [contributor notes](https://github.com/jo-duchan/tapflow/blob/main/CONTRIBUTING.md#technical-internals) cover the SimulatorKit reverse-engineering and the streaming render pipeline.
 
 **Requirements**: Node.js ≥ 20, pnpm ≥ 9
 
