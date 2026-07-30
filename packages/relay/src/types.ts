@@ -62,15 +62,12 @@ export type MessageType =
 import type { AgentResources, UIElement } from '@tapflowio/agent-core'
 export type { AgentResources, UIElement }
 
-export interface DeviceInfo {
-  id: string
-  name: string
-  platform: string
-  status: string
-  osVersion?: string
-  sessionId: string
-  busy: boolean
-}
+// The wire contract lives in @tapflowio/protocol so the relay, the dashboard and mcp-server cannot
+// drift apart. `DeviceInfo` is kept as an alias while call sites move over.
+import type { DeviceSummary } from '@tapflowio/protocol'
+export type { DeviceReport, DeviceSummary } from '@tapflowio/protocol'
+
+export type DeviceInfo = DeviceSummary
 
 // agents:listed response groups devices by agent machine
 export interface SessionInfo {

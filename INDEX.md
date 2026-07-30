@@ -15,6 +15,7 @@ Common rules are in the root [AGENTS.md](./AGENTS.md).
 
 | Package | AGENTS.md | Role |
 |---------|-----------|------|
+| protocol | [packages/protocol/AGENTS.md](./packages/protocol/AGENTS.md) | WebSocket wire contract shared by relay, dashboard and mcp-server (types only) |
 | agent-core | [packages/agent-core/AGENTS.md](./packages/agent-core/AGENTS.md) | DeviceAgent interface design principles |
 | ios-agent | [packages/ios-agent/AGENTS.md](./packages/ios-agent/AGENTS.md) | macOS-only simulator control rules |
 | android-agent | [packages/android-agent/AGENTS.md](./packages/android-agent/AGENTS.md) | ADB-based emulator control rules |

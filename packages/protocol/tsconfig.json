@@ -10,26 +10,15 @@
     "sourceMap": true,
     "strict": true,
     "esModuleInterop": true,
-    "composite": true,
     "skipLibCheck": true,
-    "types": [
-      "node"
-    ]
+    "composite": true,
+    "types": []
   },
   "include": [
     "src"
   ],
   "exclude": [
-    "src/__tests__",
     "dist",
     "node_modules"
-  ],
-  "references": [
-    {
-      "path": "../agent-core"
-    },
-    {
-      "path": "../protocol"
-    }
   ]
 }

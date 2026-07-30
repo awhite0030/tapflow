@@ -53,6 +53,7 @@
   },
   "dependencies": {
     "@tapflowio/agent-core": "workspace:*",
+    "@tapflowio/protocol": "workspace:*",
     "acme-client": "^5.4.0",
     "better-sqlite3": "^12.11.1",
     "busboy": "^1.6.0",
