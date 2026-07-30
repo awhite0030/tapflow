@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { AgentDevice, SessionInfo } from '@/lib/types'
+import type { SessionInfo } from '@/lib/types'
 
 export function useDeviceSelector(
   selectedSession: SessionInfo | undefined,

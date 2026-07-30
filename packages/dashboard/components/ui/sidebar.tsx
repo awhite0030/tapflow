@@ -662,6 +662,12 @@ const SidebarMenuSkeleton = React.forwardRef<
 >(({ className, showIcon = false, ...props }, ref) => {
   // Random width between 50 to 90%.
   const width = React.useMemo(() => {
+    // shadcn upstream code. The width is randomised once per mount so skeleton rows differ; both
+    // useMemo and a lazy initializer run during render, so neither satisfies react-hooks/purity, and
+    // the only structural alternative — computing it in an effect — would make the width jump after
+    // first paint. SidebarMenuSkeleton is currently unused, so suppressing costs nothing today and
+    // avoids handing a visible jump to whoever adopts it.
+    // eslint-disable-next-line react-hooks/purity
     return `${Math.floor(Math.random() * 40) + 50}%`
   }, [])
 

@@ -126,13 +126,19 @@ export class SimctlWrapper {
       if (stderr.includes('Unable to boot device in current state: Booted')) return
       throw err
     }
-    // Xcode 14+ auto-opens Simulator.app on `simctl boot`.
-    // Quitting kills the simulator runtime, so just hide the app window instead.
-    execFile('osascript', ['-e', 'tell application "Simulator" to set visible to false'], () => {})
   }
 
   async shutdown(deviceId: string): Promise<void> {
-    await this.runner.exec('shutdown', deviceId)
+    try {
+      await this.runner.exec('shutdown', deviceId)
+    } catch (err: unknown) {
+      const stderr = (err as { stderr?: string }).stderr ?? ''
+      // already shut down is not an error — the mirror of the guard in boot(). Without it a normal
+      // teardown of an already-stopped device logs `shutdown failed`, which is indistinguishable
+      // from a device that genuinely refused to stop.
+      if (stderr.includes('Unable to shutdown device in current state: Shutdown')) return
+      throw err
+    }
   }
 
   async erase(deviceId: string): Promise<void> {

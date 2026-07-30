@@ -180,7 +180,7 @@ export function AndroidViewer({
       }
     }
     ctx.restore()
-  }, [])
+  }, [recordCanvasRef])
 
   const handleScreenshot = useCallback(() => {
     const src = decoderRef.current?.surface; const size = videoSizeRef.current
@@ -208,7 +208,7 @@ export function AndroidViewer({
     } else if (recordState === 'recording') {
       stopClientRecording()
     }
-  }, [recordState, startClientRecording, stopClientRecording, composeFrame])
+  }, [recordState, startClientRecording, stopClientRecording, composeFrame, recordCanvasRef])
 
   const handleRotate = useCallback(() => {
     send({ type: 'input:rotate', sessionId })
@@ -429,6 +429,12 @@ export function AndroidViewer({
   // display naturally (any landscape direction stays upright — scrcpy mirrors the real display).
   const isLandscapeContent = effectiveSize ? effectiveSize.width > effectiveSize.height : false;
   const needsCSSRotation = userWantsLandscape && !isLandscapeContent;
+  // react-hooks/immutability false positive: needsCSSRotationRef is only *read*, inside callbacks
+  // (lines 204 and 293), is never passed to a hook or listed in a deps array, and is not exposed via
+  // forwardRef — so writing it from an effect is the standard pattern the rule exists to allow. The
+  // rule counts a closure capture as an argument. Restructuring would touch the rotation path below,
+  // whose display behaviour no test covers, for no correctness gain.
+  // eslint-disable-next-line react-hooks/immutability
   useLayoutEffect(() => { needsCSSRotationRef.current = needsCSSRotation }, [needsCSSRotation])
   // Container uses landscape dims; canvas inside rotated 90° to show portrait content in landscape shell
   const containerW = needsCSSRotation ? androidDisplayH : androidDisplayW;

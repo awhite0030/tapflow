@@ -186,7 +186,7 @@ export function IOSViewer({
   useEffect(() => {
     const rc = recordCanvasRef.current; const container = containerRef.current
     if (rc && container) { rc.width = container.clientWidth; rc.height = container.clientHeight }
-  }, [chrome])
+  }, [chrome, recordCanvasRef])
 
   // ── Recording (composeFrame only — state/refs/lifecycle in useClientRecording) ──
   const composeFrame = useCallback(() => {
@@ -252,7 +252,7 @@ export function IOSViewer({
       }
       ctx.restore()
     }
-  }, [])
+  }, [recordCanvasRef])
 
   const handleScreenshot = useCallback(() => {
     const src = canvasRef.current; if (!src) return
@@ -276,7 +276,7 @@ export function IOSViewer({
     } else if (recordState === 'recording') {
       stopClientRecording()
     }
-  }, [recordState, startClientRecording, stopClientRecording, composeFrame])
+  }, [recordState, startClientRecording, stopClientRecording, composeFrame, recordCanvasRef])
 
   const handleRotate = useCallback(() => {
     send({ type: 'input:rotate', sessionId }); setIsLandscape(prev => !prev)
@@ -399,7 +399,7 @@ export function IOSViewer({
     const fc = canvasRef.current; const rc = recordCanvasRef.current
     if (fc && fc.clientWidth > 0) return { x: fc.offsetLeft + norm.x * fc.clientWidth, y: fc.offsetTop + norm.y * fc.clientHeight }
     return { x: norm.x * (rc?.width ?? 1), y: norm.y * (rc?.height ?? 1) }
-  }, [])
+  }, [recordCanvasRef])
 
   // ── Pointer interaction ───────────────────────────────────────────────────
   const handlePointerDown = useCallback((e: React.PointerEvent) => {

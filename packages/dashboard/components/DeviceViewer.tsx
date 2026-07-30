@@ -120,6 +120,10 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
         description: 'Go back and select a different Mac.',
       })
     }
+    // `resetMode` is missing from the deps below on purpose. Adding it changes what `device:boot`
+    // sends, which is a behaviour fix (a stale mode can be sent after a reconnect) tracked in #439 —
+    // not part of widening the lint scope. Remove this suppression when #439 lands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, deviceId, buildId]);
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {

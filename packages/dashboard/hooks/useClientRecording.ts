@@ -31,10 +31,12 @@ export function useClientRecording({ sessionId, buildId, onRecordingUploaded }: 
   // Stable ref wrapper so RAF always calls the latest composeFrame without recreating the loop
   const composeFrameRef = useRef<(() => void) | null>(null)
 
-  const rafLoop = useCallback(() => {
+  // Named function expression so the recursive schedule refers to itself, not to the `rafLoop`
+  // binding that is still uninitialised while useCallback runs.
+  const rafLoop = useCallback(function loop() {
     if (!recordingRef.current) return
     composeFrameRef.current?.()
-    rafIdRef.current = requestAnimationFrame(rafLoop)
+    rafIdRef.current = requestAnimationFrame(loop)
   }, [])
 
   // Caller must set recordCanvasRef.current.width/height before calling this.

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -57,13 +57,13 @@ export function CommentPanel({ buildId }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
   const commentRefs = useRef<Record<number, HTMLDivElement | null>>({})
 
-  function load() {
+  const load = useCallback(() => {
     fetch(`/api/v1/comments?build_id=${buildId}`, { credentials: 'include' })
       .then((r) => r.ok ? r.json() : [])
       .then(setComments)
-  }
+  }, [buildId])
 
-  useEffect(() => { load() }, [buildId])
+  useEffect(() => { load() }, [load])
 
   useEffect(() => {
     const hash = window.location.hash

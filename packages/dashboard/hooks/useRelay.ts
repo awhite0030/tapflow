@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { RelayMessage } from '@/lib/types'
 
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -11,10 +11,17 @@ export function useRelay(
 ) {
   const ws = useRef<WebSocket | null>(null)
   const [connected, setConnected] = useState(false)
+  // Latest-callback refs. Written in a layout effect, not during render (lost when a concurrent
+  // render is discarded) and not in a passive effect: `useEffect` runs after paint, leaving a gap
+  // in which a socket message can still reach the previous callbacks — misrouting a frame right
+  // after `sessionId` or `deviceId` changes. A layout effect runs synchronously on commit, so no
+  // task can interleave.
   const onMessageRef = useRef(onMessage)
-  onMessageRef.current = onMessage
   const onBinaryFrameRef = useRef(onBinaryFrame)
-  onBinaryFrameRef.current = onBinaryFrame
+  useLayoutEffect(() => {
+    onMessageRef.current = onMessage
+    onBinaryFrameRef.current = onBinaryFrame
+  }, [onMessage, onBinaryFrame])
 
   useEffect(() => {
     let cancelled = false

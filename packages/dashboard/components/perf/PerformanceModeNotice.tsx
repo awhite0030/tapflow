@@ -9,15 +9,8 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import type { PerformanceMode } from '@/lib/decoders/pickDecoder';
 
-export const PERF_NOTICE_KEY = 'tapflow.perfModeNoticeDismissed';
 const DOCS_HTTPS_URL = 'https://www.tapflow.dev/reference/configuration#https-secure-context';
-
-// Auto-show only in Standard mode and only if not dismissed before (once per browser).
-export function shouldAutoShowPerfNotice(mode: PerformanceMode, dismissed: boolean): boolean {
-  return mode === 'standard' && !dismissed;
-}
 
 export function PerformanceModeNotice({
   open,
