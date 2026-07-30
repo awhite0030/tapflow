@@ -84,6 +84,7 @@ cannot keep true.
 | [android-video-streaming-diagnosis.md](./android-video-streaming-diagnosis.md) | diagnosis | android, video, streaming |
 | [awdl-wifi-latency-diagnosis.md](./awdl-wifi-latency-diagnosis.md) | diagnosis | network, latency, relay, wifi |
 | [workshop-lab-fork-observations.md](./workshop-lab-fork-observations.md) | reference | performance, capacity, extensibility, external-fork |
+| [adversarial-review.md](./adversarial-review.md) | rules | process, review, quality |
 
 ## Adding a record
 

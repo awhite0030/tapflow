@@ -72,3 +72,4 @@ Committed *why* behind non-obvious decisions. Read the relevant one **before** c
 | [android-video-streaming-diagnosis.md](./contributing/android-video-streaming-diagnosis.md) | diagnosis | Android emulator streaming issues traced to root cause, one section per issue |
 | [awdl-wifi-latency-diagnosis.md](./contributing/awdl-wifi-latency-diagnosis.md) | diagnosis | Periodic Wi-Fi stream hitch traced to AWDL via ICMP ping — method and evidence |
 | [workshop-lab-fork-observations.md](./contributing/workshop-lab-fork-observations.md) | reference | Third-party workshop-lab fork: independent iOS-sim capacity data (~4 seats/32GB) + where our extension seams stop |
+| [adversarial-review.md](./contributing/adversarial-review.md) | rules | How to run the pre-PR review and the cross-cutting design pass — channel design, prompt skeleton, why the same review costs 4 minutes or 106 |

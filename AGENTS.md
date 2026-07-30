@@ -77,30 +77,11 @@ Custom commands: `/work-plan {topic}` · `/deep-research {problem}` · `/qa {tar
 
 The authoring session inherits its own assumptions, so before creating a PR the diff must be refuted by an **independent context** that has NOT seen the working conversation. Docs-only PRs may skip the review itself, but still write the record (with the skip reason) — the gate always requires it.
 
-- **Default reviewer**: a fresh subagent given only the diff, repo access, and a refute-first prompt — "find bugs, contract violations, and missing cases; verify every claim with commands; report findings with severity and evidence, plus a checked-and-cleared list". Do not share the authoring session's reasoning with it.
-- **Escalation**: protocol / public-interface / release-infrastructure changes get a second independent channel (a second subagent with a different lens, or Codex for cross-model independence).
-- **Record**: write findings + dispositions (fixed, or skipped with a reason) to `.work/reviews/<branch>.md` (slashes → `__`), including the **full 40-character HEAD hash** (`git rev-parse HEAD` — an abbreviated hash will not pass the gate). Mention the review in the PR body.
+- **Record**: findings + dispositions (fixed, or skipped with a reason) go in `.work/reviews/<branch>.md` (slashes → `__`), including the **full 40-character HEAD hash** (`git rev-parse HEAD` — an abbreviated hash will not pass the gate). Mention the review in the PR body.
 - **Enforcement**: the PreToolUse hook `.claude/hooks/adversarial-review-gate.sh` blocks PR creation unless that record exists and references the current HEAD — any commit after the review invalidates the record until it is refreshed against the new diff.
+- **A change spanning two or more packages, or both platforms, needs a second, earlier review — of the design, before the code.** One adversarial pass over the plan, in addition to the pre-PR one.
 
-#### Keeping a review affordable
-
-Review wall-clock is dominated by **what the reviewer has to execute**, not by how hard it thinks. Measured across one session: a read-and-probe review of a protocol change took 11 minutes at 93k tokens; a review of ~590 lines of tooling took **106 minutes at only 134k tokens** — fewer tokens, 10× the time, because it spent that time on `pnpm install`, `pnpm build`, starting real dev servers and waiting out sleeps.
-
-- **Only use an isolated worktree when the reviewer must edit files.** A fresh worktree has no `node_modules` and no `dist`, so it pays 8–10 minutes of install and build before it can run anything — and a reviewer that does not know this reports results from commands that silently did nothing (`vitest: command not found` swallowed by a shell exit). A read-only lens (contract, compatibility, documentation) can work against the primary checkout, which is already built.
-- **Say what to install.** When a worktree is required, the prompt must open with `pnpm install --frozen-lockfile && pnpm build`, or the first `pnpm test` result is meaningless.
-- **Do the mutation testing yourself, then hand over the list.** Ask the reviewer to find what your mutations *missed*, not to redo them. Every surviving mutation found so far came from someone imagining a different way to break a test — never from running more of them.
-- **No blanket "run it 10 times".** Repeat runs have found zero flakes across two rounds; they cost 4+ minutes each time. Ask for 3 runs, and only for tests that use timers or real sleeps.
-- **Split by lens and run the lenses in parallel.** Wall-clock is then the slowest lens, not the sum. Two channels on the same commit took 11 and 40 minutes concurrently, against 51 serially.
-- **Some cost is irreducible.** Verifying code that kills processes means starting and killing processes, with real waits. Budget for it and say so up front, rather than discovering it at 100 minutes.
-
-### Before Implementing — cross-cutting features
-
-Applies when a change spans **two or more packages, or both platforms**. Skip it for work inside one package.
-
-1. **Write the invariant table first** — one row per path or state, one column per platform, and what the *user* observes. Put it in the plan document. The clipboard bridge took eleven review rounds largely because this table was never written: the same class of defect (one platform fixed, the other not) was found five separate times, each by a reviewer rather than by looking.
-2. **Review the design before the code.** One adversarial pass over the plan and that table, before implementing. The expensive rounds on a multi-package feature are the ones where the mechanism itself was wrong, and a wrong mechanism is cheapest to find on paper. This is in addition to the pre-PR review below, not instead of it.
-3. **A design-level review finding means replan, not patch.** If a reviewer says the *shape* is wrong — wrong scope for a flag, wrong owner for a decision — stop and redo that part. Patching a design finding produced the next design finding three times in a row on the clipboard branch.
-4. **Mutate the guards too.** A test written to catch drift or protect an invariant is itself untested until you break the thing it guards and watch it fail — and until you run it **alone**. Three separate guards on the clipboard branch had the very hole they were written to close, including one that only worked because a sibling `describe` leaked its environment.
+**Read [contributing/adversarial-review.md](./contributing/adversarial-review.md) before launching a reviewer.** It covers how to design the channels, how to run the cross-cutting design pass, and how to keep the cost in minutes rather than hours — the same review can take 4 minutes or 106 depending only on what its prompt makes it execute.
 
 ### Design Principles (SOLID — priority subset)
 
