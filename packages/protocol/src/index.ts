@@ -188,6 +188,9 @@ export type ClipboardRequest =
 export type BrowserToRelay =
   | { type: 'agents:list' }
   | { type: 'session:start'; sessionId: string }
+  // The relay handles `session:end`, but nothing in this repo sends it — the dashboard and
+  // mcp-server both use `session:leave`. Kept because the relay's handler is the contract for any
+  // client that does send it; remove it here only together with that handler.
   | { type: 'session:end'; sessionId: string }
   | { type: 'session:leave'; sessionId: string }
   // `external` is added by the relay on the way through — the browser never sets it.
