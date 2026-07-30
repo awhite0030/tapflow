@@ -8,6 +8,19 @@
 // runtime bundle. Do not add `enum` or const objects: they compile to runtime values, which would
 // put JavaScript into the dashboard bundle the moment someone referenced one as a value.
 
+// ── Domain shapes carried by messages ────────────────────────────────────────
+
+/** Agent resource sample, reported on `agent:resources` and echoed in a session listing. */
+export interface AgentResources {
+  cpuPercent: number
+  memUsedMB: number
+  memTotalMB: number
+  slotsAvailable: number
+  slotsTotal: number
+  /** Date.now() */
+  reportedAt: number
+}
+
 /** What an agent reports about a device in `agent:register`. No `sessionId`/`busy` — the relay
  *  owns those. */
 export interface DeviceReport {
@@ -32,6 +45,119 @@ export interface DeviceDetails {
   osVersion: string
 }
 
+/** `agents:listed` groups devices by agent machine. */
+export interface SessionInfo {
+  agentName?: string
+  platform?: string
+  resources?: AgentResources
+  devices: DeviceSummary[]
+}
+
+export interface ChromeRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface ChromeButton {
+  name: string
+  accessibilityTitle: string
+  anchor: string
+  /** true = button is above the device frame (e.g. home button) */
+  onTop: boolean
+  /** button center at retracted/default position, in 2× composite px */
+  normalOffset: { x: number; y: number }
+  /** button center at extended/hover position, in 2× composite px */
+  rolloverOffset: { x: number; y: number }
+  buttonW: number
+  buttonH: number
+  /** HID usage page for SimulatorKit injection (0 = unknown) */
+  usagePage: number
+  /** HID usage code (0 = unknown) */
+  usage: number
+  /** base64 PNG of the button at 2× (for the CSS-animated overlay) */
+  buttonPng?: string
+  /** base64 PNG of the pressed state (imageDown asset) */
+  pressedPng?: string
+  pressedRect?: ChromeRect
+}
+
+export interface AndroidButton {
+  name: string
+  accessibilityTitle: string
+  keyCode: number
+}
+
+/** iOS device chrome — the bezel artwork and hit regions the viewer composites around the screen. */
+export interface ChromeData {
+  /** full composite PDF at 2× — device frame visible, screen hole transparent */
+  framePng: string
+  bezelWidth: number
+  bezelHeight: number
+  /** full PDF width including devicePadding, at 2× px */
+  compositeWidth: number
+  compositeHeight: number
+  padding: { left: number; right: number; top: number; bottom: number }
+  screenRect: ChromeRect
+  /** screen corner radius in 2× px (0 if the device has no rounded corners) */
+  screenCornerRadius: number
+  logicalWidth: number
+  logicalHeight: number
+  buttons: ChromeButton[]
+}
+
+/** Android chrome — no bezel artwork; the emulator frame carries it. */
+export interface AndroidChrome {
+  buttons: AndroidButton[]
+  streamType: 'h264'
+  screenWidth?: number
+  screenHeight?: number
+  cornerRadius?: number
+}
+
+/** The `session:chrome` payload. The relay never reads it — it stores and forwards — but the
+ *  contract still states the shape, because the viewer parses it. A new platform adds its variant
+ *  here; relay and dashboard code stay unchanged, which is what the OCP rule asks for. */
+export type ChromePayload = ChromeData | AndroidChrome
+
+// ── relay → agent ────────────────────────────────────────────────────────────
+
+export type RelayToAgent =
+  | { type: 'agent:registered'; registeredSessions: Array<{ deviceId: string; sessionId: string }> }
+  | { type: 'stream:request-idr'; sessionId: string }
+  | { type: 'device:shutdown'; sessionId: string; payload: { deviceId: string } }
+  | { type: 'app:install'; sessionId: string; payload: { filePath: string; bundleId: string | null } }
+  | { type: 'app:launch'; sessionId: string; payload: { bundleId: string } }
+  | { type: 'screenshot:request'; sessionId: string; requestId: string; format: 'png' | 'jpeg' }
+  | { type: 'ui:tree:request'; sessionId: string; requestId: string }
+
+// ── relay → browser ──────────────────────────────────────────────────────────
+//
+// `stream:registered` goes to a stream socket rather than a viewer. It is grouped here because the
+// relay treats "everything that is not an agent" alike on the way out; splitting the outbound union
+// by socket role is a later refinement, and the roles are already distinguished at runtime
+// (`wsRoles`, `AGENT_MSG_TYPES`).
+
+export type RelayToBrowser =
+  | { type: 'agents:listed'; sessions: SessionInfo[] }
+  | { type: 'stream:registered' }
+  | { type: 'session:joined'; sessionId: string; capabilities: string[] }
+  | { type: 'session:chrome'; payload: ChromePayload }
+  | { type: 'session:deviceInfo'; payload: DeviceDetails }
+  | { type: 'device:ready'; payload: { deviceId: string } }
+  | { type: 'error'; message: string }
+  | { type: 'app:install-error'; message: string }
+  | { type: 'app:launch-error'; message: string }
+  | { type: 'open-url:error'; sessionId: string; message: string }
+  | { type: 'app:clear-state-error'; sessionId: string; message: string }
+  | { type: 'input:error'; sessionId: string; message: string }
+  | { type: 'clipboard:error'; sessionId: string; requestId: string; message: string }
+
+/** Everything the relay originates. Messages it merely forwards keep their inbound type — they are
+ *  not re-created, so they are not checked against this union. */
+export type RelayOutbound = RelayToAgent | RelayToBrowser
+
 // ── browser → relay ──────────────────────────────────────────────────────────
 
 /** Key input. The payload carries `code` (a `KeyboardEvent.code` name) and a modifier list — NOT
@@ -45,20 +171,3 @@ export interface InputKey {
 
 export type BrowserToRelay =
   | InputKey
-
-// ── relay → browser ──────────────────────────────────────────────────────────
-
-export interface SessionJoined {
-  type: 'session:joined'
-  sessionId: string
-  capabilities?: string[]
-}
-
-export interface ErrorMessage {
-  type: 'error'
-  message: string
-}
-
-export type RelayToBrowser =
-  | SessionJoined
-  | ErrorMessage
