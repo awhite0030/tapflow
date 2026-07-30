@@ -77,6 +77,7 @@ describe('SimctlWrapper', () => {
         exec: vi.fn().mockRejectedValue(
           Object.assign(new Error(), { stderr: 'Unable to boot device in current state: Booted' })
         ),
+        execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
@@ -86,6 +87,7 @@ describe('SimctlWrapper', () => {
     it('rethrows unexpected errors', async () => {
       const runner: SimctlRunner = {
         exec: vi.fn().mockRejectedValue(new Error('xcrun not found')),
+        execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
@@ -106,6 +108,7 @@ describe('SimctlWrapper', () => {
         exec: vi.fn().mockRejectedValue(
           Object.assign(new Error(), { stderr: 'Unable to shutdown device in current state: Shutdown' })
         ),
+        execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
@@ -115,6 +118,7 @@ describe('SimctlWrapper', () => {
     it('rethrows unexpected errors', async () => {
       const runner: SimctlRunner = {
         exec: vi.fn().mockRejectedValue(new Error('xcrun not found')),
+        execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
@@ -192,6 +196,7 @@ describe('SimctlWrapper', () => {
           .mockResolvedValueOnce('(\n    "ko-KR",\n    "en-US"\n)')  // defaults read
           .mockResolvedValue(''),                                       // write + kickstart
         execBinary: vi.fn(),
+        execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
@@ -211,6 +216,7 @@ describe('SimctlWrapper', () => {
           .mockResolvedValueOnce('(\n    "ko-KR"\n)')
           .mockResolvedValue(''),
         execBinary: vi.fn(),
+        execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
@@ -226,6 +232,7 @@ describe('SimctlWrapper', () => {
       const runner: SimctlRunner = {
         exec: vi.fn().mockRejectedValue(new Error('Domain does not exist')),
         execBinary: vi.fn(),
+        execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
@@ -242,6 +249,7 @@ describe('SimctlWrapper', () => {
           .mockResolvedValueOnce('')                    // write
           .mockRejectedValueOnce(new Error('kbd not found')), // kickstart fails
         execBinary: vi.fn(),
+        execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
@@ -259,6 +267,7 @@ describe('SimctlWrapper', () => {
 
       const runner: SimctlRunner = {
         exec: vi.fn().mockResolvedValue(''),
+        execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }

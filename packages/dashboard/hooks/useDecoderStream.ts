@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { MutableRefObject } from 'react'
 import { pickDecoder } from '@/lib/decoders/pickDecoder'
 import { WASMDecoder } from '@/lib/decoders/WASMDecoder'
@@ -34,11 +34,12 @@ interface UseDecoderStreamOptions {
  */
 export function useDecoderStream(opts: UseDecoderStreamOptions): void {
   const { binaryFrameHandlerRef, perfHookRef, frameCount } = opts
-  // Keep the latest callbacks without re-running the (mount-once) effect. Written after commit
-  // rather than during render — the mount effect below reads it only from async decode/frame
-  // callbacks, and a render-time write is lost when a concurrent render is discarded.
+  // Keep the latest callbacks without re-running the (mount-once) effect. Written in a layout
+  // effect for the same reason as `useRelay`: a render-time write is lost when a concurrent render
+  // is discarded, and a passive effect runs after paint, leaving a window in which an arriving
+  // frame still reaches the previous callbacks.
   const cbRef = useRef(opts)
-  useEffect(() => {
+  useLayoutEffect(() => {
     cbRef.current = opts
   }, [opts])
 
