@@ -19,6 +19,16 @@ It exists because the relay and the dashboard each kept their own copy and they 
 - `stream:request-idr` was sent by the relay in two places but was absent from its `MessageType` union.
 - `input:key` was declared as `payload: { key: string }` in the dashboard union while **every** sender — both viewers and mcp-server — sent `{ code, modifiers }`. The declaration was wrong, not merely incomplete, and nothing caught it because `send()` took `object`.
 
+## Why this name
+
+`protocol` is deliberately broader than what the package holds today, because the alternatives age worse.
+
+- `protocol-types` would become a lie the moment a runtime validator lands, and one plausibly will — the relay validates nothing on the way in.
+- `relay-protocol` reads narrower than the truth: these messages are exchanged by browser ↔ relay ↔ agent, not owned by the relay. It also sits one letter away from `@tapflowio/relay` at every import site.
+- `messages` cannot hold anything that is not a message, which is the same corner `protocol-types` paints into.
+
+The cost of a broad name is ambiguity about what belongs — answered by the two Scope sections below rather than by the name. In particular the repo has a *second* wire format (the binary frame envelope), and the name alone does not say which one this is.
+
 ## Scope — what belongs here
 
 - **JSON message types** over the relay WebSocket, grouped by direction.
