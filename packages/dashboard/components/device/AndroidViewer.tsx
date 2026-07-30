@@ -1,5 +1,6 @@
 'use client';
 
+import type { BrowserToRelay } from '@tapflowio/protocol'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useClientRecording } from '@/hooks/useClientRecording';
 import { ArrowLeft, Home, LayoutGrid, Loader2, Play, Power, Volume1, Volume2 } from 'lucide-react';
@@ -28,7 +29,7 @@ const MAX_ANDROID_LONG = 720;
 interface AndroidViewerProps {
   sessionId: string;
   buildId?: number;
-  send: (msg: object) => void;
+  send: (msg: BrowserToRelay) => void;
   connected: boolean;
   joined: boolean;
   deviceReady: boolean;

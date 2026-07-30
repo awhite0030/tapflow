@@ -160,14 +160,55 @@ export type RelayOutbound = RelayToAgent | RelayToBrowser
 
 // ── browser → relay ──────────────────────────────────────────────────────────
 
-/** Key input. The payload carries `code` (a `KeyboardEvent.code` name) and a modifier list — NOT
- *  `key`. The dashboard union declared `{ key: string }` for a long time while every sender and
- *  the agents used `{ code, modifiers }`; that mismatch survived because `send()` took `object`. */
+/** Key input. The payload carries `code` — a `KeyboardEvent.code` name — and `modifiers` as a
+ *  **bitmap**, not a list and not `key`.
+ *
+ *  The dashboard union declared `{ key: string }` while every sender and both agents used
+ *  `{ code, modifiers }`; the mismatch survived because `send()` took `object`. The authority is
+ *  the consumer: `IOSAgent.ts` reads `{ code: string; modifiers?: number }` and passes the number
+ *  straight to `touchHelper.sendKey(usage, modifiers ?? 0)`, where it is the HID modifier bitmap
+ *  documented in packages/ios-agent/AGENTS.md (touch-helper type 9). */
 export interface InputKey {
   type: 'input:key'
   sessionId: string
-  payload: { code: string; modifiers?: string[] }
+  payload: { code: string; modifiers?: number }
 }
 
+export interface Point {
+  x: number
+  y: number
+}
+
+/** The two clipboard requests a viewer can make. Kept as its own union because the bridge sends
+ *  them through one call that takes the type as an argument. */
+export type ClipboardRequest =
+  | { type: 'clipboard:read'; sessionId: string; requestId: string; payload?: { press?: 'copy' | 'cut' } }
+  | { type: 'clipboard:write'; sessionId: string; requestId: string; payload: { text: string; pasteAfter?: boolean } }
+
 export type BrowserToRelay =
+  | { type: 'agents:list' }
+  | { type: 'session:start'; sessionId: string }
+  | { type: 'session:end'; sessionId: string }
+  | { type: 'session:leave'; sessionId: string }
+  // `external` is added by the relay on the way through — the browser never sets it.
+  | { type: 'device:boot'; sessionId: string; payload: { deviceId: string; resetMode?: 'app-only' | 'full-erase'; acceptH264?: boolean; secureContext?: boolean } }
+  | { type: 'device:shutdown'; sessionId: string; payload: { deviceId: string } }
+  | { type: 'app:install'; sessionId: string; buildId: number }
+  | { type: 'app:launch'; sessionId: string; buildId: number }
+  | { type: 'app:clear-state'; sessionId: string; payload?: { bundleId?: string } }
+  | { type: 'open-url'; sessionId: string; payload: { url: string } }
+  | { type: 'input:touch:start'; sessionId: string; payload: Point }
+  | { type: 'input:touch:move'; sessionId: string; payload: Point }
+  // `payload` is accepted but ignored: the agents call `touchEnd()` without reading it. The
+  // dashboard omits it, mcp-server sends the last point. Optional here because that is what the
+  // wire actually carries — not because the coordinate means anything on this message.
+  | { type: 'input:touch:end'; sessionId: string; payload?: Point }
+  | { type: 'input:pinch:start'; sessionId: string; payload: { f0: Point; f1: Point } }
+  | { type: 'input:pinch:move'; sessionId: string; payload: { f0: Point; f1: Point } }
+  | { type: 'input:pinch:end'; sessionId: string }
   | InputKey
+  | { type: 'input:type'; sessionId: string; payload: { text: string } }
+  | { type: 'input:button'; sessionId: string; payload: { name: string; phase?: 'down' | 'up' } }
+  | { type: 'input:rotate'; sessionId: string }
+  | { type: 'input:keyboard:toggle'; sessionId: string }
+  | ClipboardRequest

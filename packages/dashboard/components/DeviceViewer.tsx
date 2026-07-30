@@ -1,5 +1,6 @@
 'use client';
 
+import type { BrowserToRelay } from '@tapflowio/protocol'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useRelay } from '@/hooks/useRelay';
 import { usePerfMode } from '@/hooks/usePerfMode';
@@ -27,7 +28,7 @@ interface Props {
 type AndroidChrome = { buttons: AndroidButton[]; streamType: 'h264'; screenWidth?: number; screenHeight?: number; cornerRadius?: number };
 
 export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecordingUploaded }: Props) {
-  const sendRef = useRef<(msg: object) => void>(() => {});
+  const sendRef = useRef<(msg: BrowserToRelay) => void>(() => {});
   const { perfMode, visible: perfVisible } = usePerfMode();
 
   // statsRef is set by StatsOverlay; perfMetricsPushRef is set by MetricsPanel

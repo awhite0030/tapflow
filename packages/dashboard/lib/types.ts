@@ -130,41 +130,34 @@ export interface ReleaseGroup {
   builds: Build[]
 }
 
+/**
+ * What the viewer *receives*. Outbound messages are no longer listed here — they live in
+ * `@tapflowio/protocol` as `BrowserToRelay`, which `send()` is typed with, so they are checked
+ * rather than merely described.
+ *
+ * They used to be listed "as the readable record of the protocol", and that record went wrong
+ * without anyone noticing: `input:key` was documented as `payload: { key: string }` while every
+ * sender and both agents used `{ code, modifiers }` — with `modifiers` a bitmap, not a string.
+ * A description that nothing checks is a description that drifts.
+ */
 export type RelayMessage =
   | { type: 'agents:listed'; sessions: SessionInfo[] }
   | { type: 'session:joined'; sessionId: string; capabilities?: string[] }
   | { type: 'session:chrome'; payload: ChromeData | { buttons: AndroidButton[]; streamType: 'h264' } }
   | { type: 'session:deviceInfo'; payload: DeviceInfo }
-  | { type: 'device:boot'; sessionId: string; payload: { deviceId: string; resetMode?: 'app-only' | 'full-erase'; acceptH264?: boolean } }
   | { type: 'device:booting' }
   | { type: 'device:ready'; payload: { deviceId: string } }
   | { type: 'device:boot-error'; message: string }
-  | { type: 'device:shutdown'; sessionId: string; payload: { deviceId: string } }
   | { type: 'device:shutdown-done'; payload: { deviceId: string } }
-  | { type: 'input:touch:start'; sessionId: string; payload: { x: number; y: number } }
-  | { type: 'input:touch:move'; sessionId: string; payload: { x: number; y: number } }
-  | { type: 'input:touch:end'; sessionId: string }
-  | { type: 'input:pinch:start'; sessionId: string; payload: { f0: { x: number; y: number }; f1: { x: number; y: number } } }
-  | { type: 'input:pinch:move'; sessionId: string; payload: { f0: { x: number; y: number }; f1: { x: number; y: number } } }
-  | { type: 'input:pinch:end'; sessionId: string }
-  | { type: 'input:key'; sessionId: string; payload: { key: string } }
-  | { type: 'input:type'; sessionId: string; payload: { text: string } }
-  | { type: 'input:button'; sessionId: string; payload: { name: string; phase?: 'down' | 'up' } }
-  | { type: 'input:rotate'; sessionId: string }
-  | { type: 'input:keyboard:toggle'; sessionId: string }
   | { type: 'keyboard:toggled'; sessionId: string; payload: { visible: boolean } }
   | { type: 'app:install-done' }
   | { type: 'app:install-error'; message: string }
   | { type: 'app:launch-done' }
   | { type: 'app:launch-error'; message: string }
-  | { type: 'open-url'; sessionId: string; payload: { url: string } }
   | { type: 'open-url:done'; sessionId: string }
   | { type: 'open-url:error'; sessionId: string; message: string }
-  // browser → agent. Listed for the same reason every other outbound message is: this union is
-  // the readable record of the protocol. It does not constrain `send()`, which takes `object` —
-  // narrowing that is a separate change across every existing call site.
-  | { type: 'clipboard:read'; sessionId: string; requestId: string; payload?: { press?: 'copy' | 'cut' } }
-  | { type: 'clipboard:write'; sessionId: string; requestId: string; payload: { text: string; pasteAfter?: boolean } }
+  | { type: 'input:done'; sessionId: string }
+  | { type: 'input:error'; sessionId: string; message: string }
   // agent → browser
   | { type: 'clipboard:data'; sessionId: string; requestId: string; payload: { text: string } }
   | { type: 'clipboard:write-done'; sessionId: string; requestId: string }

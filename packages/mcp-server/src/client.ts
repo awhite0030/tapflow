@@ -1,3 +1,4 @@
+import type { BrowserToRelay } from '@tapflowio/protocol'
 import { WebSocket } from 'ws'
 
 export interface DeviceInfo {
@@ -106,7 +107,7 @@ export class TapflowClient {
     }
   }
 
-  private send(msg: RelayMsg): void {
+  private send(msg: BrowserToRelay): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('Not connected to relay')
     }
