@@ -100,6 +100,26 @@ describe('SimctlWrapper', () => {
       await wrapper.shutdown('device-1')
       expect(runner.exec).toHaveBeenCalledWith('shutdown', 'device-1')
     })
+
+    it('does not throw if device is already shut down', async () => {
+      const runner: SimctlRunner = {
+        exec: vi.fn().mockRejectedValue(
+          Object.assign(new Error(), { stderr: 'Unable to shutdown device in current state: Shutdown' })
+        ),
+        execWithOpts: vi.fn().mockResolvedValue(''),
+      }
+      const wrapper = new SimctlWrapper(runner)
+      await expect(wrapper.shutdown('device-1')).resolves.toBeUndefined()
+    })
+
+    it('rethrows unexpected errors', async () => {
+      const runner: SimctlRunner = {
+        exec: vi.fn().mockRejectedValue(new Error('xcrun not found')),
+        execWithOpts: vi.fn().mockResolvedValue(''),
+      }
+      const wrapper = new SimctlWrapper(runner)
+      await expect(wrapper.shutdown('device-1')).rejects.toThrow('xcrun not found')
+    })
   })
 
   describe('installApp', () => {
