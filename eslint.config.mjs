@@ -54,4 +54,16 @@ export default tseslint.config(
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
     },
   },
+
+  // shadcn primitives are generated and re-synced from upstream, and their convention is to export
+  // a `*Variants` helper next to the component. That trips the Fast Refresh hint in five files for a
+  // structure we do not own and would have to re-fix on every upstream sync. Only that hint is
+  // waived — every correctness rule still applies here, which is what caught the `Math.random()`
+  // during render in sidebar.tsx.
+  {
+    files: ['packages/dashboard/components/ui/**/*.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 )

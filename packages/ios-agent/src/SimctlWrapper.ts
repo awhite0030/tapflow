@@ -126,9 +126,6 @@ export class SimctlWrapper {
       if (stderr.includes('Unable to boot device in current state: Booted')) return
       throw err
     }
-    // Xcode 14+ auto-opens Simulator.app on `simctl boot`.
-    // Quitting kills the simulator runtime, so just hide the app window instead.
-    execFile('osascript', ['-e', 'tell application "Simulator" to set visible to false'], () => {})
   }
 
   async shutdown(deviceId: string): Promise<void> {

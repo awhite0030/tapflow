@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldAutoShowPerfNotice } from '@/components/perf/PerformanceModeNotice'
+import { shouldAutoShowPerfNotice } from '@/lib/perfNotice'
 
 describe('shouldAutoShowPerfNotice — 자동 1회 노출 정책', () => {
   it('standard + 미해제 → true', () => {

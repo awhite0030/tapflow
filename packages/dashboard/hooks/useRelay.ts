@@ -11,10 +11,15 @@ export function useRelay(
 ) {
   const ws = useRef<WebSocket | null>(null)
   const [connected, setConnected] = useState(false)
+  // Latest-callback refs, written after commit instead of during render. The socket handlers below
+  // only run from events — i.e. after the effects have flushed — so a post-commit write is soon
+  // enough, while a write during render is lost when a concurrent render is discarded.
   const onMessageRef = useRef(onMessage)
-  onMessageRef.current = onMessage
   const onBinaryFrameRef = useRef(onBinaryFrame)
-  onBinaryFrameRef.current = onBinaryFrame
+  useEffect(() => {
+    onMessageRef.current = onMessage
+    onBinaryFrameRef.current = onBinaryFrame
+  }, [onMessage, onBinaryFrame])
 
   useEffect(() => {
     let cancelled = false

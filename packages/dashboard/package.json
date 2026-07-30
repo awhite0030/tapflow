@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build && rm -rf ../relay/public && mkdir -p ../relay/public && cp -r dist/. ../relay/public/",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "lint": "eslint src",
+    "lint": "eslint src hooks components lib",
     "test": "vitest run",
     "test:watch": "vitest"
   },

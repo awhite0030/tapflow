@@ -5,11 +5,8 @@ import { ScanLine } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Separator } from '@/components/ui/separator';
 import { performanceMode } from '@/lib/decoders/pickDecoder';
-import {
-  PerformanceModeNotice,
-  shouldAutoShowPerfNotice,
-  PERF_NOTICE_KEY,
-} from '@/components/perf/PerformanceModeNotice';
+import { PerformanceModeNotice } from '@/components/perf/PerformanceModeNotice';
+import { shouldAutoShowPerfNotice, PERF_NOTICE_KEY } from '@/lib/perfNotice';
 
 // init wizard와 같은 프로파일 용어로 — 디코더 jargon(WebCodecs/WASM) 대신.
 const MODE_LABEL: Record<string, string | null> = {

@@ -34,9 +34,13 @@ interface UseDecoderStreamOptions {
  */
 export function useDecoderStream(opts: UseDecoderStreamOptions): void {
   const { binaryFrameHandlerRef, perfHookRef, frameCount } = opts
-  // Keep the latest callbacks without re-running the (mount-once) effect.
+  // Keep the latest callbacks without re-running the (mount-once) effect. Written after commit
+  // rather than during render — the mount effect below reads it only from async decode/frame
+  // callbacks, and a render-time write is lost when a concurrent render is discarded.
   const cbRef = useRef(opts)
-  cbRef.current = opts
+  useEffect(() => {
+    cbRef.current = opts
+  }, [opts])
 
   useEffect(() => {
     let decoder: Decoder | null = null
