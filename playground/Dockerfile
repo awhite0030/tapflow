@@ -26,7 +26,8 @@ COPY packages/dashboard packages/dashboard
 COPY packages/relay packages/relay
 COPY playground/server.js playground/
 
-RUN pnpm --filter @tapflowio/agent-core build && \
+RUN pnpm --filter @tapflowio/protocol build && \
+    pnpm --filter @tapflowio/agent-core build && \
     pnpm --filter @tapflowio/dashboard build && \
     pnpm --filter @tapflowio/relay build
 

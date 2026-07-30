@@ -29,6 +29,8 @@ jobs:
 
       - run: pnpm typecheck
 
+      # protocol first — dashboard and relay resolve its types from dist/, absent in a clean checkout
+      - run: pnpm --filter @tapflowio/protocol build
       - run: pnpm --filter @tapflowio/agent-core build
       - run: pnpm --filter @tapflowio/audiotap-helper build
       - run: pnpm --filter @tapflowio/dashboard build
