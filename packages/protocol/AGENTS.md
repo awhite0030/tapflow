@@ -1,3 +1,9 @@
+---
+type: rules
+topics: [protocol, websocket, contract, types]
+status: living
+---
+
 # protocol — AGENTS.md
 
 > Common rules: [AGENTS.md](../../AGENTS.md) | Full index: [INDEX.md](../../INDEX.md)
