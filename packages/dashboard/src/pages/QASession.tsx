@@ -23,7 +23,6 @@ import {
 } from '@/components/ui/breadcrumb';
 import { cn } from '@/lib/utils';
 import { STATUS_TONE, buildLabel } from '@/lib/build-format';
-import { Info } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -204,53 +203,37 @@ export function QASession() {
                     </SelectContent>
                   </Select>
                 )}
-                {/* Absent rather than disabled where nothing acts on it (#447): the only place to
-                    explain a disabled switch here is the tooltip, and its trigger is the label —
-                    hover and mouse focus, which leaves keyboard and screen-reader users with a
-                    dead control and no reason for it. */}
+                {/* Absent rather than disabled where nothing acts on it (#447). A disabled control
+                    owes the user a reason, and the only channel here is the tooltip — which does
+                    not reach touch at all. Showing nothing beats showing a switch that erases
+                    nothing and cannot say why. */}
                 {fullResetSupported && (
                   <TooltipProvider>
                     <Tooltip>
-                      <div className="ml-auto flex items-center gap-2 shrink-0">
-                        {/* The ⓘ is the trigger, and it is a button so the tooltip opens on focus
-                            as well as hover — a keyboard user who does not run a screen reader has
-                            no other route to it. Not the label (not focusable) and not the Switch:
-                            `asChild` there puts TooltipTrigger's own `data-state` on the element
-                            whose track is coloured by `data-[state=checked|unchecked]`, and the
-                            switch renders as a floating thumb over nothing. */}
-                        <TooltipTrigger asChild>
-                          {/* A button, not the label, so the tooltip opens on keyboard focus too.
-                              h-6 w-6 keeps the tap target at 24px beside a switch that arms an
-                              irreversible erase.
-                              Radix closes its tooltip on pointer-down, which makes the thing
-                              vanish the moment you click the control that explains it. Its
-                              handlers are composed with `checkForDefaultPrevented`, so preventing
-                              the default here drops that close and leaves hover intact. */}
-                          <button
-                            type="button"
-                            aria-label="About Full reset"
-                            onPointerDown={(e) => e.preventDefault()}
-                            className="inline-flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                          >
-                            <Info className="h-3.5 w-3.5" aria-hidden="true" />
-                          </button>
-                        </TooltipTrigger>
-                        <Label htmlFor="reset-mode" className="text-sm cursor-pointer whitespace-nowrap">
-                          Full reset
-                        </Label>
-                        {/* Said unconditionally for anyone reading the toolbar rather than hovering
-                            it: Radix attaches the tooltip's own aria-describedby only while it is
-                            open, and on touch it never opens. */}
-                        <span id="reset-mode-desc" className="sr-only">
-                          When on, erases all data on the next device you pick
-                        </span>
-                        <Switch
-                          id="reset-mode"
-                          aria-describedby="reset-mode-desc"
-                          checked={resetMode === 'full-erase'}
-                          onCheckedChange={(checked) => setResetMode(checked ? 'full-erase' : 'app-only')}
-                        />
-                      </div>
+                      {/* The whole control is the trigger, not the label alone: a label cannot take
+                          focus, so a tooltip hung on it is hover-only and the keyboard never sees
+                          what this switch destroys. Focus bubbles, so tabbing to the Switch opens
+                          it — and the Switch keeps its own `data-state`, which is the only thing
+                          colouring its track. */}
+                      <TooltipTrigger asChild>
+                        <div className="ml-auto flex items-center gap-2 shrink-0">
+                          <Label htmlFor="reset-mode" className="text-sm cursor-pointer whitespace-nowrap">
+                            Full reset
+                          </Label>
+                          {/* Said unconditionally for anyone reading the toolbar rather than
+                              hovering it — Radix attaches the tooltip's own aria-describedby only
+                              while it is open, and on touch it never opens at all. */}
+                          <span id="reset-mode-desc" className="sr-only">
+                            When on, erases all data on the next device you pick
+                          </span>
+                          <Switch
+                            id="reset-mode"
+                            aria-describedby="reset-mode-desc"
+                            checked={resetMode === 'full-erase'}
+                            onCheckedChange={(checked) => setResetMode(checked ? 'full-erase' : 'app-only')}
+                          />
+                        </div>
+                      </TooltipTrigger>
                       <TooltipContent>
                         {resetMode === 'full-erase' ? 'Erase all data on the next device you pick' : 'Keep existing data'}
                       </TooltipContent>
