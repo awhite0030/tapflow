@@ -753,7 +753,12 @@ export class RelayServer {
     socket.send(JSON.stringify(msg))
   }
 
-  private evictAgentSocket(ws: WebSocket): boolean {
+  /**
+   * @param cause  `'disconnect'` — the socket closed. `'replaced'` — the same agent re-registered
+   *   and this is its previous socket. Only affects the log line: a restart otherwise reads as a
+   *   crash followed by a recovery, which is not what happened.
+   */
+  private evictAgentSocket(ws: WebSocket, cause: 'disconnect' | 'replaced' = 'disconnect'): boolean {
     const agentSessions = this.sessions.getAllByAgentSocket(ws)
     if (agentSessions.length === 0) return false
     const agentSessionIds = new Set(agentSessions.map((s) => s.id))
@@ -771,8 +776,26 @@ export class RelayServer {
         pending.reject(new Error('Agent disconnected'))
       }
     }
+    // Tell whoever is attached before the session stops existing — after `remove()` the socket
+    // reference is gone. Without this the browser keeps a live socket addressed to a sessionId the
+    // relay no longer knows, so everything it sends is dropped as unknown and nothing streams back:
+    // the tab sits on "Waiting for first frame..." with no explanation (#426).
+    //
+    // `sendTo` skips a socket that is not OPEN, and a session nobody has joined has no
+    // `browserSocket` at all. An attached MCP client does have one and will receive this; its
+    // dispatcher drops messages no waiter matches, so that is harmless.
+    for (const s of agentSessions) {
+      if (s.browserSocket) {
+        this.sendTo(s.browserSocket, {
+          type: 'session:terminated', sessionId: s.id, reason: 'agent-disconnected',
+        })
+      }
+    }
     for (const s of agentSessions) this.sessions.remove(s.id)
     this.sessions.removeResources(ws)
+    logger.info(cause === 'replaced'
+      ? `agent re-registered — ${agentSessions.length} previous session(s) replaced`
+      : `agent disconnected — ${agentSessions.length} session(s) ended`)
     return true
   }
 
@@ -788,7 +811,7 @@ export class RelayServer {
         if (old === ws) continue
         // Evict before terminate: the old socket's close fires async, by which point its sessions are
         // gone and its in-flight screenshots would be undiscoverable — reject them here instead.
-        this.evictAgentSocket(old)
+        this.evictAgentSocket(old, 'replaced')
         old.terminate()
       }
     }
@@ -798,6 +821,10 @@ export class RelayServer {
       sessionId: sessionIds[i],
     }))
     this.sendTo(ws, { type: 'agent:registered', registeredSessions })
+    // The startup banner prints "Waiting for agents..." once and then the relay says nothing either
+    // way, so a terminal gives no signal about whether an agent is attached. One line per
+    // transition, matching the disconnect line in evictAgentSocket.
+    logger.info(`agent connected: ${msg.agentName ?? msg.agentId ?? 'unknown'} (${msg.platform ?? 'unknown'}) — ${registeredSessions.length} device(s)`)
   }
 
   private handleSessionStart(ws: WebSocket, msg: RelayMessage): void {

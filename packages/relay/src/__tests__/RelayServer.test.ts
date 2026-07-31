@@ -262,6 +262,58 @@ describe('RelayServer', () => {
     browserB.close()
   })
 
+  it('tells an attached viewer its session ended when the agent disconnects (#426)', async () => {
+    const devices = [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'shutdown' }]
+    const agent = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(agent)
+    agent.send(JSON.stringify({ type: 'agent:register', devices }))
+    const { registeredSessions } = await waitForMessage(agent)
+    const sessionId = registeredSessions![0].sessionId
+
+    const browser = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(browser)
+    browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(browser, 'session:joined')
+
+    // Without the notice the browser keeps a live socket addressed to a sessionId the relay has
+    // dropped: everything it sends is ignored and nothing streams back, with no way to tell.
+    const endedPromise = waitForType(browser, 'session:terminated')
+    agent.close()
+    const ended = await endedPromise
+
+    expect(ended.sessionId).toBe(sessionId)
+    expect(ended.reason).toBe('agent-disconnected')
+
+    browser.close()
+  })
+
+  it('handles an agent disconnect with no viewer attached', async () => {
+    const devices = [{ id: 'devSolo', name: 'iPhone Solo', platform: 'ios', status: 'shutdown' }]
+    const agent = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(agent)
+    agent.send(JSON.stringify({ type: 'agent:register', devices }))
+    await waitForMessage(agent)
+
+    // Arm the close listener before closing: `agent.close()` returns immediately and the relay's
+    // eviction runs on its own close handler, so querying straight away can observe the session
+    // still present and prove nothing.
+    const agentClosed = new Promise<void>((resolve) => agent.on('close', () => resolve()))
+    agent.close()
+    await agentClosed
+
+    // The session had no browserSocket, so there is nobody to notify. The relay must skip it
+    // rather than throw — proven by it still answering, and by the session actually being gone.
+    const probe = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(probe)
+    probe.send(JSON.stringify({ type: 'agents:list' }))
+    const listed = await waitForType(probe, 'agents:listed')
+    // Not `listed.sessions ?? []` — that would also pass if the field went missing entirely, which
+    // is a different bug wearing the same green tick.
+    expect(listed.sessions).toBeDefined()
+    expect(listed.sessions!.filter((s) => s.devices.some((d) => d.id === 'devSolo'))).toHaveLength(0)
+    probe.close()
+  })
+
   it('routes input:touch:start from browser to agent', async () => {
     const devices = [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'shutdown' }]
     const agent = new WebSocket(`ws://localhost:${port}`)
