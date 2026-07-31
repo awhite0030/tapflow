@@ -43,7 +43,7 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p tsconfig.assertions.json",
     "lint": "eslint src"
   },
   "devDependencies": {

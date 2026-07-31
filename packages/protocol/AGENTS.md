@@ -31,8 +31,8 @@ The cost of a broad name is ambiguity about what belongs — answered by the two
 
 ## Scope — what belongs here
 
-- **JSON message types** over the relay WebSocket, grouped by direction.
-- **Runtime validators**, if they are ever added. They belong next to the types they validate; splitting them would recreate the drift this package removes.
+- **JSON message types** over the relay WebSocket, grouped by direction. That is all the package holds today, and the main entry point is **runtime-free** — see HOW NOT.
+- **Runtime validators** would belong here *conceptually* — next to the types they validate, since splitting them recreates the drift this package removes. But they cannot go in the main entry: that would break the erasure the dashboard depends on. Adding them means a second entry point (`@tapflowio/protocol/validate`) that only server-side consumers import, which is an explicit scope change, not a drive-by addition. Tracked in #444.
 
 ## Scope — what does not
 
@@ -41,7 +41,7 @@ The cost of a broad name is ambiguity about what belongs — answered by the two
 
 ## HOW NOT
 
-- **No `enum`, no const objects, no runtime values of any kind.** They compile to JavaScript, so the moment a consumer references one as a value it stops being erased by `import type` and lands in the dashboard's browser bundle. String literal unions only.
+- **No `enum`, no const objects, no runtime values of any kind — in the main entry.** They compile to JavaScript, so the moment a consumer references one as a value it stops being erased by `import type` and lands in the dashboard's browser bundle. String literal unions only. (`src/typeAssertions.ts` is checked by `tsconfig.assertions.json` and excluded from the build for exactly this reason — it declares values, so it must not reach `dist`.)
 - **Do not add a dependency.** This package is a leaf — it must stay importable from the browser bundle, the relay, and mcp-server alike.
 - Do not widen a message to `unknown`/`Record<string, unknown>` to make a call site compile. That reopens the hole this package closes; fix the call site or correct the type.
 
