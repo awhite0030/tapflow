@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/breadcrumb';
 import { cn } from '@/lib/utils';
 import { STATUS_TONE, buildLabel } from '@/lib/build-format';
+import { Info } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -211,26 +212,36 @@ export function QASession() {
                   <TooltipProvider>
                     <Tooltip>
                       <div className="ml-auto flex items-center gap-2 shrink-0">
+                        {/* The ⓘ is the trigger, and it is a button so the tooltip opens on focus
+                            as well as hover — a keyboard user who does not run a screen reader has
+                            no other route to it. Not the label (not focusable) and not the Switch:
+                            `asChild` there puts TooltipTrigger's own `data-state` on the element
+                            whose track is coloured by `data-[state=checked|unchecked]`, and the
+                            switch renders as a floating thumb over nothing. */}
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label="About Full reset"
+                            className="rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                          >
+                            <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        </TooltipTrigger>
                         <Label htmlFor="reset-mode" className="text-sm cursor-pointer whitespace-nowrap">
                           Full reset
                         </Label>
-                        {/* What the switch destroys, said unconditionally. Radix only attaches
-                            aria-describedby while the tooltip is open, so on touch — where no
-                            tooltip opens at all — and in browse mode the toggle would otherwise
-                            announce as "Full reset, switch, off" and nothing more. The tooltip
-                            stays as the sighted hover/focus channel; the trigger sits on the
-                            switch because a label cannot take focus. */}
+                        {/* Said unconditionally for anyone reading the toolbar rather than hovering
+                            it: Radix attaches the tooltip's own aria-describedby only while it is
+                            open, and on touch it never opens. */}
                         <span id="reset-mode-desc" className="sr-only">
                           When on, erases all data on the next device you pick
                         </span>
-                        <TooltipTrigger asChild>
-                          <Switch
-                            id="reset-mode"
-                            aria-describedby="reset-mode-desc"
-                            checked={resetMode === 'full-erase'}
-                            onCheckedChange={(checked) => setResetMode(checked ? 'full-erase' : 'app-only')}
-                          />
-                        </TooltipTrigger>
+                        <Switch
+                          id="reset-mode"
+                          aria-describedby="reset-mode-desc"
+                          checked={resetMode === 'full-erase'}
+                          onCheckedChange={(checked) => setResetMode(checked ? 'full-erase' : 'app-only')}
+                        />
                       </div>
                       <TooltipContent>
                         {resetMode === 'full-erase' ? 'Erase all data on the next device you pick' : 'Keep existing data'}

@@ -142,6 +142,18 @@ describe('QASession — Full reset applies to exactly one pick (#439)', () => {
     expect(viewerMounts.at(-1)).toEqual({ deviceId: 'dev-b', resetMode: 'full-erase' })
   })
 
+  // The track colour is `data-[state=checked|unchecked]:bg-*` and nothing else. Putting Radix's
+  // TooltipTrigger on the Switch with `asChild` overwrites that attribute with its own open/closed
+  // state, and the switch renders as an invisible track with a floating thumb.
+  it('leaves the switch its own data-state, which is what colours it', async () => {
+    const user = userEvent.setup()
+    await openDeviceList(user)
+
+    expect(screen.getByRole('switch')).toHaveAttribute('data-state', 'unchecked')
+    await user.click(screen.getByRole('switch'))
+    expect(screen.getByRole('switch')).toHaveAttribute('data-state', 'checked')
+  })
+
   // #447: AndroidAgent never reads resetMode. A switch that erases nothing is worse than no
   // switch, and worse still now that it disarms itself as if it had run.
   it('does not offer Full reset on Android', async () => {
