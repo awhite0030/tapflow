@@ -204,29 +204,36 @@ export function QASession() {
                     </SelectContent>
                   </Select>
                 )}
-                <TooltipProvider>
-                  <Tooltip>
-                    <div className="ml-auto flex items-center gap-2 shrink-0">
-                      <TooltipTrigger asChild>
+                {/* Absent rather than disabled where nothing acts on it (#447): the only place to
+                    explain a disabled switch here is the tooltip, and its trigger is the label —
+                    hover and mouse focus, which leaves keyboard and screen-reader users with a
+                    dead control and no reason for it. */}
+                {fullResetSupported && (
+                  <TooltipProvider>
+                    <Tooltip>
+                      <div className="ml-auto flex items-center gap-2 shrink-0">
                         <Label htmlFor="reset-mode" className="flex items-center gap-1 text-sm cursor-pointer whitespace-nowrap">
-                          <Info className="h-3.5 w-3.5 text-muted-foreground" />
+                          <Info className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
                           Full reset
                         </Label>
-                      </TooltipTrigger>
-                      <Switch
-                        id="reset-mode"
-                        disabled={!fullResetSupported}
-                        checked={resetMode === 'full-erase'}
-                        onCheckedChange={(checked) => setResetMode(checked ? 'full-erase' : 'app-only')}
-                      />
-                    </div>
-                    <TooltipContent>
-                      {!fullResetSupported
-                        ? 'Full reset is not available on Android yet'
-                        : resetMode === 'full-erase' ? 'Erase all data on the next device you pick' : 'Keep existing data'}
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
+                        {/* The trigger belongs on the switch, not the label: this tooltip carries the
+                            only statement of what the toggle destroys, and a label is not focusable —
+                            keyboard and screen-reader users would hear "Full reset" and nothing about
+                            the consequence. On the switch, Radix also wires up aria-describedby. */}
+                        <TooltipTrigger asChild>
+                          <Switch
+                            id="reset-mode"
+                            checked={resetMode === 'full-erase'}
+                            onCheckedChange={(checked) => setResetMode(checked ? 'full-erase' : 'app-only')}
+                          />
+                        </TooltipTrigger>
+                      </div>
+                      <TooltipContent>
+                        {resetMode === 'full-erase' ? 'Erase all data on the next device you pick' : 'Keep existing data'}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                )}
               </div>
 
               {versionedDevices.length === 0 ? (

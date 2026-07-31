@@ -533,7 +533,17 @@ export class IOSAgent implements DeviceAgent {
           // We powered the device off to make the erase possible. If the erase then fails, leaving
           // it off strands the tester with a dead device on top of the error message, so put it
           // back the way we found it and report the original failure.
-          if (target.status !== 'shutdown') {
+          //
+          // `=== 'booted'`, deliberately narrower than the `!== 'shutdown'` above: that one asks
+          // "does this need shutting down", this one asks "did we take it down". `unknown` covers
+          // `Shutting Down` (someone else was already stopping it) and `Creating` (never ran) —
+          // booting either would not be putting it back.
+          //
+          // The seq check matters as much: erase takes seconds, and a shutdown arriving mid-flight
+          // bumps bootSeq. Recovering then would power a device back up right after the tester
+          // asked for it to stop — and the throw below is swallowed by the outer catch on the same
+          // seq mismatch, so nothing would say why.
+          if (seq === state.bootSeq && target.status === 'booted') {
             await this.simctl.boot(deviceId).catch(() => { /* the original error is what matters */ })
           }
           throw err

@@ -675,7 +675,40 @@ describe('IOSAgent', () => {
       const err = await waitForType(browser, 'device:boot-error')
 
       expect(err.message).toContain('erase exploded')
-      expect(simctl.boot).toHaveBeenCalledWith('dev-1')
+      // Exactly one boot, and it comes after the failed erase — not the normal post-erase boot,
+      // which never runs, and not a second attempt.
+      expect(simctl.boot).toHaveBeenCalledTimes(1)
+      const eraseOrder = (simctl.erase as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!
+      const bootOrder = (simctl.boot as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!
+      expect(eraseOrder).toBeLessThan(bootOrder)
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('does not power up a device it never took down when the erase fails', async () => {
+      // 'unknown' is Shutting Down / Creating: the device was on its way off, or had never run.
+      // The recovery exists to undo *our* shutdown, so here there is nothing to undo — booting
+      // would override what someone else asked for.
+      const simctl = mockSimctl('unknown')
+      ;(simctl.erase as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('erase exploded'))
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      browser.send(JSON.stringify({
+        type: 'device:boot',
+        sessionId: agent.sessionId,
+        payload: { deviceId: 'dev-1', resetMode: 'full-erase' },
+      }))
+      const err = await waitForType(browser, 'device:boot-error')
+
+      expect(err.message).toContain('erase exploded')
+      expect(simctl.boot).not.toHaveBeenCalled()
 
       agent.disconnect()
       browser.close()

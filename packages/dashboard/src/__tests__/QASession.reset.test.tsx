@@ -22,10 +22,13 @@ vi.mock('@/hooks/useRelay', () => ({
     return { send, connected: true }
   },
 }))
-const BUILD = {
-  id: 7, app_id: 3, name: 'Demo', platform: 'ios', status_label: null,
-  version_name: '1.0', build_number: '1',
-}
+// Mutable so a test can flip the platform; reset in beforeEach.
+const { BUILD } = vi.hoisted(() => ({
+  BUILD: {
+    id: 7, app_id: 3, name: 'Demo', platform: 'ios', status_label: null,
+    version_name: '1.0', build_number: '1',
+  },
+}))
 const BUILD_LABEL = '1.0 · build 1'
 vi.mock('@/hooks/useBuildLoader', () => ({ useBuildLoader: () => ({ build: BUILD }) }))
 vi.mock('@/components/SessionPanel', () => ({ SessionPanel: () => <div /> }))
@@ -47,13 +50,18 @@ vi.mock('@/components/DeviceViewer', async () => {
 
 const { QASession } = await import('../pages/QASession')
 
-const device = (id: string, name: string) => ({
-  id, name, platform: 'ios', status: 'shutdown', osVersion: 'iOS 18.3', sessionId: 'sess-1', busy: false,
+const device = (id: string, name: string, platform = 'ios') => ({
+  id, name, platform, status: 'shutdown', osVersion: 'iOS 18.3', sessionId: 'sess-1', busy: false,
 })
 const AGENTS: SessionInfo[] = [{
   agentName: 'studio-mac',
   platform: 'ios',
   devices: [device('dev-a', 'iPhone 15'), device('dev-b', 'iPhone SE')],
+}]
+const ANDROID_AGENTS: SessionInfo[] = [{
+  agentName: 'studio-mac',
+  platform: 'android',
+  devices: [device('dev-a', 'Pixel 7', 'android')],
 }]
 
 /** The breadcrumb is rendered by the layout, outside QASession — and once a session is open it is
@@ -63,14 +71,14 @@ function Harness() {
   return <>{node}<QASession /></>
 }
 
-async function openDeviceList(user: ReturnType<typeof userEvent.setup>) {
+async function openDeviceList(user: ReturnType<typeof userEvent.setup>, agents = AGENTS) {
   render(
     <MemoryRouter initialEntries={['/qa?id=7']}>
       <BreadcrumbProvider><Harness /></BreadcrumbProvider>
     </MemoryRouter>,
   )
   await vi.waitFor(() => expect(deliver).not.toBeNull())
-  await act(async () => { deliver!({ type: 'agents:listed', sessions: AGENTS } as RelayMessage) })
+  await act(async () => { deliver!({ type: 'agents:listed', sessions: agents } as RelayMessage) })
   await user.click(await screen.findByText('studio-mac'))
 }
 
@@ -85,6 +93,7 @@ describe('QASession — Full reset applies to exactly one pick (#439)', () => {
     viewerMounts.length = 0
     send.mockClear()
     deliver = null
+    BUILD.platform = 'ios'
   })
 
   it('erases the device it was armed for, and not the next one', async () => {
@@ -131,6 +140,19 @@ describe('QASession — Full reset applies to exactly one pick (#439)', () => {
     await user.click(screen.getByText('iPhone SE'))
 
     expect(viewerMounts.at(-1)).toEqual({ deviceId: 'dev-b', resetMode: 'full-erase' })
+  })
+
+  // #447: AndroidAgent never reads resetMode. A switch that erases nothing is worse than no
+  // switch, and worse still now that it disarms itself as if it had run.
+  it('does not offer Full reset on Android', async () => {
+    BUILD.platform = 'android'
+    const user = userEvent.setup()
+    await openDeviceList(user, ANDROID_AGENTS)
+
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument()
+
+    await user.click(screen.getByText('Pixel 7'))
+    expect(viewerMounts).toEqual([{ deviceId: 'dev-a', resetMode: 'app-only' }])
   })
 
   it('mounts a fresh viewer per pick — the per-mount reset guard depends on it', async () => {
