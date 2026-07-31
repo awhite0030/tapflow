@@ -221,12 +221,15 @@ export function QASession() {
                         <TooltipTrigger asChild>
                           {/* A button, not the label, so the tooltip opens on keyboard focus too.
                               h-6 w-6 keeps the tap target at 24px beside a switch that arms an
-                              irreversible erase. Touch reads the sr-only text below instead —
-                              driving the tooltip from a click fights Radix, which closes it on
-                              pointer-down. */}
+                              irreversible erase.
+                              Radix closes its tooltip on pointer-down, which makes the thing
+                              vanish the moment you click the control that explains it. Its
+                              handlers are composed with `checkForDefaultPrevented`, so preventing
+                              the default here drops that close and leaves hover intact. */}
                           <button
                             type="button"
                             aria-label="About Full reset"
+                            onPointerDown={(e) => e.preventDefault()}
                             className="inline-flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                           >
                             <Info className="h-3.5 w-3.5" aria-hidden="true" />
