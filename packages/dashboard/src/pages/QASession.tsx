@@ -222,13 +222,15 @@ export function QASession() {
                             switch renders as a floating thumb over nothing. */}
                         <TooltipTrigger asChild>
                           {/* Radix opens a tooltip on hover/focus only, so without the click
-                              handler this button does nothing at all on touch. h-6 w-6 keeps the
-                              tap target at 24px — it sits beside a switch that arms an
-                              irreversible erase, so a mistap is expensive. */}
+                              handler this button does nothing at all on touch. Open, not toggle:
+                              clicking while hovering would otherwise close what the hover just
+                              opened. Radix still dismisses it on outside click and blur.
+                              h-6 w-6 keeps the tap target at 24px — it sits beside a switch that
+                              arms an irreversible erase, so a mistap is expensive. */}
                           <button
                             type="button"
                             aria-label="About Full reset"
-                            onClick={() => setResetTipOpen((open) => !open)}
+                            onClick={() => setResetTipOpen(true)}
                             className="inline-flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                           >
                             <Info className="h-3.5 w-3.5" aria-hidden="true" />
