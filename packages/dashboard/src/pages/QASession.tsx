@@ -23,7 +23,6 @@ import {
 } from '@/components/ui/breadcrumb';
 import { cn } from '@/lib/utils';
 import { STATUS_TONE, buildLabel } from '@/lib/build-format';
-import { Info } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -212,17 +211,22 @@ export function QASession() {
                   <TooltipProvider>
                     <Tooltip>
                       <div className="ml-auto flex items-center gap-2 shrink-0">
-                        <Label htmlFor="reset-mode" className="flex items-center gap-1 text-sm cursor-pointer whitespace-nowrap">
-                          <Info className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                        <Label htmlFor="reset-mode" className="text-sm cursor-pointer whitespace-nowrap">
                           Full reset
                         </Label>
-                        {/* The trigger belongs on the switch, not the label: this tooltip carries the
-                            only statement of what the toggle destroys, and a label is not focusable —
-                            keyboard and screen-reader users would hear "Full reset" and nothing about
-                            the consequence. On the switch, Radix also wires up aria-describedby. */}
+                        {/* What the switch destroys, said unconditionally. Radix only attaches
+                            aria-describedby while the tooltip is open, so on touch — where no
+                            tooltip opens at all — and in browse mode the toggle would otherwise
+                            announce as "Full reset, switch, off" and nothing more. The tooltip
+                            stays as the sighted hover/focus channel; the trigger sits on the
+                            switch because a label cannot take focus. */}
+                        <span id="reset-mode-desc" className="sr-only">
+                          When on, erases all data on the next device you pick
+                        </span>
                         <TooltipTrigger asChild>
                           <Switch
                             id="reset-mode"
+                            aria-describedby="reset-mode-desc"
                             checked={resetMode === 'full-erase'}
                             onCheckedChange={(checked) => setResetMode(checked ? 'full-erase' : 'app-only')}
                           />
