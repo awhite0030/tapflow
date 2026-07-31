@@ -307,8 +307,10 @@ describe('RelayServer', () => {
     await waitForOpen(probe)
     probe.send(JSON.stringify({ type: 'agents:list' }))
     const listed = await waitForType(probe, 'agents:listed')
-    const solo = (listed.sessions ?? []).filter((s) => s.devices.some((d) => d.id === 'devSolo'))
-    expect(solo).toHaveLength(0)
+    // Not `listed.sessions ?? []` — that would also pass if the field went missing entirely, which
+    // is a different bug wearing the same green tick.
+    expect(listed.sessions).toBeDefined()
+    expect(listed.sessions!.filter((s) => s.devices.some((d) => d.id === 'devSolo'))).toHaveLength(0)
     probe.close()
   })
 
