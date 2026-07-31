@@ -10,6 +10,7 @@ export type MessageType =
   | 'session:deviceInfo'
   | 'session:end'
   | 'session:leave'
+  | 'session:terminated'
   | 'stream:register'
   | 'stream:registered'
   | 'device:boot'
@@ -64,8 +65,8 @@ export type { AgentResources, UIElement }
 
 // The wire contract lives in @tapflowio/protocol so the relay, the dashboard and mcp-server cannot
 // drift apart. `DeviceInfo` is kept as an alias while call sites move over.
-import type { DeviceSummary } from '@tapflowio/protocol'
-export type { DeviceReport, DeviceSummary } from '@tapflowio/protocol'
+import type { DeviceSummary, SessionTerminatedReason } from '@tapflowio/protocol'
+export type { DeviceReport, DeviceSummary, SessionTerminatedReason } from '@tapflowio/protocol'
 
 export type DeviceInfo = DeviceSummary
 
@@ -104,4 +105,6 @@ export interface RelayMessage {
   format?: 'png' | 'jpeg'
   // ui:tree:response: unified element schema (normalized 0-1 frames), mapped agent-side
   elements?: UIElement[]
+  // session:terminated: why the relay dropped the session
+  reason?: SessionTerminatedReason
 }

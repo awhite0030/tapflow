@@ -282,7 +282,7 @@ describe('RelayServer', () => {
     const ended = await endedPromise
 
     expect(ended.sessionId).toBe(sessionId)
-    expect((ended as unknown as { reason: string }).reason).toBe('agent-disconnected')
+    expect(ended.reason).toBe('agent-disconnected')
 
     browser.close()
   })

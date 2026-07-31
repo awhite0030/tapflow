@@ -753,7 +753,12 @@ export class RelayServer {
     socket.send(JSON.stringify(msg))
   }
 
-  private evictAgentSocket(ws: WebSocket): boolean {
+  /**
+   * @param cause  `'disconnect'` — the socket closed. `'replaced'` — the same agent re-registered
+   *   and this is its previous socket. Only affects the log line: a restart otherwise reads as a
+   *   crash followed by a recovery, which is not what happened.
+   */
+  private evictAgentSocket(ws: WebSocket, cause: 'disconnect' | 'replaced' = 'disconnect'): boolean {
     const agentSessions = this.sessions.getAllByAgentSocket(ws)
     if (agentSessions.length === 0) return false
     const agentSessionIds = new Set(agentSessions.map((s) => s.id))
@@ -788,7 +793,9 @@ export class RelayServer {
     }
     for (const s of agentSessions) this.sessions.remove(s.id)
     this.sessions.removeResources(ws)
-    logger.info(`agent disconnected — ${agentSessions.length} session(s) ended`)
+    logger.info(cause === 'replaced'
+      ? `agent re-registered — ${agentSessions.length} previous session(s) replaced`
+      : `agent disconnected — ${agentSessions.length} session(s) ended`)
     return true
   }
 
@@ -804,7 +811,7 @@ export class RelayServer {
         if (old === ws) continue
         // Evict before terminate: the old socket's close fires async, by which point its sessions are
         // gone and its in-flight screenshots would be undiscoverable — reject them here instead.
-        this.evictAgentSocket(old)
+        this.evictAgentSocket(old, 'replaced')
         old.terminate()
       }
     }

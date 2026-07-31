@@ -76,8 +76,10 @@ export function useAgentSession(os: string) {
 
   /**
    * The relay told us the session is gone (the agent went away). Same destination as
-   * `handleBackToMacs` but deliberately **not** the same function: there is no session left to shut
-   * down, so sending `device:shutdown` would only earn a `Session not found`.
+   * `handleBackToMacs` but deliberately **not** the same function: there is no session left, so a
+   * `device:shutdown` would be addressed to a sessionId the relay has already dropped. The relay
+   * discards it silently (that case has no `else` branch), so nothing breaks — it is simply a
+   * message sent about something that no longer exists.
    *
    * The immediate `agents:list` matters here. The list otherwise refreshes on a 5s interval, and
    * this flow puts the user back on it and invites them to pick again straight away — with a stale

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import type { SessionTerminatedReason } from '@tapflowio/protocol';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useBreadcrumb } from '@/hooks/useBreadcrumb';
 import { useBuildLoader } from '@/hooks/useBuildLoader';
@@ -29,6 +30,16 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { SearchInput } from '@/components/ui/search-input';
 import type { AgentDevice, SessionInfo } from '@/lib/types';
 import { getResourceHealth, type ResourceHealth } from '@/lib/resource-health';
+
+// Keyed by the reason so a new one cannot be added without deciding what the user is told. A
+// callback that ignored `reason` would keep showing "the agent disconnected" for every future
+// cause — which is exactly what the literal union exists to prevent.
+const SESSION_ENDED_NOTICE: Record<SessionTerminatedReason, { title: string; description: string }> = {
+  'agent-disconnected': {
+    title: 'The agent disconnected — this session ended.',
+    description: 'Pick the Mac again to start a new session.',
+  },
+};
 
 export function QASession() {
   const [searchParams] = useSearchParams();
@@ -64,10 +75,9 @@ export function QASession() {
   // The relay dropped the session because its agent went away. Say so and go back to the Mac list —
   // before #426 the tab just sat on "Waiting for first frame..." with no way to know a refresh was
   // needed.
-  const onSessionEnded = useCallback(() => {
-    toast.error('The agent disconnected — this session ended.', {
-      description: 'Pick the Mac again to start a new session.',
-    });
+  const onSessionEnded = useCallback((reason: SessionTerminatedReason) => {
+    const notice = SESSION_ENDED_NOTICE[reason];
+    toast.error(notice.title, { description: notice.description });
     handleSessionEnded();
   }, [handleSessionEnded]);
 
