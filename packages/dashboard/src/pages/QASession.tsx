@@ -48,8 +48,6 @@ export function QASession() {
 
   const { build } = useBuildLoader(buildId);
   const [recordingsKey, setRecordingsKey] = useState(0);
-  // Controlled so the ⓘ can be tapped as well as hovered.
-  const [resetTipOpen, setResetTipOpen] = useState(false);
 
   const os = build?.platform ?? 'ios';
   const {
@@ -212,7 +210,7 @@ export function QASession() {
                     dead control and no reason for it. */}
                 {fullResetSupported && (
                   <TooltipProvider>
-                    <Tooltip open={resetTipOpen} onOpenChange={setResetTipOpen}>
+                    <Tooltip>
                       <div className="ml-auto flex items-center gap-2 shrink-0">
                         {/* The ⓘ is the trigger, and it is a button so the tooltip opens on focus
                             as well as hover — a keyboard user who does not run a screen reader has
@@ -221,16 +219,14 @@ export function QASession() {
                             whose track is coloured by `data-[state=checked|unchecked]`, and the
                             switch renders as a floating thumb over nothing. */}
                         <TooltipTrigger asChild>
-                          {/* Radix opens a tooltip on hover/focus only, so without the click
-                              handler this button does nothing at all on touch. Open, not toggle:
-                              clicking while hovering would otherwise close what the hover just
-                              opened. Radix still dismisses it on outside click and blur.
-                              h-6 w-6 keeps the tap target at 24px — it sits beside a switch that
-                              arms an irreversible erase, so a mistap is expensive. */}
+                          {/* A button, not the label, so the tooltip opens on keyboard focus too.
+                              h-6 w-6 keeps the tap target at 24px beside a switch that arms an
+                              irreversible erase. Touch reads the sr-only text below instead —
+                              driving the tooltip from a click fights Radix, which closes it on
+                              pointer-down. */}
                           <button
                             type="button"
                             aria-label="About Full reset"
-                            onClick={() => setResetTipOpen(true)}
                             className="inline-flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                           >
                             <Info className="h-3.5 w-3.5" aria-hidden="true" />
