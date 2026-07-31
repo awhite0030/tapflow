@@ -61,7 +61,7 @@ export function QASession() {
   const {
     osVersions, osVersion, setOsVersion,
     deviceSearch, setDeviceSearch, versionedDevices,
-    resetMode, setResetMode, appliedResetMode, consumeResetMode,
+    resetMode, setResetMode, appliedResetMode, consumeResetMode, fullResetSupported,
   } = useDeviceSelector(selectedSession, os);
 
   const allDevices = sessions.flatMap((s) => s.devices);
@@ -215,12 +215,15 @@ export function QASession() {
                       </TooltipTrigger>
                       <Switch
                         id="reset-mode"
+                        disabled={!fullResetSupported}
                         checked={resetMode === 'full-erase'}
                         onCheckedChange={(checked) => setResetMode(checked ? 'full-erase' : 'app-only')}
                       />
                     </div>
                     <TooltipContent>
-                      {resetMode === 'full-erase' ? 'Erase all data on the next device you pick' : 'Keep existing data'}
+                      {!fullResetSupported
+                        ? 'Full reset is not available on Android yet'
+                        : resetMode === 'full-erase' ? 'Erase all data on the next device you pick' : 'Keep existing data'}
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>

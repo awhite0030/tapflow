@@ -53,6 +53,7 @@ describe('DeviceViewer — resetMode is consumed once per mount (#439)', () => {
     expect(bootModes()).toEqual(['full-erase', 'app-only', 'app-only'])
   })
 
+  // Guards the inverted condition, not #439 itself: the pre-fix code passed this too.
   it('never asks for an erase when the toggle was off', () => {
     render(<DeviceViewer sessionId="s-1" deviceId="dev-1" resetMode="app-only" />)
     act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
@@ -61,10 +62,12 @@ describe('DeviceViewer — resetMode is consumed once per mount (#439)', () => {
     expect(bootModes()).toEqual(['app-only', 'app-only'])
   })
 
-  it('arms again for a fresh mount — selecting a device is what consumes the toggle, not the socket', () => {
+  // Per mount, not per module: the next viewer has to be able to erase. Whether picking a device
+  // actually produces a new mount is QASession's business — see QASession.reset.test.tsx.
+  it('a second viewer arms again', () => {
     const first = render(<DeviceViewer sessionId="s-1" deviceId="dev-1" resetMode="full-erase" />)
     act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
-    first.unmount()
+    first.unmount()  // keeps the two viewers from overlapping; `deliver` already points at the next one
     send.mockClear()
 
     render(<DeviceViewer sessionId="s-2" deviceId="dev-2" resetMode="full-erase" />)

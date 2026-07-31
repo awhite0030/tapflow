@@ -13,13 +13,19 @@ export function useDeviceSelector(
   // which mode it was launched under.
   const [appliedResetMode, setAppliedResetMode] = useState<'app-only' | 'full-erase'>('app-only')
 
+  /** Only iOS acts on Full reset today (#447). */
+  const fullResetSupported = os !== 'android'
+
   /** Full reset is a one-shot intent — "erase the next device I pick" — not a setting that stays
    *  on. Leaving a session is a conditional re-render, not an unmount, so without this the toggle
    *  survives back-to-the-list and silently erases the *next* device too (#439). */
   const consumeResetMode = useCallback(() => {
-    setAppliedResetMode(resetMode)
+    // Android ignores resetMode outright — AndroidAgent never reads it (#447). Applying it there
+    // would disarm the toggle having erased nothing, which reads as "done"; the UI disables the
+    // switch for the same reason, and this keeps the two from drifting apart.
+    setAppliedResetMode(fullResetSupported ? resetMode : 'app-only')
     setResetMode('app-only')
-  }, [resetMode])
+  }, [resetMode, fullResetSupported])
 
   const filteredDevices = selectedSession?.devices.filter((d) => d.platform === os) ?? []
 
@@ -52,5 +58,6 @@ export function useDeviceSelector(
     setResetMode,
     appliedResetMode,
     consumeResetMode,
+    fullResetSupported,
   }
 }
