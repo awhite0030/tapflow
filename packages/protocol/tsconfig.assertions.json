@@ -1,0 +1,17 @@
+// Type-checks src/typeAssertions.ts without emitting it.
+//
+// The assertions have to be compiled to be useful — an unused `@ts-expect-error` is only an error
+// if something checks it — but they must not reach `dist`, because this package publishes types
+// only and its own rules forbid shipping runtime values.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["src"],
+  "exclude": ["dist", "node_modules"]
+}

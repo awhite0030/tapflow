@@ -22,6 +22,10 @@ RUN pnpm install --frozen-lockfile
 
 # Build required dependencies and the relay package itself.
 # Dashboard is built so its static assets are placed in relay/public.
+# protocol comes first: dashboard and relay both resolve its types from dist/, which does not
+# exist in a clean checkout. This order has to match the root `build` script — they are two
+# separate lists of the same graph, which is what #261 (topological build) would remove.
+RUN pnpm --filter @tapflowio/protocol build
 RUN pnpm --filter @tapflowio/agent-core build
 RUN pnpm --filter @tapflowio/dashboard build
 RUN pnpm --filter @tapflowio/relay build

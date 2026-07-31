@@ -11,7 +11,10 @@ const commonRules = {
 export default tseslint.config(
   // `!scripts/**` re-includes: a global ignore cannot be undone by a later `files` entry, so the
   // negation has to live here.
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/*.js', '**/*.mjs', '**/*.cjs', '**/__tests__/**', '!scripts/**'] },
+  // `typeAssertions.ts` is deliberately outside the protocol package's build tsconfig (it declares
+  // values and must not reach `dist`), which puts it outside the typed-lint project service too.
+  // It is type-checked by `tsconfig.assertions.json`, which is the only check that file needs.
+  { ignores: ['**/dist/**', '**/node_modules/**', '**/*.js', '**/*.mjs', '**/*.cjs', '**/__tests__/**', 'packages/protocol/src/typeAssertions.ts', '!scripts/**'] },
 
   // Repo tooling under scripts/ is .mjs, which the blanket ignore above covers. It is opted back
   // in because `dev-down` sends SIGKILL to processes it selects — the most destructive code in

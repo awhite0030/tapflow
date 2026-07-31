@@ -3,6 +3,7 @@ import { WebSocket } from 'ws'
 import type { DeviceStatus } from '@tapflowio/agent-core'
 import { ValidationError } from '@tapflowio/agent-core'
 import type { AgentResources, SessionInfo } from './types.js'
+import type { ChromePayload, DeviceDetails } from '@tapflowio/protocol'
 
 export interface Session {
   id: string
@@ -18,8 +19,8 @@ export interface Session {
   devicePlatform: string
   deviceStatus: DeviceStatus
   deviceOsVersion?: string
-  chromeData?: unknown
-  deviceInfo?: { deviceName: string; osVersion: string }
+  chromeData?: ChromePayload
+  deviceInfo?: DeviceDetails
   idleTimer: ReturnType<typeof setTimeout> | null
 }
 
@@ -175,7 +176,7 @@ export class SessionManager {
     session.streamSocket = null
   }
 
-  setChromeData(sessionId: string, data: unknown): void {
+  setChromeData(sessionId: string, data: ChromePayload): void {
     const session = this.sessions.get(sessionId)
     if (session) session.chromeData = data
   }

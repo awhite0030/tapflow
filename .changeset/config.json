@@ -5,6 +5,7 @@
   "fixed": [
     [
       "tapflow",
+      "@tapflowio/protocol",
       "@tapflowio/agent-core",
       "@tapflowio/ios-agent",
       "@tapflowio/android-agent",

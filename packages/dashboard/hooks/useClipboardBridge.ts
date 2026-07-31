@@ -1,3 +1,4 @@
+import type { BrowserToRelay, ClipboardRequest } from '@tapflowio/protocol'
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { MutableRefObject } from 'react'
 
@@ -12,7 +13,7 @@ export type ClipboardMessageHandler = (msg: ClipboardBridgeMessage) => void
 
 interface Options {
   sessionId: string
-  send: (msg: object) => void
+  send: (msg: BrowserToRelay) => void
   /** Only hijack the chords while the viewer owns the keyboard. */
   active: boolean
   /** Does the connected agent implement the clipboard protocol (from session:joined)? */
@@ -169,7 +170,14 @@ export function useClipboardBridge({ sessionId, send, active, supported, handler
 
   // Resolves with the reply, or null if the budget ran out. A late reply is dropped by the
   // handler above rather than acted on, so a slow agent can never write a stale value.
-  const request = useCallback((type: string, payload?: object): Promise<ClipboardBridgeMessage | null> => {
+  // The argument tuple is derived from the request type, so `clipboard:write` *requires* its
+  // payload while `clipboard:read` may omit one. A single `payload?:` parameter would let
+  // `request('clipboard:write')` compile and then send a message with no text.
+  const request = useCallback(<T extends ClipboardRequest['type']>(
+    ...[type, payload]: Extract<ClipboardRequest, { type: T }> extends { payload: infer P }
+      ? [type: T, payload: P]
+      : [type: T, payload?: Extract<ClipboardRequest, { type: T }>['payload']]
+  ): Promise<ClipboardBridgeMessage | null> => {
     const id = requestId()
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -177,7 +185,10 @@ export function useClipboardBridge({ sessionId, send, active, supported, handler
         resolve(null)
       }, ROUND_TRIP_BUDGET_MS)
       pending.current.set(id, (reply) => { clearTimeout(timer); resolve(reply) })
-      send({ type, sessionId, requestId: id, payload })
+      // The generic pins `payload` to whichever request `type` selects, so both call sites are
+      // checked. TypeScript cannot see that the reassembled object satisfies the union while `T`
+      // is still unresolved, hence the assertion — the checking already happened at the boundary.
+      send({ type, sessionId, requestId: id, payload } as ClipboardRequest)
     })
   }, [send, sessionId])
 

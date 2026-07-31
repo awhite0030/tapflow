@@ -36,6 +36,7 @@ The audience is the whole team (PO, PM, designers, backend, QA) — not just QA.
 - **Routing**: `BrowserRouter`-based. `/login` and `/invite` are public. Everything else is protected by `DashboardLayout` via `useAuth` (redirects to `/login`).
 - **Auth**: Session confirmed via `GET /api/v1/auth/me`. HttpOnly cookie (not readable from JS).
 - **Streaming**: set `binaryType = 'arraybuffer'` in `useRelay`, branch on `e.data instanceof ArrayBuffer` for binary frames.
+- **Outbound message shapes live in [`@tapflowio/protocol`](../protocol/AGENTS.md)**, imported with `import type` so nothing lands in the bundle. `send()` takes `BrowserToRelay`, so a new message has to be added to that union first. `RelayMessage` in `lib/types.ts` is what the viewer *receives* — it deliberately no longer lists outbound messages, because that list drifted from the wire while nothing checked it.
 - **Dev server proxy**: `vite.config.ts` proxies `/api` and `/uploads` → `http://localhost:4000`.
 - **Build order**: dashboard first → relay second (`agent-core → dashboard → relay`).
 

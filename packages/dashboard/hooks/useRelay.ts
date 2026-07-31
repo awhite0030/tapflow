@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { RelayMessage } from '@/lib/types'
+import type { BrowserToRelay } from '@tapflowio/protocol'
 
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
 const RELAY_URL = import.meta.env.VITE_RELAY_URL ?? `${wsProtocol}//${location.host}`
@@ -59,7 +60,7 @@ export function useRelay(
     }
   }, [])
 
-  const send = useCallback((msg: object) => {
+  const send = useCallback((msg: BrowserToRelay) => {
     if (ws.current?.readyState === WebSocket.OPEN) {
       ws.current.send(JSON.stringify(msg))
     }

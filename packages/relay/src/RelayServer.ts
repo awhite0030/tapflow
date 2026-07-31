@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import { SessionManager } from './SessionManager.js'
 import type { RelayMessage, UIElement } from './types.js'
+import type { ChromePayload, RelayOutbound } from '@tapflowio/protocol'
 import { Router, json } from './router.js'
 import { requireViewAuth, requireAuth, getAuth, verifyPat } from './middleware/auth.js'
 import { classifyConnection } from './lib/connectionAuth.js'
@@ -355,7 +356,7 @@ export class RelayServer {
       lastAt = now
       const session = this.sessions.get(sessionId)
       if (session?.agentSocket.readyState === WebSocket.OPEN) {
-        session.agentSocket.send(JSON.stringify({ type: 'stream:request-idr', sessionId }))
+        this.sendTo(session.agentSocket, { type: 'stream:request-idr', sessionId })
       }
     }
   }
@@ -483,11 +484,11 @@ export class RelayServer {
         this.sessions.clearBrowser(browserSession.id, () => {
           const session = this.sessions.get(browserSession.id)
           if (session?.agentSocket.readyState === WebSocket.OPEN) {
-            session.agentSocket.send(JSON.stringify({
+            this.sendTo(session.agentSocket, {
               type: 'device:shutdown',
               sessionId: session.id,
               payload: { deviceId: session.deviceId },
-            }))
+            })
           }
         })
       }
@@ -523,7 +524,7 @@ export class RelayServer {
       case 'ui:tree:response':   this.handleUITreeResponse(msg); break
       case 'ui:tree:error':      this.handleUITreeError(msg); break
       case 'agents:list': {
-        ws.send(JSON.stringify({ type: 'agents:listed', sessions: this.sessions.list() }))
+        this.sendTo(ws, { type: 'agents:listed', sessions: this.sessions.list() })
         break
       }
 
@@ -553,7 +554,7 @@ export class RelayServer {
         const session = this.sessions.get(msg.sessionId!)
         if (session) {
           this.sessions.setStreamSocket(session.id, ws)
-          ws.send(JSON.stringify({ type: 'stream:registered' }))
+          this.sendTo(ws, { type: 'stream:registered' })
         }
         break
       }
@@ -562,7 +563,11 @@ export class RelayServer {
       case 'session:chrome': {
         const session = this.sessions.get(msg.sessionId!)
         if (!session) break
-        this.sessions.setChromeData(session.id, msg.payload)
+        // Cast, not a check: nothing validates inbound messages, so the relay takes the agent's
+        // word for the shape. It only stores and forwards this, so a wrong shape surfaces in the
+        // viewer rather than here — but this is where a runtime validator belongs when one exists
+        // (see packages/protocol/AGENTS.md).
+        this.sessions.setChromeData(session.id, msg.payload as ChromePayload)
         if (session.browserSocket?.readyState === WebSocket.OPEN) {
           session.browserSocket.send(JSON.stringify(msg))
         }
@@ -666,7 +671,7 @@ export class RelayServer {
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
         } else {
-          ws.send(JSON.stringify({ type: 'open-url:error', sessionId: msg.sessionId, message: 'agent offline' }))
+          this.sendTo(ws, { type: 'open-url:error', sessionId: msg.sessionId!, message: 'agent offline' })
         }
         break
       }
@@ -675,7 +680,7 @@ export class RelayServer {
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
         } else {
-          ws.send(JSON.stringify({ type: 'app:clear-state-error', sessionId: msg.sessionId, message: 'agent offline' }))
+          this.sendTo(ws, { type: 'app:clear-state-error', sessionId: msg.sessionId!, message: 'agent offline' })
         }
         break
       }
@@ -697,7 +702,7 @@ export class RelayServer {
           // Agent offline or session evicted: a terminal input can't be dispatched.
           // Reply to the sender (the MCP/browser socket) so it fails truthfully
           // instead of falling through to its optimistic 2s timeout.
-          ws.send(JSON.stringify({ type: 'input:error', sessionId: msg.sessionId, message: 'agent offline' }))
+          this.sendTo(ws, { type: 'input:error', sessionId: msg.sessionId!, message: 'agent offline' })
         }
         break
       }
@@ -710,9 +715,9 @@ export class RelayServer {
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
         } else if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'clipboard:error', sessionId: msg.sessionId, requestId: msg.requestId, message: 'agent offline',
-          }))
+          this.sendTo(ws, {
+            type: 'clipboard:error', sessionId: msg.sessionId!, requestId: msg.requestId!, message: 'agent offline',
+          })
         }
         break
       }
@@ -734,6 +739,20 @@ export class RelayServer {
   // Removes an agent socket's sessions + resources and rejects its in-flight
   // screenshot / ui-tree requests. Shared by socket close and re-register
   // eviction. Returns true if `ws` had agent sessions.
+  /**
+   * Every message the relay *originates* goes through here. The union checks the shape where the
+   * literal is written — a mistyped `type`, a missing field or one that does not belong are all
+   * compile errors — and the readyState guard replaces the check that was repeated (and sometimes
+   * omitted) at each call site.
+   *
+   * Messages the relay merely *forwards* do not use this: they are re-serialised unchanged, so
+   * they keep their inbound type and there is nothing new to check.
+   */
+  private sendTo(socket: WebSocket, msg: RelayOutbound): void {
+    if (socket.readyState !== WebSocket.OPEN) return
+    socket.send(JSON.stringify(msg))
+  }
+
   private evictAgentSocket(ws: WebSocket): boolean {
     const agentSessions = this.sessions.getAllByAgentSocket(ws)
     if (agentSessions.length === 0) return false
@@ -778,50 +797,50 @@ export class RelayServer {
       deviceId: d.id,
       sessionId: sessionIds[i],
     }))
-    ws.send(JSON.stringify({ type: 'agent:registered', registeredSessions }))
+    this.sendTo(ws, { type: 'agent:registered', registeredSessions })
   }
 
   private handleSessionStart(ws: WebSocket, msg: RelayMessage): void {
     const session = this.sessions.get(msg.sessionId!)
     if (!session) {
-      ws.send(JSON.stringify({ type: 'error', message: 'Session not found' }))
+      this.sendTo(ws, { type: 'error', message: 'Session not found' })
       return
     }
     const resources = this.sessions.getResources(session.agentSocket)
     if (resources) {
       const memPercent = (resources.memUsedMB / resources.memTotalMB) * 100
       if (resources.cpuPercent > RESOURCE_THRESHOLD || memPercent > RESOURCE_THRESHOLD) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Agent resources exhausted' }))
+        this.sendTo(ws, { type: 'error', message: 'Agent resources exhausted' })
         return
       }
     }
     try {
       this.sessions.join(msg.sessionId!, ws)
     } catch {
-      ws.send(JSON.stringify({ type: 'error', message: 'Session busy' }))
+      this.sendTo(ws, { type: 'error', message: 'Session busy' })
       return
     }
     // Include the agent's capabilities so the viewer knows up front what is implemented on
     // the other end — an agent that predates a feature omits it, and the dashboard degrades
     // deliberately instead of inferring anything from a timeout.
-    ws.send(JSON.stringify({
-      type: 'session:joined', sessionId: msg.sessionId, capabilities: session.agentCapabilities ?? [],
-    }))
+    this.sendTo(ws, {
+      type: 'session:joined', sessionId: msg.sessionId!, capabilities: session.agentCapabilities ?? [],
+    })
     if (session.chromeData) {
-      ws.send(JSON.stringify({ type: 'session:chrome', payload: session.chromeData }))
+      this.sendTo(ws, { type: 'session:chrome', payload: session.chromeData })
     }
     if (session.deviceInfo) {
-      ws.send(JSON.stringify({ type: 'session:deviceInfo', payload: session.deviceInfo }))
+      this.sendTo(ws, { type: 'session:deviceInfo', payload: session.deviceInfo })
     }
     // Replay device:ready if the device is already booted (browser WS blip reconnect)
     if (session.deviceStatus === 'booted') {
-      ws.send(JSON.stringify({ type: 'device:ready', payload: { deviceId: session.deviceId } }))
+      this.sendTo(ws, { type: 'device:ready', payload: { deviceId: session.deviceId } })
       // (Re)joining a live stream: ask the agent for an IDR so this viewer gets a decodable
       // keyframe immediately, instead of waiting for the next periodic one — and so it isn't
       // left blank when the encoder is static-skipping an unchanged screen. Agents that don't
       // support on-demand IDR ignore the message.
       if (session.agentSocket.readyState === WebSocket.OPEN) {
-        session.agentSocket.send(JSON.stringify({ type: 'stream:request-idr', sessionId: session.id }))
+        this.sendTo(session.agentSocket, { type: 'stream:request-idr', sessionId: session.id })
       }
     }
   }
@@ -830,22 +849,22 @@ export class RelayServer {
     // Relay looks up file_path from DB and enriches; includes sessionId for response routing
     const session = this.sessions.get(msg.sessionId!)
     if (!session) {
-      ws.send(JSON.stringify({ type: 'error', message: 'Session not found' }))
+      this.sendTo(ws, { type: 'error', message: 'Session not found' })
       return
     }
     const build = getDb()
       .prepare('SELECT file_path, bundle_id FROM builds WHERE id = ?')
       .get(msg.buildId!) as { file_path: string; bundle_id: string | null } | undefined
     if (!build) {
-      ws.send(JSON.stringify({ type: 'app:install-error', message: 'Build not found' }))
+      this.sendTo(ws, { type: 'app:install-error', message: 'Build not found' })
       return
     }
     if (session.agentSocket.readyState === WebSocket.OPEN) {
-      session.agentSocket.send(JSON.stringify({
+      this.sendTo(session.agentSocket, {
         type: 'app:install',
-        sessionId: msg.sessionId,
+        sessionId: msg.sessionId!,
         payload: { filePath: build.file_path, bundleId: build.bundle_id },
-      }))
+      })
     }
   }
 
@@ -853,22 +872,22 @@ export class RelayServer {
     // Relay looks up bundle_id from DB; includes sessionId for response routing
     const session = this.sessions.get(msg.sessionId!)
     if (!session) {
-      ws.send(JSON.stringify({ type: 'error', message: 'Session not found' }))
+      this.sendTo(ws, { type: 'error', message: 'Session not found' })
       return
     }
     const build = getDb()
       .prepare('SELECT bundle_id FROM builds WHERE id = ?')
       .get(msg.buildId!) as { bundle_id: string | null } | undefined
     if (!build?.bundle_id) {
-      ws.send(JSON.stringify({ type: 'app:launch-error', message: 'Bundle ID not available for this build' }))
+      this.sendTo(ws, { type: 'app:launch-error', message: 'Bundle ID not available for this build' })
       return
     }
     if (session.agentSocket.readyState === WebSocket.OPEN) {
-      session.agentSocket.send(JSON.stringify({
+      this.sendTo(session.agentSocket, {
         type: 'app:launch',
-        sessionId: msg.sessionId,
+        sessionId: msg.sessionId!,
         payload: { bundleId: build.bundle_id },
-      }))
+      })
     }
   }
 
@@ -924,7 +943,7 @@ export class RelayServer {
         timer,
       })
 
-      session.agentSocket.send(JSON.stringify({ type: 'screenshot:request', sessionId, requestId, format }))
+      this.sendTo(session.agentSocket, { type: 'screenshot:request', sessionId, requestId, format })
     })
   }
 
@@ -976,7 +995,7 @@ export class RelayServer {
         timer,
       })
 
-      session.agentSocket.send(JSON.stringify({ type: 'ui:tree:request', sessionId, requestId }))
+      this.sendTo(session.agentSocket, { type: 'ui:tree:request', sessionId, requestId })
     })
   }
 

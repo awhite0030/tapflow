@@ -1,0 +1,52 @@
+{
+  "name": "@tapflowio/protocol",
+  "version": "0.17.0",
+  "description": "Wire protocol contract for tapflow — the WebSocket message types exchanged between browser, relay, and device agents",
+  "keywords": [
+    "tapflow",
+    "protocol",
+    "websocket",
+    "types",
+    "qa"
+  ],
+  "homepage": "https://github.com/jo-duchan/tapflow",
+  "bugs": "https://github.com/jo-duchan/tapflow/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jo-duchan/tapflow.git",
+    "directory": "packages/protocol"
+  },
+  "license": "MIT",
+  "author": "tapflow contributors",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "source": "./src/index.ts",
+      "tsx": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b && tsc -p tsconfig.assertions.json",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

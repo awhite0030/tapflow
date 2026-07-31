@@ -1136,8 +1136,10 @@ export class AndroidAgent implements DeviceAgent {
         const state = this.deviceStates.get(msg.sessionId!)
         if (!state) break
         const serial = this.adb.getSerial(state.deviceId)
-        const { code, modifiers } = msg.payload as { code: string; modifiers: number }
-        if (serial) this.handleKeyInput(serial, code, modifiers).catch(() => {})
+        // `modifiers` is optional in the contract and iOS already defaults it; match that here so
+        // both agents read the same message the same way.
+        const { code, modifiers } = msg.payload as { code: string; modifiers?: number }
+        if (serial) this.handleKeyInput(serial, code, modifiers ?? 0).catch(() => {})
         void this.ackInput(state, serial !== undefined)
         break
       }

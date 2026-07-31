@@ -7,6 +7,7 @@ WORKDIR /app
 
 # Workspace manifests first (layer cache: changes rarely)
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY packages/protocol/package.json packages/protocol/
 COPY packages/agent-core/package.json packages/agent-core/
 COPY packages/dashboard/package.json packages/dashboard/
 COPY packages/relay/package.json packages/relay/
@@ -21,12 +22,14 @@ COPY docs/package.json docs/
 RUN git init && pnpm install --frozen-lockfile
 
 # Source files for build (agent-core → dashboard → relay only)
+COPY packages/protocol packages/protocol
 COPY packages/agent-core packages/agent-core
 COPY packages/dashboard packages/dashboard
 COPY packages/relay packages/relay
 COPY playground/server.js playground/
 
-RUN pnpm --filter @tapflowio/agent-core build && \
+RUN pnpm --filter @tapflowio/protocol build && \
+    pnpm --filter @tapflowio/agent-core build && \
     pnpm --filter @tapflowio/dashboard build && \
     pnpm --filter @tapflowio/relay build
 

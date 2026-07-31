@@ -1,5 +1,6 @@
 'use client';
 
+import type { BrowserToRelay } from '@tapflowio/protocol'
 import { useState, useEffect, useRef } from 'react';
 import { Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -9,7 +10,7 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   sessionId: string;
-  send: (msg: object) => void;
+  send: (msg: BrowserToRelay) => void;
 }
 
 export function DeepLinkDialog({ open, onOpenChange, sessionId, send }: Props) {

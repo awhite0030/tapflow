@@ -1,5 +1,6 @@
 'use client';
 
+import type { BrowserToRelay } from '@tapflowio/protocol'
 import { useCallback, useEffect, useRef, useState, Fragment } from 'react';
 import { useClientRecording } from '@/hooks/useClientRecording';
 import { Home, Keyboard, Loader2, Play } from 'lucide-react';
@@ -28,7 +29,7 @@ const BUTTON_HIT_RADIUS = 100;
 interface IOSViewerProps {
   sessionId: string;
   buildId?: number;
-  send: (msg: object) => void;
+  send: (msg: BrowserToRelay) => void;
   connected: boolean;
   joined: boolean;
   deviceReady: boolean;
