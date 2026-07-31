@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { SessionInfo } from '@/lib/types'
 
 export function useDeviceSelector(
@@ -8,6 +8,18 @@ export function useDeviceSelector(
   const [osVersion, setOsVersion] = useState('')
   const [deviceSearch, setDeviceSearch] = useState('')
   const [resetMode, setResetMode] = useState<'app-only' | 'full-erase'>('app-only')
+  // What the device currently on screen was actually booted with. Held apart from `resetMode`
+  // because picking a device disarms the toggle immediately, and the viewer still has to know
+  // which mode it was launched under.
+  const [appliedResetMode, setAppliedResetMode] = useState<'app-only' | 'full-erase'>('app-only')
+
+  /** Full reset is a one-shot intent — "erase the next device I pick" — not a setting that stays
+   *  on. Leaving a session is a conditional re-render, not an unmount, so without this the toggle
+   *  survives back-to-the-list and silently erases the *next* device too (#439). */
+  const consumeResetMode = useCallback(() => {
+    setAppliedResetMode(resetMode)
+    setResetMode('app-only')
+  }, [resetMode])
 
   const filteredDevices = selectedSession?.devices.filter((d) => d.platform === os) ?? []
 
@@ -38,5 +50,7 @@ export function useDeviceSelector(
     versionedDevices,
     resetMode,
     setResetMode,
+    appliedResetMode,
+    consumeResetMode,
   }
 }

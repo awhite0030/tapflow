@@ -509,6 +509,15 @@ export class IOSAgent implements DeviceAgent {
       if (!target) throw new PlatformError(`Device not found: ${deviceId}`)
 
       if (fullErase) {
+        // `simctl erase` only accepts a shut-down device, and a device is often already running —
+        // it survives agent restarts and sessions that ended without a clean shutdown. Without this
+        // the boot fails outright (#439). Shutting down is idempotent, so the extra call is free
+        // when the device is already off.
+        //
+        // This makes an unwanted reset *succeed* rather than fail, so it is only safe alongside the
+        // dashboard change that consumes the toggle after one use. The erase failing is what used
+        // to stand between a stale toggle and a wiped device.
+        if (target.status === 'booted') await this.simctl.shutdown(deviceId)
         await this.simctl.erase(deviceId)
         await this.simctl.boot(deviceId)
       } else if (target.status !== 'booted') {

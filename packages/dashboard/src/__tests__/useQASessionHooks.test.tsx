@@ -231,4 +231,37 @@ describe('useDeviceSelector', () => {
 
     expect(result.current.osVersions).toEqual(['Android 15', 'Android 14', 'Android 13'])
   })
+
+  // #439: leaving a session is a conditional re-render, not an unmount, so an armed toggle used to
+  // survive back-to-the-list and erase the next device the tester picked.
+  describe('resetMode is a one-shot intent', () => {
+    it('hands the armed mode to the viewer and disarms the toggle when a device is picked', () => {
+      const { result } = renderHook(() => useDeviceSelector(session, 'android'))
+
+      act(() => result.current.setResetMode('full-erase'))
+      act(() => result.current.consumeResetMode())
+
+      expect(result.current.appliedResetMode).toBe('full-erase')
+      expect(result.current.resetMode).toBe('app-only')
+    })
+
+    it('does not re-arm on the next pick', () => {
+      const { result } = renderHook(() => useDeviceSelector(session, 'android'))
+
+      act(() => result.current.setResetMode('full-erase'))
+      act(() => result.current.consumeResetMode())
+      act(() => result.current.consumeResetMode())
+
+      expect(result.current.appliedResetMode).toBe('app-only')
+      expect(result.current.resetMode).toBe('app-only')
+    })
+
+    it('starts disarmed', () => {
+      const { result } = renderHook(() => useDeviceSelector(session, 'android'))
+
+      act(() => result.current.consumeResetMode())
+
+      expect(result.current.appliedResetMode).toBe('app-only')
+    })
+  })
 })

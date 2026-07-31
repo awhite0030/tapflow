@@ -61,7 +61,7 @@ export function QASession() {
   const {
     osVersions, osVersion, setOsVersion,
     deviceSearch, setDeviceSearch, versionedDevices,
-    resetMode, setResetMode,
+    resetMode, setResetMode, appliedResetMode, consumeResetMode,
   } = useDeviceSelector(selectedSession, os);
 
   const allDevices = sessions.flatMap((s) => s.devices);
@@ -71,6 +71,18 @@ export function QASession() {
     : '';
 
   const handleRecordingUploaded = useCallback(() => setRecordingsKey((k) => k + 1), []);
+
+  // Full reset is a one-shot instruction, not a setting. Snapshot it for this launch and turn the
+  // toggle off in the same click: the value has to survive because `device:boot` is only sent later,
+  // after `session:joined` arrives, and clearing the toggle alone would leave `app-only` in its place.
+  // Turning it off here is also what stops the next device from being erased too (#439).
+  //
+  // Consumed on click, not on success — a failed boot does not re-arm it. Asking again means
+  // turning it on again, which keeps an irreversible action tied to an explicit act.
+  const handleStartDevice = useCallback((d: AgentDevice) => {
+    consumeResetMode();
+    startDevice(d);
+  }, [consumeResetMode, startDevice]);
 
   // The relay dropped the session because its agent went away. Say so and go back to the Mac list —
   // before #426 the tab just sat on "Waiting for first frame..." with no way to know a refresh was
@@ -150,7 +162,7 @@ export function QASession() {
                 sessionId={activeSessionId}
                 deviceId={deviceId}
                 buildId={build?.id}
-                resetMode={resetMode}
+                resetMode={appliedResetMode}
                 onRecordingUploaded={handleRecordingUploaded}
                 onSessionEnded={onSessionEnded}
               />
@@ -208,7 +220,7 @@ export function QASession() {
                       />
                     </div>
                     <TooltipContent>
-                      {resetMode === 'full-erase' ? 'Erase all data before booting' : 'Keep existing data'}
+                      {resetMode === 'full-erase' ? 'Erase all data on the next device you pick' : 'Keep existing data'}
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
@@ -233,7 +245,7 @@ export function QASession() {
                       <button
                         key={d.id}
                         disabled={isBusy || booting || !connected}
-                        onClick={() => startDevice(d)}
+                        onClick={() => handleStartDevice(d)}
                         className={cn(
                           'flex flex-col gap-3 rounded-lg border p-3 text-left transition-colors min-h-[100px]',
                           'hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50',
