@@ -771,8 +771,24 @@ export class RelayServer {
         pending.reject(new Error('Agent disconnected'))
       }
     }
+    // Tell whoever is attached before the session stops existing — after `remove()` the socket
+    // reference is gone. Without this the browser keeps a live socket addressed to a sessionId the
+    // relay no longer knows, so everything it sends is dropped as unknown and nothing streams back:
+    // the tab sits on "Waiting for first frame..." with no explanation (#426).
+    //
+    // `sendTo` skips a socket that is not OPEN, and a session nobody has joined has no
+    // `browserSocket` at all. An attached MCP client does have one and will receive this; its
+    // dispatcher drops messages no waiter matches, so that is harmless.
+    for (const s of agentSessions) {
+      if (s.browserSocket) {
+        this.sendTo(s.browserSocket, {
+          type: 'session:terminated', sessionId: s.id, reason: 'agent-disconnected',
+        })
+      }
+    }
     for (const s of agentSessions) this.sessions.remove(s.id)
     this.sessions.removeResources(ws)
+    logger.info(`agent disconnected — ${agentSessions.length} session(s) ended`)
     return true
   }
 
@@ -798,6 +814,10 @@ export class RelayServer {
       sessionId: sessionIds[i],
     }))
     this.sendTo(ws, { type: 'agent:registered', registeredSessions })
+    // The startup banner prints "Waiting for agents..." once and then the relay says nothing either
+    // way, so a terminal gives no signal about whether an agent is attached. One line per
+    // transition, matching the disconnect line in evictAgentSocket.
+    logger.info(`agent connected: ${msg.agentName ?? msg.agentId ?? 'unknown'} (${msg.platform ?? 'unknown'}) — ${registeredSessions.length} device(s)`)
   }
 
   private handleSessionStart(ws: WebSocket, msg: RelayMessage): void {

@@ -132,6 +132,16 @@ export type RelayToAgent =
   | { type: 'screenshot:request'; sessionId: string; requestId: string; format: 'png' | 'jpeg' }
   | { type: 'ui:tree:request'; sessionId: string; requestId: string }
 
+/**
+ * Why a session stopped existing, server-side. A literal union rather than a string so that adding
+ * a case is a compile-time event for every consumer that switches on it.
+ *
+ * Named `session:terminated`, not `session:ended`: `session:end` is already a message the *browser*
+ * sends to ask for shutdown, and the two would sit one letter apart in the same switch. This one
+ * travels the other way and is not an acknowledgement of that request.
+ */
+export type SessionTerminatedReason = 'agent-disconnected'
+
 // ── relay → browser ──────────────────────────────────────────────────────────
 //
 // `stream:registered` goes to a stream socket rather than a viewer. It is grouped here because the
@@ -143,6 +153,7 @@ export type RelayToBrowser =
   | { type: 'agents:listed'; sessions: SessionInfo[] }
   | { type: 'stream:registered' }
   | { type: 'session:joined'; sessionId: string; capabilities: string[] }
+  | { type: 'session:terminated'; sessionId: string; reason: SessionTerminatedReason }
   | { type: 'session:chrome'; payload: ChromePayload }
   | { type: 'session:deviceInfo'; payload: DeviceDetails }
   | { type: 'device:ready'; payload: { deviceId: string } }

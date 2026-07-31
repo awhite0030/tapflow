@@ -1,6 +1,6 @@
 'use client';
 
-import type { BrowserToRelay } from '@tapflowio/protocol'
+import type { BrowserToRelay, SessionTerminatedReason } from '@tapflowio/protocol'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useRelay } from '@/hooks/useRelay';
 import { usePerfMode } from '@/hooks/usePerfMode';
@@ -23,11 +23,15 @@ interface Props {
   buildId?: number;
   resetMode?: 'app-only' | 'full-erase';
   onRecordingUploaded?: () => void;
+  /** The relay dropped this session (the agent went away). The viewer cannot recover on its own —
+   *  it holds a socket addressed to a sessionId that no longer exists — so it reports upward and
+   *  the parent decides where to go. */
+  onSessionEnded?: (reason: SessionTerminatedReason) => void;
 }
 
 type AndroidChrome = { buttons: AndroidButton[]; streamType: 'h264'; screenWidth?: number; screenHeight?: number; cornerRadius?: number };
 
-export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecordingUploaded }: Props) {
+export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecordingUploaded, onSessionEnded }: Props) {
   const sendRef = useRef<(msg: BrowserToRelay) => void>(() => {});
   const { perfMode, visible: perfVisible } = usePerfMode();
 
@@ -86,6 +90,10 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // non-secure (LAN-HTTP) → it downscales for the WASM decoder. The relay adds `external`.
       sendRef.current({ type: 'device:boot', sessionId, payload: { deviceId, resetMode, acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
     }
+    if (msg.type === 'session:terminated') {
+      onSessionEnded?.(msg.reason);
+      return;
+    }
     if (msg.type === 'device:boot-error') {
       setBootError((msg as unknown as { message: string }).message);
     }
@@ -125,7 +133,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     // sends, which is a behaviour fix (a stale mode can be sent after a reconnect) tracked in #439 —
     // not part of widening the lint scope. Remove this suppression when #439 lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, deviceId, buildId]);
+  }, [sessionId, deviceId, buildId, onSessionEnded]);
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {
     const envelope = parseEnvelopeHeader(data);

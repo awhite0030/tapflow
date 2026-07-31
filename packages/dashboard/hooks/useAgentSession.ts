@@ -71,6 +71,24 @@ export function useAgentSession(os: string) {
     setSelectedAgent(null)
     setBooting(false)
     setStatus('')
+    send({ type: 'agents:list' })
+  }, [send])
+
+  /**
+   * The relay told us the session is gone (the agent went away). Same destination as
+   * `handleBackToMacs` but deliberately **not** the same function: there is no session left to shut
+   * down, so sending `device:shutdown` would only earn a `Session not found`.
+   *
+   * The immediate `agents:list` matters here. The list otherwise refreshes on a 5s interval, and
+   * this flow puts the user back on it and invites them to pick again straight away — with a stale
+   * list that would mean joining a sessionId the relay has already dropped.
+   */
+  const handleSessionEnded = useCallback(() => {
+    setActiveSessionId(null)
+    setSelectedAgent(null)
+    setBooting(false)
+    setStatus('')
+    send({ type: 'agents:list' })
   }, [send])
 
   return {
@@ -88,5 +106,6 @@ export function useAgentSession(os: string) {
     resetDevice,
     handleBack,
     handleBackToMacs,
+    handleSessionEnded,
   }
 }

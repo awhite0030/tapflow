@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { toast } from 'sonner';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useBreadcrumb } from '@/hooks/useBreadcrumb';
 import { useBuildLoader } from '@/hooks/useBuildLoader';
@@ -42,7 +43,7 @@ export function QASession() {
     sessions, selectedAgent, setSelectedAgent,
     activeSessionId, deviceId, booting, status,
     connected, agentGroups,
-    startDevice, resetDevice, handleBack, handleBackToMacs,
+    startDevice, resetDevice, handleBack, handleBackToMacs, handleSessionEnded,
   } = useAgentSession(os);
 
   const selectedSession = agentGroups.find((s) => s.agentName === selectedAgent);
@@ -59,6 +60,16 @@ export function QASession() {
     : '';
 
   const handleRecordingUploaded = useCallback(() => setRecordingsKey((k) => k + 1), []);
+
+  // The relay dropped the session because its agent went away. Say so and go back to the Mac list —
+  // before #426 the tab just sat on "Waiting for first frame..." with no way to know a refresh was
+  // needed.
+  const onSessionEnded = useCallback(() => {
+    toast.error('The agent disconnected — this session ended.', {
+      description: 'Pick the Mac again to start a new session.',
+    });
+    handleSessionEnded();
+  }, [handleSessionEnded]);
 
   const { setNode: setBreadcrumb } = useBreadcrumb();
   useEffect(() => {
@@ -131,6 +142,7 @@ export function QASession() {
                 buildId={build?.id}
                 resetMode={resetMode}
                 onRecordingUploaded={handleRecordingUploaded}
+                onSessionEnded={onSessionEnded}
               />
             </div>
           ) : selectedAgent ? (
