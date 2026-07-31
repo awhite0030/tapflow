@@ -294,15 +294,21 @@ describe('RelayServer', () => {
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
     await waitForMessage(agent)
 
+    // Arm the close listener before closing: `agent.close()` returns immediately and the relay's
+    // eviction runs on its own close handler, so querying straight away can observe the session
+    // still present and prove nothing.
+    const agentClosed = new Promise<void>((resolve) => agent.on('close', () => resolve()))
     agent.close()
+    await agentClosed
 
     // The session had no browserSocket, so there is nobody to notify. The relay must skip it
-    // rather than throw — proven by it still answering the next client.
+    // rather than throw — proven by it still answering, and by the session actually being gone.
     const probe = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(probe)
     probe.send(JSON.stringify({ type: 'agents:list' }))
     const listed = await waitForType(probe, 'agents:listed')
-    expect(listed.type).toBe('agents:listed')
+    const solo = (listed.sessions ?? []).filter((s) => s.devices.some((d) => d.id === 'devSolo'))
+    expect(solo).toHaveLength(0)
     probe.close()
   })
 
