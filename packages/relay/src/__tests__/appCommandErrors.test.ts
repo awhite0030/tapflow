@@ -196,6 +196,25 @@ describe('app command failures reach the caller (#445)', () => {
     browser.close()
   })
 
+  // A missing or non-numeric buildId reaches the DB query unvalidated (#444 is open on inbound
+  // validation generally). better-sqlite3 treats both as "no row" rather than throwing, so the
+  // caller still gets a correlated answer instead of an exception killing the handler — which is
+  // the property this PR is about. The message is imprecise, not absent.
+  it.each([
+    ['no buildId', undefined],
+    ['a non-numeric buildId', 'abc'],
+  ])('answers %s without going silent', async (_label, buildId) => {
+    const { agent, browser, sessionId } = await connectAgentAndBrowser()
+
+    browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId }))
+    const msg = await firstOfOrTimeout(browser, ['app:install-error', 'error'])
+
+    expect(msg?.type).toBe('app:install-error')
+    expect(msg?.sessionId).toBe(sessionId)
+
+    agent.close(); browser.close()
+  })
+
   it('still forwards a valid install to the agent', async () => {
     const { agent, browser, sessionId } = await connectAgentAndBrowser()
     const buildId = insertBuild('com.example.demo')
