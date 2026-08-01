@@ -63,9 +63,12 @@ export function parseStreamFrames(
 export class ScreenCaptureStreamer {
   private proc: ChildProcessWithoutNullStreams | null = null
 
+  // udid first, and the defaulted parameters after it. It used to carry `= 'booted'` and sit second;
+  // dropping that default left `fps = 30` unreachable, since every caller has to pass fps to get to
+  // a required udid. Device-first also matches SimctlWrapper.
   constructor(
-    private readonly fps: number = 30,
     private readonly udid: string,
+    private readonly fps: number = 30,
     private readonly codec: 'jpeg' | 'h264' = 'jpeg',
     // Downscale cap (longest side, px) the helper encodes at; 0 = native. Passed to the Swift helper
     // as TAPFLOW_IOS_MAX_SIZE so the per-session tier wins over any inherited env value.

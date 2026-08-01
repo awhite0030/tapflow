@@ -406,7 +406,7 @@ export class IOSAgent implements DeviceAgent {
         external: state.external,
         override: process.env.TAPFLOW_IOS_MAX_SIZE ?? process.env.TAPFLOW_MAX_SIZE,
       })
-      const capture = new ScreenCaptureStreamer(this.fps, state.deviceId, useH264 ? 'h264' : 'jpeg', maxSize)
+      const capture = new ScreenCaptureStreamer(state.deviceId, this.fps, useH264 ? 'h264' : 'jpeg', maxSize)
       state.captureStreamer = capture
       stream = capture.start()
     }
@@ -1234,7 +1234,15 @@ export class IOSAgent implements DeviceAgent {
     await this.simctl.launchApp(this.soleDeviceId(), bundleId)
   }
 
-  private soleDeviceId(): string {
+  /** The one booted session, or undefined when there is no unambiguous answer. Callers that can
+   *  reasonably do nothing (input) use this; callers that owe the user a result use
+   *  `soleDeviceState`, which throws instead. */
+  private liveDeviceState(): DeviceState | undefined {
+    const live = [...this.deviceStates.values()].filter((s) => s.booted)
+    return live.length === 1 ? live[0] : undefined
+  }
+
+  private soleDeviceState(): DeviceState {
     // `deviceStates` holds one entry per *registered* simulator, not per running one — the relay
     // opens a session for every device in `agent:register` and this Mac reports dozens. Taking the
     // first entry would pick whichever simulator simctl listed first, almost always a shut-down
@@ -1249,12 +1257,13 @@ export class IOSAgent implements DeviceAgent {
     if (live.length > 1) {
       throw new ValidationError(`${live.length} booted devices — this entry point cannot choose between them`)
     }
-    return live[0]!.deviceId
+    return live[0]!
   }
 
+  private soleDeviceId(): string { return this.soleDeviceState().deviceId }
+
   async queryUITree(): Promise<UIElement[]> {
-    const state = this.deviceStates.values().next().value
-    if (!state) throw new ValidationError('no booted device — call connect() first')
+    const state = this.soleDeviceState()
     return this.readUITree(state)
   }
 
@@ -1345,33 +1354,31 @@ export class IOSAgent implements DeviceAgent {
   // typed `Promise<T>` skips every caller's `.catch`.
   async screenshot(): Promise<Buffer> { return this.simctl.screenshot(this.soleDeviceId()) }
   stream(): ReadableStream<Buffer> {
-    const first = this.deviceStates.values().next().value
-    if (!first) throw new ValidationError('no booted device — call connect() first')
+    const first = this.soleDeviceState()
     // DeviceAgent.stream() is the platform-neutral Buffer contract; unwrap StreamFrame payloads.
-    return new ScreenCaptureStreamer(this.fps, first.deviceId).start()
+    return new ScreenCaptureStreamer(first.deviceId, this.fps).start()
       .pipeThrough(new TransformStream<StreamFrame, Buffer>({
         transform(frame, controller) { controller.enqueue(frame.payload) },
       }))
   }
 
   touchStart(x: number, y: number): void {
-    const first = this.deviceStates.values().next().value
+    const first = this.liveDeviceState()
     first?.touchHelper?.touchStart(x, y)
   }
   touchMove(x: number, y: number): Promise<void> {
-    const first = this.deviceStates.values().next().value
+    const first = this.liveDeviceState()
     first?.touchHelper?.touchMove(x, y)
     return Promise.resolve()
   }
   touchEnd(): Promise<void> {
-    const first = this.deviceStates.values().next().value
+    const first = this.liveDeviceState()
     first?.touchHelper?.touchEnd()
     return Promise.resolve()
   }
 
   openUrl(url: string): Promise<void> {
-    const first = this.deviceStates.values().next().value
-    if (!first) throw new ValidationError('no booted device — call connect() first')
+    const first = this.soleDeviceState()
     return this.simctl.openUrl(first.deviceId, url)
   }
 }

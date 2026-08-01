@@ -12,4 +12,6 @@ Every app command in `SimctlWrapper` passed `booted` — simctl's alias for the 
 - Session call sites pass `DeviceState.deviceId`. `MjpegStreamer` takes the device through its constructor rather than reaching for the alias mid-stream.
 - The three `DeviceAgent` entry points (`installApp`, `launchApp`, `screenshot`) have no device parameter — the interface is shared with Android and predates multi-session agents. They resolve the one **booted** session and throw when there is none, or when there is more than one. Filtering on booted matters: the relay opens a session per registered simulator, so "the first entry" is whichever simctl listed first, usually shut down — worse than the alias, which at least found the device that was running.
 
+The same lookup backed `queryUITree`, `stream`, `openUrl` and the input methods, so they went through it too. Input does nothing rather than throwing when the answer is ambiguous — refusing a tap is worse than dropping one.
+
 One call the compiler could not catch: `screenshot(format)` stayed type-correct when a leading `udid: string` was added — the format string simply became the device id. Tests assert the arguments rather than trusting the signature.
