@@ -150,13 +150,13 @@ export type RelayMessage =
   | { type: 'session:deviceInfo'; payload: DeviceInfo }
   | { type: 'device:booting' }
   | { type: 'device:ready'; payload: { deviceId: string } }
-  | { type: 'device:boot-error'; message: string }
+  | { type: 'device:boot-error'; sessionId?: string; message: string }
   | { type: 'device:shutdown-done'; payload: { deviceId: string } }
   | { type: 'keyboard:toggled'; sessionId: string; payload: { visible: boolean } }
   | { type: 'app:install-done' }
-  | { type: 'app:install-error'; message: string }
+  | { type: 'app:install-error'; sessionId?: string; message: string }
   | { type: 'app:launch-done' }
-  | { type: 'app:launch-error'; message: string }
+  | { type: 'app:launch-error'; sessionId?: string; message: string }
   | { type: 'open-url:done'; sessionId: string }
   | { type: 'open-url:error'; sessionId: string; message: string }
   | { type: 'input:done'; sessionId: string }

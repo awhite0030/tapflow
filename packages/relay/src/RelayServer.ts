@@ -654,6 +654,13 @@ export class RelayServer {
       case 'device:boot':
       case 'device:shutdown': {
         const session = this.sessions.get(msg.sessionId!)
+        if (session?.agentSocket.readyState !== WebSocket.OPEN && msg.type === 'device:boot') {
+          // A boot the agent never receives leaves the viewer on "Waiting for first frame…" with
+          // nothing said. `device:shutdown` gets no such reply: nothing waits on it, and inventing
+          // a `device:shutdown-error` would grow the contract for a message no one reads.
+          this.sendTo(ws, { type: 'device:boot-error', sessionId: msg.sessionId!, message: 'agent offline' })
+          break
+        }
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           // Tag the boot with whether the viewer is external (public IP) so the agent can pick the
           // downscale tier. The browser already reports secureContext in the payload.
@@ -872,50 +879,55 @@ export class RelayServer {
     }
   }
 
+  /** Relay looks up file_path from DB and enriches it for the agent.
+   *
+   *  Every exit carries the request's `sessionId`, including the failures. A dashboard viewer holds
+   *  one session per socket, so an uncorrelated error still lands somewhere sensible — but an MCP
+   *  caller waits for the reply matching its own sessionId, so anything else is indistinguishable
+   *  from silence and it waits out the deadline (#445). `Session not found` is app-specific for the
+   *  same reason: a generic `error` cannot be correlated by construction. */
   private handleBrowserAppInstall(ws: WebSocket, msg: RelayMessage): void {
-    // Relay looks up file_path from DB and enriches; includes sessionId for response routing
-    const session = this.sessions.get(msg.sessionId!)
-    if (!session) {
-      this.sendTo(ws, { type: 'error', message: 'Session not found' })
-      return
-    }
+    const sessionId = msg.sessionId!
+    const fail = (message: string) => this.sendTo(ws, { type: 'app:install-error', sessionId, message })
+
+    const session = this.sessions.get(sessionId)
+    if (!session) return fail('Session not found')
+
     const build = getDb()
       .prepare('SELECT file_path, bundle_id FROM builds WHERE id = ?')
       .get(msg.buildId!) as { file_path: string; bundle_id: string | null } | undefined
-    if (!build) {
-      this.sendTo(ws, { type: 'app:install-error', message: 'Build not found' })
-      return
-    }
-    if (session.agentSocket.readyState === WebSocket.OPEN) {
-      this.sendTo(session.agentSocket, {
-        type: 'app:install',
-        sessionId: msg.sessionId!,
-        payload: { filePath: build.file_path, bundleId: build.bundle_id },
-      })
-    }
+    if (!build) return fail('Build not found')
+
+    // Answer now rather than letting the caller time out — the same shape as `open-url` above.
+    if (session.agentSocket.readyState !== WebSocket.OPEN) return fail('agent offline')
+
+    this.sendTo(session.agentSocket, {
+      type: 'app:install',
+      sessionId,
+      payload: { filePath: build.file_path, bundleId: build.bundle_id },
+    })
   }
 
+  /** Relay looks up bundle_id from DB. Same correlation rules as `handleBrowserAppInstall`. */
   private handleBrowserAppLaunch(ws: WebSocket, msg: RelayMessage): void {
-    // Relay looks up bundle_id from DB; includes sessionId for response routing
-    const session = this.sessions.get(msg.sessionId!)
-    if (!session) {
-      this.sendTo(ws, { type: 'error', message: 'Session not found' })
-      return
-    }
+    const sessionId = msg.sessionId!
+    const fail = (message: string) => this.sendTo(ws, { type: 'app:launch-error', sessionId, message })
+
+    const session = this.sessions.get(sessionId)
+    if (!session) return fail('Session not found')
+
     const build = getDb()
       .prepare('SELECT bundle_id FROM builds WHERE id = ?')
       .get(msg.buildId!) as { bundle_id: string | null } | undefined
-    if (!build?.bundle_id) {
-      this.sendTo(ws, { type: 'app:launch-error', message: 'Bundle ID not available for this build' })
-      return
-    }
-    if (session.agentSocket.readyState === WebSocket.OPEN) {
-      this.sendTo(session.agentSocket, {
-        type: 'app:launch',
-        sessionId: msg.sessionId!,
-        payload: { bundleId: build.bundle_id },
-      })
-    }
+    if (!build?.bundle_id) return fail('Bundle ID not available for this build')
+
+    if (session.agentSocket.readyState !== WebSocket.OPEN) return fail('agent offline')
+
+    this.sendTo(session.agentSocket, {
+      type: 'app:launch',
+      sessionId,
+      payload: { bundleId: build.bundle_id },
+    })
   }
 
   private async handleGetScreenshot(

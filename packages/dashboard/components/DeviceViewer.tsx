@@ -83,6 +83,12 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const { pushFrame: pushAudioFrame } = useAudioPlayback();
 
   const handleMessage = useCallback((msg: RelayMessage) => {
+    // Anything addressed to another session is not ours to act on. This only became possible once
+    // the relay started carrying `sessionId` on failures (#445) — before that an `app:install-error`
+    // arrived unattributed and was applied to whichever viewer happened to be mounted. Messages
+    // with no sessionId (`agents:listed`, broadcast state) are not session-scoped and pass through.
+    if ('sessionId' in msg && msg.sessionId && msg.sessionId !== sessionId) return;
+
     if (msg.type === 'session:joined') {
       setJoined(true);
       setAgentCapabilities(msg.capabilities ?? []);
@@ -103,7 +109,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       return;
     }
     if (msg.type === 'device:boot-error') {
-      setBootError((msg as unknown as { message: string }).message);
+      setBootError(msg.message);
     }
     if (msg.type === 'device:booting') {
       setDeviceReady(false);

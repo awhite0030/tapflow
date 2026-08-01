@@ -158,8 +158,14 @@ export type RelayToBrowser =
   | { type: 'session:deviceInfo'; payload: DeviceDetails }
   | { type: 'device:ready'; payload: { deviceId: string } }
   | { type: 'error'; message: string }
-  | { type: 'app:install-error'; message: string }
-  | { type: 'app:launch-error'; message: string }
+  // `sessionId` is what makes a failure findable. A dashboard viewer holds one session per socket,
+  // so an uncorrelated error still lands somewhere sensible — but an MCP caller waits for the reply
+  // that carries its own sessionId, and without one it waits out the deadline instead (#445).
+  | { type: 'app:install-error'; sessionId: string; message: string }
+  | { type: 'app:launch-error'; sessionId: string; message: string }
+  // Originated by the relay when it cannot reach the agent. The agent also sends this one, and that
+  // copy is forwarded rather than re-created — only the relay's own is checked against this union.
+  | { type: 'device:boot-error'; sessionId: string; message: string }
   | { type: 'open-url:error'; sessionId: string; message: string }
   | { type: 'app:clear-state-error'; sessionId: string; message: string }
   | { type: 'input:error'; sessionId: string; message: string }
