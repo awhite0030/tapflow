@@ -658,7 +658,14 @@ export class RelayServer {
           // A boot the agent never receives leaves the viewer on "Waiting for first frame…" with
           // nothing said. `device:shutdown` gets no such reply: nothing waits on it, and inventing
           // a `device:shutdown-error` would grow the contract for a message no one reads.
-          this.sendTo(ws, { type: 'device:boot-error', sessionId: msg.sessionId!, message: 'agent offline' })
+          //
+          // The two are worth telling apart: `bootDevice` is the first call an MCP caller makes, so
+          // reporting a stale session id as a dead Mac sends the reader after the wrong problem.
+          this.sendTo(ws, {
+            type: 'device:boot-error',
+            sessionId: msg.sessionId!,
+            message: session ? 'agent offline' : 'Session not found',
+          })
           break
         }
         if (session?.agentSocket.readyState === WebSocket.OPEN) {

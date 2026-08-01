@@ -58,11 +58,45 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
 
   it('still accepts messages that carry no session at all', () => {
     // `agents:listed` and friends are not session-scoped; filtering on a missing field would
-    // silence them. `session:joined` reaching the boot handler is the observable proof.
+    // silence them.
     render(<DeviceViewer sessionId="mine" deviceId="dev-1" />)
 
     act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
 
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'device:boot' }))
+  })
+
+  it('accepts a matching session id — the shape the relay actually sends', () => {
+    // The relay echoes the id the browser sent (`sessionId: msg.sessionId!`), so the no-field case
+    // above is not what arrives in production. This is.
+    render(<DeviceViewer sessionId="mine" deviceId="dev-1" />)
+
+    act(() => { deliver!({ type: 'session:joined', sessionId: 'mine' } as RelayMessage) })
+
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'device:boot' }))
+  })
+
+  // A dropped session:terminated is the one loss this filter could cause that nobody would see:
+  // the tab sits on "Waiting for first frame…" forever, which is #426 all over again.
+  it('still reports a termination for its own session', () => {
+    const onSessionEnded = vi.fn()
+    render(<DeviceViewer sessionId="mine" deviceId="dev-1" onSessionEnded={onSessionEnded} />)
+
+    act(() => {
+      deliver!({ type: 'session:terminated', sessionId: 'mine', reason: 'agent-disconnected' } as RelayMessage)
+    })
+
+    expect(onSessionEnded).toHaveBeenCalledWith('agent-disconnected')
+  })
+
+  it('does not report a termination belonging to someone else', () => {
+    const onSessionEnded = vi.fn()
+    render(<DeviceViewer sessionId="mine" deviceId="dev-1" onSessionEnded={onSessionEnded} />)
+
+    act(() => {
+      deliver!({ type: 'session:terminated', sessionId: 'other', reason: 'agent-disconnected' } as RelayMessage)
+    })
+
+    expect(onSessionEnded).not.toHaveBeenCalled()
   })
 })

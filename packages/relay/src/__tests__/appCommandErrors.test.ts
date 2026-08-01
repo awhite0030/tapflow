@@ -188,6 +188,10 @@ describe('app command failures reach the caller (#445)', () => {
 
     expect(msg).not.toBeNull()
     expect(msg!.sessionId).toBe(sessionId)
+    // Losing the agent takes its sessions with it, so this is a missing session — not a live
+    // session with a dead socket. Saying "agent offline" here would point an MCP caller at the
+    // wrong problem on the very first call it makes.
+    expect(msg!.message).toBe('Session not found')
 
     browser.close()
   })

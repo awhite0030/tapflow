@@ -83,10 +83,17 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const { pushFrame: pushAudioFrame } = useAudioPlayback();
 
   const handleMessage = useCallback((msg: RelayMessage) => {
-    // Anything addressed to another session is not ours to act on. This only became possible once
-    // the relay started carrying `sessionId` on failures (#445) — before that an `app:install-error`
-    // arrived unattributed and was applied to whichever viewer happened to be mounted. Messages
-    // with no sessionId (`agents:listed`, broadcast state) are not session-scoped and pass through.
+    // Anything addressed to another session is not ours to act on. Before #445 an
+    // `app:install-error` arrived unattributed and was applied to whichever viewer was mounted.
+    //
+    // This gate is wider than the union suggests: the relay forwards agent messages verbatim and
+    // both agents stamp `sessionId` on nearly all of them — `device:ready`, `device:booting`,
+    // `session:chrome` and others carry one on the wire while the local type says they do not.
+    // The check is `in msg`, so it is live on all of those. That is safe because of an invariant
+    // the types do not express: the relay only ever forwards a session-scoped message to that
+    // session's own `browserSocket`, so a mismatch means a stale socket, not normal traffic.
+    // If that ever stops holding, a dropped `session:terminated` strands the tab — which is the
+    // defect #426 existed to fix, so there is a test for exactly that below.
     if ('sessionId' in msg && msg.sessionId && msg.sessionId !== sessionId) return;
 
     if (msg.type === 'session:joined') {
