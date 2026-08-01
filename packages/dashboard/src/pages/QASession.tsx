@@ -23,7 +23,6 @@ import {
 } from '@/components/ui/breadcrumb';
 import { cn } from '@/lib/utils';
 import { STATUS_TONE, buildLabel } from '@/lib/build-format';
-import { Info } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -61,7 +60,7 @@ export function QASession() {
   const {
     osVersions, osVersion, setOsVersion,
     deviceSearch, setDeviceSearch, versionedDevices,
-    resetMode, setResetMode,
+    resetMode, setResetMode, appliedResetMode, consumeResetMode, fullResetSupported,
   } = useDeviceSelector(selectedSession, os);
 
   const allDevices = sessions.flatMap((s) => s.devices);
@@ -71,6 +70,18 @@ export function QASession() {
     : '';
 
   const handleRecordingUploaded = useCallback(() => setRecordingsKey((k) => k + 1), []);
+
+  // Full reset is a one-shot instruction, not a setting. Snapshot it for this launch and turn the
+  // toggle off in the same click: the value has to survive because `device:boot` is only sent later,
+  // after `session:joined` arrives, and clearing the toggle alone would leave `app-only` in its place.
+  // Turning it off here is also what stops the next device from being erased too (#439).
+  //
+  // Consumed on click, not on success — a failed boot does not re-arm it. Asking again means
+  // turning it on again, which keeps an irreversible action tied to an explicit act.
+  const handleStartDevice = useCallback((d: AgentDevice) => {
+    consumeResetMode();
+    startDevice(d);
+  }, [consumeResetMode, startDevice]);
 
   // The relay dropped the session because its agent went away. Say so and go back to the Mac list —
   // before #426 the tab just sat on "Waiting for first frame..." with no way to know a refresh was
@@ -150,7 +161,7 @@ export function QASession() {
                 sessionId={activeSessionId}
                 deviceId={deviceId}
                 buildId={build?.id}
-                resetMode={resetMode}
+                resetMode={appliedResetMode}
                 onRecordingUploaded={handleRecordingUploaded}
                 onSessionEnded={onSessionEnded}
               />
@@ -192,26 +203,43 @@ export function QASession() {
                     </SelectContent>
                   </Select>
                 )}
-                <TooltipProvider>
-                  <Tooltip>
-                    <div className="ml-auto flex items-center gap-2 shrink-0">
+                {/* Absent rather than disabled where nothing acts on it (#447). A disabled control
+                    owes the user a reason, and the only channel here is the tooltip — which does
+                    not reach touch at all. Showing nothing beats showing a switch that erases
+                    nothing and cannot say why. */}
+                {fullResetSupported && (
+                  <TooltipProvider>
+                    <Tooltip>
+                      {/* The whole control is the trigger, not the label alone: a label cannot take
+                          focus, so a tooltip hung on it is hover-only and the keyboard never sees
+                          what this switch destroys. Focus bubbles, so tabbing to the Switch opens
+                          it — and the Switch keeps its own `data-state`, which is the only thing
+                          colouring its track. */}
                       <TooltipTrigger asChild>
-                        <Label htmlFor="reset-mode" className="flex items-center gap-1 text-sm cursor-pointer whitespace-nowrap">
-                          <Info className="h-3.5 w-3.5 text-muted-foreground" />
-                          Full reset
-                        </Label>
+                        <div className="ml-auto flex items-center gap-2 shrink-0">
+                          <Label htmlFor="reset-mode" className="text-sm cursor-pointer whitespace-nowrap">
+                            Full reset
+                          </Label>
+                          {/* Said unconditionally for anyone reading the toolbar rather than
+                              hovering it — Radix attaches the tooltip's own aria-describedby only
+                              while it is open, and on touch it never opens at all. */}
+                          <span id="reset-mode-desc" className="sr-only">
+                            When on, erases all data on the next device you pick
+                          </span>
+                          <Switch
+                            id="reset-mode"
+                            aria-describedby="reset-mode-desc"
+                            checked={resetMode === 'full-erase'}
+                            onCheckedChange={(checked) => setResetMode(checked ? 'full-erase' : 'app-only')}
+                          />
+                        </div>
                       </TooltipTrigger>
-                      <Switch
-                        id="reset-mode"
-                        checked={resetMode === 'full-erase'}
-                        onCheckedChange={(checked) => setResetMode(checked ? 'full-erase' : 'app-only')}
-                      />
-                    </div>
-                    <TooltipContent>
-                      {resetMode === 'full-erase' ? 'Erase all data before booting' : 'Keep existing data'}
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
+                      <TooltipContent>
+                        {resetMode === 'full-erase' ? 'Erase all data on the next device you pick' : 'Keep existing data'}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                )}
               </div>
 
               {versionedDevices.length === 0 ? (
@@ -233,7 +261,7 @@ export function QASession() {
                       <button
                         key={d.id}
                         disabled={isBusy || booting || !connected}
-                        onClick={() => startDevice(d)}
+                        onClick={() => handleStartDevice(d)}
                         className={cn(
                           'flex flex-col gap-3 rounded-lg border p-3 text-left transition-colors min-h-[100px]',
                           'hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50',

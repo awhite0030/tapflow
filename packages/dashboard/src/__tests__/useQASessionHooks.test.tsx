@@ -231,4 +231,42 @@ describe('useDeviceSelector', () => {
 
     expect(result.current.osVersions).toEqual(['Android 15', 'Android 14', 'Android 13'])
   })
+
+  // #439: leaving a session is a conditional re-render, not an unmount, so an armed toggle used to
+  // survive back-to-the-list and erase the next device the tester picked.
+  describe('resetMode is a one-shot intent', () => {
+    it('hands the armed mode to the viewer and disarms the toggle when a device is picked', () => {
+      const { result } = renderHook(() => useDeviceSelector(session, 'ios'))
+
+      act(() => result.current.setResetMode('full-erase'))
+      act(() => result.current.consumeResetMode())
+
+      expect(result.current.appliedResetMode).toBe('full-erase')
+      expect(result.current.resetMode).toBe('app-only')
+    })
+
+    it('does not re-arm on the next pick', () => {
+      const { result } = renderHook(() => useDeviceSelector(session, 'ios'))
+
+      act(() => result.current.setResetMode('full-erase'))
+      act(() => result.current.consumeResetMode())
+      act(() => result.current.consumeResetMode())
+
+      expect(result.current.appliedResetMode).toBe('app-only')
+      expect(result.current.resetMode).toBe('app-only')
+    })
+
+    // #447: AndroidAgent never reads resetMode. Arming it there would disarm the toggle having
+    // erased nothing — a stronger promise than before, kept even less.
+    it('never applies full-erase on Android, where nothing acts on it', () => {
+      const { result } = renderHook(() => useDeviceSelector(session, 'android'))
+
+      expect(result.current.fullResetSupported).toBe(false)
+
+      act(() => result.current.setResetMode('full-erase'))
+      act(() => result.current.consumeResetMode())
+
+      expect(result.current.appliedResetMode).toBe('app-only')
+    })
+  })
 })

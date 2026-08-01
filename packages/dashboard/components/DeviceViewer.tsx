@@ -33,6 +33,8 @@ type AndroidChrome = { buttons: AndroidButton[]; streamType: 'h264'; screenWidth
 
 export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecordingUploaded, onSessionEnded }: Props) {
   const sendRef = useRef<(msg: BrowserToRelay) => void>(() => {});
+  // One reset per mount; see the boot handler below.
+  const resetSentRef = useRef(false);
   const { perfMode, visible: perfVisible } = usePerfMode();
 
   // statsRef is set by StatsOverlay; perfMetricsPushRef is set by MetricsPanel
@@ -88,7 +90,13 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // codec accordingly; false (old/unsupported browser) → agent streams JPEG.
       // secureContext (localhost/HTTPS) → the agent can stream full res (WebCodecs hw-decodes it);
       // non-secure (LAN-HTTP) → it downscales for the WASM decoder. The relay adds `external`.
-      sendRef.current({ type: 'device:boot', sessionId, payload: { deviceId, resetMode, acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
+      // Only the first boot of this mount carries the reset. `session:joined` arrives again whenever
+      // the socket reconnects (useRelay retries after 2s, and the effect below re-sends
+      // `session:start` on `connected`), so a Wi-Fi blip or a sleeping laptop would otherwise
+      // re-erase the device the user is currently looking at — with no click involved (#439).
+      const reset = resetSentRef.current ? 'app-only' : resetMode;
+      resetSentRef.current = true;
+      sendRef.current({ type: 'device:boot', sessionId, payload: { deviceId, resetMode: reset, acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
     }
     if (msg.type === 'session:terminated') {
       onSessionEnded?.(msg.reason);
@@ -129,11 +137,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
         description: 'Go back and select a different Mac.',
       })
     }
-    // `resetMode` is missing from the deps below on purpose. Adding it changes what `device:boot`
-    // sends, which is a behaviour fix (a stale mode can be sent after a reconnect) tracked in #439 —
-    // not part of widening the lint scope. Remove this suppression when #439 lands.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, deviceId, buildId, onSessionEnded]);
+  }, [sessionId, deviceId, buildId, onSessionEnded, resetMode]);
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {
     const envelope = parseEnvelopeHeader(data);

@@ -509,7 +509,45 @@ export class IOSAgent implements DeviceAgent {
       if (!target) throw new PlatformError(`Device not found: ${deviceId}`)
 
       if (fullErase) {
-        await this.simctl.erase(deviceId)
+        // `simctl erase` only accepts a shut-down device, and a device is often already running —
+        // it survives agent restarts and sessions that ended without a clean shutdown. Without this
+        // the boot fails outright (#439).
+        //
+        // Anything that is not `shutdown` gets the shutdown, not just `booted`: `toDeviceStatus`
+        // collapses `Booting` / `Shutting Down` / `Creating` into `unknown`, and `erase` refuses
+        // every one of them. Re-picking a device while its `device:shutdown` is still draining
+        // lands exactly there. `SimctlWrapper.shutdown` already tolerates an off device, so
+        // widening the condition costs nothing.
+        //
+        // This makes an unwanted reset *succeed* rather than fail, so it is only safe alongside the
+        // dashboard change that consumes the toggle after one use. The erase failing is what used
+        // to stand between a stale toggle and a wiped device.
+        if (target.status !== 'shutdown') await this.simctl.shutdown(deviceId)
+        // The shutdown is an await, so a newer boot for this device may have overtaken us while it
+        // ran. Without this check the superseded boot goes on to erase a device the tester has
+        // since re-picked with the toggle off — the exact wipe-with-no-click this issue is about.
+        if (seq !== state.bootSeq) return
+        try {
+          await this.simctl.erase(deviceId)
+        } catch (err) {
+          // We powered the device off to make the erase possible. If the erase then fails, leaving
+          // it off strands the tester with a dead device on top of the error message, so put it
+          // back the way we found it and report the original failure.
+          //
+          // `=== 'booted'`, deliberately narrower than the `!== 'shutdown'` above: that one asks
+          // "does this need shutting down", this one asks "did we take it down". `unknown` covers
+          // `Shutting Down` (someone else was already stopping it) and `Creating` (never ran) —
+          // booting either would not be putting it back.
+          //
+          // The seq check matters as much: erase takes seconds, and a shutdown arriving mid-flight
+          // bumps bootSeq. Recovering then would power a device back up right after the tester
+          // asked for it to stop — and the throw below is swallowed by the outer catch on the same
+          // seq mismatch, so nothing would say why.
+          if (seq === state.bootSeq && target.status === 'booted') {
+            await this.simctl.boot(deviceId).catch(() => { /* the original error is what matters */ })
+          }
+          throw err
+        }
         await this.simctl.boot(deviceId)
       } else if (target.status !== 'booted') {
         await this.bootWithZombieRecovery(deviceId)
