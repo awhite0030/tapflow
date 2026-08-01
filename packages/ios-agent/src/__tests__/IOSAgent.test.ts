@@ -135,6 +135,7 @@ function mockSimctl(booted: boolean | 'unknown' = false): SimctlWrapper {
     shutdown: vi.fn().mockResolvedValue(undefined),
     erase: vi.fn().mockResolvedValue(undefined),
     uninstallApp: vi.fn().mockResolvedValue(undefined),
+    clearAppData: vi.fn().mockResolvedValue(undefined),
     installApp: vi.fn().mockResolvedValue(undefined),
     launchApp: vi.fn().mockResolvedValue(undefined),
     screenshot: vi.fn().mockResolvedValue(Buffer.from('png')),
@@ -215,17 +216,34 @@ describe('IOSAgent', () => {
       expect(simctl.shutdown).toHaveBeenCalledWith('dev-1')
     })
 
-    it('installApp delegates to SimctlWrapper', async () => {
+    // The DeviceAgent interface carries no device (it is shared with Android and predates
+    // multi-session agents), so these resolve the one live session — or refuse. Refusing beats
+    // falling through to simctl's `booted` alias, which would act on whichever simulator is up.
+    it('installApp refuses when no session is open', async () => {
       const simctl = mockSimctl()
       const agent = new IOSAgent({}, simctl)
-      await agent.installApp('/path/MyApp.app')
-      expect(simctl.installApp).toHaveBeenCalledWith('/path/MyApp.app')
+      await expect(agent.installApp('/path/MyApp.app')).rejects.toThrow(/no booted device/)
+      expect(simctl.installApp).not.toHaveBeenCalled()
+    })
+
+    it('launchApp refuses when no session is open', async () => {
+      const simctl = mockSimctl()
+      const agent = new IOSAgent({}, simctl)
+      await expect(agent.launchApp('com.example.app')).rejects.toThrow(/no booted device/)
+      expect(simctl.launchApp).not.toHaveBeenCalled()
+    })
+
+    it('screenshot refuses when no session is open', async () => {
+      const simctl = mockSimctl()
+      const agent = new IOSAgent({}, simctl)
+      await expect(agent.screenshot()).rejects.toThrow(/no booted device/)
+      expect(simctl.screenshot).not.toHaveBeenCalled()
     })
 
     // installBuild: extract .app.zip / .tar.gz to a temp dir, then simctl install the .app.
     // The real simulator install+launch (fidelity/exec-bit) is manual QA; here we verify the
     // archive branch resolves the .app path via mocked simctl.
-    type WithInstallBuild = { installBuild(filePath: string, bundleId?: string): Promise<void> }
+    type WithInstallBuild = { installBuild(udid: string, filePath: string, bundleId?: string): Promise<void> }
     const makeSimAppArchive = (name: string, ext: string): string => {
       const src = fs.mkdtempSync(path.join(os.tmpdir(), 'tapflow-arch-src-'))
       const appDir = path.join(src, `${name}.app`)
@@ -245,25 +263,25 @@ describe('IOSAgent', () => {
       const simctl = mockSimctl()
       const agent = new IOSAgent({}, simctl) as unknown as WithInstallBuild
       const tarPath = makeSimAppArchive('TarApp', '.tar.gz')
-      await agent.installBuild(tarPath)
+      await agent.installBuild('dev-1', tarPath)
       expect(simctl.installApp).toHaveBeenCalledTimes(1)
-      expect((simctl.installApp as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/\/TarApp\.app$/)
+      expect((simctl.installApp as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatch(/\/TarApp\.app$/)
     })
 
     it('installBuild supports the .tgz extension', async () => {
       const simctl = mockSimctl()
       const agent = new IOSAgent({}, simctl) as unknown as WithInstallBuild
       const tarPath = makeSimAppArchive('TgzApp', '.tgz')
-      await agent.installBuild(tarPath)
-      expect((simctl.installApp as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/\/TgzApp\.app$/)
+      await agent.installBuild('dev-1', tarPath)
+      expect((simctl.installApp as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatch(/\/TgzApp\.app$/)
     })
 
     it('installBuild still handles legacy .app.zip (regression)', async () => {
       const simctl = mockSimctl()
       const agent = new IOSAgent({}, simctl) as unknown as WithInstallBuild
       const zipPath = makeSimAppArchive('ZipApp', '.app.zip')
-      await agent.installBuild(zipPath)
-      expect((simctl.installApp as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/\/ZipApp\.app$/)
+      await agent.installBuild('dev-1', zipPath)
+      expect((simctl.installApp as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatch(/\/ZipApp\.app$/)
     })
 
     it('installBuild rejects a tar.gz with no .app directory', async () => {
@@ -273,7 +291,7 @@ describe('IOSAgent', () => {
       fs.writeFileSync(path.join(src, 'readme.txt'), 'hi')
       const out = path.join(src, 'noapp.tar.gz')
       spawnSync('tar', ['-czf', out, '-C', src, 'readme.txt'])
-      await expect(agent.installBuild(out)).rejects.toThrow(/\.app/)
+      await expect(agent.installBuild('dev-1', out)).rejects.toThrow(/\.app/)
       expect(simctl.installApp).not.toHaveBeenCalled()
     })
 
@@ -283,15 +301,15 @@ describe('IOSAgent', () => {
       const src = fs.mkdtempSync(path.join(os.tmpdir(), 'tapflow-arch-bad-'))
       const out = path.join(src, 'corrupt.tar.gz')
       fs.writeFileSync(out, Buffer.from('not a real gzip stream'))
-      await expect(agent.installBuild(out)).rejects.toThrow(/압축 해제 실패/)
+      await expect(agent.installBuild('dev-1', out)).rejects.toThrow(/압축 해제 실패/)
       expect(simctl.installApp).not.toHaveBeenCalled()
     })
 
-    it('launchApp delegates to SimctlWrapper', async () => {
+    it('launchApp refuses when no session is open (interface path)', async () => {
       const simctl = mockSimctl()
       const agent = new IOSAgent({}, simctl)
-      await agent.launchApp('com.example.app')
-      expect(simctl.launchApp).toHaveBeenCalledWith('com.example.app')
+      await expect(agent.launchApp('com.example.app')).rejects.toThrow(/no booted device/)
+      expect(simctl.launchApp).not.toHaveBeenCalled()
     })
 
     it('stream throws ValidationError before any device session is available', () => {
@@ -599,6 +617,102 @@ describe('IOSAgent', () => {
 
       agent.disconnect()
       browser.close()
+    })
+
+    // #440: simctl's `booted` alias means "whichever device is up", so with two simulators running
+    // these commands could land on the wrong one — silently, since the wrong device accepts them
+    // just fine. The guard is that every app command carries the session's udid, and the place it
+    // can regress is the call site, not the wrapper: a default parameter on the wrapper would keep
+    // every one of these compiling while the alias came back.
+    //
+    // Driven through the agent's own message handler rather than a browser socket. Going through
+    // the relay would drag in its build lookup (`app:install` carries a buildId, not a filePath),
+    // which is a different contract from the one under test here.
+    describe('app commands target the session device (#440)', () => {
+      type WithHandler = { handleRelayMessage(msg: Record<string, unknown>): void }
+      const deliver = (agent: IOSAgent, msg: Record<string, unknown>) =>
+        (agent as unknown as WithHandler).handleRelayMessage(msg)
+
+      async function bootedAgent() {
+        const simctl = mockSimctl(false)
+        const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = new WebSocket(`ws://localhost:${port}`)
+        await waitForOpen(browser)
+        const ready = waitForType(browser, 'device:ready')
+        browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+        await waitForType(browser, 'session:joined')
+        browser.send(JSON.stringify({
+          type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' },
+        }))
+        await ready
+        return { simctl, agent, browser }
+      }
+
+      it('install carries the udid', async () => {
+        const { simctl, agent, browser } = await bootedAgent()
+
+        deliver(agent, {
+          type: 'app:install',
+          sessionId: agent.sessionId,
+          payload: { filePath: '/tmp/x.app', bundleId: 'com.example.app' },
+        })
+        await vi.waitFor(() => expect(simctl.installApp).toHaveBeenCalled())
+
+        expect(simctl.installApp).toHaveBeenCalledWith('dev-1', '/tmp/x.app')
+        expect(simctl.uninstallApp).toHaveBeenCalledWith('dev-1', 'com.example.app')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('launch carries the udid', async () => {
+        const { simctl, agent, browser } = await bootedAgent()
+
+        deliver(agent, {
+          type: 'app:launch',
+          sessionId: agent.sessionId,
+          payload: { bundleId: 'com.example.app' },
+        })
+        await vi.waitFor(() => expect(simctl.launchApp).toHaveBeenCalled())
+
+        expect(simctl.launchApp).toHaveBeenCalledWith('dev-1', 'com.example.app')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('clear-state carries the udid', async () => {
+        const { simctl, agent, browser } = await bootedAgent()
+
+        deliver(agent, {
+          type: 'app:clear-state',
+          sessionId: agent.sessionId,
+          payload: { bundleId: 'com.example.app' },
+        })
+        await vi.waitFor(() => expect(simctl.clearAppData).toHaveBeenCalled())
+
+        expect(simctl.clearAppData).toHaveBeenCalledWith('dev-1', 'com.example.app')
+
+        agent.disconnect(); browser.close()
+      })
+
+      // The compiler could not have caught this one: the old call was `screenshot(format)`, and
+      // adding a leading `udid: string` left it type-correct — the format string simply became the
+      // device id. Only an assertion on the arguments finds it.
+      it('screenshot carries the udid, not the format string', async () => {
+        const { simctl, agent, browser } = await bootedAgent()
+
+        deliver(agent, {
+          type: 'screenshot:request',
+          sessionId: agent.sessionId,
+          requestId: 'req-1',
+          format: 'png',
+        })
+        await vi.waitFor(() => expect(simctl.screenshot).toHaveBeenCalled())
+
+        expect(simctl.screenshot).toHaveBeenCalledWith('dev-1', 'png')
+
+        agent.disconnect(); browser.close()
+      })
     })
 
     it('shuts a device down from a transient state too, not just Booted (#439)', async () => {

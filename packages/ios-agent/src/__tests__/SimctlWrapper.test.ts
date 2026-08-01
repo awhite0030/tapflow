@@ -130,8 +130,8 @@ describe('SimctlWrapper', () => {
     it('calls simctl install booted with the app path', async () => {
       const runner = mockRunner()
       const wrapper = new SimctlWrapper(runner)
-      await wrapper.installApp('/path/to/App.app')
-      expect(runner.exec).toHaveBeenCalledWith('install', 'booted', '/path/to/App.app')
+      await wrapper.installApp('dev-1', '/path/to/App.app')
+      expect(runner.exec).toHaveBeenCalledWith('install', 'dev-1', '/path/to/App.app')
     })
   })
 
@@ -139,20 +139,20 @@ describe('SimctlWrapper', () => {
     it('calls simctl launch booted with the bundleId', async () => {
       const runner = mockRunner()
       const wrapper = new SimctlWrapper(runner)
-      await wrapper.launchApp('com.example.app')
-      expect(runner.exec).toHaveBeenCalledWith('launch', 'booted', 'com.example.app')
+      await wrapper.launchApp('dev-1', 'com.example.app')
+      expect(runner.exec).toHaveBeenCalledWith('launch', 'dev-1', 'com.example.app')
     })
 
     it('parses the launched host PID from simctl output (for the audiotap-helper)', async () => {
       const runner = mockRunner({ launch: 'com.example.app: 90210\n' })
       const wrapper = new SimctlWrapper(runner)
-      await expect(wrapper.launchApp('com.example.app')).resolves.toBe(90210)
+      await expect(wrapper.launchApp('dev-1', 'com.example.app')).resolves.toBe(90210)
     })
 
     it('returns null when no PID can be parsed', async () => {
       const runner = mockRunner({ launch: '' })
       const wrapper = new SimctlWrapper(runner)
-      await expect(wrapper.launchApp('com.example.app')).resolves.toBeNull()
+      await expect(wrapper.launchApp('dev-1', 'com.example.app')).resolves.toBeNull()
     })
   })
 
@@ -272,10 +272,10 @@ describe('SimctlWrapper', () => {
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
       const wrapper = new SimctlWrapper(runner)
-      const buf = await wrapper.screenshot()
+      const buf = await wrapper.screenshot('dev-1')
 
       expect(runner.exec).toHaveBeenCalledWith(
-        'io', 'booted', 'screenshot', '--type', 'png',
+        'io', 'dev-1', 'screenshot', '--type', 'png',
         expect.stringMatching(/tapflow-.+\.png$/)
       )
       expect(buf).toEqual(pngMagic)
@@ -332,9 +332,9 @@ describe('SimctlWrapper', () => {
 
       const runner = mockRunner({ get_app_container: `${container}\n` })
       const wrapper = new SimctlWrapper(runner)
-      await wrapper.clearAppData('com.example.app')
+      await wrapper.clearAppData('dev-1', 'com.example.app')
 
-      expect(runner.exec).toHaveBeenCalledWith('terminate', 'booted', 'com.example.app')
+      expect(runner.exec).toHaveBeenCalledWith('terminate', 'dev-1', 'com.example.app')
       expect(await realFs.readdir(path.join(container, 'Documents'))).toEqual([])
       expect(await realFs.readdir(path.join(container, 'Library'))).toEqual([])
       expect(await realFs.readdir(path.join(container, 'tmp'))).toEqual([])

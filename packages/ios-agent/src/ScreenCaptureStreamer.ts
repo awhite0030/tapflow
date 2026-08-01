@@ -65,7 +65,7 @@ export class ScreenCaptureStreamer {
 
   constructor(
     private readonly fps: number = 30,
-    private readonly udid: string = 'booted',
+    private readonly udid: string,
     private readonly codec: 'jpeg' | 'h264' = 'jpeg',
     // Downscale cap (longest side, px) the helper encodes at; 0 = native. Passed to the Swift helper
     // as TAPFLOW_IOS_MAX_SIZE so the per-session tier wins over any inherited env value.

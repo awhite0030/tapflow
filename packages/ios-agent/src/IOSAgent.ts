@@ -399,7 +399,7 @@ export class IOSAgent implements DeviceAgent {
     let stream: ReadableStream<StreamFrame>
     if (this.intervalMs !== undefined) {
       state.captureStreamer = null
-      stream = new MjpegStreamer(this.simctl, this.intervalMs).start()
+      stream = new MjpegStreamer(this.simctl, state.deviceId, this.intervalMs).start()
     } else {
       const maxSize = pickMaxSize({
         secureContext: state.secureContext,
@@ -699,7 +699,12 @@ export class IOSAgent implements DeviceAgent {
       case 'app:install': {
         const { filePath, bundleId } = msg.payload as { filePath: string; bundleId?: string }
         const sessionId = msg.sessionId
-        this.installBuild(filePath, bundleId)
+        const installState = this.deviceStates.get(sessionId!)
+        if (!installState) {
+          this.ws?.send(JSON.stringify({ type: 'app:install-error', sessionId, message: 'No booted device' }))
+          break
+        }
+        this.installBuild(installState.deviceId, filePath, bundleId)
           .then(() => this.ws?.send(JSON.stringify({ type: 'app:install-done', sessionId })))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
@@ -711,10 +716,14 @@ export class IOSAgent implements DeviceAgent {
         const { bundleId } = msg.payload as { bundleId: string }
         const sessionId = msg.sessionId
         const launchState = this.deviceStates.get(sessionId!)
-        this.simctl.launchApp(bundleId)
+        if (!launchState) {
+          this.ws?.send(JSON.stringify({ type: 'app:launch-error', sessionId, message: 'No booted device' }))
+          break
+        }
+        this.simctl.launchApp(launchState.deviceId, bundleId)
           .then(() => {
             // Track the foreground app so ui:tree:request can query it via XCUITest.
-            if (launchState) this.lastBundleIds.set(launchState.deviceId, bundleId)
+            this.lastBundleIds.set(launchState.deviceId, bundleId)
             // Audio: the whole-sim tap's poll picks up the launched app process within one interval;
             // no per-launch helper needed.
             this.ws?.send(JSON.stringify({ type: 'app:launch-done', sessionId }))
@@ -908,7 +917,16 @@ export class IOSAgent implements DeviceAgent {
         const raw = msg as unknown as { requestId: string; format?: 'png' | 'jpeg'; sessionId?: string }
         const { requestId, format } = raw
         const sessionId = msg.sessionId
-        this.simctl.screenshot(format ?? 'png')
+        const shotState = this.deviceStates.get(sessionId!)
+        if (!shotState) {
+          this.ws?.send(JSON.stringify({ type: 'screenshot:error', sessionId, requestId, message: 'No booted device' }))
+          break
+        }
+        // Note for anyone widening this signature again: before the udid parameter existed this
+        // read `screenshot(format ?? 'png')`, and adding a leading `udid: string` did NOT make it a
+        // type error — the format string simply became the device id. The compiler cannot help
+        // here; the test that scans exec arguments is what does.
+        this.simctl.screenshot(shotState.deviceId, format ?? 'png')
           .then((buf) => this.ws?.send(JSON.stringify({
             type: 'screenshot:done',
             sessionId,
@@ -930,7 +948,7 @@ export class IOSAgent implements DeviceAgent {
           this.ws?.send(JSON.stringify({ type: 'app:clear-state-error', sessionId, message: !state ? 'No booted device' : 'bundleId missing' }))
           break
         }
-        this.simctl.clearAppData(bundleId)
+        this.simctl.clearAppData(state.deviceId, bundleId)
           .then(() => this.ws?.send(JSON.stringify({ type: 'app:clear-state-done', sessionId })))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
@@ -1155,16 +1173,16 @@ export class IOSAgent implements DeviceAgent {
    * 직접 설치. tar 추출은 실행 비트·심볼릭 링크를 보존하고(재압축이 아니라 네이티브 보관),
    * macOS tar(libarchive)가 path traversal·symlink 탈출을 기본 차단한다. 완료 후 임시 정리.
    */
-  private async installBuild(filePath: string, bundleId?: string): Promise<void> {
+  private async installBuild(udid: string, filePath: string, bundleId?: string): Promise<void> {
     if (bundleId) {
-      await this.simctl.uninstallApp(bundleId).catch(() => { /* 미설치 상태면 무시 */ })
+      await this.simctl.uninstallApp(udid, bundleId).catch(() => { /* 미설치 상태면 무시 */ })
     }
 
     const lower = filePath.toLowerCase()
     const isTar = lower.endsWith('.tar.gz') || lower.endsWith('.tgz')
     const isZip = lower.endsWith('.zip')
     if (!isTar && !isZip) {
-      return this.simctl.installApp(filePath)
+      return this.simctl.installApp(udid, filePath)
     }
 
     const tmpDir = path.join(tmpdir(), `tapflow-install-${randomUUID()}`)
@@ -1194,7 +1212,7 @@ export class IOSAgent implements DeviceAgent {
         throw new ValidationError('.app 디렉토리를 찾을 수 없습니다. iphonesimulator 로 빌드한 .app 을 .app.zip 또는 .tar.gz 로 업로드하세요.')
       }
 
-      await this.simctl.installApp(path.join(tmpDir, appDir))
+      await this.simctl.installApp(udid, path.join(tmpDir, appDir))
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }
@@ -1204,8 +1222,23 @@ export class IOSAgent implements DeviceAgent {
   listDevices(): Promise<Device[]> { return this.simctl.listDevices() }
   boot(deviceId: string): Promise<void> { return this.simctl.boot(deviceId) }
   shutdown(deviceId: string): Promise<void> { return this.simctl.shutdown(deviceId) }
-  installApp(appPath: string): Promise<void> { return this.simctl.installApp(appPath) }
-  async launchApp(bundleId: string): Promise<void> { await this.simctl.launchApp(bundleId) }
+  /** The `DeviceAgent` interface has no device parameter — it predates multi-session agents and is
+   *  shared with Android, so widening it would be a breaking change for every implementation and
+   *  caller. `AndroidAgent` resolves the single live session internally instead
+   *  (`AndroidAgent.ts:1429`); these do the same. Throwing beats falling back to simctl's `booted`
+   *  alias, which would quietly act on whichever simulator happened to be up. */
+  async installApp(appPath: string): Promise<void> {
+    await this.simctl.installApp(this.soleDeviceId(), appPath)
+  }
+  async launchApp(bundleId: string): Promise<void> {
+    await this.simctl.launchApp(this.soleDeviceId(), bundleId)
+  }
+
+  private soleDeviceId(): string {
+    const first = this.deviceStates.values().next().value
+    if (!first) throw new ValidationError('no booted device — call connect() first')
+    return first.deviceId
+  }
 
   async queryUITree(): Promise<UIElement[]> {
     const state = this.deviceStates.values().next().value
@@ -1296,7 +1329,9 @@ export class IOSAgent implements DeviceAgent {
       // stream cancelled or ws closed — expected on teardown/restart
     }
   }
-  screenshot(): Promise<Buffer> { return this.simctl.screenshot() }
+  // async, not a bare `return`: `soleDeviceId` throws, and a synchronous throw out of a method
+  // typed `Promise<T>` skips every caller's `.catch`.
+  async screenshot(): Promise<Buffer> { return this.simctl.screenshot(this.soleDeviceId()) }
   stream(): ReadableStream<Buffer> {
     const first = this.deviceStates.values().next().value
     if (!first) throw new ValidationError('no booted device — call connect() first')
