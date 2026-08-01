@@ -457,19 +457,24 @@ export class RelayServer {
         }
         return
       }
-      let msg: RelayMessage
+      let parsed: unknown
       try {
-        msg = JSON.parse(data.toString())
+        parsed = JSON.parse(data.toString())
       } catch {
         return // genuinely malformed — there is no type to answer on
       }
+      // `JSON.parse` returns bare `null`, numbers and strings without throwing, and `route` reads
+      // `.type` off whatever it is handed. Rejecting non-objects here is what lets the catch below
+      // name the message safely.
+      if (typeof parsed !== 'object' || parsed === null) return
+      const msg = parsed as RelayMessage
       try {
         this.route(ws, msg)
       } catch (e) {
         // A throw inside a handler used to land in the same catch as a parse failure and vanish.
         // Anything reaching here is a bug in routing, not a bad message, and the caller is left
         // waiting either way — so at least say so once instead of dropping it silently.
-        logger.error(`route failed for ${msg.type}:`, e)
+        logger.error(`route failed for ${String(msg.type)}:`, e)
       }
     })
 

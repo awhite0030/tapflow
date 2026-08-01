@@ -252,6 +252,25 @@ describe('app command failures reach the caller (#445)', () => {
     agent.close(); browser.close()
   })
 
+  // `JSON.parse` accepts bare `null`, numbers and strings without throwing, so a payload that is
+  // valid JSON but not a message still reaches the routing path. Splitting the parse and route
+  // catches — which is what stops a handler throw from vanishing — meant the error branch started
+  // reading `.type` off those, raising an unhandled TypeError out of the socket callback. The
+  // silence fix must not become a crash.
+  it.each(['null', '123', '"str"', 'true'])('survives a bare %s payload', async (raw) => {
+    const { agent, browser, sessionId } = await connectAgentAndBrowser()
+
+    browser.send(raw)
+    // Still serving afterwards is the assertion: a thrown TypeError here would surface as an
+    // unhandled error and, in production, take the process with it.
+    browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId: 999999 }))
+    const msg = await firstOfOrTimeout(browser, ['app:install-error'])
+
+    expect(msg?.type).toBe('app:install-error')
+
+    agent.close(); browser.close()
+  })
+
   it('still forwards a valid install to the agent', async () => {
     const { agent, browser, sessionId } = await connectAgentAndBrowser()
     const buildId = insertBuild('com.example.demo')
