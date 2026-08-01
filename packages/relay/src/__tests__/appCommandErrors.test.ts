@@ -23,8 +23,13 @@ const waitForType = (ws: WebSocket, type: string) =>
   })
 
 /** Resolves to the first message of any of `types`, or to null after `ms`. Used to assert that a
- *  reply arrives *promptly* — the defect under test is a caller waiting out its whole deadline. */
-function firstOfOrTimeout(ws: WebSocket, types: string[], ms = 1000) {
+ *  reply arrives *promptly* — the defect under test is a caller waiting out its whole deadline.
+ *
+ *  The budget is generous on purpose. Every reply here is emitted in the same tick as the inbound
+ *  message, so a passing run resolves in single-digit milliseconds and the number never costs
+ *  anything; it only bounds the failing case. At 1s this went flaky under a full-monorepo run,
+ *  where the relay competes with nine other packages' workers. */
+function firstOfOrTimeout(ws: WebSocket, types: string[], ms = 3000) {
   return new Promise<RelayMessage | null>((resolve) => {
     const timer = setTimeout(() => { ws.off('message', listener); resolve(null) }, ms)
     const listener = (data: Buffer) => {
@@ -210,6 +215,38 @@ describe('app command failures reach the caller (#445)', () => {
     const msg = await firstOfOrTimeout(browser, ['app:install-error', 'error'])
 
     expect(msg?.type).toBe('app:install-error')
+    expect(msg?.sessionId).toBe(sessionId)
+
+    agent.close(); browser.close()
+  })
+
+  // `JSON.parse` does not honour the `RelayMessage` type, so buildId arrives as whatever was sent.
+  // An object or array makes better-sqlite3 throw, and that exception used to be caught by the
+  // message loop alongside genuine parse failures — the caller got nothing at all. This is the
+  // same silence the rest of the file is about, reached through the type system's blind spot.
+  it.each([
+    ['an object', {}],
+    ['an array', []],
+    ['a populated object', { a: 1 }],
+  ])('answers a buildId that is %s', async (_label, buildId) => {
+    const { agent, browser, sessionId } = await connectAgentAndBrowser()
+
+    browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId }))
+    const msg = await firstOfOrTimeout(browser, ['app:install-error', 'error'])
+
+    expect(msg?.type).toBe('app:install-error')
+    expect(msg?.sessionId).toBe(sessionId)
+
+    agent.close(); browser.close()
+  })
+
+  it('answers an object buildId on the launch path too', async () => {
+    const { agent, browser, sessionId } = await connectAgentAndBrowser()
+
+    browser.send(JSON.stringify({ type: 'app:launch', sessionId, buildId: {} }))
+    const msg = await firstOfOrTimeout(browser, ['app:launch-error', 'error'])
+
+    expect(msg?.type).toBe('app:launch-error')
     expect(msg?.sessionId).toBe(sessionId)
 
     agent.close(); browser.close()

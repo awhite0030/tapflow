@@ -457,11 +457,19 @@ export class RelayServer {
         }
         return
       }
+      let msg: RelayMessage
       try {
-        const msg: RelayMessage = JSON.parse(data.toString())
-        this.route(ws, msg)
+        msg = JSON.parse(data.toString())
       } catch {
-        // ignore malformed messages
+        return // genuinely malformed — there is no type to answer on
+      }
+      try {
+        this.route(ws, msg)
+      } catch (e) {
+        // A throw inside a handler used to land in the same catch as a parse failure and vanish.
+        // Anything reaching here is a bug in routing, not a bad message, and the caller is left
+        // waiting either way — so at least say so once instead of dropping it silently.
+        logger.error(`route failed for ${msg.type}:`, e)
       }
     })
 
@@ -900,6 +908,12 @@ export class RelayServer {
     const session = this.sessions.get(sessionId)
     if (!session) return fail('Session not found')
 
+    // `JSON.parse` does not honour `RelayMessage`, so buildId is whatever the sender put there.
+    // better-sqlite3 binds a missing value as NULL but *throws* on an object or array — and that
+    // exception is swallowed by the message-loop catch, which is the silence this PR exists to
+    // remove. Checked here rather than trusted; general inbound validation is #444.
+    if (!Number.isInteger(msg.buildId)) return fail('Build not found')
+
     const build = getDb()
       .prepare('SELECT file_path, bundle_id FROM builds WHERE id = ?')
       .get(msg.buildId!) as { file_path: string; bundle_id: string | null } | undefined
@@ -922,6 +936,10 @@ export class RelayServer {
 
     const session = this.sessions.get(sessionId)
     if (!session) return fail('Session not found')
+
+    // See handleBrowserAppInstall — an object here throws inside the driver and the exception is
+    // swallowed upstream.
+    if (!Number.isInteger(msg.buildId)) return fail('Bundle ID not available for this build')
 
     const build = getDb()
       .prepare('SELECT bundle_id FROM builds WHERE id = ?')
