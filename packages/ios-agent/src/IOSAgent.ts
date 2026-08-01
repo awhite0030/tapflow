@@ -1235,9 +1235,21 @@ export class IOSAgent implements DeviceAgent {
   }
 
   private soleDeviceId(): string {
-    const first = this.deviceStates.values().next().value
-    if (!first) throw new ValidationError('no booted device — call connect() first')
-    return first.deviceId
+    // `deviceStates` holds one entry per *registered* simulator, not per running one — the relay
+    // opens a session for every device in `agent:register` and this Mac reports dozens. Taking the
+    // first entry would pick whichever simulator simctl listed first, almost always a shut-down
+    // one, which is worse than the `booted` alias it replaced: the alias at least found the device
+    // that was actually up. `booted` is set by handleDeviceBoot, so filtering on it is the liveness
+    // check `AndroidAgent` gets for free from `getSerial` (its serial map is only populated on
+    // launch).
+    const live = [...this.deviceStates.values()].filter((s) => s.booted)
+    if (live.length === 0) throw new ValidationError('no booted device — call connect() first')
+    // Refusing beats guessing: this interface has no way to say which device is meant, and picking
+    // one silently is the whole defect being fixed here.
+    if (live.length > 1) {
+      throw new ValidationError(`${live.length} booted devices — this entry point cannot choose between them`)
+    }
+    return live[0]!.deviceId
   }
 
   async queryUITree(): Promise<UIElement[]> {

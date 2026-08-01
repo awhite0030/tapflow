@@ -41,7 +41,7 @@ describe('ScreenCaptureStreamer', () => {
     const proc = await setupProc()
     const { ScreenCaptureStreamer } = await import('../ScreenCaptureStreamer')
 
-    const reader = new ScreenCaptureStreamer(30, 'booted').start().getReader()
+    const reader = new ScreenCaptureStreamer(30, 'dev-1').start().getReader()
     await reader.cancel()
 
     expect(proc.kill).toHaveBeenCalledWith('SIGTERM')
@@ -52,7 +52,7 @@ describe('ScreenCaptureStreamer', () => {
     const proc = await setupProc()
     const { ScreenCaptureStreamer } = await import('../ScreenCaptureStreamer')
 
-    const reader = new ScreenCaptureStreamer(30, 'booted').start().getReader()
+    const reader = new ScreenCaptureStreamer(30, 'dev-1').start().getReader()
     await reader.cancel()
     proc.emit('exit', 0)
     await vi.advanceTimersByTimeAsync(1000)
@@ -66,7 +66,7 @@ describe('ScreenCaptureStreamer', () => {
     const proc = await setupProc()
     const { ScreenCaptureStreamer } = await import('../ScreenCaptureStreamer')
 
-    const reader = new ScreenCaptureStreamer(30, 'booted').start().getReader()
+    const reader = new ScreenCaptureStreamer(30, 'dev-1').start().getReader()
     await reader.cancel()
     await vi.advanceTimersByTimeAsync(1000)
 

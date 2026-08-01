@@ -123,6 +123,18 @@ const copyOnChord = (th: { sendKey: ReturnType<typeof vi.fn> }, text = 'copied t
 // `booted` stays boolean for the callers that only care about on/off. `'unknown'` is what
 // `toDeviceStatus` returns for every transient state — Booting, Shutting Down, Creating — and
 // `simctl erase` refuses all of them, so it needs to be reachable from a test.
+/** Two registered simulators, both shut down. The relay opens a session per registered device, so
+ *  this is what an ordinary Mac looks like — `mockSimctl`'s single device makes "the session's
+ *  device" and "the first registered device" indistinguishable, which is the whole defect. */
+function mockSimctlTwoDevices(): SimctlWrapper {
+  const sw = mockSimctl(false)
+  ;(sw.listDevices as ReturnType<typeof vi.fn>).mockResolvedValue([
+    { id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: 'shutdown', osVersion: 'iOS 18.3' },
+    { id: 'dev-2', name: 'iPhone 16', platform: 'ios', status: 'shutdown', osVersion: 'iOS 18.3' },
+  ])
+  return sw
+}
+
 function mockSimctl(booted: boolean | 'unknown' = false): SimctlWrapper {
   const status = booted === 'unknown' ? 'unknown' : booted ? 'booted' : 'shutdown'
   pasteboard = ''
@@ -648,6 +660,54 @@ describe('IOSAgent', () => {
         await ready
         return { simctl, agent, browser }
       }
+
+      // The DeviceAgent entry points have no device argument, so they resolve one themselves. With
+      // several simulators registered — the normal case — "the first entry" is whichever simctl
+      // listed first, usually shut down. That would be worse than the alias this PR removed: the
+      // alias at least hit the device that was actually running.
+      it('the DeviceAgent path picks the booted device, not the first registered one', async () => {
+        const simctl = mockSimctlTwoDevices()
+        const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+        await agent.connect(`ws://localhost:${port}`)
+        const sessions = [...(agent as unknown as { deviceStates: Map<string, { deviceId: string }> }).deviceStates.entries()]
+        const second = sessions.find(([, v]) => v.deviceId === 'dev-2')!
+
+        const browser = new WebSocket(`ws://localhost:${port}`)
+        await waitForOpen(browser)
+        const ready = waitForType(browser, 'device:ready')
+        browser.send(JSON.stringify({ type: 'session:start', sessionId: second[0] }))
+        await waitForType(browser, 'session:joined')
+        browser.send(JSON.stringify({
+          type: 'device:boot', sessionId: second[0], payload: { deviceId: 'dev-2' },
+        }))
+        await ready
+
+        // `installApp`, not `screenshot`: the MJPEG stream calls screenshot on a timer with the same
+        // udid, so asserting on it would pass whatever this line did.
+        await agent.installApp('/tmp/iface.app')
+        expect(simctl.installApp).toHaveBeenCalledWith('dev-2', '/tmp/iface.app')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('a session drives its own device, not the first registered one', async () => {
+        const simctl = mockSimctlTwoDevices()
+        const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+        await agent.connect(`ws://localhost:${port}`)
+        const sessions = [...(agent as unknown as { deviceStates: Map<string, { deviceId: string }> }).deviceStates.entries()]
+        const second = sessions.find(([, v]) => v.deviceId === 'dev-2')!
+
+        deliver(agent, {
+          type: 'app:install',
+          sessionId: second[0],
+          payload: { filePath: '/tmp/x.app', bundleId: 'com.example.app' },
+        })
+        await vi.waitFor(() => expect(simctl.installApp).toHaveBeenCalled())
+
+        expect(simctl.installApp).toHaveBeenCalledWith('dev-2', '/tmp/x.app')
+
+        agent.disconnect()
+      })
 
       it('install carries the udid', async () => {
         const { simctl, agent, browser } = await bootedAgent()
