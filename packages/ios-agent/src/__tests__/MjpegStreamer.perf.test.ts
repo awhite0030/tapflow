@@ -17,7 +17,7 @@ describe('MjpegStreamer — 성능', () => {
 
     const screenshot = vi.fn().mockResolvedValue(Buffer.alloc(1024, 0xff))
     const simctl: Screenshottable = { screenshot }
-    const streamer = new MjpegStreamer(simctl, INTERVAL_MS)
+    const streamer = new MjpegStreamer(simctl, 'dev-1', INTERVAL_MS)
 
     streamer.start()
     await vi.advanceTimersByTimeAsync(DURATION_MS)
@@ -38,7 +38,7 @@ describe('MjpegStreamer — 성능', () => {
       new Promise<Buffer>((r) => { resolveCapture = () => r(Buffer.alloc(100)) })
     )
     const simctl: Screenshottable = { screenshot: slowScreenshot }
-    const streamer = new MjpegStreamer(simctl, INTERVAL_MS)
+    const streamer = new MjpegStreamer(simctl, 'dev-1', INTERVAL_MS)
 
     streamer.start()
 
@@ -64,7 +64,7 @@ describe('MjpegStreamer — 성능', () => {
     const INTERVAL_MS = 33
     const screenshot = vi.fn().mockResolvedValue(Buffer.alloc(100))
     const simctl: Screenshottable = { screenshot }
-    const streamer = new MjpegStreamer(simctl, INTERVAL_MS)
+    const streamer = new MjpegStreamer(simctl, 'dev-1', INTERVAL_MS)
 
     const stream = streamer.start()
     const reader = stream.getReader()

@@ -145,16 +145,20 @@ export class SimctlWrapper {
     await this.runner.exec('erase', deviceId)
   }
 
-  async uninstallApp(bundleId: string): Promise<void> {
-    await this.runner.exec('uninstall', 'booted', bundleId)
+  // Every app command takes the device explicitly. `booted` — simctl's "whichever device is up"
+  // alias — silently picks a different simulator whenever more than one is running, which on a
+  // shared Mac is the normal case, not an edge one (#440). No default: a default is how the alias
+  // would survive a refactor with every test still green.
+  async uninstallApp(udid: string, bundleId: string): Promise<void> {
+    await this.runner.exec('uninstall', udid, bundleId)
   }
 
   // pm-clear analog for the simulator: wipe the app's data-container contents
   // (Documents / Library / tmp) instead of uninstalling, so the installed
   // binary survives and flow-runner clearState → launchApp keeps working.
-  async clearAppData(bundleId: string): Promise<void> {
-    await this.runner.exec('terminate', 'booted', bundleId).catch(() => { /* not running is fine */ })
-    const out = await this.runner.exec('get_app_container', 'booted', bundleId, 'data')
+  async clearAppData(udid: string, bundleId: string): Promise<void> {
+    await this.runner.exec('terminate', udid, bundleId).catch(() => { /* not running is fine */ })
+    const out = await this.runner.exec('get_app_container', udid, bundleId, 'data')
     const container = out.trim()
     if (!container.startsWith('/')) {
       throw new PlatformError(`cannot resolve data container for ${bundleId}: ${container || 'empty simctl output'}`)
@@ -166,14 +170,14 @@ export class SimctlWrapper {
     }
   }
 
-  async installApp(appPath: string): Promise<void> {
-    await this.runner.exec('install', 'booted', appPath)
+  async installApp(udid: string, appPath: string): Promise<void> {
+    await this.runner.exec('install', udid, appPath)
   }
 
   // Returns the launched app's host PID (`simctl launch` prints "<bundleId>: <pid>"), or null if it
   // can't be parsed. The audiotap-helper taps this PID; non-audio callers ignore it.
-  async launchApp(bundleId: string): Promise<number | null> {
-    const out = await this.runner.exec('launch', 'booted', bundleId)
+  async launchApp(udid: string, bundleId: string): Promise<number | null> {
+    const out = await this.runner.exec('launch', udid, bundleId)
     const m = out.match(/:\s*(\d+)\s*$/)
     return m ? Number(m[1]) : null
   }
@@ -213,11 +217,11 @@ export class SimctlWrapper {
     }
   }
 
-  async screenshot(format: 'png' | 'jpeg' = 'png'): Promise<Buffer> {
+  async screenshot(udid: string, format: 'png' | 'jpeg' = 'png'): Promise<Buffer> {
     const ext = format === 'jpeg' ? 'jpg' : 'png'
     const tmpPath = `${tmpdir()}/tapflow-${randomUUID()}.${ext}`
     try {
-      await this.runner.exec('io', 'booted', 'screenshot', '--type', format, tmpPath)
+      await this.runner.exec('io', udid, 'screenshot', '--type', format, tmpPath)
       return await fs.readFile(tmpPath)
     } finally {
       await fs.unlink(tmpPath).catch(() => {})

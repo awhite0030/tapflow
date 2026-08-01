@@ -32,7 +32,7 @@ describe('TouchHelper stdin byte protocol snapshots', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    helper = new TouchHelper('booted')
+    helper = new TouchHelper('dev-1')
     helper.start()
   })
 

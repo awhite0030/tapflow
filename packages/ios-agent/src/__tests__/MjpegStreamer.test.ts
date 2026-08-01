@@ -14,7 +14,7 @@ describe('MjpegStreamer', () => {
   it('emits the first frame immediately', async () => {
     const frame = Buffer.from('frame-data')
     const simctl = mockSimctl(frame)
-    const streamer = new MjpegStreamer(simctl, 1000)
+    const streamer = new MjpegStreamer(simctl, 'dev-1', 1000)
 
     const stream = streamer.start()
     const reader = stream.getReader()
@@ -27,7 +27,7 @@ describe('MjpegStreamer', () => {
   it('emits multiple frames at the given interval', async () => {
     vi.useFakeTimers()
     const simctl = mockSimctl()
-    const streamer = new MjpegStreamer(simctl, 100)
+    const streamer = new MjpegStreamer(simctl, 'dev-1', 100)
 
     streamer.start()
     await vi.advanceTimersByTimeAsync(0)
@@ -40,7 +40,7 @@ describe('MjpegStreamer', () => {
   it('stops emitting after cancel', async () => {
     vi.useFakeTimers()
     const simctl = mockSimctl()
-    const streamer = new MjpegStreamer(simctl, 100)
+    const streamer = new MjpegStreamer(simctl, 'dev-1', 100)
 
     const stream = streamer.start()
     const reader = stream.getReader()
@@ -57,7 +57,7 @@ describe('MjpegStreamer', () => {
     const slowScreenshot = vi.fn(
       () => new Promise<Buffer>((r) => { resolve = () => r(Buffer.from('x')) })
     )
-    const streamer = new MjpegStreamer({ screenshot: slowScreenshot }, 100)
+    const streamer = new MjpegStreamer({ screenshot: slowScreenshot }, 'dev-1', 100)
 
     // capture() is called synchronously — capturing = true before first await
     streamer.start()

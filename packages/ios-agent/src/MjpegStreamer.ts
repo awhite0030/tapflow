@@ -6,6 +6,7 @@ type Screenshottable = Pick<SimctlWrapper, 'screenshot'>
 export class MjpegStreamer {
   constructor(
     private readonly simctl: Screenshottable,
+    private readonly udid: string,
     private readonly intervalMs: number = 100,
   ) {}
 
@@ -19,7 +20,7 @@ export class MjpegStreamer {
           if (capturing) return
           capturing = true
           try {
-            const frame = await this.simctl.screenshot()
+            const frame = await this.simctl.screenshot(this.udid)
             controller.enqueue({ payload: frame, keyframe: false })
           } catch (err) {
             controller.error(err)
