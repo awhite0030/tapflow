@@ -689,6 +689,7 @@ export class RelayServer {
           if (msg.type === 'device:boot' && msg.payload && typeof msg.payload === 'object') {
             (msg.payload as Record<string, unknown>).external = this.wsExternal.get(ws) ?? false
           }
+          if (msg.type === 'device:boot') this.sessions.markBootRequested(session.id)
           session.agentSocket.send(JSON.stringify(msg))
         }
         break
@@ -725,13 +726,21 @@ export class RelayServer {
       case 'input:rotate':
       case 'input:keyboard:toggle': {
         const session = this.sessions.get(msg.sessionId!)
-        if (session?.agentSocket.readyState === WebSocket.OPEN) {
+        const agentUp = session?.agentSocket.readyState === WebSocket.OPEN
+        // An agent that has never been asked to boot this session holds no state for it and drops
+        // the input without acking — so forwarding a terminal input there buys silence. Answering
+        // is the same courtesy as the offline case below, for a cause the caller cannot see: after
+        // a restart the socket is open and healthy, it is simply a different process (#426).
+        if (agentUp && (session.bootRequested || !TERMINAL_INPUT_TYPES.has(msg.type))) {
           session.agentSocket.send(JSON.stringify(msg))
         } else if (TERMINAL_INPUT_TYPES.has(msg.type) && ws.readyState === WebSocket.OPEN) {
           // Agent offline or session evicted: a terminal input can't be dispatched.
           // Reply to the sender (the MCP/browser socket) so it fails truthfully
           // instead of falling through to its optimistic 2s timeout.
-          this.sendTo(ws, { type: 'input:error', sessionId: msg.sessionId!, message: 'agent offline' })
+          this.sendTo(ws, {
+            type: 'input:error', sessionId: msg.sessionId!,
+            message: agentUp ? 'device not ready' : 'agent offline',
+          })
         }
         break
       }
@@ -783,6 +792,23 @@ export class RelayServer {
   }
 
   /**
+   * Settle every in-flight screenshot / UI-tree request belonging to these sessions. Both callers
+   * are moments where the agent that was going to answer them no longer exists — it disconnected,
+   * or it restarted and its session moved to the new process. Left alone these reject on their own
+   * timeout, minutes later, having told the caller nothing in between.
+   */
+  private rejectPending(sessionIds: Set<string>, reason: string): void {
+    for (const pendings of [this.pendingScreenshots, this.pendingUITrees]) {
+      for (const [reqId, pending] of pendings.entries()) {
+        if (!sessionIds.has(pending.sessionId)) continue
+        clearTimeout(pending.timer)
+        pendings.delete(reqId)
+        pending.reject(new Error(reason))
+      }
+    }
+  }
+
+  /**
    * @param cause  `'disconnect'` — the socket closed. `'replaced'` — the same agent re-registered
    *   and this is its previous socket. Only affects the log line: a restart otherwise reads as a
    *   crash followed by a recovery, which is not what happened.
@@ -790,21 +816,7 @@ export class RelayServer {
   private evictAgentSocket(ws: WebSocket, cause: 'disconnect' | 'replaced' = 'disconnect'): boolean {
     const agentSessions = this.sessions.getAllByAgentSocket(ws)
     if (agentSessions.length === 0) return false
-    const agentSessionIds = new Set(agentSessions.map((s) => s.id))
-    for (const [reqId, pending] of this.pendingScreenshots.entries()) {
-      if (agentSessionIds.has(pending.sessionId)) {
-        clearTimeout(pending.timer)
-        this.pendingScreenshots.delete(reqId)
-        pending.reject(new Error('Agent disconnected'))
-      }
-    }
-    for (const [reqId, pending] of this.pendingUITrees.entries()) {
-      if (agentSessionIds.has(pending.sessionId)) {
-        clearTimeout(pending.timer)
-        this.pendingUITrees.delete(reqId)
-        pending.reject(new Error('Agent disconnected'))
-      }
-    }
+    this.rejectPending(new Set(agentSessions.map((s) => s.id)), 'Agent disconnected')
     // Tell whoever is attached before the session stops existing — after `remove()` the socket
     // reference is gone. Without this the browser keeps a live socket addressed to a sessionId the
     // relay no longer knows, so everything it sends is dropped as unknown and nothing streams back:
@@ -835,21 +847,60 @@ export class RelayServer {
     // its socket before creating the new ones. Identity is agentId (unique per Mac) when present,
     // else agentName. (Heartbeat backstop for never-reconnecting agents: #313.)
     const identity = msg.agentId ?? msg.agentName
+    const devices = msg.devices ?? []
+    const agent = {
+      agentId: msg.agentId, agentName: msg.agentName,
+      agentPlatform: msg.platform, agentCapabilities: msg.capabilities,
+    }
+    // deviceId → the session id kept across the restart. Also the guard that a device is rebound at
+    // most once (#426): before rebinding existed, `create()` ran after every old session had been
+    // evicted, so one device could not be behind two sessions. It can now, and `list()` does not
+    // deduplicate — the second card would name a session the agent has never heard of, which is the
+    // symptom this whole change is fixing.
+    const rebound = new Map<string, string>()
     if (identity) {
       for (const old of this.sessions.getAgentSocketsByIdentity(identity, msg.platform)) {
         if (old === ws) continue
+        for (const s of this.sessions.getAllByAgentSocket(old)) {
+          if (rebound.has(s.deviceId)) continue
+          const device = devices.find((d) => d.id === s.deviceId)
+          // The device is gone from this agent's list — unplugged, deleted, renamed away. Leave it
+          // for the eviction below, which tells the browser the session ended.
+          if (!device) continue
+          this.sessions.rebind(s.id, ws, device, agent)
+          rebound.set(s.deviceId, s.id)
+        }
         // Evict before terminate: the old socket's close fires async, by which point its sessions are
         // gone and its in-flight screenshots would be undiscoverable — reject them here instead.
+        // The rebound sessions have already moved off `old`, so this no longer covers them.
         this.evictAgentSocket(old, 'replaced')
         old.terminate()
       }
     }
-    const sessionIds = this.sessions.create(ws, msg.devices ?? [], msg.agentName, msg.platform, msg.agentId, msg.capabilities)
-    const registeredSessions = (msg.devices ?? []).map((d, i) => ({
-      deviceId: d.id,
-      sessionId: sessionIds[i],
-    }))
+    // Their in-flight requests are addressed to a process that is gone, and the eviction above can
+    // no longer see them. Nothing else would ever settle these.
+    if (rebound.size > 0) this.rejectPending(new Set(rebound.values()), 'Agent restarted')
+
+    // Only devices without a surviving session get a new one. Passing all of them here is what
+    // would produce the duplicate card described above.
+    const fresh = devices.filter((d) => !rebound.has(d.id))
+    const freshIds = this.sessions.create(ws, fresh, msg.agentName, msg.platform, msg.agentId, msg.capabilities)
+    const byDeviceId = new Map(rebound)
+    fresh.forEach((d, i) => byDeviceId.set(d.id, freshIds[i]!))
+    // Keyed by deviceId, not by position. The old form paired `msg.devices[i]` with `sessionIds[i]`,
+    // which only held while every device got a session — now that some are rebound, the arrays have
+    // different lengths and index alignment would hand the agent someone else's session id.
+    const registeredSessions = devices.map((d) => ({ deviceId: d.id, sessionId: byDeviceId.get(d.id)! }))
     this.sendTo(ws, { type: 'agent:registered', registeredSessions })
+
+    // After the state is final: the browser answers this with `device:boot` on the same session id.
+    for (const sessionId of rebound.values()) {
+      const s = this.sessions.get(sessionId)
+      if (s?.browserSocket) {
+        this.sendTo(s.browserSocket, { type: 'session:rebound', sessionId, capabilities: msg.capabilities ?? [] })
+      }
+    }
+    if (rebound.size > 0) logger.info(`agent restarted — ${rebound.size} session(s) kept across the restart`)
     // The startup banner prints "Waiting for agents..." once and then the relay says nothing either
     // way, so a terminal gives no signal about whether an agent is attached. One line per
     // transition, matching the disconnect line in evictAgentSocket.

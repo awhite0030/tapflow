@@ -25,6 +25,13 @@ export interface Session {
    *  starts from the agent's `simctl list` snapshot, so a simulator that was already running has a
    *  session marked `booted` before the agent has done anything for it (#440). */
   readySent: boolean
+  /** Whether the relay has forwarded a `device:boot` for this session to the agent socket it is
+   *  currently pointed at. Until it has, that agent holds no device state for the session and
+   *  drops its input without a word (`IOSAgent.handleRelayMessage`: `if (!state) break`) — so this
+   *  is what lets the relay answer instead of letting the caller time out. Distinct from
+   *  `readySent`, which also goes false when only the stream socket drops; the agent still has its
+   *  state then, and input still works. */
+  bootRequested: boolean
   deviceOsVersion?: string
   chromeData?: ChromePayload
   deviceInfo?: DeviceDetails
@@ -32,6 +39,14 @@ export interface Session {
 }
 
 type RawDevice = { id: string; name: string; platform: string; status: string; osVersion?: string }
+
+/** What an `agent:register` says about the agent itself, as opposed to its devices. */
+export type AgentIdentity = {
+  agentId?: string
+  agentName?: string
+  agentPlatform?: string
+  agentCapabilities?: string[]
+}
 
 const DEFAULT_IDLE_TIMEOUT_MS = parseInt(process.env['IDLE_TIMEOUT_MS'] ?? String(5 * 60 * 1000))
 
@@ -47,25 +62,42 @@ export class SessionManager {
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   }
 
+  /**
+   * The single place a session's agent-derived fields are computed. `create()` spreads it and
+   * `rebind()` assigns it, so neither one names these fields itself — adding one to `Session` has
+   * exactly one place it can be filled in, instead of two that must be kept in step. The rebind
+   * path is the one that would be forgotten, and nothing checks for it.
+   */
+  private static agentFields(
+    agent: AgentIdentity,
+    device: RawDevice,
+  ): Pick<Session, 'agentId' | 'agentName' | 'agentPlatform' | 'agentCapabilities' | 'deviceName' | 'deviceStatus' | 'deviceOsVersion'> {
+    return {
+      agentId: agent.agentId,
+      agentName: agent.agentName,
+      agentPlatform: agent.agentPlatform,
+      agentCapabilities: agent.agentCapabilities,
+      deviceName: device.name,
+      deviceStatus: device.status as DeviceStatus,
+      deviceOsVersion: device.osVersion,
+    }
+  }
+
   create(agentSocket: WebSocket, devices: RawDevice[] = [], agentName?: string, agentPlatform?: string, agentId?: string, agentCapabilities?: string[]): string[] {
     const agentIds = this.agentSocketIndex.get(agentSocket) ?? new Set<string>()
+    const agent: AgentIdentity = { agentId, agentName, agentPlatform, agentCapabilities }
     return devices.map((d) => {
       const id = randomUUID()
       this.sessions.set(id, {
         id,
-        agentId,
-        agentName,
-        agentPlatform,
-        agentCapabilities,
+        ...SessionManager.agentFields(agent, d),
         agentSocket,
         browserSocket: null,
         streamSocket: null,
         deviceId: d.id,
-        deviceName: d.name,
         devicePlatform: d.platform,
-        deviceStatus: d.status as DeviceStatus,
         readySent: false,
-        deviceOsVersion: d.osVersion,
+        bootRequested: false,
         idleTimer: null,
       })
       agentIds.add(id)
@@ -149,6 +181,51 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Re-point an existing session at the socket of an agent that just restarted, keeping its id.
+   *
+   * Everything a rebind touches lives here rather than at the call site, and that is deliberate:
+   * the index move below has an order requirement that is invisible where it is used, and the
+   * field refresh has to stay in step with `create()`. Written inline in `RelayServer`, the next
+   * field added to `create()` would be missed on this path alone, and silently.
+   */
+  rebind(sessionId: string, agentSocket: WebSocket, device: RawDevice, agent: AgentIdentity): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    const old = session.agentSocket
+
+    // Drop from the old socket's set BEFORE reassigning. `remove()` dereferences the index through
+    // `session.agentSocket`, and following that idiom here would delete the id from the *new* set
+    // and leave the old one holding it — so the old socket's close, which fires late after an
+    // unclean drop, would evict the session that was just re-pointed.
+    const oldIds = this.agentSocketIndex.get(old)
+    oldIds?.delete(sessionId)
+    if (oldIds?.size === 0) this.agentSocketIndex.delete(old)
+
+    session.agentSocket = agentSocket
+    const ids = this.agentSocketIndex.get(agentSocket) ?? new Set<string>()
+    ids.add(sessionId)
+    this.agentSocketIndex.set(agentSocket, ids)
+
+    // The stream died with the old process. `old.terminate()` only closes the control socket, so
+    // nothing else would clear this.
+    this.clearStreamSocket(sessionId)
+    // `clearStreamSocket` returns early when there is no stream socket, and a session that was
+    // never streamed has none — so this cannot be left to it.
+    session.readySent = false
+    // The new process has no device state for this session until it is asked to boot.
+    session.bootRequested = false
+
+    Object.assign(session, SessionManager.agentFields(agent, device))
+
+    // Not a carry-over guard — resources are keyed by socket, so re-pointing the session at a new
+    // one already leaves the old reading behind, and every reader goes through
+    // `session.agentSocket`. This is the leak: `evictAgentSocket` drops the entry, but it returns
+    // early when the socket has no sessions left, which is precisely the case where every one of
+    // them was rebound. Without this line the map keeps a dead socket per restart, forever.
+    this.agentResources.delete(old)
+  }
+
   setResources(agentSocket: WebSocket, resources: AgentResources): void {
     this.agentResources.set(agentSocket, resources)
   }
@@ -199,6 +276,11 @@ export class SessionManager {
   setDeviceInfo(sessionId: string, info: { deviceName: string; osVersion: string }): void {
     const session = this.sessions.get(sessionId)
     if (session) session.deviceInfo = info
+  }
+
+  markBootRequested(sessionId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (session) session.bootRequested = true
   }
 
   setReadySent(sessionId: string, value: boolean): void {

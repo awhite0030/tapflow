@@ -357,7 +357,7 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
 
     const start = Date.now()
     const res = await httpGet(port, `/api/v1/sessions/${sessionId}/screenshot`, { Cookie: makeAuthCookie() })
-    expect(res.status).toBe(502)                 // rejected as Agent disconnected, not the 504 timeout
+    expect(res.status).toBe(502)                 // rejected outright, not left to the 504 timeout
     expect(Date.now() - start).toBeLessThan(300) // resolved before screenshotTimeoutMs
 
     agent1.close()
