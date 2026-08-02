@@ -146,6 +146,7 @@ export type RelayMessage =
   | { type: 'agents:listed'; sessions: SessionInfo[] }
   | { type: 'session:joined'; sessionId: string; capabilities?: string[] }
   | { type: 'session:terminated'; sessionId: string; reason: SessionTerminatedReason }
+  | { type: 'session:rebound'; sessionId: string; capabilities: string[] }
   | { type: 'session:chrome'; payload: ChromeData | { buttons: AndroidButton[]; streamType: 'h264' } }
   | { type: 'session:deviceInfo'; payload: DeviceInfo }
   | { type: 'device:booting' }

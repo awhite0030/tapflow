@@ -154,6 +154,12 @@ export type RelayToBrowser =
   | { type: 'stream:registered' }
   | { type: 'session:joined'; sessionId: string; capabilities: string[] }
   | { type: 'session:terminated'; sessionId: string; reason: SessionTerminatedReason }
+  // The agent behind this session restarted and the relay re-pointed the session at its new socket
+  // — same sessionId, nothing streaming. The viewer has to ask for the device again, because the
+  // codec negotiation and tier live in its own `device:boot` payload and nowhere the relay can see.
+  // `capabilities` rides along because `session:joined` is sent once and a restarted agent may
+  // advertise a different set (an upgrade is the usual reason to restart one).
+  | { type: 'session:rebound'; sessionId: string; capabilities: string[] }
   | { type: 'session:chrome'; payload: ChromePayload }
   | { type: 'session:deviceInfo'; payload: DeviceDetails }
   | { type: 'device:ready'; payload: { deviceId: string } }

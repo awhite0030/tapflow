@@ -486,6 +486,7 @@ export function AndroidViewer({
     <Tooltip>
       <TooltipTrigger asChild>
         <Button variant="ghost" size="icon" className="h-8 w-8" disabled={launching || installing}
+          aria-label="Launch app"
           onClick={() => { setLaunching(true); send({ type: 'app:launch', sessionId, buildId }) }}
         >
           {launching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
