@@ -49,6 +49,13 @@ expect(await waitForTypeOrNull(ws, 'device:ready', 0)).toBeNull()
 
 Two sockets have no ordering between them — an agent's `device:ready` and a browser's `session:start` can be handled in either order. A test that depends on one preceding the other needs `barrier` on the **sending** socket.
 
+### Narrowing is available but unused
+
+`waitForType<RelayMessage>(…)` works. Almost nothing does it, because every package excludes
+`src/__tests__` from `tsc` — a test file's types are stripped, never checked — so the narrowing
+would be decorative. The parameter exists so that bringing tests under `tsc` is a config change
+rather than a rewrite.
+
 ## HOW NOT
 
 - Do not import this from production code. It is `private` and unbuilt; a `src/` import would fail at publish time, not at review time.

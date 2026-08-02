@@ -81,22 +81,36 @@ function record(ws: WebSocket): Recording {
  */
 export const waitForOpen = (ws: WebSocket): Promise<void> => {
   record(ws)
-  return new Promise((resolve) => ws.once('open', resolve))
+  return new Promise((resolve, reject) => {
+    // Without the error branch a refused connection hangs until the suite timeout, and the
+    // failure names the assertion rather than the socket.
+    const onError = (err: Error) => { ws.off('open', onOpen); reject(err) }
+    const onOpen = () => { ws.off('error', onError); resolve() }
+    ws.once('open', onOpen)
+    ws.once('error', onError)
+  })
 }
 
-/** The next message of `type`, taken from the recording if it has already arrived. */
-export function waitForType(ws: WebSocket, type: string): Promise<SocketMessage> {
+/**
+ * The next message of `type`, taken from the recording if it has already arrived.
+ *
+ * The type parameter lets a caller narrow to its own wire type — `waitForType<RelayMessage>(…)`.
+ * Most call sites do not, because test files are outside `tsc` (every package excludes
+ * `src/__tests__`), so the narrowing would be decorative today. It is here so that stops being
+ * true without a rewrite.
+ */
+export function waitForType<T extends SocketMessage = SocketMessage>(ws: WebSocket, type: string): Promise<T> {
   const rec = record(ws)
   const i = rec.queued.findIndex((m) => m.type === type)
-  if (i >= 0) return Promise.resolve(rec.queued.splice(i, 1)[0]!)
-  return new Promise((resolve) => rec.waiters.push({ type, resolve }))
+  if (i >= 0) return Promise.resolve(rec.queued.splice(i, 1)[0]! as T)
+  return new Promise((resolve) => rec.waiters.push({ type, resolve: (m) => resolve(m as T) }))
 }
 
 /** The next message of any type. Same recording, same ordering guarantee. */
-export function waitForMessage(ws: WebSocket): Promise<SocketMessage> {
+export function waitForMessage<T extends SocketMessage = SocketMessage>(ws: WebSocket): Promise<T> {
   const rec = record(ws)
-  if (rec.queued.length > 0) return Promise.resolve(rec.queued.shift()!)
-  return new Promise((resolve) => rec.waiters.push({ type: null, resolve }))
+  if (rec.queued.length > 0) return Promise.resolve(rec.queued.shift()! as T)
+  return new Promise((resolve) => rec.waiters.push({ type: null, resolve: (m) => resolve(m as T) }))
 }
 
 /**
@@ -106,12 +120,16 @@ export function waitForMessage(ws: WebSocket): Promise<SocketMessage> {
  * proves the relay has finished with everything sent before it, which is an answer rather than a
  * guess, and it costs milliseconds instead of the timeout.
  */
-export function waitForTypeOrNull(ws: WebSocket, type: string, ms = 1000): Promise<SocketMessage | null> {
+export function waitForTypeOrNull<T extends SocketMessage = SocketMessage>(
+  ws: WebSocket,
+  type: string,
+  ms = 1000,
+): Promise<T | null> {
   const rec = record(ws)
   const i = rec.queued.findIndex((m) => m.type === type)
-  if (i >= 0) return Promise.resolve(rec.queued.splice(i, 1)[0]!)
+  if (i >= 0) return Promise.resolve(rec.queued.splice(i, 1)[0]! as T)
   return new Promise((resolve) => {
-    const waiter: Waiter = { type, resolve: (m) => { clearTimeout(timer); resolve(m) } }
+    const waiter: Waiter = { type, resolve: (m) => { clearTimeout(timer); resolve(m as T) } }
     rec.waiters.push(waiter)
     const timer = setTimeout(() => {
       const j = rec.waiters.indexOf(waiter)
@@ -131,9 +149,16 @@ export function waitForTypeOrNull(ws: WebSocket, type: string, ms = 1000): Promi
  * likely.
  *
  * `agents:list` is used because it is answered on the same socket regardless of role.
+ *
+ * Registers its waiter *before* sending and never reads the queue: arriving messages go to a
+ * waiter ahead of the queue, so this consumes the reply to its own request. Going through
+ * `waitForType` would take an `agents:listed` a test had queued earlier and return without any
+ * round-trip having happened — the barrier would prove nothing.
  */
-export async function barrier(ws: WebSocket): Promise<void> {
-  const done = waitForType(ws, 'agents:listed')
-  ws.send(JSON.stringify({ type: 'agents:list' }))
-  await done
+export function barrier(ws: WebSocket): Promise<void> {
+  const rec = record(ws)
+  return new Promise((resolve) => {
+    rec.waiters.push({ type: 'agents:listed', resolve: () => resolve() })
+    ws.send(JSON.stringify({ type: 'agents:list' }))
+  })
 }
