@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -6,43 +6,8 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb, getDb } from '../db'
 import type { RelayMessage } from '../types'
+import { waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 
-const waitForOpen = (ws: WebSocket) =>
-  new Promise<void>((resolve) => ws.once('open', resolve))
-
-const waitForType = (ws: WebSocket, type: string) =>
-  new Promise<RelayMessage>((resolve) => {
-    const listener = (data: Buffer) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
-      if (msg.type === type) {
-        ws.off('message', listener)
-        resolve(msg)
-      }
-    }
-    ws.on('message', listener)
-  })
-
-/** Resolves to the first message of any of `types`, or to null after `ms`. Used to assert that a
- *  reply arrives *promptly* — the defect under test is a caller waiting out its whole deadline.
- *
- *  The budget is generous on purpose. Every reply here is emitted in the same tick as the inbound
- *  message, so a passing run resolves in single-digit milliseconds and the number never costs
- *  anything; it only bounds the failing case. At 1s this went flaky under a full-monorepo run,
- *  where the relay competes with nine other packages' workers. */
-function firstOfOrTimeout(ws: WebSocket, types: string[], ms = 3000) {
-  return new Promise<RelayMessage | null>((resolve) => {
-    const timer = setTimeout(() => { ws.off('message', listener); resolve(null) }, ms)
-    const listener = (data: Buffer) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
-      if (types.includes(msg.type)) {
-        clearTimeout(timer)
-        ws.off('message', listener)
-        resolve(msg)
-      }
-    }
-    ws.on('message', listener)
-  })
-}
 
 // #445: every failure of app:install / app:launch has to reach the caller, carrying the sessionId
 // it was asked about. A dashboard viewer holds one session per socket so an unattributed error
@@ -80,7 +45,7 @@ describe('app command failures reach the caller (#445)', () => {
       type: 'agent:register',
       devices: [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }],
     }))
-    const reply = await waitForType(agent, 'agent:registered')
+    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
     const sessionId = reply.registeredSessions![0]!.sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
@@ -88,6 +53,20 @@ describe('app command failures reach the caller (#445)', () => {
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
     await waitForType(browser, 'session:joined')
     return { agent, browser, sessionId }
+  }
+
+  /** Blocks until the relay has finished dropping the sessions an agent owned.
+   *
+   *  Closing the agent socket starts that teardown; nothing orders it against the browser's next
+   *  request. Without this the same request answers `agent offline` or `Session not found`
+   *  depending on which won — measured at roughly 1 run in 10, which is exactly the kind of
+   *  flake that gets a real assertion deleted instead of fixed. */
+  async function untilAgentSessionsGone(browser: WebSocket) {
+    await vi.waitFor(async () => {
+      const listed = waitForType(browser, 'agents:listed')
+      browser.send(JSON.stringify({ type: 'agents:list' }))
+      expect((await listed).sessions ?? []).toHaveLength(0)
+    }, { timeout: 2000 })
   }
 
   function insertBuild(bundleId: string | null): number {
@@ -108,7 +87,7 @@ describe('app command failures reach the caller (#445)', () => {
     browser.send(JSON.stringify({ type: 'app:install', sessionId: 'no-such-session', buildId: 1 }))
     // A generic `error` cannot be correlated by construction — the caller cannot tell whose
     // request it answers, so it keeps waiting.
-    const msg = await firstOfOrTimeout(browser, ['app:install-error', 'error'])
+    const msg = await waitForTypeOrNull(browser, 'app:install-error')
 
     expect(msg?.type).toBe('app:install-error')
     expect(msg?.sessionId).toBe('no-such-session')
@@ -155,7 +134,7 @@ describe('app command failures reach the caller (#445)', () => {
     await closed
 
     browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId }))
-    const msg = await firstOfOrTimeout(browser, ['app:install-error', 'error'])
+    const msg = await waitForTypeOrNull(browser, 'app:install-error')
 
     expect(msg?.type).toBe('app:install-error')
     expect(msg?.sessionId).toBe(sessionId)
@@ -172,7 +151,7 @@ describe('app command failures reach the caller (#445)', () => {
     await closed
 
     browser.send(JSON.stringify({ type: 'app:launch', sessionId, buildId }))
-    const msg = await firstOfOrTimeout(browser, ['app:launch-error', 'error'])
+    const msg = await waitForTypeOrNull(browser, 'app:launch-error')
 
     expect(msg?.type).toBe('app:launch-error')
     expect(msg?.sessionId).toBe(sessionId)
@@ -186,10 +165,11 @@ describe('app command failures reach the caller (#445)', () => {
     const closed = new Promise<void>((r) => agent.on('close', () => r()))
     agent.close()
     await closed
+    await untilAgentSessionsGone(browser)
 
     browser.send(JSON.stringify({ type: 'device:boot', sessionId, payload: { deviceId: 'dev-1' } }))
     // Without this the viewer sits on "Waiting for first frame…" with nothing said.
-    const msg = await firstOfOrTimeout(browser, ['device:boot-error'])
+    const msg = await waitForTypeOrNull(browser, 'device:boot-error')
 
     expect(msg).not.toBeNull()
     expect(msg!.sessionId).toBe(sessionId)
@@ -212,7 +192,7 @@ describe('app command failures reach the caller (#445)', () => {
     const { agent, browser, sessionId } = await connectAgentAndBrowser()
 
     browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId }))
-    const msg = await firstOfOrTimeout(browser, ['app:install-error', 'error'])
+    const msg = await waitForTypeOrNull(browser, 'app:install-error')
 
     expect(msg?.type).toBe('app:install-error')
     expect(msg?.sessionId).toBe(sessionId)
@@ -232,7 +212,7 @@ describe('app command failures reach the caller (#445)', () => {
     const { agent, browser, sessionId } = await connectAgentAndBrowser()
 
     browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId }))
-    const msg = await firstOfOrTimeout(browser, ['app:install-error', 'error'])
+    const msg = await waitForTypeOrNull(browser, 'app:install-error')
 
     expect(msg?.type).toBe('app:install-error')
     expect(msg?.sessionId).toBe(sessionId)
@@ -244,7 +224,7 @@ describe('app command failures reach the caller (#445)', () => {
     const { agent, browser, sessionId } = await connectAgentAndBrowser()
 
     browser.send(JSON.stringify({ type: 'app:launch', sessionId, buildId: {} }))
-    const msg = await firstOfOrTimeout(browser, ['app:launch-error', 'error'])
+    const msg = await waitForTypeOrNull(browser, 'app:launch-error')
 
     expect(msg?.type).toBe('app:launch-error')
     expect(msg?.sessionId).toBe(sessionId)
@@ -264,9 +244,26 @@ describe('app command failures reach the caller (#445)', () => {
     // Still serving afterwards is the assertion: a thrown TypeError here would surface as an
     // unhandled error and, in production, take the process with it.
     browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId: 999999 }))
-    const msg = await firstOfOrTimeout(browser, ['app:install-error'])
+    const msg = await waitForTypeOrNull(browser, 'app:install-error')
 
     expect(msg?.type).toBe('app:install-error')
+
+    agent.close(); browser.close()
+  })
+
+  // `bootDevice` is the first call an MCP caller makes, so a stale session id reported as a dead
+  // Mac sends the reader after the wrong problem. An id that was never real is the case where the
+  // distinction is decidable — no teardown to race against.
+  it('calls an unknown session by its name, not a dead agent', async () => {
+    const { agent, browser } = await connectAgentAndBrowser()
+
+    browser.send(JSON.stringify({
+      type: 'device:boot', sessionId: 'no-such-session', payload: { deviceId: 'dev-1' },
+    }))
+    const msg = await waitForTypeOrNull(browser, 'device:boot-error')
+
+    expect(msg?.message).toBe('Session not found')
+    expect(msg?.sessionId).toBe('no-such-session')
 
     agent.close(); browser.close()
   })

@@ -5,15 +5,8 @@ import path from 'path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
-import type { RelayMessage } from '../types'
+import { waitForMessage, waitForOpen } from '@tapflowio/test-utils'
 
-const waitForOpen = (ws: WebSocket) =>
-  new Promise<void>((resolve) => ws.once('open', resolve))
-
-const waitForMessage = (ws: WebSocket) =>
-  new Promise<RelayMessage>((resolve) =>
-    ws.once('message', (data) => resolve(JSON.parse(data.toString()))),
-  )
 
 // Minimal stand-in for a ws socket — only the surface runHeartbeat() touches.
 type MockSocket = { readyState: number; ping: ReturnType<typeof vi.fn>; terminate: ReturnType<typeof vi.fn> }

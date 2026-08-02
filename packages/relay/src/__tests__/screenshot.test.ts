@@ -8,24 +8,11 @@ import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
 import type { RelayMessage } from '../types'
 import { signJwt } from '../middleware/auth'
+import { waitForOpen, waitForType } from '@tapflowio/test-utils'
 
 const FAKE_PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) // PNG magic bytes
 const FAKE_JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0]) // JPEG magic bytes
 
-const waitForOpen = (ws: WebSocket) =>
-  new Promise<void>((resolve) => ws.once('open', resolve))
-
-const waitForType = (ws: WebSocket, type: string) =>
-  new Promise<RelayMessage>((resolve) => {
-    const listener = (data: Buffer) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
-      if (msg.type === type) {
-        ws.off('message', listener)
-        resolve(msg)
-      }
-    }
-    ws.on('message', listener)
-  })
 
 function makeAuthCookie(): string {
   return `tapflow_token=${signJwt({ userId: 1, email: 'test@example.com', role: 'Admin' })}`
@@ -353,7 +340,7 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     const agent1 = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent1)
     agent1.send(JSON.stringify({ type: 'agent:register', agentId: 'uuid-1', platform: 'ios', devices }))
-    const reply = await waitForType(agent1, 'agent:registered')
+    const reply = await waitForType<RelayMessage>(agent1, 'agent:registered')
     const sessionId = reply.registeredSessions![0].sessionId
 
     // On the screenshot request, the same Mac reconnects on a fresh socket → evicts agent1.

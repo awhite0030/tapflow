@@ -128,6 +128,7 @@ import { isAudioSupported, launchMuteOnlyTap } from '@tapflowio/audiotap-helper'
 import type { ScrcpyControl } from '../scrcpy/ScrcpyControl'
 import type { ScrcpyFrame } from '../scrcpy/ScrcpyVideo'
 import type { AdbRunner } from '../adb'
+import { waitForOpen, waitForType } from '@tapflowio/test-utils'
 
 // Test-only view of a per-device state entry (the real DeviceState is not exported).
 interface TestState {
@@ -176,22 +177,6 @@ function mockAdb(booted = false): AdbWrapper {
   return adb
 }
 
-const waitForOpen = (ws: WebSocket) =>
-  new Promise<void>((r) => ws.once('open', r))
-
-const waitForType = (ws: WebSocket, type: string) =>
-  new Promise<Record<string, unknown>>((r) => {
-    const listener = (d: Buffer) => {
-      try {
-        const msg = JSON.parse(d.toString())
-        if (msg.type === type) {
-          ws.off('message', listener)
-          r(msg)
-        }
-      } catch { /* binary frame */ }
-    }
-    ws.on('message', listener)
-  })
 
 describe('AndroidAgent', () => {
   let relay: RelayServer

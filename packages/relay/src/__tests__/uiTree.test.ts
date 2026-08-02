@@ -8,6 +8,7 @@ import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
 import type { RelayMessage, UIElement } from '../types'
 import { signJwt } from '../middleware/auth'
+import { waitForOpen, waitForType } from '@tapflowio/test-utils'
 
 const ELEMENTS: UIElement[] = [
   {
@@ -20,20 +21,6 @@ const ELEMENTS: UIElement[] = [
   },
 ]
 
-const waitForOpen = (ws: WebSocket) =>
-  new Promise<void>((resolve) => ws.once('open', resolve))
-
-const waitForType = (ws: WebSocket, type: string) =>
-  new Promise<RelayMessage>((resolve) => {
-    const listener = (data: Buffer) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
-      if (msg.type === type) {
-        ws.off('message', listener)
-        resolve(msg)
-      }
-    }
-    ws.on('message', listener)
-  })
 
 function makeAuthCookie(): string {
   return `tapflow_token=${signJwt({ userId: 1, email: 'test@example.com', role: 'Admin' })}`
@@ -89,10 +76,10 @@ describe('GET /api/v1/sessions/:sessionId/ui-tree', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const reply = await new Promise<RelayMessage>((resolve) =>
-      agent.once('message', (d) => resolve(JSON.parse(d.toString()))),
-    )
-    const sessionId = reply.registeredSessions![0].sessionId
+    // Through the shared recorder, not a raw `once`: the recorder queues the frame either way, and
+    // consuming it here keeps a later wait on this socket from finding it.
+    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
+    const sessionId = reply.registeredSessions![0]!.sessionId
     return { agent, sessionId }
   }
 
