@@ -303,4 +303,6 @@ const touchHelper = MockTouchHelper.mock.results[0].value
 
 `mockSimctl(true)` (booted=true) → skips `device:booting` and delivers `device:ready` immediately.
 
-**`device:ready` is not a sync point.** With `booted=true` the relay registers the session as already booted and **replays a `device:ready` on `session:start`** (browser-reconnect support), so `waitForType(browser, 'device:ready')` can latch that stale ack rather than the one this boot emits — before any streamer or helper exists. Always `vi.waitFor` on the mock you are about to read (`MockCapture`, `MockTouchHelper`, …), never on the message alone. This is what made the codec-negotiation test flake at ~2/10 suite runs.
+**`device:ready` is not a sync point.** It is sent as soon as the stream is handed off, before the helpers a test is usually about to read are observable — so `waitForType(browser, 'device:ready')` returning does not mean `MockCapture` or `MockTouchHelper` has been constructed. Always `vi.waitFor` on the mock you are about to read, never on the message alone.
+
+There used to be a second reason: the relay replayed `device:ready` on `session:start` for any session whose device was up at registration, so the wait could latch an ack that belonged to no boot at all — that is what made the codec-negotiation test flake at ~2/10 suite runs. The replay now keys off whether the session announced a stream (relay `Session.readySent`), so a freshly registered `mockSimctl(true)` session no longer produces one. The `vi.waitFor` rule stands on the first reason alone.

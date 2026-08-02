@@ -19,16 +19,17 @@ const waitForType = (ws: WebSocket, type: string) =>
     ws.on('message', listener)
   })
 
-/** Null after `ms` instead of hanging — used to assert a message does *not* arrive. */
-function typeOrTimeout(ws: WebSocket, type: string, ms = 800) {
-  return new Promise<RelayMessage | null>((resolve) => {
-    const timer = setTimeout(() => { ws.off('message', listener); resolve(null) }, ms)
-    const listener = (data: Buffer) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
-      if (msg.type === type) { clearTimeout(timer); ws.off('message', listener); resolve(msg) }
-    }
-    ws.on('message', listener)
+/** Records every message of `type` from the moment it is attached. Paired with a round-trip
+ *  barrier below, this answers "did it arrive" without waiting on a clock: the replay is written
+ *  synchronously alongside `session:joined`, so anything that was coming has already been queued
+ *  by the time a later request completes. */
+function collect(ws: WebSocket, type: string): { got: () => RelayMessage | null } {
+  let seen: RelayMessage | null = null
+  ws.on('message', (data: Buffer) => {
+    const msg = JSON.parse(data.toString()) as RelayMessage
+    if (msg.type === type) seen ??= msg
   })
+  return { got: () => seen }
 }
 
 // #440: the relay replays `device:ready` so a browser that reconnects mid-stream gets a picture
@@ -75,9 +76,13 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
   async function joinAs(sessionId: string) {
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
-    const ready = typeOrTimeout(browser, 'device:ready')
+    const ready = collect(browser, 'device:ready')
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
     await waitForType(browser, 'session:joined')
+    // Barrier, not a sleep: a completed round-trip after the join means the relay has finished
+    // everything it was going to send for it.
+    browser.send(JSON.stringify({ type: 'agents:list' }))
+    await waitForType(browser, 'agents:listed')
     return { browser, ready }
   }
 
@@ -87,7 +92,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     const { browser, ready } = await joinAs(sessionId)
 
     // Before this fix the viewer was told the device was ready here, with no stream behind it.
-    expect(await ready).toBeNull()
+    expect(ready.got()).toBeNull()
 
     agent.close(); browser.close()
   })
@@ -98,13 +103,19 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     // would pass the test above.
     const { agent, sessionId } = await registerAgent('shutdown')
     agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
-    await new Promise((r) => setTimeout(r, 50))
 
+    // The IDR request rides the same branch, and it goes out during the join — so the listener has
+    // to exist before it. Asserting it here keeps it covered: moving it out of the replay block
+    // would otherwise be caught by nothing.
+    const idrPromise = waitForType(agent, 'stream:request-idr')
     const { browser, ready } = await joinAs(sessionId)
 
-    const msg = await ready
+    const msg = ready.got()
     expect(msg).not.toBeNull()
     expect((msg!.payload as { deviceId: string }).deviceId).toBe('devA')
+
+    const idr = await idrPromise
+    expect(idr.sessionId).toBe(sessionId)
 
     agent.close(); browser.close()
   })
@@ -113,11 +124,10 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     const { agent, sessionId } = await registerAgent('shutdown')
     agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
     agent.send(JSON.stringify({ type: 'device:shutdown-done', sessionId, payload: { deviceId: 'devA' } }))
-    await new Promise((r) => setTimeout(r, 50))
 
     const { browser, ready } = await joinAs(sessionId)
 
-    expect(await ready).toBeNull()
+    expect(ready.got()).toBeNull()
 
     agent.close(); browser.close()
   })
@@ -128,11 +138,33 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     const { agent, sessionId } = await registerAgent('shutdown')
     agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
     agent.send(JSON.stringify({ type: 'device:booting', sessionId }))
-    await new Promise((r) => setTimeout(r, 50))
 
     const { browser, ready } = await joinAs(sessionId)
 
-    expect(await ready).toBeNull()
+    expect(ready.got()).toBeNull()
+
+    agent.close(); browser.close()
+  })
+
+  // The agent does not always get to say the stream ended: `handleDeviceShutdown` tears the
+  // streamer down first and only then runs `simctl shutdown`, which can throw — and then no
+  // `device:shutdown-done` is sent at all. The stream socket closing is the signal that survives
+  // that, and without it a later join is told a stream exists and fires an install into nothing.
+  it('stops replaying when the stream socket goes away', async () => {
+    const { agent, sessionId } = await registerAgent('shutdown')
+    agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
+
+    const streamWs = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(streamWs)
+    streamWs.send(JSON.stringify({ type: 'stream:register', sessionId }))
+    await waitForType(streamWs, 'stream:registered')
+    const closed = new Promise<void>((r) => streamWs.on('close', () => r()))
+    streamWs.close()
+    await closed
+
+    const { browser, ready } = await joinAs(sessionId)
+
+    expect(ready.got()).toBeNull()
 
     agent.close(); browser.close()
   })

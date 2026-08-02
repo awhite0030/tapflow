@@ -8,4 +8,4 @@ The relay replays `device:ready` when a browser joins, so a tab that lost its so
 
 The replay now keys off whether this session announced a stream and has not since taken it back, tracked separately from the device's own state. `deviceStatus` is unchanged and still answers "is this device up" for the device list and the REST guards — the two questions were sharing one field.
 
-Also released when a reboot starts: `device:booting` already cleared the cached chrome for the same reason, and a browser joining mid-boot should not be promised a stream that is being torn down.
+Also released when a reboot starts and when the stream socket goes away. `device:booting` already cleared the cached chrome for the same reason, and a browser joining mid-boot should not be promised a stream that is being torn down. The stream socket matters because the agent does not always get to report the end: `handleDeviceShutdown` tears the streamer down before running `simctl shutdown`, and if that throws, no `device:shutdown-done` is ever sent.

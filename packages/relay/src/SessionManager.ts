@@ -180,11 +180,15 @@ export class SessionManager {
     this.streamSocketIndex.set(ws, session)
   }
 
+  /** The stream socket is the stream. Losing it means whatever we announced is no longer true —
+   *  and this is the only signal for it on the paths where the agent never reports back, such as a
+   *  `simctl shutdown` that throws after the streamer has already been torn down. */
   clearStreamSocket(sessionId: string): void {
     const session = this.sessions.get(sessionId)
     if (!session?.streamSocket) return
     this.streamSocketIndex.delete(session.streamSocket)
     session.streamSocket = null
+    session.readySent = false
   }
 
   setChromeData(sessionId: string, data: ChromePayload): void {
