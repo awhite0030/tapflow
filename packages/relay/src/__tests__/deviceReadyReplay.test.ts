@@ -6,41 +6,8 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
 import type { RelayMessage } from '../types'
+import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 
-const waitForOpen = (ws: WebSocket) =>
-  new Promise<void>((resolve) => ws.once('open', resolve))
-
-const waitForType = (ws: WebSocket, type: string) =>
-  new Promise<RelayMessage>((resolve) => {
-    const listener = (data: Buffer) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
-      if (msg.type === type) { ws.off('message', listener); resolve(msg) }
-    }
-    ws.on('message', listener)
-  })
-
-/** Records every message of `type` from the moment it is attached. Paired with a round-trip
- *  barrier below, this answers "did it arrive" without waiting on a clock: the replay is written
- *  synchronously alongside `session:joined`, so anything that was coming has already been queued
- *  by the time a later request completes. */
-function collect(ws: WebSocket, type: string): { got: () => RelayMessage | null } {
-  let seen: RelayMessage | null = null
-  ws.on('message', (data: Buffer) => {
-    const msg = JSON.parse(data.toString()) as RelayMessage
-    if (msg.type === type) seen ??= msg
-  })
-  return { got: () => seen }
-}
-
-/** A round-trip on one socket. WebSocket preserves order within a connection, so once the reply
- *  lands the relay has finished everything sent before it. The agent and the browser are separate
- *  connections with no ordering between them, so lifecycle messages sent on the agent socket need
- *  this before the browser acts on their effect — a sleep would only make that likely. */
-async function barrier(ws: WebSocket): Promise<void> {
-  const done = waitForType(ws, 'agents:listed')
-  ws.send(JSON.stringify({ type: 'agents:list' }))
-  await done
-}
 
 // #440: the relay replays `device:ready` so a browser that reconnects mid-stream gets a picture
 // without waiting for the next boot. The condition for that has to be "this session announced a
@@ -86,10 +53,12 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
   async function joinAs(sessionId: string) {
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
-    const ready = collect(browser, 'device:ready')
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
     await waitForType(browser, 'session:joined')
+    // The barrier proves the relay is done with the join, so whatever it was going to send is
+    // already recorded — `waitForTypeOrNull` reads that recording rather than racing it.
     await barrier(browser)
+    const ready = await waitForTypeOrNull(browser, 'device:ready', 0)
     return { browser, ready }
   }
 
@@ -99,7 +68,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     const { browser, ready } = await joinAs(sessionId)
 
     // Before this fix the viewer was told the device was ready here, with no stream behind it.
-    expect(ready.got()).toBeNull()
+    expect(ready).toBeNull()
 
     agent.close(); browser.close()
   })
@@ -118,9 +87,8 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     const idrPromise = waitForType(agent, 'stream:request-idr')
     const { browser, ready } = await joinAs(sessionId)
 
-    const msg = ready.got()
-    expect(msg).not.toBeNull()
-    expect((msg!.payload as { deviceId: string }).deviceId).toBe('devA')
+    expect(ready).not.toBeNull()
+    expect((ready!.payload as { deviceId: string }).deviceId).toBe('devA')
 
     const idr = await idrPromise
     expect(idr.sessionId).toBe(sessionId)
@@ -136,7 +104,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
 
     const { browser, ready } = await joinAs(sessionId)
 
-    expect(ready.got()).toBeNull()
+    expect(ready).toBeNull()
 
     agent.close(); browser.close()
   })
@@ -151,7 +119,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
 
     const { browser, ready } = await joinAs(sessionId)
 
-    expect(ready.got()).toBeNull()
+    expect(ready).toBeNull()
 
     agent.close(); browser.close()
   })
@@ -175,7 +143,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
 
     const { browser, ready } = await joinAs(sessionId)
 
-    expect(ready.got()).toBeNull()
+    expect(ready).toBeNull()
 
     agent.close(); browser.close()
   })

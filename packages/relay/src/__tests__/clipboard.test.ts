@@ -6,21 +6,8 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
 import type { RelayMessage } from '../types'
+import { waitForOpen, waitForType } from '@tapflowio/test-utils'
 
-const waitForOpen = (ws: WebSocket) =>
-  new Promise<void>((resolve) => ws.once('open', resolve))
-
-const waitForType = (ws: WebSocket, type: string) =>
-  new Promise<RelayMessage>((resolve) => {
-    const listener = (data: Buffer) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
-      if (msg.type === type) {
-        ws.off('message', listener)
-        resolve(msg)
-      }
-    }
-    ws.on('message', listener)
-  })
 
 describe('clipboard bridge relay routing', () => {
   let server: RelayServer

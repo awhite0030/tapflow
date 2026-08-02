@@ -25,6 +25,7 @@ Common rules are in the root [AGENTS.md](./AGENTS.md).
 | cli | [packages/cli/AGENTS.md](./packages/cli/AGENTS.md) | CLI UX rules |
 | mcp-server | [packages/mcp-server/AGENTS.md](./packages/mcp-server/AGENTS.md) | MCP server bridging tapflow to LLM agents |
 | flow-runner | [packages/flow-runner/AGENTS.md](./packages/flow-runner/AGENTS.md) | Deterministic YAML flow engine (automated QA axis) |
+| test-utils | [packages/test-utils/AGENTS.md](./packages/test-utils/AGENTS.md) | Test-only helpers shared across packages (private, never published) |
 
 ## Local Only
 

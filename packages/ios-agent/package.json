@@ -65,6 +65,7 @@
   },
   "devDependencies": {
     "@tapflowio/relay": "workspace:*",
+    "@tapflowio/test-utils": "workspace:*",
     "@types/node": "^20.19.43",
     "@types/ws": "^8.0.0",
     "typescript": "^5.0.0",

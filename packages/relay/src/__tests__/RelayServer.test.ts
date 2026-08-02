@@ -10,6 +10,7 @@ import { initDb, closeDb, getDb } from '../db'
 import { hashPat } from '../middleware/auth'
 import type { RelayMessage } from '../types'
 import { writeEnvelopeHeader, HEADER_SIZE, CODEC_AUDIO } from '@tapflowio/agent-core/utils'
+import { waitForMessage, waitForOpen, waitForType } from '@tapflowio/test-utils'
 
 // Sends a raw HTTP request, bypassing client-side URL normalization.
 const rawHttpGet = (targetPort: number, rawPath: string): Promise<number> =>
@@ -26,25 +27,7 @@ const rawHttpGet = (targetPort: number, rawPath: string): Promise<number> =>
     socket.on('error', reject)
   })
 
-const waitForOpen = (ws: WebSocket) =>
-  new Promise<void>((resolve) => ws.once('open', resolve))
 
-const waitForMessage = (ws: WebSocket) =>
-  new Promise<RelayMessage>((resolve) =>
-    ws.once('message', (data) => resolve(JSON.parse(data.toString())))
-  )
-
-const waitForType = (ws: WebSocket, type: string) =>
-  new Promise<RelayMessage>((resolve) => {
-    const listener = (data: Buffer) => {
-      const msg = JSON.parse(data.toString())
-      if (msg.type === type) {
-        ws.off('message', listener)
-        resolve(msg)
-      }
-    }
-    ws.on('message', listener)
-  })
 
 describe('RelayServer', () => {
   let server: RelayServer
@@ -1160,10 +1143,10 @@ describe('RelayServer', () => {
     agent.close()
     await new Promise((resolve) => setTimeout(resolve, 50))
 
-    const msgPromise = waitForMessage(browser)
+    // By type, not "the next message": losing the agent also produces a `session:terminated`, and
+    // whichever lands first is not this test's subject.
     browser.send(JSON.stringify({ type: 'open-url', sessionId, payload: { url: 'myapp://home' } }))
-    const received = await msgPromise
-    expect(received.type).toBe('open-url:error')
+    const received = await waitForType(browser, 'open-url:error')
     expect(received.message).toBe('agent offline')
 
     browser.close()

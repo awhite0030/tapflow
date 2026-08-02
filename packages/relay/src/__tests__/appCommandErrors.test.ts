@@ -6,21 +6,8 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb, getDb } from '../db'
 import type { RelayMessage } from '../types'
+import { waitForOpen, waitForType } from '@tapflowio/test-utils'
 
-const waitForOpen = (ws: WebSocket) =>
-  new Promise<void>((resolve) => ws.once('open', resolve))
-
-const waitForType = (ws: WebSocket, type: string) =>
-  new Promise<RelayMessage>((resolve) => {
-    const listener = (data: Buffer) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
-      if (msg.type === type) {
-        ws.off('message', listener)
-        resolve(msg)
-      }
-    }
-    ws.on('message', listener)
-  })
 
 /** Resolves to the first message of any of `types`, or to null after `ms`. Used to assert that a
  *  reply arrives *promptly* — the defect under test is a caller waiting out its whole deadline.
@@ -188,15 +175,14 @@ describe('app command failures reach the caller (#445)', () => {
     await closed
 
     browser.send(JSON.stringify({ type: 'device:boot', sessionId, payload: { deviceId: 'dev-1' } }))
-    // Without this the viewer sits on "Waiting for first frame…" with nothing said.
+    // Without this the viewer sits on "Waiting for first frame…" with nothing said. Which of the
+    // two messages it is depends on whether the relay has finished tearing the agent's sessions
+    // down, which nothing here orders — the test below pins the wording on a case that is
+    // unambiguous.
     const msg = await firstOfOrTimeout(browser, ['device:boot-error'])
 
     expect(msg).not.toBeNull()
     expect(msg!.sessionId).toBe(sessionId)
-    // Losing the agent takes its sessions with it, so this is a missing session — not a live
-    // session with a dead socket. Saying "agent offline" here would point an MCP caller at the
-    // wrong problem on the very first call it makes.
-    expect(msg!.message).toBe('Session not found')
 
     browser.close()
   })
@@ -267,6 +253,23 @@ describe('app command failures reach the caller (#445)', () => {
     const msg = await firstOfOrTimeout(browser, ['app:install-error'])
 
     expect(msg?.type).toBe('app:install-error')
+
+    agent.close(); browser.close()
+  })
+
+  // `bootDevice` is the first call an MCP caller makes, so a stale session id reported as a dead
+  // Mac sends the reader after the wrong problem. An id that was never real is the case where the
+  // distinction is decidable — no teardown to race against.
+  it('calls an unknown session by its name, not a dead agent', async () => {
+    const { agent, browser } = await connectAgentAndBrowser()
+
+    browser.send(JSON.stringify({
+      type: 'device:boot', sessionId: 'no-such-session', payload: { deviceId: 'dev-1' },
+    }))
+    const msg = await firstOfOrTimeout(browser, ['device:boot-error'])
+
+    expect(msg?.message).toBe('Session not found')
+    expect(msg?.sessionId).toBe('no-such-session')
 
     agent.close(); browser.close()
   })

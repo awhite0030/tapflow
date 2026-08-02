@@ -71,6 +71,7 @@ import { AudioCaptureStreamer } from '../AudioCaptureStreamer'
 import { launchAudioHelper } from '@tapflowio/audiotap-helper'
 import { SimctlWrapper } from '../SimctlWrapper'
 import { TouchHelper } from '../TouchHelper'
+import { waitForOpen, waitForType } from '@tapflowio/test-utils'
 const MockTouchHelper = vi.mocked(TouchHelper)
 const MockAudioStreamer = vi.mocked(AudioCaptureStreamer)
 const mockLaunchAudioHelper = vi.mocked(launchAudioHelper)
@@ -89,22 +90,6 @@ const internals = (agent: IOSAgent): IOSAgentInternals => agent as unknown as IO
 const HID_BACKSPACE = 0x2A
 const HID_KEY_A = 0x04
 
-const waitForOpen = (ws: WebSocket) =>
-  new Promise<void>((r) => ws.once('open', r))
-
-const waitForType = (ws: WebSocket, type: string) =>
-  new Promise<Record<string, unknown>>((r) => {
-    const listener = (d: Buffer) => {
-      try {
-        const msg = JSON.parse(d.toString())
-        if (msg.type === type) {
-          ws.off('message', listener)
-          r(msg)
-        }
-      } catch { /* binary frame — ignore */ }
-    }
-    ws.on('message', listener)
-  })
 
 let pasteboard = ''
 const isSentinelish = (v: string): boolean => v.startsWith('\u200Btapflow-clipboard-')
