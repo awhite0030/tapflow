@@ -1057,13 +1057,19 @@ describe('RelayServer', () => {
     browser.close()
   })
 
-  it('requests an IDR from the agent when a browser joins a booted device', async () => {
+  // The trigger is the agent having announced a stream, not the device having been up at register
+  // time. This used to register with `status: 'booted'` and join — which is the case #440 was
+  // about: a session for an already-running simulator looked ready before the agent touched it.
+  it('requests an IDR from the agent when a browser joins a streaming session', async () => {
     const devices = [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'booted' }]
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
     const { registeredSessions } = await waitForMessage(agent)
     const sessionId = registeredSessions![0].sessionId
+
+    agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
+    await new Promise((r) => setTimeout(r, 50))
 
     const idrPromise = waitForType(agent, 'stream:request-idr')
     const browser = new WebSocket(`ws://localhost:${port}`)

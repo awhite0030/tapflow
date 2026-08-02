@@ -616,6 +616,7 @@ export class RelayServer {
         const session = this.sessions.get(msg.sessionId!)
         if (!session) break
         this.sessions.updateDeviceStatus(session.id, 'shutdown')
+        this.sessions.setReadySent(session.id, false)
         if (session.browserSocket?.readyState === WebSocket.OPEN) {
           session.browserSocket.send(JSON.stringify(msg))
         }
@@ -625,6 +626,7 @@ export class RelayServer {
         const session = this.sessions.get(msg.sessionId!)
         if (!session) break
         this.sessions.updateDeviceStatus(session.id, 'booted')
+        this.sessions.setReadySent(session.id, true)
         if (session.browserSocket?.readyState === WebSocket.OPEN) {
           session.browserSocket.send(JSON.stringify(msg))
         }
@@ -886,8 +888,11 @@ export class RelayServer {
     if (session.deviceInfo) {
       this.sendTo(ws, { type: 'session:deviceInfo', payload: session.deviceInfo })
     }
-    // Replay device:ready if the device is already booted (browser WS blip reconnect)
-    if (session.deviceStatus === 'booted') {
+    // Replay device:ready only if this session actually announced one (browser WS blip reconnect).
+    // Not `deviceStatus`: that starts from the agent's `simctl list` snapshot, so a session for a
+    // simulator that was already running would fire this before the agent had done anything —
+    // telling the viewer a stream exists when none does (#440).
+    if (session.readySent) {
       this.sendTo(ws, { type: 'device:ready', payload: { deviceId: session.deviceId } })
       // (Re)joining a live stream: ask the agent for an IDR so this viewer gets a decodable
       // keyframe immediately, instead of waiting for the next periodic one — and so it isn't

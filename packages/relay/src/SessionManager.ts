@@ -17,7 +17,14 @@ export interface Session {
   deviceId: string
   deviceName: string
   devicePlatform: string
+  /** What simctl/adb reported about the device. Drives the device list and the REST guards —
+   *  "is this device up", which is a different question from the one below. */
   deviceStatus: DeviceStatus
+  /** Whether the relay has told a browser this session is streaming, and has not since taken it
+   *  back. This is what the `device:ready` replay keys off. `deviceStatus` cannot answer it: it
+   *  starts from the agent's `simctl list` snapshot, so a simulator that was already running has a
+   *  session marked `booted` before the agent has done anything for it (#440). */
+  readySent: boolean
   deviceOsVersion?: string
   chromeData?: ChromePayload
   deviceInfo?: DeviceDetails
@@ -57,6 +64,7 @@ export class SessionManager {
         deviceName: d.name,
         devicePlatform: d.platform,
         deviceStatus: d.status as DeviceStatus,
+        readySent: false,
         deviceOsVersion: d.osVersion,
         idleTimer: null,
       })
@@ -159,6 +167,9 @@ export class SessionManager {
     session.chromeData = undefined
     session.deviceInfo = undefined
     session.deviceStatus = 'shutdown'
+    // Called on `device:booting`: whatever we announced before is no longer true, and replaying it
+    // to a browser that joins mid-boot would promise a stream that is being torn down.
+    session.readySent = false
   }
 
   setStreamSocket(sessionId: string, ws: WebSocket): void {
@@ -184,6 +195,11 @@ export class SessionManager {
   setDeviceInfo(sessionId: string, info: { deviceName: string; osVersion: string }): void {
     const session = this.sessions.get(sessionId)
     if (session) session.deviceInfo = info
+  }
+
+  setReadySent(sessionId: string, value: boolean): void {
+    const session = this.sessions.get(sessionId)
+    if (session) session.readySent = value
   }
 
   updateDeviceStatus(sessionId: string, status: DeviceStatus): void {
