@@ -1069,7 +1069,11 @@ describe('RelayServer', () => {
     const sessionId = registeredSessions![0].sessionId
 
     agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
-    await new Promise((r) => setTimeout(r, 50))
+    // Round-trip on the agent socket rather than a sleep: the browser joins on a different
+    // connection, so nothing orders its session:start against the device:ready above.
+    const listed = waitForType(agent, 'agents:listed')
+    agent.send(JSON.stringify({ type: 'agents:list' }))
+    await listed
 
     const idrPromise = waitForType(agent, 'stream:request-idr')
     const browser = new WebSocket(`ws://localhost:${port}`)

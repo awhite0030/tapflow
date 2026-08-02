@@ -32,6 +32,16 @@ function collect(ws: WebSocket, type: string): { got: () => RelayMessage | null 
   return { got: () => seen }
 }
 
+/** A round-trip on one socket. WebSocket preserves order within a connection, so once the reply
+ *  lands the relay has finished everything sent before it. The agent and the browser are separate
+ *  connections with no ordering between them, so lifecycle messages sent on the agent socket need
+ *  this before the browser acts on their effect — a sleep would only make that likely. */
+async function barrier(ws: WebSocket): Promise<void> {
+  const done = waitForType(ws, 'agents:listed')
+  ws.send(JSON.stringify({ type: 'agents:list' }))
+  await done
+}
+
 // #440: the relay replays `device:ready` so a browser that reconnects mid-stream gets a picture
 // without waiting for the next boot. The condition for that has to be "this session announced a
 // stream", not "the device was up when the agent registered" — the relay opens a session for every
@@ -79,10 +89,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     const ready = collect(browser, 'device:ready')
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
     await waitForType(browser, 'session:joined')
-    // Barrier, not a sleep: a completed round-trip after the join means the relay has finished
-    // everything it was going to send for it.
-    browser.send(JSON.stringify({ type: 'agents:list' }))
-    await waitForType(browser, 'agents:listed')
+    await barrier(browser)
     return { browser, ready }
   }
 
@@ -103,6 +110,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     // would pass the test above.
     const { agent, sessionId } = await registerAgent('shutdown')
     agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
+    await barrier(agent)
 
     // The IDR request rides the same branch, and it goes out during the join — so the listener has
     // to exist before it. Asserting it here keeps it covered: moving it out of the replay block
@@ -124,6 +132,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     const { agent, sessionId } = await registerAgent('shutdown')
     agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
     agent.send(JSON.stringify({ type: 'device:shutdown-done', sessionId, payload: { deviceId: 'devA' } }))
+    await barrier(agent)
 
     const { browser, ready } = await joinAs(sessionId)
 
@@ -138,6 +147,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     const { agent, sessionId } = await registerAgent('shutdown')
     agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
     agent.send(JSON.stringify({ type: 'device:booting', sessionId }))
+    await barrier(agent)
 
     const { browser, ready } = await joinAs(sessionId)
 
@@ -153,6 +163,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
   it('stops replaying when the stream socket goes away', async () => {
     const { agent, sessionId } = await registerAgent('shutdown')
     agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
+    await barrier(agent)
 
     const streamWs = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(streamWs)
