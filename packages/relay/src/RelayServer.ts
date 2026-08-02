@@ -185,8 +185,14 @@ export class RelayServer {
     // `.env` line would pass a `>= 0` check and give a zero-length window.
     const graceRaw = process.env['TAPFLOW_AGENT_GRACE_MS']?.trim()
     const graceEnv = graceRaw ? Number(graceRaw) : NaN
-    this.agentGraceMs = options.agentGraceMs
-      ?? (Number.isFinite(graceEnv) && graceEnv >= 0 ? graceEnv : DEFAULT_AGENT_GRACE_MS)
+    const graceUsable = Number.isFinite(graceEnv) && graceEnv >= 0
+    this.agentGraceMs = options.agentGraceMs ?? (graceUsable ? graceEnv : DEFAULT_AGENT_GRACE_MS)
+    // Say so rather than only documenting it. Both times this parsing was wrong the symptom was
+    // the same — the hold switched off and nothing mentioned it — and somebody who types `15s` is
+    // reading their terminal, not the configuration table.
+    if (options.agentGraceMs === undefined && graceRaw && !graceUsable) {
+      logger.warn(`TAPFLOW_AGENT_GRACE_MS="${graceRaw}" is not a usable number of milliseconds — using ${DEFAULT_AGENT_GRACE_MS}`)
+    }
     this.sessions = new SessionManager({ idleTimeoutMs: options.idleTimeoutMs })
     this.publicDir = options.publicDir ?? path.join(import.meta.dirname, '../public')
     this.uploadsDir = options.uploadsDir ?? path.join(import.meta.dirname, '../uploads')

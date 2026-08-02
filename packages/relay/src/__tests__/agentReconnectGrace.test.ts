@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -384,11 +384,15 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
       const before = process.env['TAPFLOW_AGENT_GRACE_MS']
       if (value === undefined) delete process.env['TAPFLOW_AGENT_GRACE_MS']
       else process.env['TAPFLOW_AGENT_GRACE_MS'] = value
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
       try {
         // The window is private and has no observable short of waiting one out, which is the whole
         // problem with these values — a broken one expires before anything can watch for it.
-        return (new RelayServer({ port: 0 }) as unknown as { agentGraceMs: number }).agentGraceMs
+        const ms = (new RelayServer({ port: 0 }) as unknown as { agentGraceMs: number }).agentGraceMs
+        const warned = warn.mock.calls.map((c) => c.join(' ')).join('\n')
+        return { ms, warned }
       } finally {
+        warn.mockRestore()
         if (before === undefined) delete process.env['TAPFLOW_AGENT_GRACE_MS']
         else process.env['TAPFLOW_AGENT_GRACE_MS'] = before
       }
@@ -396,15 +400,36 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
 
     it.each([
       ['unset', undefined, 15_000],
-      ['empty', '', 15_000],
-      ['blank', '   ', 15_000],
-      ['non-numeric', 'abc', 15_000],
+      ['an empty value', '', 15_000],
+      ['a blank value', '   ', 15_000],
+      ['a non-number', 'abc', 15_000],
       ['a unit suffix', '15s', 15_000],
-      ['negative', '-5', 15_000],
+      ['a negative', '-5', 15_000],
       ['a real value', '3000', 3_000],
-      ['zero, meaning no hold', '0', 0],
-    ])('takes %s as %s', (_label, value, expected) => {
-      expect(graceFor(value as string | undefined)).toBe(expected)
+      ['zero, meaning no hold at all', '0', 0],
+    ])('reads %s as the %sms window', (label, value, expected) => {
+      expect(graceFor(value as string | undefined).ms, label as string).toBe(expected)
+    })
+
+    it.each([
+      ['a unit suffix', '15s'],
+      ['a non-number', 'abc'],
+      ['a negative', '-5'],
+    ])('warns about %s instead of falling back quietly', (_label, value) => {
+      // Documenting the fallback is not enough. Both times this line was wrong the symptom was the
+      // hold switching off with nothing said, and someone who typed `15s` is looking at a terminal
+      // rather than at the configuration table.
+      const { warned } = graceFor(value)
+      expect(warned).toContain('TAPFLOW_AGENT_GRACE_MS')
+      expect(warned).toContain(value)
+    })
+
+    it.each([
+      ['unset', undefined],
+      ['a usable value', '3000'],
+      ['zero', '0'],
+    ])('says nothing about %s', (_label, value) => {
+      expect(graceFor(value as string | undefined).warned).toBe('')
     })
   })
 
