@@ -689,7 +689,6 @@ export class RelayServer {
           if (msg.type === 'device:boot' && msg.payload && typeof msg.payload === 'object') {
             (msg.payload as Record<string, unknown>).external = this.wsExternal.get(ws) ?? false
           }
-          if (msg.type === 'device:boot') this.sessions.markBootRequested(session.id)
           session.agentSocket.send(JSON.stringify(msg))
         }
         break
@@ -726,21 +725,13 @@ export class RelayServer {
       case 'input:rotate':
       case 'input:keyboard:toggle': {
         const session = this.sessions.get(msg.sessionId!)
-        const agentUp = session?.agentSocket.readyState === WebSocket.OPEN
-        // An agent that has never been asked to boot this session holds no state for it and drops
-        // the input without acking — so forwarding a terminal input there buys silence. Answering
-        // is the same courtesy as the offline case below, for a cause the caller cannot see: after
-        // a restart the socket is open and healthy, it is simply a different process (#426).
-        if (agentUp && (session.bootRequested || !TERMINAL_INPUT_TYPES.has(msg.type))) {
+        if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
         } else if (TERMINAL_INPUT_TYPES.has(msg.type) && ws.readyState === WebSocket.OPEN) {
           // Agent offline or session evicted: a terminal input can't be dispatched.
           // Reply to the sender (the MCP/browser socket) so it fails truthfully
           // instead of falling through to its optimistic 2s timeout.
-          this.sendTo(ws, {
-            type: 'input:error', sessionId: msg.sessionId!,
-            message: agentUp ? 'device not ready' : 'agent offline',
-          })
+          this.sendTo(ws, { type: 'input:error', sessionId: msg.sessionId!, message: 'agent offline' })
         }
         break
       }
@@ -847,7 +838,11 @@ export class RelayServer {
     // its socket before creating the new ones. Identity is agentId (unique per Mac) when present,
     // else agentName. (Heartbeat backstop for never-reconnecting agents: #313.)
     const identity = msg.agentId ?? msg.agentName
-    const devices = msg.devices ?? []
+    // Deduplicate first. Everything below is keyed by device id, so a payload naming one device
+    // twice would collapse to a single entry in `registeredSessions` while `create()` had already
+    // made two sessions — leaving one the agent is never told about. That is the same orphan the
+    // rebind exists to prevent, arriving by a different door.
+    const devices = [...new Map((msg.devices ?? []).map((d) => [d.id, d])).values()]
     const agent = {
       agentId: msg.agentId, agentName: msg.agentName,
       agentPlatform: msg.platform, agentCapabilities: msg.capabilities,

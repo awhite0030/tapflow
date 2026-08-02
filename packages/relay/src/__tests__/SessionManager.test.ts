@@ -371,12 +371,53 @@ describe('SessionManager', () => {
       expect(sm.list()[0].devices[0].busy).toBe(false)
     })
 
-    it('separates sessions from different agents', () => {
+  })
+
+  describe('rebind()', () => {
+    const DEV = { id: 'devA', name: 'iPhone A', platform: 'ios', status: 'booted' }
+    const AGENT = { agentId: 'mac-1', agentName: 'the-mac', agentPlatform: 'ios', agentCapabilities: ['clipboard'] }
+
+    it('moves the session off the old socket entirely', () => {
+      // The end-to-end tests observe the session surviving; this observes the index itself, which is
+      // what the survival rests on. An id left in the old socket's set is reachable by the eviction
+      // that runs on that socket's close.
       const sm = new SessionManager()
-      sm.create(mockSocket(), [{ id: 'devA', name: 'A', platform: 'ios', status: 'shutdown' }], 'Mac1')
-      sm.create(mockSocket(), [{ id: 'devB', name: 'B', platform: 'ios', status: 'shutdown' }], 'Mac2')
-      const listed = sm.list()
-      expect(listed).toHaveLength(2)
+      const oldWs = mockSocket()
+      const newWs = mockSocket()
+      const [id] = sm.create(oldWs, [DEV])
+
+      sm.rebind(id!, newWs, DEV, AGENT)
+
+      expect(sm.getAllByAgentSocket(oldWs)).toEqual([])
+      expect(sm.getAllByAgentSocket(newWs).map((x) => x.id)).toEqual([id])
+    })
+
+    it('keeps the other sessions on a socket that only lost one', () => {
+      const sm = new SessionManager()
+      const oldWs = mockSocket()
+      const [idA, idB] = sm.create(oldWs, [DEV, { id: 'devB', name: 'iPhone B', platform: 'ios', status: 'booted' }])
+
+      sm.rebind(idA!, mockSocket(), DEV, AGENT)
+
+      expect(sm.getAllByAgentSocket(oldWs).map((x) => x.id)).toEqual([idB])
+    })
+
+    it('does nothing for a session id that no longer exists', () => {
+      // `handleAgentRegister` reads the sessions before it rebinds them, so a removal in between
+      // would otherwise index into undefined.
+      const sm = new SessionManager()
+      const ws = mockSocket()
+
+      expect(() => sm.rebind('no-such-session', ws, DEV, AGENT)).not.toThrow()
+      expect(sm.getAllByAgentSocket(ws)).toEqual([])
     })
   })
-})
+
+  it('separates sessions from different agents', () => {
+    const sm = new SessionManager()
+    sm.create(mockSocket(), [{ id: 'devA', name: 'A', platform: 'ios', status: 'shutdown' }], 'Mac1')
+    sm.create(mockSocket(), [{ id: 'devB', name: 'B', platform: 'ios', status: 'shutdown' }], 'Mac2')
+    const listed = sm.list()
+    expect(listed).toHaveLength(2)
+  })
+  })

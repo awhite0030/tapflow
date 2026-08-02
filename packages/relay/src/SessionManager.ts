@@ -25,13 +25,6 @@ export interface Session {
    *  starts from the agent's `simctl list` snapshot, so a simulator that was already running has a
    *  session marked `booted` before the agent has done anything for it (#440). */
   readySent: boolean
-  /** Whether the relay has forwarded a `device:boot` for this session to the agent socket it is
-   *  currently pointed at. Until it has, that agent holds no device state for the session and
-   *  drops its input without a word (`IOSAgent.handleRelayMessage`: `if (!state) break`) — so this
-   *  is what lets the relay answer instead of letting the caller time out. Distinct from
-   *  `readySent`, which also goes false when only the stream socket drops; the agent still has its
-   *  state then, and input still works. */
-  bootRequested: boolean
   deviceOsVersion?: string
   chromeData?: ChromePayload
   deviceInfo?: DeviceDetails
@@ -63,21 +56,24 @@ export class SessionManager {
   }
 
   /**
-   * The single place a session's agent-derived fields are computed. `create()` spreads it and
-   * `rebind()` assigns it, so neither one names these fields itself — adding one to `Session` has
-   * exactly one place it can be filled in, instead of two that must be kept in step. The rebind
-   * path is the one that would be forgotten, and nothing checks for it.
+   * The single place a session's fields are computed from an `agent:register`. `create()` spreads
+   * it and `rebind()` assigns it, so neither one names these fields itself — a field added here
+   * reaches both paths, and `rebind` is the one that would otherwise be forgotten.
+   *
+   * What is left out is what a register cannot change: the session's own id and sockets, and
+   * `deviceId`, which is the key the rebind matched on in the first place.
    */
   private static agentFields(
     agent: AgentIdentity,
     device: RawDevice,
-  ): Pick<Session, 'agentId' | 'agentName' | 'agentPlatform' | 'agentCapabilities' | 'deviceName' | 'deviceStatus' | 'deviceOsVersion'> {
+  ): Pick<Session, 'agentId' | 'agentName' | 'agentPlatform' | 'agentCapabilities' | 'deviceName' | 'devicePlatform' | 'deviceStatus' | 'deviceOsVersion'> {
     return {
       agentId: agent.agentId,
       agentName: agent.agentName,
       agentPlatform: agent.agentPlatform,
       agentCapabilities: agent.agentCapabilities,
       deviceName: device.name,
+      devicePlatform: device.platform,
       deviceStatus: device.status as DeviceStatus,
       deviceOsVersion: device.osVersion,
     }
@@ -95,9 +91,7 @@ export class SessionManager {
         browserSocket: null,
         streamSocket: null,
         deviceId: d.id,
-        devicePlatform: d.platform,
         readySent: false,
-        bootRequested: false,
         idleTimer: null,
       })
       agentIds.add(id)
@@ -213,8 +207,12 @@ export class SessionManager {
     // `clearStreamSocket` returns early when there is no stream socket, and a session that was
     // never streamed has none — so this cannot be left to it.
     session.readySent = false
-    // The new process has no device state for this session until it is asked to boot.
-    session.bootRequested = false
+    // Same argument as `readySent`, two fields over: `handleSessionStart` replays both to a browser
+    // that joins now, and both were measured by the process that just died. A viewer's own
+    // `device:boot` would clear them a moment later via `device:booting`, but an MCP-attached
+    // session never boots on its own and would keep them for as long as it lives.
+    session.chromeData = undefined
+    session.deviceInfo = undefined
 
     Object.assign(session, SessionManager.agentFields(agent, device))
 
@@ -276,11 +274,6 @@ export class SessionManager {
   setDeviceInfo(sessionId: string, info: { deviceName: string; osVersion: string }): void {
     const session = this.sessions.get(sessionId)
     if (session) session.deviceInfo = info
-  }
-
-  markBootRequested(sessionId: string): void {
-    const session = this.sessions.get(sessionId)
-    if (session) session.bootRequested = true
   }
 
   setReadySent(sessionId: string, value: boolean): void {

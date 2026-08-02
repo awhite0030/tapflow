@@ -18,4 +18,4 @@ Only devices the restarted agent still reports are kept. One that is gone gets t
 
 Two things that used to be handled by the eviction the rebind now skips: in-flight screenshot and UI-tree requests are rejected outright instead of waiting out their timeout, and a device that gets a new session is left out of `create()` so the same simulator cannot end up behind two of them. `agent:registered` pairs devices with sessions by id rather than by position, which stops holding the moment some devices are rebound and others are new.
 
-Also answers a terminal input the agent would have silently dropped. A restarted agent holds no state for a session until it is asked to boot, and an input for a session it does not know is discarded with no ack — while the relay's existing "agent offline" reply stays quiet, because the socket is open and healthy. The caller was left to time out, which the MCP client reports as success. It now gets `input:error` with `device not ready`.
+A device named twice in one register payload now gets one session rather than two, one of which the agent was never told about — the same orphan the rebind prevents, arriving by a different door.

@@ -58,12 +58,14 @@ describe('a session survives its agent restarting (#426)', () => {
     return { agent, byDevice, registered: reply.registeredSessions! }
   }
 
+  /** `joined` is handed back because `session:joined` is consumed here — it is the only message
+   *  carrying what the relay has stored about the agent, and a later wait would find it gone. */
   async function join(sessionId: string) {
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForType(browser, 'session:joined')
-    return browser
+    const joined = await waitForType<RelayMessage>(browser, 'session:joined')
+    return Object.assign(browser, { joined })
   }
 
   /** The device list as the dashboard sees it, flattened across agents. */
@@ -140,11 +142,15 @@ describe('a session survives its agent restarting (#426)', () => {
     first.agent.close(); second.agent.close()
   })
 
-  it('survives the old socket closing afterwards', async () => {
-    // The index move has an order requirement. Reassign `session.agentSocket` first and the id is
-    // deleted from the *new* socket's set while the old one keeps it — so this close, which fires
-    // late after an unclean drop, evicts the session that was just re-pointed. The relay terminates
-    // the old socket itself, so this is the ordinary path, not an exotic one.
+  it('leaves the old socket holding nothing', async () => {
+    // The index move has an order requirement, and this is the state that shows it kept: after the
+    // move the old socket owns no session ids, so nothing that walks them can reach the rebound one.
+    //
+    // Not named for a late close. Reversing the order does break this, but the session is already
+    // gone by then — `evictAgentSocket` runs in the same synchronous handler and takes it, so the
+    // failure the wrong order produces is immediate, and `keeps the session id and tells the viewer`
+    // is what catches it. `first.agent.close()` here is a formality: the relay has already called
+    // `terminate()` on that socket.
     const first = await register([DEV_A])
     const sessionId = first.byDevice.get('devA')!
     const browser = await join(sessionId)
@@ -152,13 +158,11 @@ describe('a session survives its agent restarting (#426)', () => {
     const second = await register([DEV_A])
     await waitForType(browser, 'session:rebound')
     first.agent.close()
-    // Round-trip the new socket: the close above is processed in order relative to this reply.
-    await barrier(second.agent)
 
     expect((await devices(second.agent)).map((d) => d.id)).toEqual(['devA'])
     expect(await waitForTypeOrNull(browser, 'session:terminated', 0)).toBeNull()
 
-    first.agent.close(); second.agent.close(); browser.close()
+    second.agent.close(); browser.close()
   })
 
   it('ends the session for a device the restarted agent no longer has', async () => {
@@ -194,21 +198,72 @@ describe('a session survives its agent restarting (#426)', () => {
 
   it('refreshes what the session records about its agent', async () => {
     // An upgrade is the usual reason to restart an agent, so its capabilities are exactly what a
-    // restart is likely to change — and `session:joined` is sent once, so the viewer has no other
-    // way to learn the new set. The device's own reported state comes across too: left at the old
+    // restart is likely to change — and `session:joined` is sent once, so a viewer has no other way
+    // to learn the new set. The device's own reported state comes across too: left at the old
     // value, a device that came back down would still read `booted` to the REST guards.
-    const first = await register([DEV_A], ['clipboard'])
+    const first = await register([DEV_A, DEV_B], ['clipboard'])
     const browser = await join(first.byDevice.get('devA')!)
 
-    const second = await register([{ ...DEV_A, name: 'iPhone A (renamed)', status: 'shutdown' }], ['clipboard', 'audio'])
+    const second = await register(
+      [{ ...DEV_A, name: 'iPhone A (renamed)', status: 'shutdown' }, DEV_B],
+      ['clipboard', 'audio'],
+    )
 
     const rebound = await waitForType<RelayMessage>(browser, 'session:rebound')
     expect(rebound.capabilities).toEqual(['clipboard', 'audio'])
+    // ...but that one only proves the register frame was echoed: the relay copies `msg.capabilities`
+    // into it directly, so it holds even if the session was never updated. `session:joined` is what
+    // reads `session.agentCapabilities`, so joining devB — rebound too, and with no browser on it —
+    // is what observes the stored value.
+    const other = await join(first.byDevice.get('devB')!)
+
     const [devA] = await devices(second.agent)
     expect(devA!.status).toBe('shutdown')
     expect(devA!.name).toBe('iPhone A (renamed)')
 
-    first.agent.close(); second.agent.close(); browser.close()
+    first.agent.close(); second.agent.close(); browser.close(); other.close()
+    // Asserted last so the sockets above are closed even when this is the failure.
+    expect(other.joined.capabilities).toEqual(['clipboard', 'audio'])
+  })
+
+  it('tells the agent about every session it made, even for a repeated device', async () => {
+    // Everything here is keyed by device id, so a payload naming one device twice used to collapse
+    // to a single `registeredSessions` entry while `create()` had already made two sessions —
+    // orphaning one. Agents do not normally send duplicates; the relay does not get to assume it.
+    const { agent, registered } = await register([DEV_A, DEV_A])
+
+    const ids = new Set(registered.map((r) => r.sessionId))
+    expect((await devices(agent)).map((d) => d.id)).toEqual(['devA'])
+    expect(ids.size).toBe(registered.length)
+
+    agent.close()
+  })
+
+  it('does not replay the dead agent\'s geometry to a browser that joins next', async () => {
+    // `handleSessionStart` replays `session:chrome` and `session:deviceInfo` the same way it replays
+    // `device:ready`, and all three were measured by the process that just died. A viewer would
+    // clear them itself a moment later with `device:boot`; an MCP-attached session never boots on
+    // its own, so for it they would simply be wrong for as long as it lives.
+    const first = await register([DEV_A])
+    const sessionId = first.byDevice.get('devA')!
+    const browserA = await join(sessionId)
+    first.agent.send(JSON.stringify({ type: 'session:chrome', sessionId, payload: { tag: 'old-agent' } }))
+    first.agent.send(JSON.stringify({
+      type: 'session:deviceInfo', sessionId, payload: { deviceName: 'stale', osVersion: '17.0' },
+    }))
+    await waitForType(browserA, 'session:deviceInfo')
+
+    const second = await register([DEV_A])
+    await waitForType(browserA, 'session:rebound')
+    browserA.close()
+    await barrier(second.agent)
+
+    const browserB = await join(sessionId)
+    await barrier(browserB)
+    expect(await waitForTypeOrNull(browserB, 'session:chrome', 0)).toBeNull()
+    expect(await waitForTypeOrNull(browserB, 'session:deviceInfo', 0)).toBeNull()
+
+    first.agent.close(); second.agent.close(); browserB.close()
   })
 
   it('stops claiming the session is streaming', async () => {
@@ -270,45 +325,30 @@ describe('a session survives its agent restarting (#426)', () => {
     first.agent.close(); second.agent.close(); browser.close()
   })
 
-  it('answers a terminal input the restarted agent would have dropped', async () => {
-    // The new process holds no device state for this session until it is asked to boot, and an
-    // input for a session it does not know is dropped with no ack at all
-    // (`IOSAgent.handleRelayMessage`: `if (!state) break`). The socket is open and healthy, so the
-    // relay's "agent offline" branch does not fire either — the caller just waits, and the MCP
-    // client turns that wait into a reported success.
-    const first = await register([DEV_A])
-    const sessionId = first.byDevice.get('devA')!
-    const browser = await join(sessionId)
-    browser.send(JSON.stringify({ type: 'device:boot', sessionId, payload: { deviceId: 'devA' } }))
-    await barrier(browser)
-
-    const second = await register([DEV_A])
-    await waitForType(browser, 'session:rebound')
-
-    browser.send(JSON.stringify({ type: 'input:touch:end', sessionId, payload: { x: 1, y: 1 } }))
-
-    const err = await waitForType<RelayMessage>(browser, 'input:error')
-    expect(err.message).toBe('device not ready')
-    // ...and the new agent was not sent an input it would have thrown away.
-    expect(await waitForTypeOrNull(second.agent, 'input:touch:end', 0)).toBeNull()
-
-    first.agent.close(); second.agent.close(); browser.close()
-  })
-
-  it('goes back to forwarding input once the device is asked for again', async () => {
-    // The scope of the answer above is "this agent has not been asked to boot this session". If it
-    // outlived the rebind it would suppress input for the rest of the session.
+  it('forwards input to the restarted agent instead of answering for it', async () => {
+    // A relay-side "the device is not ready" reply was written here and then removed: it was built
+    // on the belief that a restarted agent knows nothing about the session until it is asked to
+    // boot, and drops its input silently. That is false. The relay hands the new socket the kept
+    // session id in `agent:registered`, and the agent seeds a device state for every pair it is
+    // given (`IOSAgent.initDeviceStates`) — so `if (!state) break` never fires, and the agent
+    // answers `input:error: input channel not ready` on its own.
+    //
+    // Answering here instead costs correctness twice over: `input:touch:start` is not a terminal
+    // type, so it would still be forwarded while its `:end` was refused, leaving the device holding
+    // a press that never lifts — and `run_flow` never boots at all, so its first `tapOn` would fail
+    // on a device that is up and working. This pins the forwarding so none of that comes back.
     const first = await register([DEV_A])
     const sessionId = first.byDevice.get('devA')!
     const browser = await join(sessionId)
     const second = await register([DEV_A])
     await waitForType(browser, 'session:rebound')
 
-    browser.send(JSON.stringify({ type: 'device:boot', sessionId, payload: { deviceId: 'devA' } }))
-    await waitForType(second.agent, 'device:boot')
+    browser.send(JSON.stringify({ type: 'input:touch:start', sessionId, payload: { x: 1, y: 1 } }))
     browser.send(JSON.stringify({ type: 'input:touch:end', sessionId, payload: { x: 1, y: 1 } }))
 
+    await expect(waitForType(second.agent, 'input:touch:start')).resolves.toBeTruthy()
     await expect(waitForType(second.agent, 'input:touch:end')).resolves.toBeTruthy()
+    // Both halves of the gesture, and nothing invented on the session's behalf.
     expect(await waitForTypeOrNull(browser, 'input:error', 0)).toBeNull()
 
     first.agent.close(); second.agent.close(); browser.close()
