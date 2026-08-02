@@ -459,9 +459,10 @@ describe('IOSAgent', () => {
       browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
 
-      // device:ready is sent after TouchHelper is created, but the relay also replays a
-      // device:ready on session:start for an already-booted device, so this may have latched
-      // the stale one — wait for the helper itself. (A vi.fn call log never lags.)
+      // device:ready is sent as the stream is handed off, which is not the same instant the helper
+      // becomes observable — wait for the helper itself. (A vi.fn call log never lags.)
+      // The relay used to replay a device:ready for any already-booted session too, which could
+      // latch an ack belonging to no boot; that is fixed, but this wait is still the right shape.
       await vi.waitFor(() => expect(MockTouchHelper.mock.results).toHaveLength(1), { timeout: 500 })
       const thInstance = MockTouchHelper.mock.results[0].value
       return { browser, agent, thInstance }
