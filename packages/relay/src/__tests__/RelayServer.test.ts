@@ -246,28 +246,38 @@ describe('RelayServer', () => {
   })
 
   it('tells an attached viewer its session ended when the agent disconnects (#426)', async () => {
-    const devices = [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'shutdown' }]
-    const agent = new WebSocket(`ws://localhost:${port}`)
-    await waitForOpen(agent)
-    agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
-    const sessionId = registeredSessions![0].sessionId
+    // Its own server with a near-zero hold: the session now outlives its agent's socket while the
+    // relay waits for that agent to come back, and the default window is far longer than any test
+    // should sit through. The notice itself is unchanged — only when it arrives.
+    const shortServer = new RelayServer({ port: 0, agentGraceMs: 20 })
+    try {
+      await shortServer.start()
+      const shortPort = (shortServer.address() as { port: number }).port
+      const devices = [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'shutdown' }]
+      const agent = new WebSocket(`ws://localhost:${shortPort}`)
+      await waitForOpen(agent)
+      agent.send(JSON.stringify({ type: 'agent:register', devices }))
+      const { registeredSessions } = await waitForMessage(agent)
+      const sessionId = registeredSessions![0].sessionId
 
-    const browser = new WebSocket(`ws://localhost:${port}`)
-    await waitForOpen(browser)
-    browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForType(browser, 'session:joined')
+      const browser = new WebSocket(`ws://localhost:${shortPort}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+      await waitForType(browser, 'session:joined')
 
-    // Without the notice the browser keeps a live socket addressed to a sessionId the relay has
-    // dropped: everything it sends is ignored and nothing streams back, with no way to tell.
-    const endedPromise = waitForType(browser, 'session:terminated')
-    agent.close()
-    const ended = await endedPromise
+      // Without the notice the browser keeps a live socket addressed to a sessionId the relay has
+      // dropped: everything it sends is ignored and nothing streams back, with no way to tell.
+      const endedPromise = waitForType(browser, 'session:terminated')
+      agent.close()
+      const ended = await endedPromise
 
-    expect(ended.sessionId).toBe(sessionId)
-    expect(ended.reason).toBe('agent-disconnected')
+      expect(ended.sessionId).toBe(sessionId)
+      expect(ended.reason).toBe('agent-disconnected')
 
-    browser.close()
+      browser.close()
+    } finally {
+      await shortServer.stop()
+    }
   })
 
   it('handles an agent disconnect with no viewer attached', async () => {
@@ -285,7 +295,9 @@ describe('RelayServer', () => {
     await agentClosed
 
     // The session had no browserSocket, so there is nobody to notify. The relay must skip it
-    // rather than throw — proven by it still answering, and by the session actually being gone.
+    // rather than throw — proven by it still answering, and by the device no longer being offered.
+    // Not the same as the session being gone: it is held for a returning agent (#426) and merely
+    // left out of the list, since nobody can pick it while its agent is away.
     const probe = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(probe)
     probe.send(JSON.stringify({ type: 'agents:list' }))

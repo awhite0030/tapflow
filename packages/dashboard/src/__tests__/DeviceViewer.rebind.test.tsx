@@ -240,6 +240,114 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     expect(installs()).toHaveLength(0)
   })
 
+  it('says the agent is away instead of leaving a frame that stopped updating', async () => {
+    // #426 stage 3. The relay holds the session while it waits for the agent, and this is the
+    // window the issue was originally about — a picture that looks live and is not. Dropping the
+    // frame is what makes the status card visible, so the tester reads words rather than a still.
+    live()
+    const frame = () => document.querySelectorAll('img[src^="data:image/png;base64,"]').length
+    expect(frame()).toBe(1)
+
+    act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
+
+    expect(frame()).toBe(0)
+    expect(screen.getByText(/waiting for it to come back/i)).toBeInTheDocument()
+  })
+
+  it('stops saying it once the agent is back', async () => {
+    // No `session:chrome` afterwards, deliberately. Delivering one mounts the platform viewer and
+    // takes the whole status card off screen, so the text would vanish whether the flag cleared or
+    // not — measured: the assertion held with the clearing line deleted. The reboot leaves the
+    // skeleton up, which is where this can still be read.
+    live()
+    act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
+    expect(screen.getByText(/waiting for it to come back/i)).toBeInTheDocument()
+
+    rebound()
+
+    expect(screen.queryByText(/waiting for it to come back/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/starting device/i)).toBeInTheDocument()
+  })
+
+  it('does not announce the restart twice', async () => {
+    // The status card has been saying the agent is away for the whole window. A toast at the moment
+    // that message is replaced tells the tester the same thing a second time.
+    const { toast } = await import('sonner')
+    live()
+    act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
+    vi.mocked(toast.info).mockClear()
+
+    rebound()
+
+    expect(toast.info).not.toHaveBeenCalled()
+  })
+
+  it('still announces a restart that arrived with no warning', async () => {
+    // The relay only sends `session:agent-away` to an attached browser. A viewer that joined after
+    // the hold started never saw it, so the toast is the only thing that tells it.
+    const { toast } = await import('sonner')
+    live()
+    vi.mocked(toast.info).mockClear()
+
+    rebound()
+
+    expect(toast.info).toHaveBeenCalledOnce()
+  })
+
+  it('does not report a failed boot during a recovery', async () => {
+    // The exact three messages a viewer gets when it re-joins a session whose agent is away: the
+    // join succeeds, the `session:joined` branch sends `device:boot` on the strength of it, and the
+    // relay refuses that with `agent offline`. Measured on the wire. The waiting state is the
+    // truth; a boot failure recorded underneath it is one status-card reordering away from telling
+    // the tester a recovery went wrong.
+    render(<DeviceViewer sessionId="s1" deviceId="dev-1" />)
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
+    act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
+    act(() => { deliver!({ type: 'device:boot-error', sessionId: 's1', message: 'agent offline' }) })
+
+    expect(screen.getByText(/waiting for it to come back/i)).toBeInTheDocument()
+    // Asserting here alone proves nothing: the status card ranks the waiting line above a boot
+    // failure, so it stays hidden whether or not it was recorded — measured, the assertion held
+    // with the suppression deleted. Clearing the waiting state is what exposes it, and a re-join is
+    // how that happens for real.
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
+
+    expect(screen.queryByText(/boot failed/i)).not.toBeInTheDocument()
+  })
+
+  it('clears the waiting state when a later join succeeds', async () => {
+    // A join that lands after the agent is back starts a clean session, and the flag is per-mount.
+    live()
+    act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
+    expect(screen.getByText(/waiting for it to come back/i)).toBeInTheDocument()
+
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
+
+    expect(screen.queryByText(/waiting for it to come back/i)).not.toBeInTheDocument()
+  })
+
+  it('gives up when the relay no longer knows the session', async () => {
+    // The other half of the browser-blip path: if the blip outlasts the relay's hold, the re-join
+    // is answered `Session not found` and nothing else is ever coming. Ignoring it — every plain
+    // `error` but one used to be ignored — leaves the tab waiting on a message that cannot arrive.
+    const onSessionEnded = vi.fn()
+    render(<DeviceViewer sessionId="s1" deviceId="dev-1" onSessionEnded={onSessionEnded} />)
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
+    act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
+
+    act(() => { deliver!({ type: 'error', message: 'Session not found' }) })
+
+    expect(onSessionEnded).toHaveBeenCalledWith('agent-disconnected')
+  })
+
+  it('ignores an away meant for another session', async () => {
+    live()
+
+    act(() => { deliver!({ type: 'session:agent-away', sessionId: 'other' }) })
+
+    expect(screen.queryByText(/waiting for it to come back/i)).not.toBeInTheDocument()
+  })
+
   it('ignores a rebind meant for another session', async () => {
     live()
     send.mockClear()

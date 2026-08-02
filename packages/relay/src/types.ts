@@ -11,6 +11,7 @@ export type MessageType =
   | 'session:end'
   | 'session:leave'
   | 'session:terminated'
+  | 'session:agent-away'
   | 'session:rebound'
   | 'stream:register'
   | 'stream:registered'
