@@ -159,6 +159,14 @@ export type RelayToBrowser =
   // codec negotiation and tier live in its own `device:boot` payload and nowhere the relay can see.
   // `capabilities` rides along because `session:joined` is sent once and a restarted agent may
   // advertise a different set (an upgrade is the usual reason to restart one).
+  // The socket carrying this session's agent went away and the relay is holding the session open
+  // in case the agent comes back. Nothing is streaming. Sent so the viewer can say what is going on
+  // instead of showing a frame that stopped updating — the symptom #426 opened with.
+  //
+  // While the same browser socket stays attached, at most one of `session:rebound` (it came back)
+  // or `session:terminated` (it did not) follows. Both are addressed to `browserSocket`, so a
+  // viewer that disconnects in between gets neither, and re-joining re-sends this one.
+  | { type: 'session:agent-away'; sessionId: string }
   | { type: 'session:rebound'; sessionId: string; capabilities: string[] }
   | { type: 'session:chrome'; payload: ChromePayload }
   | { type: 'session:deviceInfo'; payload: DeviceDetails }

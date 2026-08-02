@@ -69,6 +69,10 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   });
 
   const [joined, setJoined] = useState(false);
+  // The relay told us it is holding this session while its agent is gone (#426). Cleared by
+  // whichever answer follows — `session:rebound` if it came back, and `session:terminated` takes
+  // the viewer away entirely.
+  const [agentAway, setAgentAway] = useState(false);
   const [deviceReady, setDeviceReady] = useState(false);
   const [chrome, setChrome] = useState<ChromeData | AndroidChrome | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -115,6 +119,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // look like a rebind — suppressing installs for the rest of the mount.
       rebindRef.current = { pending: 0, appInstalled: false };
       setJoined(true);
+      setAgentAway(false);
       setAgentCapabilities(msg.capabilities ?? []);
       // Tell the agent up front whether this browser can decode H.264 so it picks the
       // codec accordingly; false (old/unsupported browser) → agent streams JPEG.
@@ -127,6 +132,15 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       const reset = resetSentRef.current ? 'app-only' : resetMode;
       resetSentRef.current = true;
       sendRef.current({ type: 'device:boot', sessionId, payload: { deviceId, resetMode: reset, acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
+    }
+    if (msg.type === 'session:agent-away') {
+      // Everything on screen describes an agent that is no longer there. Drop the frame so the
+      // status card is what the tester sees — a picture that has simply stopped updating is the
+      // thing #426 was opened about.
+      setAgentAway(true);
+      setChrome(null);
+      setDeviceReady(false);
+      return;
     }
     if (msg.type === 'session:terminated') {
       onSessionEnded?.(msg.reason);
@@ -153,6 +167,8 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       envelopeQueueRef.current = [];
       setAgentCapabilities(msg.capabilities);
 
+      const wasAnnounced = agentAway;
+      setAgentAway(false);
       rebindRef.current = {
         pending: rebindRef.current.pending + 1,
         appInstalled: rebindRef.current.pending > 0 ? rebindRef.current.appInstalled : installed,
@@ -163,7 +179,9 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // a wipe the day that stops holding.
       resetSentRef.current = true;
       sendRef.current({ type: 'device:boot', sessionId, payload: { deviceId, resetMode: 'app-only', acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
-      toast.info('The agent restarted — reconnecting to the device.');
+      // Only when the status card has not been saying it already — otherwise the toast lands at the
+      // exact moment that message is replaced by the reconnect, saying the same thing twice.
+      if (!wasAnnounced) toast.info('The agent restarted — reconnecting to the device.');
       return;
     }
     if (msg.type === 'device:boot-error') {
@@ -216,7 +234,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
         description: 'Go back and select a different Mac.',
       })
     }
-  }, [sessionId, deviceId, buildId, onSessionEnded, resetMode, installed]);
+  }, [sessionId, deviceId, buildId, onSessionEnded, resetMode, installed, agentAway]);
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {
     const envelope = parseEnvelopeHeader(data);
@@ -286,7 +304,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
             joined={joined} fps={0} connected={connected}
             deviceReady={deviceReady} bootError={bootError}
             installing={installing} installError={installError}
-            keyboardActive={false}
+            keyboardActive={false} agentAway={agentAway}
           />
         </div>
       </div>

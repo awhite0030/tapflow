@@ -24,12 +24,16 @@ interface SimulatorInfoCardProps {
   installing: boolean;
   installError: string | null;
   keyboardActive: boolean;
+  /** The relay is holding this session open while its agent is gone (#426). Outranks every other
+   *  status: the rest describe a device this viewer cannot currently reach. */
+  agentAway?: boolean;
 }
 
 function getStatusText(props: SimulatorInfoCardProps): string | null {
-  const { connected, joined, bootError, deviceReady, installing, installError } = props;
+  const { connected, joined, bootError, deviceReady, installing, installError, agentAway } = props;
   if (!connected) return 'Connecting…';
   if (!joined) return 'Joining session…';
+  if (agentAway) return 'The agent went away — waiting for it to come back…';
   if (bootError)
     return `Boot failed: ${bootError.length > 40 ? bootError.slice(0, 40) + '…' : bootError}`;
   if (!deviceReady) return 'Starting device…';

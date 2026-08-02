@@ -3,8 +3,11 @@ import { ValidationError } from '@tapflowio/agent-core'
 import { SessionManager } from '../SessionManager'
 import type { WebSocket } from 'ws'
 
-const mockSocket = () => ({} as WebSocket)
+// `readyState` matters: `list()` leaves out sessions whose agent socket is closed, because those
+// are being held for a returning agent and are not something anyone can pick (#426).
 const OPEN = 1
+const mockSocket = () => ({ readyState: OPEN } as WebSocket)
+const closedSocket = () => ({ readyState: 3 } as WebSocket)
 
 describe('SessionManager', () => {
   describe('create()', () => {
@@ -420,4 +423,28 @@ describe('SessionManager', () => {
     const listed = sm.list()
     expect(listed).toHaveLength(2)
   })
+    describe('list() and held sessions (#426)', () => {
+    it('leaves out a session whose agent socket has closed', () => {
+      // It is being held for a returning agent. Listing it would put a card on the Mac screen for
+      // an agent that is not there — with its last resource sample, and no staleness warning,
+      // because that badge keys off a 30s-old reading and the window is far shorter.
+      const sm = new SessionManager()
+      sm.create(closedSocket(), [{ id: 'devA', name: 'A', platform: 'ios', status: 'booted' }])
+
+      expect(sm.list()).toEqual([])
+    })
+
+    it('lists it again once it is rebound to a live socket', () => {
+      const sm = new SessionManager()
+      const dead = closedSocket()
+      const live = mockSocket()
+      const dev = { id: 'devA', name: 'A', platform: 'ios', status: 'booted' }
+      const [id] = sm.create(dead, [dev])
+
+      sm.rebind(id!, live, dev, { agentId: 'mac-1' })
+
+      expect(sm.list()).toHaveLength(1)
+      expect(sm.list()[0]!.devices[0]!.sessionId).toBe(id)
+    })
   })
+})

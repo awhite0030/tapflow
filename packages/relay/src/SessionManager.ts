@@ -290,6 +290,14 @@ export class SessionManager {
     // Group sessions by agentSocket
     const agentMap = new Map<WebSocket, Session[]>()
     for (const session of this.sessions.values()) {
+      // A session whose agent socket is closed is being held for a returning agent (#426). It is
+      // not something anyone can pick right now, and listing it is worse than leaving it out: the
+      // card would render with the dead agent's last CPU/RAM reading and no warning — the `Stale`
+      // badge keys off a 30s-old resource sample, far longer than the window. Worse, if the agent
+      // comes back under a different identity (adding an agentId is a common reason to upgrade,
+      // and upgrading is a common reason to restart) nothing rebinds, and the dashboard groups by
+      // `agentName` — two groups, a duplicate React key, and the lookup picking the dead one.
+      if (session.agentSocket.readyState !== WebSocket.OPEN) continue
       const group = agentMap.get(session.agentSocket) ?? []
       group.push(session)
       agentMap.set(session.agentSocket, group)

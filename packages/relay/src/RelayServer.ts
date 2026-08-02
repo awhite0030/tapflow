@@ -51,6 +51,11 @@ export function isExternalAddress(addr: string): boolean {
 const IDR_REQUEST_THROTTLE_MS = 500
 // Ping every socket each interval; a missed pong window (~2× this) terminates the dead socket.
 const HEARTBEAT_MS = 30_000
+// How long a session outlives its agent's socket, waiting for that agent to come back (#426).
+// An agent registers ~1s after its process starts, so this covers an automatic respawn several
+// times over and about half of a hand-typed restart. What bounds it is the other direction: the
+// device stays claimed by a session nobody can use until the window closes.
+const DEFAULT_AGENT_GRACE_MS = 15_000
 import { handleVerifyReset, handleDoReset, handleSendMemberReset } from './api/passwordReset.js'
 import { handleListBuilds, handleGetBuild, handleUpdateBuild, handleUploadBuild, handleScheduleBuildDeletion, handleCancelBuildDeletion, purgeExpiredBuilds } from './api/builds.js'
 import { handleListApps, handleCreateApp, handleUpdateApp, handleDeleteApp } from './api/apps.js'
@@ -130,11 +135,16 @@ export class RelayServer {
   // Per-session throttled "request an IDR from the agent" callbacks (drop recovery).
   private idrRequesters = new Map<string, () => void>()
   private wsRoles = new Map<WebSocket, 'agent' | 'browser' | 'stream'>()
+  // Agent sockets whose sessions are being held open, and the timer that gives up on each.
+  // Keyed by the dead socket, never by session id: a rebind moves sessions off that socket, so an
+  // expiry that fires late finds nothing to evict and is harmless on its own.
+  private agentHolds = new Map<WebSocket, ReturnType<typeof setTimeout>>()
   // True when the connection's remote IP is public (not loopback / private LAN) — the agent uses
   // this to downscale harder for bandwidth on external viewers.
   private wsExternal = new Map<WebSocket, boolean>()
   private readonly backpressureBytes: number
   private readonly screenshotTimeoutMs: number
+  private readonly agentGraceMs: number
   private readonly corsAllowed: Set<string>
   // One-shot warning when XFF arrives on a loopback socket but TAPFLOW_TRUSTED_PROXIES is unset.
   private warnedProxyMisconfig = false
@@ -152,13 +162,18 @@ export class RelayServer {
     timer: ReturnType<typeof setTimeout>
   }>()
 
-  constructor(private readonly options: { port: number; publicDir?: string; uploadsDir?: string; idleTimeoutMs?: number; wsBackpressureBytes?: number; screenshotTimeoutMs?: number; uiTreeTimeoutMs?: number; trustedProxies?: string[]; corsOrigins?: string[]; tls?: { cert: string; key: string } }) {
+  constructor(private readonly options: { port: number; publicDir?: string; uploadsDir?: string; idleTimeoutMs?: number; wsBackpressureBytes?: number; screenshotTimeoutMs?: number; uiTreeTimeoutMs?: number; trustedProxies?: string[]; corsOrigins?: string[]; tls?: { cert: string; key: string }; agentGraceMs?: number }) {
     this.backpressureBytes = options.wsBackpressureBytes ?? DEFAULT_BACKPRESSURE_BYTES
     this.screenshotTimeoutMs = options.screenshotTimeoutMs ?? 10_000
     // Longer than the screenshot default: the Android agent's device-side dump
     // itself may take up to 10s before it errors out.
     this.uiTreeTimeoutMs = options.uiTreeTimeoutMs ?? 15_000
     this.corsAllowed = new Set(options.corsOrigins ?? [])
+    // Constructor option first, then env. It cannot be env-only: `IDLE_TIMEOUT_MS` is read at module
+    // load, which is why no test can set it, and the tests that need a different window here run in
+    // the same process as the default.
+    this.agentGraceMs = options.agentGraceMs
+      ?? parseInt(process.env['TAPFLOW_AGENT_GRACE_MS'] ?? String(DEFAULT_AGENT_GRACE_MS), 10)
     this.sessions = new SessionManager({ idleTimeoutMs: options.idleTimeoutMs })
     this.publicDir = options.publicDir ?? path.join(import.meta.dirname, '../public')
     this.uploadsDir = options.uploadsDir ?? path.join(import.meta.dirname, '../uploads')
@@ -319,6 +334,10 @@ export class RelayServer {
     if (this.purgeBuildsTimer) { clearInterval(this.purgeBuildsTimer); this.purgeBuildsTimer = null }
     if (this.flushResourcesTimer) { clearInterval(this.flushResourcesTimer); this.flushResourcesTimer = null }
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null }
+    // `unref()` would not do: the test runner's process outlives the server, so an un-cleared hold
+    // still fires — against a server that has already stopped.
+    for (const timer of this.agentHolds.values()) clearTimeout(timer)
+    this.agentHolds.clear()
     return new Promise((resolve, reject) => {
       this.wss.clients.forEach((ws) => ws.terminate())
       this.wss.close(() => {
@@ -481,8 +500,9 @@ export class RelayServer {
     ws.on('close', () => {
       this.wsRoles.delete(ws)
       this.wsExternal.delete(ws)
-      // Agent main socket disconnected → remove its sessions, reject in-flight screenshots, drop resources
-      if (this.evictAgentSocket(ws)) return
+      // Agent main socket disconnected → hold its sessions open for a moment in case the agent is
+      // coming back (#426), rather than ending them where they stand.
+      if (this.holdAgentSocket(ws)) return
 
       // Stream socket disconnected → clear the streamSocket reference
       const streamSession = this.sessions.getByStreamSocket(ws)
@@ -800,6 +820,53 @@ export class RelayServer {
   }
 
   /**
+   * The agent's socket went away. Keep its sessions and wait for that agent to come back, instead
+   * of ending them here — a restarting agent registers about a second later, and until #426 stage 3
+   * the close always won that race, so a restart cost the tester their place.
+   *
+   * The sessions stay exactly where they are. They are NOT moved to a holding structure of their
+   * own: `getAgentSocketsByIdentity` finds the returning agent's previous socket by walking
+   * `sessions` and reading `agentSocket`, so a session parked anywhere else is a session that can
+   * never be reclaimed.
+   *
+   * @returns whether this was an agent socket, matching `evictAgentSocket`'s contract — the close
+   *   handler uses it to decide whether to keep looking.
+   */
+  private holdAgentSocket(ws: WebSocket): boolean {
+    const sessions = this.sessions.getAllByAgentSocket(ws)
+    if (sessions.length === 0) {
+      // No sessions to hold, but the socket may still own a resource entry — `evictAgentSocket`
+      // returns before dropping it in exactly this case.
+      this.sessions.removeResources(ws)
+      return false
+    }
+    // Not held for the window: these were addressed to a process that is gone, and a returning
+    // agent is a new one that never saw them. Waiting would only delay the same failure.
+    this.rejectPending(new Set(sessions.map((s) => s.id)), 'Agent disconnected')
+
+    for (const s of sessions) {
+      if (s.browserSocket) this.sendTo(s.browserSocket, { type: 'session:agent-away', sessionId: s.id })
+    }
+    const timer = setTimeout(() => {
+      this.agentHolds.delete(ws)
+      // Whatever is still on this socket never got reclaimed. A rebind moves sessions off it, so
+      // after a successful one this finds an empty set and returns without doing anything.
+      if (this.evictAgentSocket(ws)) logger.info(`agent did not come back within ${this.agentGraceMs}ms — session(s) ended`)
+    }, this.agentGraceMs)
+    this.agentHolds.set(ws, timer)
+    logger.info(`agent socket lost — holding ${sessions.length} session(s) for ${this.agentGraceMs}ms`)
+    return true
+  }
+
+  /** Stop waiting on a socket, whether or not anything was reclaimed from it. */
+  private releaseHold(ws: WebSocket): void {
+    const timer = this.agentHolds.get(ws)
+    if (!timer) return
+    clearTimeout(timer)
+    this.agentHolds.delete(ws)
+  }
+
+  /**
    * @param cause  `'disconnect'` — the socket closed. `'replaced'` — the same agent re-registered
    *   and this is its previous socket. Only affects the log line: a restart otherwise reads as a
    *   crash followed by a recovery, which is not what happened.
@@ -856,6 +923,11 @@ export class RelayServer {
     if (identity) {
       for (const old of this.sessions.getAgentSocketsByIdentity(identity, msg.platform)) {
         if (old === ws) continue
+        // Before any decision about what to rebind: the eviction below settles this socket either
+        // way, so the timer has nothing left to do. Releasing here rather than after a successful
+        // rebind also covers the case where nothing is rebound at all — a restart that reports a
+        // completely different device list still leaves a timer keyed to a dead socket.
+        this.releaseHold(old)
         for (const s of this.sessions.getAllByAgentSocket(old)) {
           if (rebound.has(s.deviceId)) continue
           const device = devices.find((d) => d.id === s.deviceId)
@@ -908,7 +980,11 @@ export class RelayServer {
       this.sendTo(ws, { type: 'error', message: 'Session not found' })
       return
     }
-    const resources = this.sessions.getResources(session.agentSocket)
+    // Read before the resource gate, and answered before it too. The gate would otherwise read the
+    // dead socket's last sample — and an overloaded Mac is a common reason to restart an agent, so
+    // the tester would be told the Mac is exhausted at the exact moment it is recovering.
+    const agentAway = session.agentSocket.readyState !== WebSocket.OPEN
+    const resources = agentAway ? undefined : this.sessions.getResources(session.agentSocket)
     if (resources) {
       const memPercent = (resources.memUsedMB / resources.memTotalMB) * 100
       if (resources.cpuPercent > RESOURCE_THRESHOLD || memPercent > RESOURCE_THRESHOLD) {
@@ -928,6 +1004,18 @@ export class RelayServer {
     this.sendTo(ws, {
       type: 'session:joined', sessionId: msg.sessionId!, capabilities: session.agentCapabilities ?? [],
     })
+    if (agentAway) {
+      // Joining into a held session. Refusing instead would be worse than it sounds: the viewer
+      // sends `session:start` exactly once per reconnect and ignores a plain `error`, so a browser
+      // blip inside the window would leave a tab that no later `session:rebound` can reach — it is
+      // addressed to `browserSocket`, which the refusal never set. Saying what is happening keeps
+      // the tab inside the contract instead.
+      //
+      // Everything below describes the agent that went away, so it stops here. The viewer will get
+      // it all again from the boot it sends on `session:rebound`.
+      this.sendTo(ws, { type: 'session:agent-away', sessionId: msg.sessionId! })
+      return
+    }
     if (session.chromeData) {
       this.sendTo(ws, { type: 'session:chrome', payload: session.chromeData })
     }

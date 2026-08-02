@@ -55,13 +55,16 @@ describe('app command failures reach the caller (#445)', () => {
     return { agent, browser, sessionId }
   }
 
-  /** Blocks until the relay has finished dropping the sessions an agent owned.
+  /** Blocks until the relay has processed the agent socket's close.
    *
-   *  Closing the agent socket starts that teardown; nothing orders it against the browser's next
-   *  request. Without this the same request answers `agent offline` or `Session not found`
-   *  depending on which won — measured at roughly 1 run in 10, which is exactly the kind of
-   *  flake that gets a real assertion deleted instead of fixed. */
-  async function untilAgentSessionsGone(browser: WebSocket) {
+   *  Nothing orders that against the browser's next request, and without this the same request
+   *  answers differently depending on which won — measured at roughly 1 run in 10, which is exactly
+   *  the kind of flake that gets a real assertion deleted instead of fixed.
+   *
+   *  It watches `agents:list`, which stops reporting the agent as soon as its socket closes. That
+   *  is no longer the same thing as the sessions being gone: they are held for a while first
+   *  (#426), and only left out of the list because nobody can pick them. */
+  async function untilAgentLeavesTheList(browser: WebSocket) {
     await vi.waitFor(async () => {
       const listed = waitForType(browser, 'agents:listed')
       browser.send(JSON.stringify({ type: 'agents:list' }))
@@ -165,7 +168,7 @@ describe('app command failures reach the caller (#445)', () => {
     const closed = new Promise<void>((r) => agent.on('close', () => r()))
     agent.close()
     await closed
-    await untilAgentSessionsGone(browser)
+    await untilAgentLeavesTheList(browser)
 
     browser.send(JSON.stringify({ type: 'device:boot', sessionId, payload: { deviceId: 'dev-1' } }))
     // Without this the viewer sits on "Waiting for first frame…" with nothing said.
@@ -173,10 +176,14 @@ describe('app command failures reach the caller (#445)', () => {
 
     expect(msg).not.toBeNull()
     expect(msg!.sessionId).toBe(sessionId)
-    // Losing the agent takes its sessions with it, so this is a missing session — not a live
-    // session with a dead socket. Saying "agent offline" here would point an MCP caller at the
-    // wrong problem on the very first call it makes.
-    expect(msg!.message).toBe('Session not found')
+    // The session outlives its agent's socket now (#426), so this really is a live session with a
+    // dead socket and `agent offline` is the accurate half of that pair. It used to be
+    // `Session not found`, which was accurate then and would be misleading now — the id is valid,
+    // and an MCP caller retrying it in a second may well succeed.
+    //
+    // The other half — an id that is genuinely gone, after the hold expires — is covered in
+    // `agentReconnectGrace.test.ts`, where the window is short enough to wait out.
+    expect(msg!.message).toBe('agent offline')
 
     browser.close()
   })
