@@ -157,11 +157,12 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
         pending: rebindRef.current.pending + 1,
         appInstalled: rebindRef.current.pending > 0 ? rebindRef.current.appInstalled : installed,
       };
-      // `resetSentRef` is already spent, so this carries `app-only` — a restart must not erase the
-      // device (#439).
-      const reset = resetSentRef.current ? 'app-only' : resetMode;
+      // Always `app-only`: a restart is not a request to erase the device (#439). Deriving this
+      // from `resetSentRef` the way the `session:joined` branch does would happen to agree today,
+      // only because a rebind cannot precede a join on the same mount — and would silently become
+      // a wipe the day that stops holding.
       resetSentRef.current = true;
-      sendRef.current({ type: 'device:boot', sessionId, payload: { deviceId, resetMode: reset, acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
+      sendRef.current({ type: 'device:boot', sessionId, payload: { deviceId, resetMode: 'app-only', acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
       toast.info('The agent restarted — reconnecting to the device.');
       return;
     }

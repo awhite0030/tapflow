@@ -46,14 +46,14 @@ const installs = () => send.mock.calls.filter(([m]) => m.type === 'app:install')
 /** Brings a viewer to "streaming": joined, device up, chrome delivered, build installed. */
 function live(buildId?: number) {
   render(<DeviceViewer sessionId="s1" deviceId="dev-1" buildId={buildId} />)
-  act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] } as RelayMessage) })
-  act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+  act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
+  act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
   act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
-  if (buildId) act(() => { deliver!({ type: 'app:install-done' } as RelayMessage) })
+  if (buildId) act(() => { deliver!({ type: 'app:install-done' }) })
 }
 
 const rebound = (capabilities: string[] = []) =>
-  act(() => { deliver!({ type: 'session:rebound', sessionId: 's1', capabilities } as RelayMessage) })
+  act(() => { deliver!({ type: 'session:rebound', sessionId: 's1', capabilities }) })
 
 describe('DeviceViewer recovers from an agent restart (#426)', () => {
   beforeEach(() => { send.mockClear(); deliver = null })
@@ -71,7 +71,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // A restart is not a reset request. `resetSentRef` is already spent, so this is automatic —
     // pinned because losing it would wipe a tester's device with no click involved (#439).
     render(<DeviceViewer sessionId="s1" deviceId="dev-1" resetMode="full-erase" />)
-    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
     send.mockClear()
 
     rebound()
@@ -97,7 +97,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // The software keyboard was up on the old device; the reboot puts it away.
     // `data-active` on the keyboard button is the observable.
     live()
-    act(() => { deliver!({ type: 'keyboard:toggled', sessionId: 's1', payload: { visible: true } } as RelayMessage) })
+    act(() => { deliver!({ type: 'keyboard:toggled', sessionId: 's1', payload: { visible: true } }) })
     expect(document.querySelectorAll('[data-active="true"]').length).toBeGreaterThan(0)
 
     rebound()
@@ -131,16 +131,19 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // would kill the state the rebind exists to preserve — but skipping it means `app:install-done`
     // never arrives, and that message is the only thing that sets `installed`, which gates Launch.
     live(7)
-    const buttonsWhenLive = screen.queryAllByRole('button').length
+    const launch = () => screen.queryByRole('button', { name: /launch app/i })
+    expect(launch()).toBeInTheDocument()
     send.mockClear()
 
     rebound()
-    act(() => { deliver!({ type: 'device:booting' } as RelayMessage) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    act(() => { deliver!({ type: 'device:booting' }) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
     act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
 
     expect(installs()).toHaveLength(0)
-    expect(screen.queryAllByRole('button')).toHaveLength(buttonsWhenLive)
+    // Naming the control is what makes this an assertion rather than a proxy: counting buttons
+    // passes if Launch vanishes and anything else appears in the same render.
+    expect(launch()).toBeInTheDocument()
   })
 
   it('installs again on a boot that is not a rebind', async () => {
@@ -148,11 +151,11 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // simply disabled installing for the life of the mount.
     live(7)
     rebound()
-    act(() => { deliver!({ type: 'device:booting' } as RelayMessage) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    act(() => { deliver!({ type: 'device:booting' }) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
     send.mockClear()
 
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
 
     expect(installs()).toHaveLength(1)
   })
@@ -161,10 +164,10 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // Otherwise a failed recovery suppresses every install for the rest of the mount.
     live(7)
     rebound()
-    act(() => { deliver!({ type: 'device:boot-error', sessionId: 's1', message: 'nope' } as RelayMessage) })
+    act(() => { deliver!({ type: 'device:boot-error', sessionId: 's1', message: 'nope' }) })
     send.mockClear()
 
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
 
     expect(installs()).toHaveLength(1)
   })
@@ -188,14 +191,14 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // really is missing. Skipping the install anyway — and setting `installed` on top of it —
     // hands the tester a Launch button for an app that is not on the device.
     render(<DeviceViewer sessionId="s1" deviceId="dev-1" buildId={7} />)
-    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] } as RelayMessage) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
     expect(installs()).toHaveLength(1) // in flight — no `app:install-done`
     send.mockClear()
 
     rebound()
-    act(() => { deliver!({ type: 'device:booting' } as RelayMessage) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    act(() => { deliver!({ type: 'device:booting' }) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
     act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
 
     expect(installs()).toHaveLength(1)
@@ -212,11 +215,11 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // would be suppressed for the rest of the mount rather than for one recovery.
     live(7)
     rebound()
-    act(() => { deliver!({ type: 'device:booting' } as RelayMessage) }) // ...and then silence
+    act(() => { deliver!({ type: 'device:booting' }) }) // ...and then silence
     send.mockClear()
 
-    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] } as RelayMessage) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
 
     expect(installs()).toHaveLength(1)
   })
@@ -230,8 +233,8 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
 
     rebound()
     rebound()
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
 
     expect(boots()).toHaveLength(2)
     expect(installs()).toHaveLength(0)
@@ -241,7 +244,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     live()
     send.mockClear()
 
-    act(() => { deliver!({ type: 'session:rebound', sessionId: 'other', capabilities: [] } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:rebound', sessionId: 'other', capabilities: [] }) })
 
     expect(boots()).toHaveLength(0)
     expect(screen.queryByText(/Starting device/)).not.toBeInTheDocument()
