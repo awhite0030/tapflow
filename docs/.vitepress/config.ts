@@ -68,6 +68,7 @@ const enSidebar = [
       { text: 'REST API', link: '/reference/api' },
       { text: 'Performance & Latency', link: '/reference/performance' },
       { text: 'Security & Privacy', link: '/reference/security' },
+      { text: 'Sustainability', link: '/reference/sustainability' },
     ],
   },
   {
@@ -136,6 +137,7 @@ const koSidebar = [
       { text: 'REST API', link: '/ko/reference/api' },
       { text: '성능과 지연', link: '/ko/reference/performance' },
       { text: '보안 및 개인정보', link: '/ko/reference/security' },
+      { text: '지속가능성', link: '/ko/reference/sustainability' },
     ],
   },
   {
