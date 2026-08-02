@@ -5,7 +5,6 @@ import path from 'path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
-import type { RelayMessage } from '../types'
 import { waitForMessage, waitForOpen } from '@tapflowio/test-utils'
 
 

@@ -31,6 +31,11 @@ await waitForType(ws, 'device:ready')   // fine whether it has landed yet or not
 
 Matched messages leave the recording, so two waits for one type see two different messages.
 
+**It is a queue, not a broadcast** — a change from the per-call listeners it replaced, where every
+listener saw every message. A message now goes to exactly one waiter, so a pending `waitForMessage`
+will take one that a concurrent `waitForType` was waiting for. Register the specific wait first, or
+keep the two apart.
+
 **`waitForOpen` is what starts the recording.** A socket that skips it still works — the other helpers begin recording on first use — but only from that call onwards, so anything earlier is genuinely gone. Route every socket through it.
 
 ### Assert absence with a barrier, not a timeout

@@ -523,6 +523,9 @@ importers:
 
   packages/test-utils:
     devDependencies:
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
       '@types/ws':
         specifier: ^8.0.0
         version: 8.18.1

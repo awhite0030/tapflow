@@ -25,7 +25,18 @@ export type SocketMessage = Record<string, unknown> & { type: string }
  * ```
  *
  * Matched messages are removed from the recording, so two waits for the same type see two
- * different messages — the same semantics the old per-call listeners had.
+ * different messages.
+ *
+ * **This is a queue, not a broadcast.** The old per-call listeners each saw every message, so two
+ * concurrent waits for one type both resolved from a single message. Here a message goes to
+ * exactly one waiter. Two consequences worth knowing:
+ *
+ * - A pending {@link waitForMessage} (which matches any type) takes the next message even if a
+ *   {@link waitForType} for that exact type is also waiting. Register the specific one first, or
+ *   do not mix them on a socket where it matters.
+ * - A {@link waitForTypeOrNull} that times out leaves nothing behind, but a message arriving after
+ *   that goes into the recording and will answer a later wait on the same socket. That is usually
+ *   what you want; it is surprising if you expected the timeout to have consumed it.
  */
 
 type Waiter = { type: string | null; resolve: (msg: SocketMessage) => void }
