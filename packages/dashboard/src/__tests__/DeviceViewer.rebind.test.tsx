@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import type { BrowserToRelay } from '@tapflowio/protocol'
 import type { RelayMessage } from '@/lib/types'
 
@@ -93,14 +93,9 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     expect(frame()).toBe(0)
   })
 
-  it('drops UI state that only the dead agent could have resolved', async () => {
-    // The software keyboard was up on the old device; the reboot puts it away. Same block clears
-    // `launching` and `swKeyboardPending`, whose acknowledgements (`app:launch-done`,
-    // `keyboard:toggled`) died with the old agent — before rebinding existed those could not
-    // outlive it, because a dead agent unmounted the viewer.
-    //
-    // `data-active` on the keyboard button is the observable. `launching` is only reachable by
-    // clicking Launch, so it is covered by inspection rather than by this test.
+  it('drops the keyboard state the dead agent was holding', async () => {
+    // The software keyboard was up on the old device; the reboot puts it away.
+    // `data-active` on the keyboard button is the observable.
     live()
     act(() => { deliver!({ type: 'keyboard:toggled', sessionId: 's1', payload: { visible: true } } as RelayMessage) })
     expect(document.querySelectorAll('[data-active="true"]').length).toBeGreaterThan(0)
@@ -109,6 +104,26 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
 
     expect(document.querySelectorAll('[data-active="true"]')).toHaveLength(0)
+  })
+
+  it('unsticks a keyboard toggle whose acknowledgement died with the agent', async () => {
+    // `swKeyboardPending` disables the toggle until `keyboard:toggled` comes back. Send it to an
+    // agent that then restarts and the acknowledgement never arrives — the control stays disabled
+    // for the life of the mount. Before rebinding existed this was unreachable: a dead agent
+    // unmounted the viewer, so nothing could outlive it.
+    //
+    // Clicking is what makes the flag true. Delivering `keyboard:toggled` instead — as an earlier
+    // version of this test did — sets it *false*, so the assertion held with the clearing line
+    // deleted and proved nothing.
+    live()
+    const kbd = () => document.querySelector('button[data-active]') as HTMLButtonElement
+    fireEvent.click(kbd())
+    expect(kbd().disabled).toBe(true)
+
+    rebound()
+    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
+
+    expect(kbd().disabled).toBe(false)
   })
 
   it('keeps the installed app, and keeps the control that launches it', async () => {
@@ -152,6 +167,74 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
 
     expect(installs()).toHaveLength(1)
+  })
+
+  it('unsticks a launch whose acknowledgement died with the agent', async () => {
+    // Same shape as the keyboard toggle: `launching` is set on click and cleared only by
+    // `app:launch-done` / `app:launch-error`, both of which die with the agent.
+    live(7)
+    const launch = () => screen.getByRole('button', { name: /launch app/i }) as HTMLButtonElement
+    fireEvent.click(launch())
+    expect(launch().disabled).toBe(true)
+
+    rebound()
+    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
+
+    expect(launch().disabled).toBe(false)
+  })
+
+  it('installs after a rebind that interrupted the install', async () => {
+    // Finding 1. An agent is at its most fragile mid-install, and a rebind there means the app
+    // really is missing. Skipping the install anyway — and setting `installed` on top of it —
+    // hands the tester a Launch button for an app that is not on the device.
+    render(<DeviceViewer sessionId="s1" deviceId="dev-1" buildId={7} />)
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] } as RelayMessage) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    expect(installs()).toHaveLength(1) // in flight — no `app:install-done`
+    send.mockClear()
+
+    rebound()
+    act(() => { deliver!({ type: 'device:booting' } as RelayMessage) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
+
+    expect(installs()).toHaveLength(1)
+    // ...and no Launch control until that install reports back. This query is only meaningful
+    // because the button carries an `aria-label`; without one it matches nothing and passes
+    // whatever the viewer renders.
+    expect(screen.queryByRole('button', { name: /launch app/i })).not.toBeInTheDocument()
+  })
+
+  it('does not let an unanswered rebind swallow a later boot', async () => {
+    // Finding 2. The new agent can fail to answer at all — it is a process that just restarted.
+    // A rebind left pending would then absorb the `device:ready` of whatever boot comes next
+    // (a socket blip re-sends `device:boot` from the `session:joined` branch), and the install
+    // would be suppressed for the rest of the mount rather than for one recovery.
+    live(7)
+    rebound()
+    act(() => { deliver!({ type: 'device:booting' } as RelayMessage) }) // ...and then silence
+    send.mockClear()
+
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] } as RelayMessage) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+
+    expect(installs()).toHaveLength(1)
+  })
+
+  it('skips the install for every rebind, not just the first', async () => {
+    // Finding 3. A crash-looping agent rebinds more than once, and each rebind boots and gets its
+    // own ready. A flag is spent by the first of them, so the second reinstalls — destroying the
+    // app state the skip exists to preserve. Hence a count.
+    live(7)
+    send.mockClear()
+
+    rebound()
+    rebound()
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+
+    expect(boots()).toHaveLength(2)
+    expect(installs()).toHaveLength(0)
   })
 
   it('ignores a rebind meant for another session', async () => {

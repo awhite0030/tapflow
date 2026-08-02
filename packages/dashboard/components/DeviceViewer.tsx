@@ -35,11 +35,19 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const sendRef = useRef<(msg: BrowserToRelay) => void>(() => {});
   // One reset per mount; see the boot handler below.
   const resetSentRef = useRef(false);
-  // Set while a rebind's re-boot is in flight. `device:ready` reads it to skip the reinstall — the
-  // app survived the agent restart, and reinstalling would kill the state the rebind exists to
-  // keep. It cannot be an `installed` check: `device:booting` clears that flag and the agent sends
-  // it unconditionally on every boot, so `installed` is always false by the time ready arrives.
-  const rebindingRef = useRef(false);
+  // How many rebind re-boots are still waiting for their `device:ready`, and whether the app was
+  // actually on the device when the first of them started.
+  //
+  // A counter, not a flag: a crash-looping agent produces several rebinds, each with its own boot
+  // and its own ready. A boolean is cleared by the first ready, and the second then reinstalls —
+  // destroying the app state this exists to preserve.
+  //
+  // `appInstalled` is captured because a rebind can land *during* an install, which is if anything
+  // the likelier moment for an agent to die. Then the app is genuinely absent and the re-boot has
+  // to install it after all; assuming otherwise leaves a Launch button for an app that is not
+  // there. It cannot be read from `installed` at ready-time either — `device:booting` clears that
+  // flag and the agent sends it on every boot, so it is always false by then.
+  const rebindRef = useRef<{ pending: number; appInstalled: boolean }>({ pending: 0, appInstalled: false });
   const { perfMode, visible: perfVisible } = usePerfMode();
 
   // statsRef is set by StatsOverlay; perfMetricsPushRef is set by MetricsPanel
@@ -102,6 +110,10 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     if ('sessionId' in msg && msg.sessionId && msg.sessionId !== sessionId) return;
 
     if (msg.type === 'session:joined') {
+      // A join starts a boot cycle of its own (socket blip, re-entry). Any rebind still waiting for
+      // a `device:ready` will never get one, and leaving it pending would make this cycle's ready
+      // look like a rebind — suppressing installs for the rest of the mount.
+      rebindRef.current = { pending: 0, appInstalled: false };
       setJoined(true);
       setAgentCapabilities(msg.capabilities ?? []);
       // Tell the agent up front whether this browser can decode H.264 so it picks the
@@ -141,7 +153,10 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       envelopeQueueRef.current = [];
       setAgentCapabilities(msg.capabilities);
 
-      rebindingRef.current = true;
+      rebindRef.current = {
+        pending: rebindRef.current.pending + 1,
+        appInstalled: rebindRef.current.pending > 0 ? rebindRef.current.appInstalled : installed,
+      };
       // `resetSentRef` is already spent, so this carries `app-only` — a restart must not erase the
       // device (#439).
       const reset = resetSentRef.current ? 'app-only' : resetMode;
@@ -153,7 +168,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     if (msg.type === 'device:boot-error') {
       // Release the rebind: without this a failed re-boot would suppress every later install for
       // the life of the mount.
-      rebindingRef.current = false;
+      rebindRef.current = { pending: 0, appInstalled: false };
       setBootError(msg.message);
     }
     if (msg.type === 'device:booting') {
@@ -166,12 +181,17 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     }
     if (msg.type === 'device:ready') {
       setDeviceReady(true);
-      if (rebindingRef.current) {
-        // Skipping the install means `app:install-done` never arrives, and `installed` gates the
-        // Launch control — so restore it here or the tester silently loses that button.
-        rebindingRef.current = false;
-        if (buildId) setInstalled(true);
-        return;
+      if (rebindRef.current.pending > 0) {
+        const { appInstalled } = rebindRef.current;
+        rebindRef.current = { pending: rebindRef.current.pending - 1, appInstalled };
+        if (appInstalled) {
+          // Skipping the install means `app:install-done` never arrives, and `installed` gates the
+          // Launch control — so restore it here or the tester silently loses that button.
+          setInstalled(true);
+          return;
+        }
+        // The install had not finished when the agent went away, so the app really is missing.
+        // Fall through and install it.
       }
       if (buildId) { setInstalling(true); sendRef.current({ type: 'app:install', sessionId, buildId }); }
     }
@@ -195,7 +215,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
         description: 'Go back and select a different Mac.',
       })
     }
-  }, [sessionId, deviceId, buildId, onSessionEnded, resetMode]);
+  }, [sessionId, deviceId, buildId, onSessionEnded, resetMode, installed]);
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {
     const envelope = parseEnvelopeHeader(data);
