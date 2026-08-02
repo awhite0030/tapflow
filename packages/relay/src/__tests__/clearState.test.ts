@@ -41,7 +41,7 @@ describe('app:clear-state relay routing', () => {
       type: 'agent:register',
       devices: [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }],
     }))
-    const reply = await waitForType(agent, 'agent:registered')
+    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
     const sessionId = reply.registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)

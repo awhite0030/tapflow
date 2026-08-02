@@ -340,7 +340,7 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     const agent1 = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent1)
     agent1.send(JSON.stringify({ type: 'agent:register', agentId: 'uuid-1', platform: 'ios', devices }))
-    const reply = await waitForType(agent1, 'agent:registered')
+    const reply = await waitForType<RelayMessage>(agent1, 'agent:registered')
     const sessionId = reply.registeredSessions![0].sessionId
 
     // On the screenshot request, the same Mac reconnects on a fresh socket → evicts agent1.
