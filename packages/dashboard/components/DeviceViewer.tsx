@@ -185,6 +185,11 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       return;
     }
     if (msg.type === 'device:boot-error') {
+      // Joining a session whose agent is away answers `session:joined`, and the branch above sends
+      // `device:boot` on the strength of it — which the relay refuses with `agent offline`. The
+      // waiting state already says what is happening, and recording a boot failure on top of it
+      // only waits for a status-card reordering to start telling the tester a recovery failed.
+      if (agentAway) return;
       // Release the rebind: without this a failed re-boot would suppress every later install for
       // the life of the mount.
       rebindRef.current = { pending: 0, appInstalled: false };
@@ -229,6 +234,14 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     }
     if (msg.type === 'open-url:done') { toast.success('Deeplink opened'); }
     if (msg.type === 'open-url:error') { toast.error(msg.message); }
+    if (msg.type === 'error' && msg.message === 'Session not found') {
+      // The relay has no such session, so nothing else is ever coming for it. Reached when a
+      // browser blip outlasts the hold the relay keeps after an agent goes away (#426): the
+      // re-join lands after the window closed, and `session:terminated` went to a socket that no
+      // longer existed. Without this the tab waits on a message that cannot arrive.
+      onSessionEnded?.('agent-disconnected');
+      return;
+    }
     if (msg.type === 'error' && msg.message === 'Agent resources exhausted') {
       toast.error('Could not start session — this Mac is currently overloaded.', {
         description: 'Go back and select a different Mac.',

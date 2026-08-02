@@ -20,3 +20,6 @@ Also, while an agent is away:
 - **Joining says so.** The join is allowed and answered with `session:agent-away`, rather than refused. Refusing looked simpler and was a trap: the viewer sends `session:start` once per reconnect and ignores a plain error, so a browser blip inside the window would strand the tab past any recovery.
 - **Nothing from the previous process is replayed** to a viewer that joins — its chrome, device info and readiness all describe an agent that is gone.
 - `device:boot` for a held session answers `agent offline` rather than `Session not found`. The id is valid, and retrying in a moment may well work.
+- A device that comes back under a different identity — which is what happens when the upgrade prompting the restart is the one that starts sending a machine id — ends the held session immediately rather than making its viewer wait out a window for a device that is demonstrably present.
+
+`agents:listed` has three other consumers, and a restarting Mac's devices are absent from all of them for the length of the window: `tapflow status` reads as no agents connected, and a one-shot `list_devices` over MCP or flow-runner returns nothing. Retrying after the window gives the normal answer. Shortening `TAPFLOW_AGENT_GRACE_MS` narrows it.

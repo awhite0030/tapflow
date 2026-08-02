@@ -294,6 +294,52 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     expect(toast.info).toHaveBeenCalledOnce()
   })
 
+  it('does not report a failed boot during a recovery', async () => {
+    // The exact three messages a viewer gets when it re-joins a session whose agent is away: the
+    // join succeeds, the `session:joined` branch sends `device:boot` on the strength of it, and the
+    // relay refuses that with `agent offline`. Measured on the wire. The waiting state is the
+    // truth; a boot failure recorded underneath it is one status-card reordering away from telling
+    // the tester a recovery went wrong.
+    render(<DeviceViewer sessionId="s1" deviceId="dev-1" />)
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
+    act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
+    act(() => { deliver!({ type: 'device:boot-error', sessionId: 's1', message: 'agent offline' }) })
+
+    expect(screen.getByText(/waiting for it to come back/i)).toBeInTheDocument()
+    // Asserting here alone proves nothing: the status card ranks the waiting line above a boot
+    // failure, so it stays hidden whether or not it was recorded — measured, the assertion held
+    // with the suppression deleted. Clearing the waiting state is what exposes it, and a re-join is
+    // how that happens for real.
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
+
+    expect(screen.queryByText(/boot failed/i)).not.toBeInTheDocument()
+  })
+
+  it('clears the waiting state when a later join succeeds', async () => {
+    // A join that lands after the agent is back starts a clean session, and the flag is per-mount.
+    live()
+    act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
+    expect(screen.getByText(/waiting for it to come back/i)).toBeInTheDocument()
+
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
+
+    expect(screen.queryByText(/waiting for it to come back/i)).not.toBeInTheDocument()
+  })
+
+  it('gives up when the relay no longer knows the session', async () => {
+    // The other half of the browser-blip path: if the blip outlasts the relay's hold, the re-join
+    // is answered `Session not found` and nothing else is ever coming. Ignoring it — every plain
+    // `error` but one used to be ignored — leaves the tab waiting on a message that cannot arrive.
+    const onSessionEnded = vi.fn()
+    render(<DeviceViewer sessionId="s1" deviceId="dev-1" onSessionEnded={onSessionEnded} />)
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
+    act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
+
+    act(() => { deliver!({ type: 'error', message: 'Session not found' }) })
+
+    expect(onSessionEnded).toHaveBeenCalledWith('agent-disconnected')
+  })
+
   it('ignores an away meant for another session', async () => {
     live()
 

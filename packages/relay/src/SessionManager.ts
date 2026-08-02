@@ -127,6 +127,12 @@ export class SessionManager {
     return Array.from(sockets)
   }
 
+  /** Sessions currently claiming a device id. More than one only while a held session (#426) has
+   *  not yet been reclaimed or given up on. */
+  getAllByDeviceId(deviceId: string): Session[] {
+    return Array.from(this.sessions.values()).filter((s) => s.deviceId === deviceId)
+  }
+
   getByStreamSocket(ws: WebSocket): Session | undefined {
     return this.streamSocketIndex.get(ws)
   }

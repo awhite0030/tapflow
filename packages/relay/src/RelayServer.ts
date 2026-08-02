@@ -137,8 +137,14 @@ export class RelayServer {
   private wsRoles = new Map<WebSocket, 'agent' | 'browser' | 'stream'>()
   // Agent sockets whose sessions are being held open, and the timer that gives up on each.
   // Keyed by the dead socket, never by session id: a rebind moves sessions off that socket, so an
-  // expiry that fires late finds nothing to evict and is harmless on its own.
+  // expiry that fires late has nothing left to evict. That is the invariant — releasing the hold
+  // on the way back is hygiene on top of it, not a second thing holding the property up. The late
+  // expiry is not a complete no-op either: it still drops the socket's resource entry.
   private agentHolds = new Map<WebSocket, ReturnType<typeof setTimeout>>()
+  // Set by `stop()`. Its own `terminate()` loop fires a close for every socket, and a hold armed
+  // from there would outlive the server it belongs to — the exact hazard the clearing above it is
+  // for, arriving a few lines later.
+  private stopping = false
   // True when the connection's remote IP is public (not loopback / private LAN) — the agent uses
   // this to downscale harder for bandwidth on external viewers.
   private wsExternal = new Map<WebSocket, boolean>()
@@ -172,8 +178,13 @@ export class RelayServer {
     // Constructor option first, then env. It cannot be env-only: `IDLE_TIMEOUT_MS` is read at module
     // load, which is why no test can set it, and the tests that need a different window here run in
     // the same process as the default.
+    // Validated, not just parsed. `parseInt('15s')` is 15, and the documented default reads
+    // "15000 (15 s)" — so the obvious typo would give a fifteen-millisecond window and turn the
+    // feature off with nothing said. An empty `.env` line and a non-numeric value both land on
+    // NaN, which `setTimeout` rounds to ~1ms.
+    const graceEnv = Number(process.env['TAPFLOW_AGENT_GRACE_MS'])
     this.agentGraceMs = options.agentGraceMs
-      ?? parseInt(process.env['TAPFLOW_AGENT_GRACE_MS'] ?? String(DEFAULT_AGENT_GRACE_MS), 10)
+      ?? (Number.isFinite(graceEnv) && graceEnv >= 0 ? graceEnv : DEFAULT_AGENT_GRACE_MS)
     this.sessions = new SessionManager({ idleTimeoutMs: options.idleTimeoutMs })
     this.publicDir = options.publicDir ?? path.join(import.meta.dirname, '../public')
     this.uploadsDir = options.uploadsDir ?? path.join(import.meta.dirname, '../uploads')
@@ -336,6 +347,7 @@ export class RelayServer {
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null }
     // `unref()` would not do: the test runner's process outlives the server, so an un-cleared hold
     // still fires — against a server that has already stopped.
+    this.stopping = true
     for (const timer of this.agentHolds.values()) clearTimeout(timer)
     this.agentHolds.clear()
     return new Promise((resolve, reject) => {
@@ -833,6 +845,9 @@ export class RelayServer {
    *   handler uses it to decide whether to keep looking.
    */
   private holdAgentSocket(ws: WebSocket): boolean {
+    // Shutting down: nothing is coming back, and arming a timer here would leave it running after
+    // `stop()` resolved.
+    if (this.stopping) return this.evictAgentSocket(ws)
     const sessions = this.sessions.getAllByAgentSocket(ws)
     if (sessions.length === 0) {
       // No sessions to hold, but the socket may still own a resource entry — `evictAgentSocket`
@@ -850,8 +865,13 @@ export class RelayServer {
     const timer = setTimeout(() => {
       this.agentHolds.delete(ws)
       // Whatever is still on this socket never got reclaimed. A rebind moves sessions off it, so
-      // after a successful one this finds an empty set and returns without doing anything.
+      // after a successful one this evicts nothing.
       if (this.evictAgentSocket(ws)) logger.info(`agent did not come back within ${this.agentGraceMs}ms — session(s) ended`)
+      // Not inside that branch: `evictAgentSocket` returns before dropping resources when the
+      // socket has no sessions left, and the sessions can leave by routes other than a rebind —
+      // `session:end` among them. This is the last moment anything holds a reference to the dead
+      // socket, so it is the last chance to drop its entry.
+      this.sessions.removeResources(ws)
     }, this.agentGraceMs)
     this.agentHolds.set(ws, timer)
     logger.info(`agent socket lost — holding ${sessions.length} session(s) for ${this.agentGraceMs}ms`)
@@ -947,6 +967,22 @@ export class RelayServer {
     // Their in-flight requests are addressed to a process that is gone, and the eviction above can
     // no longer see them. Nothing else would ever settle these.
     if (rebound.size > 0) this.rejectPending(new Set(rebound.values()), 'Agent restarted')
+
+    // A device can be back under an agent this session cannot be rebound to — identity is
+    // `agentId ?? agentName`, and the upgrade that prompted the restart is often the one that
+    // starts sending an agentId. The device is demonstrably present, so holding its old session
+    // any longer strands that viewer while someone else picks the very same simulator. End it now
+    // and say so, which is what would have happened before the hold existed.
+    for (const d of devices) {
+      if (rebound.has(d.id)) continue
+      for (const s of this.sessions.getAllByDeviceId(d.id)) {
+        if (s.agentSocket.readyState === WebSocket.OPEN) continue
+        if (s.browserSocket) {
+          this.sendTo(s.browserSocket, { type: 'session:terminated', sessionId: s.id, reason: 'agent-disconnected' })
+        }
+        this.sessions.remove(s.id)
+      }
+    }
 
     // Only devices without a surviving session get a new one. Passing all of them here is what
     // would produce the duplicate card described above.

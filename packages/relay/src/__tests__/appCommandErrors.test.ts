@@ -55,15 +55,16 @@ describe('app command failures reach the caller (#445)', () => {
     return { agent, browser, sessionId }
   }
 
-  /** Blocks until the relay has processed the agent socket's close.
+  /** Blocks until the relay stops offering the agent's devices.
    *
    *  Nothing orders that against the browser's next request, and without this the same request
    *  answers differently depending on which won — measured at roughly 1 run in 10, which is exactly
    *  the kind of flake that gets a real assertion deleted instead of fixed.
    *
-   *  It watches `agents:list`, which stops reporting the agent as soon as its socket closes. That
-   *  is no longer the same thing as the sessions being gone: they are held for a while first
-   *  (#426), and only left out of the list because nobody can pick them. */
+   *  It watches `agents:list`, which filters on the socket's `readyState` — so it flips at
+   *  close-frame time, strictly earlier than the relay's close handler runs. That is enough here
+   *  because the assertion below keys off the same `readyState`, but it is NOT a barrier for
+   *  anything that needs the sessions to have been held or evicted. */
   async function untilAgentLeavesTheList(browser: WebSocket) {
     await vi.waitFor(async () => {
       const listed = waitForType(browser, 'agents:listed')

@@ -423,7 +423,8 @@ describe('SessionManager', () => {
     const listed = sm.list()
     expect(listed).toHaveLength(2)
   })
-    describe('list() and held sessions (#426)', () => {
+
+  describe('list() and held sessions (#426)', () => {
     it('leaves out a session whose agent socket has closed', () => {
       // It is being held for a returning agent. Listing it would put a card on the Mac screen for
       // an agent that is not there — with its last resource sample, and no staleness warning,

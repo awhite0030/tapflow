@@ -67,14 +67,33 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
     return Object.assign(browser, { joined })
   }
 
-  /** Closes a socket and waits for the close to land, so what follows is ordered after it. */
+  /** Closes a socket and waits for the *client's* close event.
+   *
+   *  This does NOT prove the relay has processed the close — that is a different event on a
+   *  different socket object, and measuring it shows the hold is not armed yet when this resolves.
+   *  Anything that depends on the relay having held the sessions must wait for `session:agent-away`
+   *  instead, which `holdAgentSocket` is the only sender of. Relying on this alone is what let the
+   *  previous stage ship with a trigger that never fired. */
   async function closeAndSettle(ws: WebSocket) {
     const closed = new Promise<void>((r) => ws.on('close', () => r()))
     ws.close()
     await closed
   }
 
+  /** Closes the agent and waits for the relay to say it is holding — the barrier `closeAndSettle`
+   *  is not. Without it a register can beat the close handler, and the test then proves the old
+   *  behaviour (both sockets briefly registered at once) rather than the new one. */
+  async function closeAndHeld(agent: WebSocket, browser: WebSocket) {
+    await closeAndSettle(agent)
+    await waitForType(browser, 'session:agent-away')
+  }
+
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+  /** The hold map is private, and it is the only place the release is observable — the timers
+   *  themselves are no-ops by the time they fire. Reaching in beats leaving the release untested. */
+  const holdsOf = (s: RelayServer) =>
+    (s as unknown as { agentHolds: Map<unknown, unknown> }).agentHolds
 
   async function devices(ws: WebSocket) {
     ws.send(JSON.stringify({ type: 'agents:list' }))
@@ -89,7 +108,10 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
     const sessionId = first.byDevice.get('devA')!
     const browser = await join(sessionId)
 
-    await closeAndSettle(first.agent)
+    // Waiting for the hold, not just for the client's close: otherwise the register can win the
+    // race and this passes because both sockets were briefly registered at once — the precondition
+    // stage 2 quietly relied on. Measured at roughly 1 run in 30 without this.
+    await closeAndHeld(first.agent, browser)
     const second = await register()
 
     const rebound = await waitForType<RelayMessage>(browser, 'session:rebound')
@@ -107,9 +129,10 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
 
     const away = await waitForType<RelayMessage>(browser, 'session:agent-away')
     expect(away.sessionId).toBe(first.byDevice.get('devA'))
-    // Nothing has been decided yet — the frozen frame is explained, not resolved.
+    // Nothing has been decided yet — the frozen frame is explained, not resolved. Only
+    // `session:terminated` is worth asserting: no second agent registers here, so `session:rebound`
+    // has no code path that could produce it and an assertion against it could never fail.
     expect(await waitForTypeOrNull(browser, 'session:terminated', 0)).toBeNull()
-    expect(await waitForTypeOrNull(browser, 'session:rebound', 0)).toBeNull()
 
     browser.close()
   })
@@ -254,10 +277,14 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
     const sessionId = first.byDevice.get('devA')!
     const browser = await join(sessionId)
 
-    await closeAndSettle(first.agent)
+    // If the register wins the race no hold is ever armed, and the timer whose late firing this is
+    // about does not exist — the assertion would hold against a scenario it never created.
+    await closeAndHeld(first.agent, browser)
     const second = await register()
     await waitForType(browser, 'session:rebound')
 
+    // The release is the only half of the pair with an observable, and this is it.
+    expect(holdsOf(server).size).toBe(0)
     await sleep(GRACE * 3)
 
     // Well past the original expiry, and the session is still here.
@@ -281,6 +308,71 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
     expect((await devices(second.agent)).map((d) => d.id)).toEqual(['devZ'])
 
     second.agent.close()
+  })
+
+  it('frees the device when it comes back under a different identity', async () => {
+    // The hold is only worth keeping while the device is unreachable. Identity is
+    // `agentId ?? agentName`, and an upgrade — the usual reason to restart — can be the release
+    // that starts sending an agentId, so nothing rebinds. Leaving the old session held would strand
+    // its viewer for the full window while a colleague picks the very same simulator.
+    const first = await register([DEV_A], 'mac-1')
+    const browser = await join(first.byDevice.get('devA')!)
+    await closeAndSettle(first.agent)
+    await waitForType(browser, 'session:agent-away')
+
+    const second = await register([DEV_A], 'a-different-machine-id')
+
+    expect((await waitForType<RelayMessage>(browser, 'session:terminated')).reason).toBe('agent-disconnected')
+    expect((await devices(second.agent)).map((d) => d.id)).toEqual(['devA'])
+
+    second.agent.close(); browser.close()
+  })
+
+  it('does not read the gone agent\'s resource sample when someone joins', async () => {
+    // An overloaded Mac is a common reason to restart an agent, and the last sample it sent is
+    // still on the dead socket — `removeResources` does not run until the window closes. Read
+    // naively, the join is refused with `Agent resources exhausted` at the exact moment the Mac is
+    // recovering, and the tester never learns the agent is on its way back.
+    const first = await register()
+    const sessionId = first.byDevice.get('devA')!
+    first.agent.send(JSON.stringify({
+      type: 'agent:resources',
+      resources: {
+        cpuPercent: 99, memUsedMB: 15_000, memTotalMB: 16_000,
+        slotsAvailable: 0, slotsTotal: 2, reportedAt: 1_754_000_000_000,
+      },
+    }))
+    await barrier(first.agent)
+    await closeAndSettle(first.agent)
+
+    const browser = await join(sessionId)
+
+    expect(browser.joined.type).toBe('session:joined')
+    expect(await waitForType(browser, 'session:agent-away')).toBeTruthy()
+
+    browser.close()
+  })
+
+  it('stops holding when the server does', async () => {
+    // `stop()` terminates every socket, and each close would arm a fresh hold — after the clearing
+    // that was meant to prevent exactly this. The timer then outlives the server and fires against
+    // a `SessionManager` nobody owns any more.
+    const own = new RelayServer({ port: 0, agentGraceMs: 60_000 })
+    await own.start()
+    const ownPort = (own.address() as { port: number }).port
+    const agent = new WebSocket(`ws://localhost:${ownPort}`)
+    await waitForOpen(agent)
+    agent.send(JSON.stringify({
+      type: 'agent:register', agentId: 'mac-1', platform: 'ios', devices: [DEV_A],
+    }))
+    await waitForType(agent, 'agent:registered')
+
+    await own.stop()
+    // Give the terminate-driven close events their turn.
+    await sleep(100)
+
+    expect(holdsOf(own).size).toBe(0)
+    agent.close()
   })
 
   it('leaves another agent alone', async () => {
