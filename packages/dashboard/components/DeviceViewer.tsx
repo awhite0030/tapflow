@@ -35,6 +35,11 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const sendRef = useRef<(msg: BrowserToRelay) => void>(() => {});
   // One reset per mount; see the boot handler below.
   const resetSentRef = useRef(false);
+  // Set while a rebind's re-boot is in flight. `device:ready` reads it to skip the reinstall — the
+  // app survived the agent restart, and reinstalling would kill the state the rebind exists to
+  // keep. It cannot be an `installed` check: `device:booting` clears that flag and the agent sends
+  // it unconditionally on every boot, so `installed` is always false by the time ready arrives.
+  const rebindingRef = useRef(false);
   const { perfMode, visible: perfVisible } = usePerfMode();
 
   // statsRef is set by StatsOverlay; perfMetricsPushRef is set by MetricsPanel
@@ -115,7 +120,40 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       onSessionEnded?.(msg.reason);
       return;
     }
+    if (msg.type === 'session:rebound') {
+      // The agent restarted under us. Nothing is streaming, but until the new agent answers, every
+      // flag here still describes the old one — and the relay cannot tell a viewer to stop, since
+      // its own "agent offline" check sees a live socket (the new agent's). So tear down first,
+      // then ask for the device back.
+      //
+      // `device:booting` clears most of this, but only once the new agent replies; these three it
+      // never clears at all, and before rebinding existed a dead agent unmounted the viewer so they
+      // could not outlive it. Now they can: a restart during a launch would leave the button
+      // spinning on an `app:launch-done` that died with the old agent.
+      setDeviceReady(false);
+      setChrome(null);
+      setInstalling(false);
+      setInstallError(null);
+      setBootError(null);
+      setLaunching(false);
+      setSwKeyboardPending(false);
+      setSwKeyboardVisible(false);
+      envelopeQueueRef.current = [];
+      setAgentCapabilities(msg.capabilities);
+
+      rebindingRef.current = true;
+      // `resetSentRef` is already spent, so this carries `app-only` — a restart must not erase the
+      // device (#439).
+      const reset = resetSentRef.current ? 'app-only' : resetMode;
+      resetSentRef.current = true;
+      sendRef.current({ type: 'device:boot', sessionId, payload: { deviceId, resetMode: reset, acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
+      toast.info('The agent restarted — reconnecting to the device.');
+      return;
+    }
     if (msg.type === 'device:boot-error') {
+      // Release the rebind: without this a failed re-boot would suppress every later install for
+      // the life of the mount.
+      rebindingRef.current = false;
       setBootError(msg.message);
     }
     if (msg.type === 'device:booting') {
@@ -128,6 +166,13 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     }
     if (msg.type === 'device:ready') {
       setDeviceReady(true);
+      if (rebindingRef.current) {
+        // Skipping the install means `app:install-done` never arrives, and `installed` gates the
+        // Launch control — so restore it here or the tester silently loses that button.
+        rebindingRef.current = false;
+        if (buildId) setInstalled(true);
+        return;
+      }
       if (buildId) { setInstalling(true); sendRef.current({ type: 'app:install', sessionId, buildId }); }
     }
     if (msg.type === 'app:install-done') { setInstalling(false); setInstalled(true); }
