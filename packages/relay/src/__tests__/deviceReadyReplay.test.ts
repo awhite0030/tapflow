@@ -6,6 +6,7 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
+import type { RelayMessage } from '../types'
 
 
 // #440: the relay replays `device:ready` so a browser that reconnects mid-stream gets a picture
@@ -45,7 +46,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
       type: 'agent:register',
       devices: [{ id: 'devA', name: 'iPhone A', platform: 'ios', status }],
     }))
-    const reply = await waitForType(agent, 'agent:registered')
+    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
     return { agent, sessionId: reply.registeredSessions![0]!.sessionId }
   }
 

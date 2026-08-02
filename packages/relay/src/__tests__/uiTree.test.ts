@@ -76,10 +76,10 @@ describe('GET /api/v1/sessions/:sessionId/ui-tree', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const reply = await new Promise<RelayMessage>((resolve) =>
-      agent.once('message', (d) => resolve(JSON.parse(d.toString()))),
-    )
-    const sessionId = reply.registeredSessions![0].sessionId
+    // Through the shared recorder, not a raw `once`: the recorder queues the frame either way, and
+    // consuming it here keeps a later wait on this socket from finding it.
+    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
+    const sessionId = reply.registeredSessions![0]!.sessionId
     return { agent, sessionId }
   }
 
