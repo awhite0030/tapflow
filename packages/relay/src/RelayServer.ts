@@ -178,11 +178,13 @@ export class RelayServer {
     // Constructor option first, then env. It cannot be env-only: `IDLE_TIMEOUT_MS` is read at module
     // load, which is why no test can set it, and the tests that need a different window here run in
     // the same process as the default.
-    // Validated, not just parsed. `parseInt('15s')` is 15, and the documented default reads
-    // "15000 (15 s)" — so the obvious typo would give a fifteen-millisecond window and turn the
-    // feature off with nothing said. An empty `.env` line and a non-numeric value both land on
-    // NaN, which `setTimeout` rounds to ~1ms.
-    const graceEnv = Number(process.env['TAPFLOW_AGENT_GRACE_MS'])
+    // Validated, not just parsed, and blank treated as unset rather than as a number. Three ways
+    // this silently switches the feature off if read naively: `parseInt('15s')` is 15 — and the
+    // documented default reads "15000 (15 s)", so that is the typo the docs invite; a non-numeric
+    // value is NaN, which `setTimeout` rounds to ~1ms; and `Number('')` is 0, not NaN, so an empty
+    // `.env` line would pass a `>= 0` check and give a zero-length window.
+    const graceRaw = process.env['TAPFLOW_AGENT_GRACE_MS']?.trim()
+    const graceEnv = graceRaw ? Number(graceRaw) : NaN
     this.agentGraceMs = options.agentGraceMs
       ?? (Number.isFinite(graceEnv) && graceEnv >= 0 ? graceEnv : DEFAULT_AGENT_GRACE_MS)
     this.sessions = new SessionManager({ idleTimeoutMs: options.idleTimeoutMs })

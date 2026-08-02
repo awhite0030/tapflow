@@ -52,6 +52,7 @@
 | `TAPFLOW_TRUSTED_PROXIES` | — | *(비어있음)* | 신뢰하는 리버스 프록시 IP 목록(콤마 구분, 예: `127.0.0.1,::1`). 릴레이를 같은 호스트의 리버스 프록시 뒤에서 실행할 때 이 값을 설정하면, 프록시 주소 대신 `X-Forwarded-For`에 담긴 실제 클라이언트 IP를 사용합니다. 비어 있으면 전달 헤더를 파싱하지 않습니다. |
 | `TAPFLOW_BUILD_TTL_DAYS` | — | `7` | 삭제를 예약한 빌드의 파일·레코드를 실제로 지우기까지 보관하는 기간(일). 예약은 수동 동작이라 **Done** 표시만으로는 삭제되지 않는다. 로컬 테스트 시 `0.001` 등 작은 값으로 즉시 확인 가능. |
 | `TAPFLOW_WS_BACKPRESSURE_BYTES` | — | `1048576` (1 MB) | 브라우저 소켓당 바이너리 프레임 드롭 임계값. 버퍼가 이 값을 초과하면 프레임이 드롭됩니다. |
+| `TAPFLOW_AGENT_GRACE_MS` | — | `15000` (15초) | agent 연결이 끊긴 뒤 그 agent가 돌아오기를 기다리며 세션을 유지하는 시간. agent는 프로세스 시작 후 약 1초면 등록되므로 기본값은 재시작을 넉넉히 덮습니다. 이 동안 열린 탭은 멈춘 화면 대신 기다리는 중임을 표시하고, 해당 기기는 다른 사람에게 제공되지 않습니다. 값을 줄이면 세션이 더 빨리 종료됩니다. |
 | `TAPFLOW_CLOUDFLARE_TOKEN` | — | *(비어있음)* | `tls.dnsProvider`가 `cloudflare`일 때 DNS-01 발급에 쓰는 Cloudflare API 토큰. |
 | `TAPFLOW_VERCEL_TOKEN` | — | *(비어있음)* | `tls.dnsProvider`가 `vercel`일 때 쓰는 Vercel API 토큰. |
 | `TAPFLOW_VERCEL_TEAM_ID` | — | *(비어있음)* | 도메인이 팀 스코프에 속할 때 필요한 Vercel 팀 ID. |

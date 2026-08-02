@@ -375,6 +375,39 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
     agent.close()
   })
 
+  describe('TAPFLOW_AGENT_GRACE_MS', () => {
+    // Every one of these silently switches the hold off if the value is merely parsed. `15s` is the
+    // typo the documented default ("15000 (15 s)") invites and `parseInt` happily returns 15 for it;
+    // `Number('')` is 0, not NaN, so an empty line in `.env` passes a `>= 0` check. This line has
+    // been wrong twice — once for the typo, once for the blank.
+    const graceFor = (value: string | undefined) => {
+      const before = process.env['TAPFLOW_AGENT_GRACE_MS']
+      if (value === undefined) delete process.env['TAPFLOW_AGENT_GRACE_MS']
+      else process.env['TAPFLOW_AGENT_GRACE_MS'] = value
+      try {
+        // The window is private and has no observable short of waiting one out, which is the whole
+        // problem with these values — a broken one expires before anything can watch for it.
+        return (new RelayServer({ port: 0 }) as unknown as { agentGraceMs: number }).agentGraceMs
+      } finally {
+        if (before === undefined) delete process.env['TAPFLOW_AGENT_GRACE_MS']
+        else process.env['TAPFLOW_AGENT_GRACE_MS'] = before
+      }
+    }
+
+    it.each([
+      ['unset', undefined, 15_000],
+      ['empty', '', 15_000],
+      ['blank', '   ', 15_000],
+      ['non-numeric', 'abc', 15_000],
+      ['a unit suffix', '15s', 15_000],
+      ['negative', '-5', 15_000],
+      ['a real value', '3000', 3_000],
+      ['zero, meaning no hold', '0', 0],
+    ])('takes %s as %s', (_label, value, expected) => {
+      expect(graceFor(value as string | undefined)).toBe(expected)
+    })
+  })
+
   it('leaves another agent alone', async () => {
     const ios = await register([DEV_A], 'mac-1')
     const other = new WebSocket(`ws://localhost:${port}`)
