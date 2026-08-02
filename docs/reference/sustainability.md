@@ -21,5 +21,5 @@ When new machines are issued, the ones they replace are left over. Running one a
 ## Limits
 
 - **It draws power.** A Mac left on running simulators consumes electricity.
-- **It does not replace every physical device.** tapflow cannot stand in for checks that depend on device hardware, such as camera, NFC, or biometrics.
+- **It does not replace every physical device.** tapflow cannot test features that depend on device hardware, such as camera, NFC, or biometrics.
 - **Old Macs have a floor.** The iOS simulator requires a recent Xcode, which requires a recent macOS. A Mac past that line cannot run as an agent. See [Requirements](/guide/requirements).
