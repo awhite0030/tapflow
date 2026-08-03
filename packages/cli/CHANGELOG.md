@@ -1,5 +1,25 @@
 # tapflow
 
+## 0.18.0
+
+### Patch Changes
+
+- Updated dependencies [2aebd34]
+- Updated dependencies [f4235e5]
+- Updated dependencies [971e375]
+- Updated dependencies [76a00e7]
+- Updated dependencies [bd9eb37]
+- Updated dependencies [7637be3]
+- Updated dependencies [bd6e64f]
+- Updated dependencies [a391b85]
+- Updated dependencies [273c016]
+- Updated dependencies [535c726]
+  - @tapflowio/relay@0.18.0
+  - @tapflowio/ios-agent@0.18.0
+  - @tapflowio/android-agent@0.18.0
+  - @tapflowio/agent-core@0.18.0
+  - @tapflowio/flow-runner@0.18.0
+
 ## 0.17.0
 
 ### Patch Changes

@@ -1,5 +1,42 @@
 # @tapflowio/ios-agent
 
+## 0.18.0
+
+### Patch Changes
+
+- 971e375: Remove the dead `Simulator.app` hide from `SimctlWrapper.boot`. On the supported Xcode (26.x) `simctl boot` does not open Simulator.app, so the `osascript` call failed with `-10006` on every boot while its callback swallowed the error — it hid nothing, and its silence meant nobody would notice if the assumption changed back. The occlusion throttle it was guarding against only applies to a window that is on screen. Verified by quitting Simulator.app entirely and booting from the dashboard: no Simulator process appears.
+
+  Also make `SimctlWrapper.shutdown` tolerate an already-stopped device, mirroring the guard `boot` has had. Tearing down a session whose device is already `Shutdown` raised `code=405 / Unable to shutdown device in current state: Shutdown`, so a routine teardown logged `shutdown failed` and became indistinguishable from a device that genuinely refused to stop.
+
+- bd9eb37: Fix Full reset erasing devices nobody asked to erase, and failing on the ones people did.
+
+  Two defects that were only safe together. `resetMode` lived in a `useState` that nothing reset: leaving a session with `← All Macs` is a conditional re-render, not an unmount, so an armed toggle survived it and the _next_ device the tester picked was erased too. Separately, `IOSAgent` called `simctl erase` without checking device state, and `erase` refuses a device that is not shut down — so an explicit Full reset on a device that was already running died with `Boot failed: Command failed: xcrun simctl erase <udid>`.
+
+  The second was containing the first: the unwanted erase usually targeted a booted device, so it threw and destroyed nothing. Fixing only the agent would have turned that loud failure into silent data loss, so both move together.
+
+  - **dashboard**: Full reset is now a one-shot intent — arming it applies to the next device you pick and then disarms itself. Asking twice means turning it on twice. The mode the viewer was launched with is held separately from the toggle, so disarming does not disturb the running session.
+  - **dashboard**: only the first `device:boot` of a viewer mount carries the reset. `session:joined` arrives again on every socket reconnect, so a Wi-Fi blip or a sleeping laptop would otherwise re-erase the device the tester is looking at, with no click involved.
+  - **dashboard**: the toggle is not offered on Android, where nothing acts on it (#447). It used to stay visibly on having done nothing; self-disarming would have made that read as "done".
+  - **ios-agent**: shut a running device down before erasing it. Any state other than `Shutdown` gets the shutdown — `Booting` and `Shutting Down` refuse an erase exactly as `Booted` does, and re-picking a device while its shutdown is still draining lands there. The request is never silently skipped.
+  - **ios-agent**: if the erase itself fails, boot the device back up before reporting the error — but only when the device really was running and no newer boot has overtaken this one. The shutdown was ours to undo; a device that was already stopping, or one the tester has since asked to stop, is not.
+
+- 535c726: Target the session's simulator, not "whichever one is booted".
+
+  Every app command in `SimctlWrapper` passed `booted` — simctl's alias for the running device — instead of the session's udid: `install`, `launch`, `uninstall`, `terminate`, `get_app_container`, `io screenshot`. With one simulator up that happens to be right. With two, the command lands on whichever simctl picks, and the wrong device accepts it without complaint. Today the defect usually surfaces as `No devices are booted` — loud, and only because nothing was running at all. The quiet case is the one worth fixing.
+
+  `AndroidAgent` already passes an explicit serial; this brings iOS in line.
+
+  - The udid is a required leading parameter with **no default**. A default is how the alias would come back: every call site keeps compiling and every test stays green while the old behaviour returns. `ScreenCaptureStreamer`'s `udid: string = 'booted'` was exactly that, and it is gone too.
+  - Session call sites pass `DeviceState.deviceId`. `MjpegStreamer` takes the device through its constructor rather than reaching for the alias mid-stream.
+  - The three `DeviceAgent` entry points (`installApp`, `launchApp`, `screenshot`) have no device parameter — the interface is shared with Android and predates multi-session agents. They resolve the one **booted** session and throw when there is none, or when there is more than one. Filtering on booted matters: the relay opens a session per registered simulator, so "the first entry" is whichever simctl listed first, usually shut down — worse than the alias, which at least found the device that was running.
+
+  The same lookup backed `queryUITree`, `stream`, `openUrl` and the input methods, so they went through it too. Input does nothing rather than throwing when the answer is ambiguous — refusing a tap is worse than dropping one.
+
+  One call the compiler could not catch: `screenshot(format)` stayed type-correct when a leading `udid: string` was added — the format string simply became the device id. Tests assert the arguments rather than trusting the signature.
+
+  - @tapflowio/agent-core@0.18.0
+  - @tapflowio/audiotap-helper@0.2.8
+
 ## 0.17.0
 
 ### Minor Changes

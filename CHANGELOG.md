@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-08-03
+
+### Added
+
+- **Restarting a device agent no longer costs you your place.** Upgrading or restarting an agent used to end every session it held: the tab you had open was sent back to the Mac list, and you navigated back through the app to where you had been. The relay now holds a session for 15 seconds after its agent's connection drops, and an agent that comes back reclaims it — the stream returns on its own with the app still on the screen you left it on, and no reinstall, so nothing you had entered is lost. If the agent does not come back the tab says it is waiting and then says the session ended, instead of showing a picture that quietly stopped updating. `TAPFLOW_AGENT_GRACE_MS` sets the window; `0` turns it off.
+- `@tapflowio/protocol`, one place the WebSocket message shapes are declared for the relay, the dashboard and the MCP server. They were three hand-kept copies that had already drifted; a message the relay sends is now a compile error everywhere it is spelled wrong.
+
+### Fixed
+
+- **Full reset erased devices nobody asked to erase, and failed on the ones people did.** The toggle stayed on for the rest of the session, so every later reconnect wiped the simulator again — a Wi-Fi blip was enough. It also failed outright on a device that was already running, which is most of them. It now erases once, when asked, and shuts a running device down first.
+- **App install and launch failures reached nobody.** A missing build, an unknown session or an offline agent produced either an error with no session attached or, when the agent was gone, nothing at all — so an MCP caller waited out its timeout and reported a failure with no cause. Every one of those paths now answers immediately, addressed to the session that asked.
+- **Commands went to whichever simulator happened to be booted.** With two devices up, an install or a launch could land on the wrong one, and `simctl` picked silently rather than erroring. Each command now names the session's own device.
+- The dashboard could report a device as ready with nothing streaming behind it — a simulator someone had left running was announced as live before the agent had done anything with it, leaving a viewer waiting for a first frame that was never coming.
+- Booting an iOS device no longer hides `Simulator.app`. The workaround dated from an older Xcode and, on the supported line, only cost a window flash on every boot.
+
+### Changed
+
+- An agent that goes away while you are watching now tells the tab so, and the tab says which of the two it is: waiting for the agent to come back, or the session is over. Both are new messages on the relay-to-browser contract; a viewer that predates them ignores them, as before.
+- While an agent is away its devices are not offered on the Mac list, and `tapflow status`, `list_devices` over MCP and flow-runner see the same — a device nobody can reach for the length of the window is not one to hand out.
+
 ## [0.17.0] - 2026-07-27
 
 ### Added
@@ -323,7 +343,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Automatic `tapflow.config.json` creation as a side effect of `tapflow start` / `tapflow relay start`.
 
-[Unreleased]: https://github.com/jo-duchan/tapflow/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/jo-duchan/tapflow/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/jo-duchan/tapflow/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/jo-duchan/tapflow/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/jo-duchan/tapflow/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/jo-duchan/tapflow/compare/v0.14.0...v0.15.0

@@ -115,6 +115,8 @@ A PR that changes published source needs a changeset. The CI `changeset` job fai
 ```
 <!-- no-changeset: comment-only follow-up to #123 -->
 ```
+A dashboard change names **`@tapflowio/relay`**, never `@tapflowio/dashboard`. The dashboard is `ignore`d in `.changeset/config.json` because it is private — but it is built into the relay's `public/` and ships inside that package, so that is where its release note belongs. Naming both in one changeset is rejected outright by `changeset version`, and nothing catches it until release day: the CI gate only checks that a changeset exists.
+
 `pnpm changeset:check` runs the same check locally, against committed work. A changeset written for an EARLIER PR must say so — `Backfills: #413` on its own line — or the audit keeps reporting that merge for the rest of the cycle. That gate cannot see anything already on main, so `/release` audits the merges too (`pnpm changeset:audit`) — four merged PRs once got as far as release preparation with no changelog entry between them, and only the audit would have caught it.
 
 ---
