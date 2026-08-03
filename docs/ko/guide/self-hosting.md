@@ -422,26 +422,34 @@ WantedBy=multi-user.target
 ```
 
 하드닝 지시어는 파일 시스템을 읽기 전용으로 유지하되
-`/var/lib/tapflow`만 쓰기 가능하게 둡니다. 이 경로 안에는 설정한
-`/var/lib/tapflow/.tapflow-data` 데이터 디렉터리가 포함됩니다.
-`TAPFLOW_DATA_DIR`을 `/var/lib/tapflow` 밖으로 옮겼다면 그 경로도
-`ReadWritePaths`에 추가하세요.
+`/var/lib/tapflow`만 쓰기 가능하게 둡니다. 이 경로 안에 위에서 설정한
+`TAPFLOW_DATA_DIR`이 들어 있고, 릴레이는 그 밖에 쓰지 않으므로 더 열어줄
+경로는 없습니다. 다만 `TAPFLOW_DATA_DIR`을 `/var/lib/tapflow` 밖으로
+옮겼다면 그 경로도 `ReadWritePaths`에 추가하세요.
+
+`ProtectHome=true`가 문제되지 않는 것은 위에서 `tapflow` 사용자의 홈을
+`/var/lib/tapflow`로 만들었기 때문입니다. 홈을 `/home` 아래에 두면 서비스가
+그 경로를 읽지 못합니다.
 
 기본값이 아닌 포트나 다른 설정이 필요하다면 `tapflow.config.json`을 `WorkingDirectory`인 `/var/lib/tapflow`에 둡니다.
 
 서비스를 활성화하기 전에 포그라운드 스모크 테스트를 먼저 실행하세요.
-전용 사용자로 실행했을 때 릴레이가 바인딩되고 데이터 디렉터리에 쓸 수
-있는지 확인합니다.
+systemd가 실행할 방식 그대로 — 같은 사용자, 같은 데이터 디렉터리 — 띄우면
+권한이나 포트 문제가 5초마다 재시작하는 유닛이 아니라 읽을 수 있는
+메시지로 드러납니다.
 
 ```sh
 cd /var/lib/tapflow
-sudo -u tapflow env TAPFLOW_DATA_DIR=/var/lib/tapflow/.tapflow-data tapflow relay start
+sudo -u tapflow env $(sudo cat /etc/tapflow/relay.env | xargs) tapflow relay start
 ```
 
-다른 셸에서 릴레이가 응답하는지 확인합니다.
+다른 셸에서 릴레이가 응답하는지 확인합니다. 기본값에 기대지 말고 URL을
+직접 지정하세요. `tapflow status`는 서비스의 설정이 아니라 **그 셸의**
+설정을 읽어 릴레이를 찾으므로, `/var/lib/tapflow/tapflow.config.json`에
+지정한 포트는 이 셸이 알지 못합니다.
 
 ```sh
-tapflow status
+tapflow status --relay ws://localhost:4000
 ```
 
 상태 확인이 끝나면 Ctrl-C로 포그라운드 릴레이를 중지합니다.

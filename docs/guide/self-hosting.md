@@ -422,25 +422,34 @@ WantedBy=multi-user.target
 ```
 
 The hardening directives keep the filesystem read-only except for
-`/var/lib/tapflow`, which includes the configured
-`/var/lib/tapflow/.tapflow-data` directory. If you move
+`/var/lib/tapflow`, which contains the `TAPFLOW_DATA_DIR` set above. The relay
+writes nowhere else, so nothing further needs opening — but if you move
 `TAPFLOW_DATA_DIR` outside `/var/lib/tapflow`, add that path to
 `ReadWritePaths` too.
 
+`ProtectHome=true` is safe here only because the `tapflow` user's home is
+`/var/lib/tapflow`, as created above. Give that user a home under `/home` and
+the service will not be able to read it.
+
 Place `tapflow.config.json` in `/var/lib/tapflow` if you need to customize the port or other settings, because that is the service `WorkingDirectory`.
 
-Run a foreground smoke test before enabling the service. This confirms the
-relay can bind and write to the data directory with the same dedicated user:
+Run a foreground smoke test before enabling the service. Starting it the same
+way systemd will — same user, same data directory — surfaces a permission or
+port problem as a message you can read, instead of a unit that restarts every
+five seconds:
 
 ```sh
 cd /var/lib/tapflow
-sudo -u tapflow env TAPFLOW_DATA_DIR=/var/lib/tapflow/.tapflow-data tapflow relay start
+sudo -u tapflow env $(sudo cat /etc/tapflow/relay.env | xargs) tapflow relay start
 ```
 
-In another shell, confirm the relay responds:
+In another shell, confirm the relay answers. Name the URL rather than relying on
+the default: `tapflow status` reads *your* configuration to find the relay, not
+the service's, so a port set in `/var/lib/tapflow/tapflow.config.json` is one
+this shell does not know about.
 
 ```sh
-tapflow status
+tapflow status --relay ws://localhost:4000
 ```
 
 Stop the foreground relay with Ctrl-C after the status check passes.
