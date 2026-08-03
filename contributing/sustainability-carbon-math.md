@@ -39,6 +39,33 @@ comparison below are separate sections making separate claims. Presenting the
 avoided-emissions result *as* an SCI figure would be wrong, and obviously so to
 anyone who knows the spec.
 
+### The SCI score itself
+
+Computed once, recorded here, and deliberately **not** published as a page. Functional
+unit `R` = one QA session-hour. `E` = (idle + measured increment × 30% active) × 1 h,
+`I` = 417.3 gCO₂e/kWh, `M = TE × (1/35,040 h) × (1/4 slots)` using Apple's four-year
+lifespan and four concurrent simulators.
+
+| Agent host | O (energy) | M (embodied) | **SCI** | M share |
+|---|---:|---:|---:|---:|
+| Mac mini M4 | 2.30 g | 0.198 g | **2.50 gCO₂e / session-hour** | 7.9% |
+| MacBook Pro 14" M2 Pro | 2.39 g | 1.404 g | 3.79 gCO₂e / session-hour | 37.0% |
+
+For scale, one QA session-hour is about a third of charging a phone once (~6.8 g).
+
+**Why it stays in this file rather than in the docs.** The score is a faithful SCI
+figure and it measures the wrong thing for our purposes: not buying four test devices
+registers as exactly zero, so the number describes tapflow purely as software that
+draws power. Publishing it as the headline would foreground the weakest reading of our
+own case, and there is nothing to gain in exchange — SCI is self-declared, with no
+registry, no badge, and no reviewer. The one public venue, the GSF `case-studies/`
+directory, has had no merged contribution since 2024.
+
+It is worth having ready for three situations: an enterprise buyer asking for an ESG
+figure, a Blue Angel DE-UZ 215 application (which needs a legal entity we do not have),
+or a conversation with the GSF community. Recomputing from scratch each time would be
+wasteful, and the decision not to lead with it should not have to be re-argued.
+
 ---
 
 ## Measurement — the session increment
