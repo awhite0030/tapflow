@@ -62,9 +62,9 @@
 
   Restart a device agent today and the tab is told `session:terminated` and sent back to the Mac list. That is better than the silence it replaced (#446), but it makes the tester redo navigation for something that should be invisible.
 
-  `session:rebound` is the message that will carry the alternative: the relay keeps the session, re-points it at the new agent socket, and tells the viewer to ask for its device back. The relay cannot restart the stream itself — the codec negotiation and the downscale tier ride in the browser's own `device:boot` payload and exist nowhere the relay can see.
+  `session:rebound` carries the alternative: the relay keeps the session, re-points it at the new agent socket, and tells the viewer to ask for its device back. The relay cannot restart the stream itself — the codec negotiation and the downscale tier ride in the browser's own `device:boot` payload and exist nowhere the relay can see.
 
-  **No behaviour changes yet.** Nothing sends `session:rebound`; the relay half is the next PR (#426). This lands first because the reverse order would leave the tab worse than today: the viewer would drop the unknown message, and since `device:boot` is only re-sent from the `session:joined` branch, there would be no recovery path at all — a frozen frame that looks live until someone refreshes.
+  The receiving half landed before the sending one, and on its own it changed nothing. The reverse order would have left the tab worse than it was: the viewer would drop a message it did not know, and `device:boot` is only re-sent from the `session:joined` branch, so there was no recovery path to fall back on — a frozen frame that looks live until someone refreshes. Both halves are in this release, along with the window that gives a restarting agent time to come back.
 
   On receipt the viewer tears down first, then re-boots:
 
