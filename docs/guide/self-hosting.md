@@ -447,11 +447,14 @@ sudo systemd-run --pty --unit=tapflow-smoke   --property=User=tapflow --property
 In another shell, confirm the relay answers. Give it the URL rather than relying
 on the default: `tapflow status` reads *your* configuration to find the relay,
 not the service's, so a port set in `/var/lib/tapflow/tapflow.config.json` is
-one this shell does not know about. Use the port the relay is actually on, and
-`wss://` if you configured TLS:
+one this shell does not know about.
+
+Copy the address the command above printed on startup — `Relay : …`. `--relay`
+accepts it as-is and switches the scheme itself, so a TLS deployment needs no
+edit:
 
 ```sh
-tapflow status --relay ws://localhost:4000   # your port; wss:// with TLS
+tapflow status --relay http://localhost:4000   # whatever `Relay :` said
 ```
 
 Stop the foreground relay with Ctrl-C once the status check passes.

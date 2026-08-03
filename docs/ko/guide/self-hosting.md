@@ -448,11 +448,14 @@ sudo systemd-run --pty --unit=tapflow-smoke   --property=User=tapflow --property
 다른 셸에서 릴레이가 응답하는지 확인합니다. 기본값에 기대지 말고 URL을
 직접 지정하세요. `tapflow status`는 서비스의 설정이 아니라 **그 셸의**
 설정을 읽어 릴레이를 찾으므로, `/var/lib/tapflow/tapflow.config.json`에
-지정한 포트는 이 셸이 알지 못합니다. 실제 릴레이가 떠 있는 포트를 쓰고,
-TLS를 설정했다면 `wss://`를 씁니다.
+지정한 포트는 이 셸이 알지 못합니다.
+
+위 명령이 시작할 때 출력한 주소(`Relay : …`)를 그대로 복사하세요.
+`--relay`는 그 형태를 받아 스킴을 알아서 바꾸므로 TLS 배포에서도 고칠
+것이 없습니다.
 
 ```sh
-tapflow status --relay ws://localhost:4000   # 실제 포트, TLS면 wss://
+tapflow status --relay http://localhost:4000   # `Relay :`에 찍힌 값
 ```
 
 상태 확인이 끝나면 Ctrl-C로 포그라운드 릴레이를 중지합니다.
