@@ -424,32 +424,35 @@ WantedBy=multi-user.target
 하드닝 지시어는 파일 시스템을 읽기 전용으로 유지하되
 `/var/lib/tapflow`만 쓰기 가능하게 둡니다. 이 경로 안에 위에서 설정한
 `TAPFLOW_DATA_DIR`이 들어 있고, 릴레이는 그 밖에 쓰지 않으므로 더 열어줄
-경로는 없습니다. 다만 `TAPFLOW_DATA_DIR`을 `/var/lib/tapflow` 밖으로
-옮겼다면 그 경로도 `ReadWritePaths`에 추가하세요.
+경로는 없습니다. `TAPFLOW_DATA_DIR`을 옮겼다면 새 경로를
+`ReadWritePaths`에 추가하세요.
 
-`ProtectHome=true`가 문제되지 않는 것은 위에서 `tapflow` 사용자의 홈을
-`/var/lib/tapflow`로 만들었기 때문입니다. 홈을 `/home` 아래에 두면 서비스가
-그 경로를 읽지 못합니다.
+예외가 하나 있습니다. `ProtectHome=true`는 `/home`·`/root`·`/run/user`를
+아예 접근 불가로 만들고, `ReadWritePaths`로는 그 안의 경로를 다시 열 수
+없습니다. 데이터 디렉터리를 그 아래에 두면 무엇을 나열하든 서비스가 보지
+못합니다. 다른 곳에 두거나 `ProtectHome=read-only`로 바꾸세요. 위에서
+`tapflow` 사용자의 홈을 `/home`이 아니라 `/var/lib/tapflow`로 만든 것도
+같은 이유입니다.
 
 기본값이 아닌 포트나 다른 설정이 필요하다면 `tapflow.config.json`을 `WorkingDirectory`인 `/var/lib/tapflow`에 둡니다.
 
-서비스를 활성화하기 전에 포그라운드 스모크 테스트를 먼저 실행하세요.
-systemd가 실행할 방식 그대로 — 같은 사용자, 같은 데이터 디렉터리 — 띄우면
-권한이나 포트 문제가 5초마다 재시작하는 유닛이 아니라 읽을 수 있는
-메시지로 드러납니다.
+서비스를 활성화하기 전에 스모크 테스트를 먼저 실행하세요. 문제가 5초마다
+재시작하는 유닛이 아니라 읽을 수 있는 메시지로 드러납니다. `systemd-run`은
+유닛과 같은 샌드박스를 적용합니다 — 그냥 `sudo -u tapflow`로 띄우면 위
+지시어들이 빠지는데, 정작 문제가 되는 것은 대개 그쪽입니다.
 
 ```sh
-cd /var/lib/tapflow
-sudo -u tapflow env $(sudo cat /etc/tapflow/relay.env | xargs) tapflow relay start
+sudo systemd-run --pty --unit=tapflow-smoke   --property=User=tapflow --property=Group=tapflow   --property=WorkingDirectory=/var/lib/tapflow   --property=EnvironmentFile=/etc/tapflow/relay.env   --property=NoNewPrivileges=true   --property=ProtectSystem=strict   --property=ProtectHome=true   --property=PrivateTmp=true   --property=ReadWritePaths=/var/lib/tapflow   /usr/bin/env tapflow relay start
 ```
 
 다른 셸에서 릴레이가 응답하는지 확인합니다. 기본값에 기대지 말고 URL을
 직접 지정하세요. `tapflow status`는 서비스의 설정이 아니라 **그 셸의**
 설정을 읽어 릴레이를 찾으므로, `/var/lib/tapflow/tapflow.config.json`에
-지정한 포트는 이 셸이 알지 못합니다.
+지정한 포트는 이 셸이 알지 못합니다. 실제 릴레이가 떠 있는 포트를 쓰고,
+TLS를 설정했다면 `wss://`를 씁니다.
 
 ```sh
-tapflow status --relay ws://localhost:4000
+tapflow status --relay ws://localhost:4000   # 실제 포트, TLS면 wss://
 ```
 
 상태 확인이 끝나면 Ctrl-C로 포그라운드 릴레이를 중지합니다.

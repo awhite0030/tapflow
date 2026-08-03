@@ -424,35 +424,37 @@ WantedBy=multi-user.target
 The hardening directives keep the filesystem read-only except for
 `/var/lib/tapflow`, which contains the `TAPFLOW_DATA_DIR` set above. The relay
 writes nowhere else, so nothing further needs opening — but if you move
-`TAPFLOW_DATA_DIR` outside `/var/lib/tapflow`, add that path to
-`ReadWritePaths` too.
+`TAPFLOW_DATA_DIR`, add its new path to `ReadWritePaths` too.
 
-`ProtectHome=true` is safe here only because the `tapflow` user's home is
-`/var/lib/tapflow`, as created above. Give that user a home under `/home` and
-the service will not be able to read it.
+With one exception: `ProtectHome=true` makes `/home`, `/root` and `/run/user`
+unreachable outright, and `ReadWritePaths` cannot open a path back up inside
+them. A data directory in any of those is invisible to the service no matter
+what you list. Keep it elsewhere, or switch to `ProtectHome=read-only`. This is
+also why the `tapflow` user is given a home in `/var/lib/tapflow` above rather
+than under `/home`.
 
 Place `tapflow.config.json` in `/var/lib/tapflow` if you need to customize the port or other settings, because that is the service `WorkingDirectory`.
 
-Run a foreground smoke test before enabling the service. Starting it the same
-way systemd will — same user, same data directory — surfaces a permission or
-port problem as a message you can read, instead of a unit that restarts every
-five seconds:
+Run a smoke test before enabling the service, so a problem arrives as a message
+you can read instead of a unit that restarts every five seconds. `systemd-run`
+applies the same sandbox the unit will, which a plain `sudo -u tapflow` would
+not — the directives above are what most often turn out to be the problem:
 
 ```sh
-cd /var/lib/tapflow
-sudo -u tapflow env $(sudo cat /etc/tapflow/relay.env | xargs) tapflow relay start
+sudo systemd-run --pty --unit=tapflow-smoke   --property=User=tapflow --property=Group=tapflow   --property=WorkingDirectory=/var/lib/tapflow   --property=EnvironmentFile=/etc/tapflow/relay.env   --property=NoNewPrivileges=true   --property=ProtectSystem=strict   --property=ProtectHome=true   --property=PrivateTmp=true   --property=ReadWritePaths=/var/lib/tapflow   /usr/bin/env tapflow relay start
 ```
 
-In another shell, confirm the relay answers. Name the URL rather than relying on
-the default: `tapflow status` reads *your* configuration to find the relay, not
-the service's, so a port set in `/var/lib/tapflow/tapflow.config.json` is one
-this shell does not know about.
+In another shell, confirm the relay answers. Give it the URL rather than relying
+on the default: `tapflow status` reads *your* configuration to find the relay,
+not the service's, so a port set in `/var/lib/tapflow/tapflow.config.json` is
+one this shell does not know about. Use the port the relay is actually on, and
+`wss://` if you configured TLS:
 
 ```sh
-tapflow status --relay ws://localhost:4000
+tapflow status --relay ws://localhost:4000   # your port; wss:// with TLS
 ```
 
-Stop the foreground relay with Ctrl-C after the status check passes.
+Stop the foreground relay with Ctrl-C once the status check passes.
 
 Enable and start the service:
 
