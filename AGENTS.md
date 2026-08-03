@@ -93,6 +93,31 @@ The authoring session inherits its own assumptions, so before creating a PR the 
 - Comments only when the WHY is non-obvious. Write new comments in English; leave existing Korean comments unless you're already editing that line.
 - When changing an interface, update `agent-core` first, then align implementations.
 
+### A package whose tests import a sibling extends `vitest.shared.ts`
+
+Cross-package imports resolve through `exports` to `dist/`, so without it a test in one package
+exercises whatever was last *built* of another. #459 shipped a regression behind a green 1889-test
+run for exactly that reason: `ios-agent` stands up a real `RelayServer`, and the relay it stood up
+was the previous one. It surfaced only when the pre-commit `tsc -b` refreshed the build.
+
+`ssr.resolve`, not `resolve` — vitest runs in node and takes the SSR resolution path. Measured:
+`resolve.conditions`, `NODE_OPTIONS=--conditions=source` and `server.deps.inline` all still loaded
+`dist`. And `source` is **prepended** to vite's defaults rather than replacing them; a replacement
+list applies to every dependency, and dropping `node` from it sent jsdom to the wrong entry of
+`decimal.js`.
+
+Adding a package that imports a sibling in its tests means adding the config too.
+`scripts/__tests__/testsReadSource.test.mjs` finds those packages by inspection and fails if one is
+missing it — and separately plants a marker in a built artifact to prove the resolution actually
+lands on source, because a config can be present and not work.
+
+**Not** solved by pointing the manifests at source with `publishConfig`, which needs no per-tool
+config at all and was tried first. `pnpm deploy` does not apply `publishConfig`
+([pnpm#6693](https://github.com/pnpm/pnpm/issues/6693), open), so the Docker image would ship
+`node_modules` full of `.ts` and die on boot — and `packages/cli/bin/tapflow.js` is plain node too.
+Covering every consumer uniformly means covering the ones that cannot read TypeScript. Opting in
+per tool is the point, not the cost.
+
 ### Test Hygiene
 After running tests (especially repeated or looped runs), always check for zombie vitest processes and kill them:
 ```bash
