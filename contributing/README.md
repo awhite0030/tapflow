@@ -80,6 +80,7 @@ cannot keep true.
 | [measurement.md](./measurement.md) | reference | performance, measurement, instrumentation |
 | [downscale-tuning.md](./downscale-tuning.md) | reference | streaming, performance, downscale |
 | [frame-envelope.md](./frame-envelope.md) | reference | streaming, protocol, instrumentation |
+| [sustainability-carbon-math.md](./sustainability-carbon-math.md) | reference | sustainability, carbon, measurement, methodology |
 | [streaming-latency-log.md](./streaming-latency-log.md) | log | streaming, latency, performance |
 | [android-video-streaming-diagnosis.md](./android-video-streaming-diagnosis.md) | diagnosis | android, video, streaming |
 | [awdl-wifi-latency-diagnosis.md](./awdl-wifi-latency-diagnosis.md) | diagnosis | network, latency, relay, wifi |

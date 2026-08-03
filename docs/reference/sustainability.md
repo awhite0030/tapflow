@@ -18,8 +18,30 @@ Simulators alone, though, do not carry that benefit across a team — only peopl
 
 When new machines are issued, the ones they replace are left over. Running one as an agent host keeps it in service instead of sending it for disposal. A simulator host often depends more on having enough memory than on CPU speed, so a Mac a generation or two behind can still handle the role reliably.
 
+Test devices and agent hosts also age on different clocks. Test devices are replaced on a schedule set by OS support windows and the need to validate new OS releases. An agent host faces little of that pressure and can stay in service until macOS stops supporting it. Over eight years, repeatedly replacing devices costs more than twice the manufacturing carbon of keeping one Mac.
+
+## What we measured
+
+We compared operating four test devices (3 iPhone + 1 iPad) against running four simulators on one Mac a team already owns. Manufacturing carbon is divided by each device's expected service life and expressed as an annual figure; emissions from electricity use Korea's grid factor of 417.3 gCO₂e/kWh (2023).
+
+| | 4 test devices | tapflow |
+|---|---:|---:|
+| Manufacturing (annualised) | 55.5 kg | 0 kg |
+| Electricity | 12.7 kg | 17.9 kg |
+| Total | 68.2 kg/yr | 17.9 kg/yr |
+
+Varying the assumptions does not change the outcome much: across every scenario, tapflow came out 3.4 to 4.3 times lower in annual CO₂e.
+
+On electricity alone, tapflow uses more. Keeping a Mac powered draws more than charging a few test devices. What creates the difference in this comparison is not energy efficiency but the absence of manufacturing carbon, since no additional hardware is purchased.
+
+Power measurements support this. With a session open, the added draw stayed within measurement noise, and only active interaction raised it by about 4.5 W, because the H.264 encoder has almost nothing to do while the screen is static. In real QA most of the time is spent looking at the screen and interaction happens intermittently, so average draw is lower still.
+
+The formulas, input sources, measurement conditions, and the comparisons we considered and rejected are documented in [sustainability-carbon-math.md](https://github.com/jo-duchan/tapflow/blob/main/contributing/sustainability-carbon-math.md).
+
 ## Limits
 
-- **It draws power.** A Mac left on running simulators consumes electricity.
+- **It draws power.** A Mac left on running simulators consumes electricity. In the comparison above, the electricity line favours physical devices.
+- **A Mac bought to be an agent host has an upfront cost.** Manufacturing carbon is zero only when you reuse a Mac you already have. If you do buy one, a Mac mini breaks even in roughly six months and a MacBook Pro in about three and a half years. Laptops carry a display and a battery, so their manufacturing carbon is far higher than a desktop's.
 - **It does not replace every physical device.** tapflow cannot test features that depend on device hardware, such as camera, NFC, or biometrics.
 - **Old Macs have a floor.** The iOS simulator requires a recent Xcode, which requires a recent macOS. A Mac past that line cannot run as an agent. See [Requirements](/guide/requirements).
+- **Grid factors vary by region.** The figures above are for Korea. On a cleaner grid both electricity lines shrink, while the manufacturing comparison stays the same.
