@@ -18,7 +18,7 @@ measurement conditions, and the arguments we tested and threw away.
 > roughly a wash and can go either way — tapflow may even lose it.
 >
 > **The claim only holds for a Mac you already have.** Buying one adds production
-> carbon; see [New hardware](#new-hardware-the-honest-case) for when it pays back.
+> carbon; see [New hardware](#new-hardware--the-honest-case) for when it pays back.
 
 ---
 
@@ -33,11 +33,15 @@ These answer different questions and must never be merged into one number.
 
 The SCI specification explicitly forbids lowering a score through offsets or
 market-based measures, and its software boundary names *testing* and *idle machines*
-as in-scope. Under SCI, tapflow is simply "software that draws power" — the fact that
-it stops someone buying a phone earns nothing. So a published SCI score and the
-comparison below are separate sections making separate claims. Presenting the
-avoided-emissions result *as* an SCI figure would be wrong, and obviously so to
-anyone who knows the spec.
+as in-scope. SCI is not an electricity-only metric: a score carries both the energy
+drawn (`O = E × I`) and the embodied carbon of the hardware allocated to the software
+(`M`), so the agent Mac's manufacturing footprint does land in tapflow's score, pro
+rata. What never appears is a **negative** term for a device nobody bought — avoided
+emissions are outside the model entirely.
+
+So a published SCI score and the comparison below are separate claims. Presenting the
+avoided-emissions result *as* an SCI figure would be wrong, and obviously so to anyone
+who knows the spec.
 
 ### The SCI score itself
 
@@ -54,12 +58,13 @@ lifespan and four concurrent simulators.
 For scale, one QA session-hour is about a third of charging a phone once (~6.8 g).
 
 **Why it stays in this file rather than in the docs.** The score is a faithful SCI
-figure and it measures the wrong thing for our purposes: not buying four test devices
-registers as exactly zero, so the number describes tapflow purely as software that
-draws power. Publishing it as the headline would foreground the weakest reading of our
-own case, and there is nothing to gain in exchange — SCI is self-declared, with no
-registry, no badge, and no reviewer. The one public venue, the GSF `case-studies/`
-directory, has had no merged contribution since 2024.
+figure and it measures the wrong thing for our purposes. It accounts for what tapflow
+consumes and reserves — energy plus its share of the Mac's embodied carbon — while not
+buying four test devices registers as exactly zero. Publishing it as the headline would
+foreground the weakest reading of our own case, and there is nothing to gain in
+exchange: SCI is self-declared, with no registry, no badge, and no reviewer. The one
+public venue, the GSF `case-studies/` directory, has had no merged contribution since
+2024.
 
 It is worth having ready for three situations: an enterprise buyer asking for an ESG
 figure, a Blue Angel DE-UZ 215 application (which needs a legal entity we do not have),
