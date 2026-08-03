@@ -71,11 +71,20 @@ const PACKAGE_FILE = /^packages\/([^/]+)\//
  * Anything unreadable counts as shipping: a manifest we cannot parse is not one to wave through.
  */
 export function manifestChangeShips(before, after) {
+  // Key order is not content. `JSON.stringify` preserves insertion order, so a formatter or a
+  // `npm pkg set` that rewrites the manifest without changing a value would compare as different
+  // and ask for a changeset that nothing earned — the same spurious signal this file exists to
+  // remove, arriving from the other side.
+  const stable = (v) =>
+    v === null || typeof v !== 'object' ? v
+      : Array.isArray(v) ? v.map(stable)
+        : Object.fromEntries(Object.keys(v).sort().map((k) => [k, stable(v[k])]))
+
   const strip = (raw) => {
     if (raw === null) return null                    // added or deleted outright — that ships
     try {
       const { devDependencies: _drop, ...rest } = JSON.parse(raw)
-      return JSON.stringify(rest)
+      return JSON.stringify(stable(rest))
     } catch { return null }
   }
   const a = strip(before)

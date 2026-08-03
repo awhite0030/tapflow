@@ -54,6 +54,22 @@ describe('a package.json edit that ships', () => {
     expect(manifestChangeShips('{ not json', withDev({}))).toBe(true)
   })
 
+  it('ignores a pure key reordering', () => {
+    // A formatter or `npm pkg set` can rewrite a manifest without changing a value. Compared as
+    // raw JSON text those differ, and the gate would ask for a changeset nothing earned — the same
+    // spurious signal this file exists to remove, arriving from the other side.
+    const a = JSON.stringify({ name: 'x', version: '1', dependencies: { b: '1', a: '1' } })
+    const b = JSON.stringify({ dependencies: { a: '1', b: '1' }, version: '1', name: 'x' })
+    expect(manifestChangeShips(a, b)).toBe(false)
+  })
+
+  it('still sees a nested value change under reordered keys', () => {
+    // Sorting must not be allowed to hide a real edit that happens to travel with a reorder.
+    const a = JSON.stringify({ name: 'x', dependencies: { b: '1', a: '1' } })
+    const b = JSON.stringify({ dependencies: { a: '2', b: '1' }, name: 'x' })
+    expect(manifestChangeShips(a, b)).toBe(true)
+  })
+
   it('still says shipping when BOTH sides are unparseable', () => {
     // The case the two above miss. Have the failure fall back to a placeholder instead of null
     // and they keep passing — the placeholder differs from the parsed side, so the comparison is
