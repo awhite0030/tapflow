@@ -70,6 +70,7 @@ Committed *why* behind non-obvious decisions. Read the relevant one **before** c
 | [measurement.md](./contributing/measurement.md) | reference | Every performance metric emitter — how to enable it, its output, what it means |
 | [downscale-tuning.md](./contributing/downscale-tuning.md) | reference | Encode-resolution downscale lever — QA fidelity vs decode/bandwidth, recommended default |
 | [frame-envelope.md](./contributing/frame-envelope.md) | reference | Frame envelope wire format (TFFE v1) — 22-byte per-frame timestamp header, magic-byte backward compat |
+| [sustainability-carbon-math.md](./contributing/sustainability-carbon-math.md) | reference | Carbon arithmetic behind the Sustainability page — measured session increment, Apple PER inputs, sensitivity, and the comparisons we dropped |
 | [streaming-latency-log.md](./contributing/streaming-latency-log.md) | log | Append-only glass-to-glass latency log — pipeline analysis, attempts, decisions |
 | [android-video-streaming-diagnosis.md](./contributing/android-video-streaming-diagnosis.md) | diagnosis | Android emulator streaming issues traced to root cause, one section per issue |
 | [awdl-wifi-latency-diagnosis.md](./contributing/awdl-wifi-latency-diagnosis.md) | diagnosis | Periodic Wi-Fi stream hitch traced to AWDL via ICMP ping — method and evidence |
