@@ -227,4 +227,58 @@ describe('audit --audit against real git history', () => {
     mergePr(104, 'dependabot/npm/foo', { 'packages/relay/package.json': '{"a":1}\n' })
     expect(audit().code).toBe(0)
   })
+
+  // Three shapes the audit reported as gaps during the v0.18.0 release, none of them real. Each
+  // was diagnosed by hand there; these are what stop the next release paying for it again.
+
+  it('ignores main being merged back into a feature branch', () => {
+    // Not a PR landing — someone refreshing their branch. It rides onto main inside their PR, and
+    // diffed against its first parent it shows everything main did since the fork, all of which
+    // already had changesets. One such commit reported 32 files.
+    // The branch has to fork BEFORE main moves, or the back-merge carries nothing and the test
+    // passes with or without the fix — measured, that is exactly what a first attempt did.
+    git('checkout', '-q', '-b', 'long-running')
+    writeFileSync(join(repo, 'README.md'), 'notes\n')
+    git('add', '-A'); git('commit', '-q', '-m', 'docs while main moved on')
+    git('checkout', '-q', 'main')
+
+    mergePr(201, 'shipped', {
+      'packages/relay/src/a.ts': 'export const a = 1\n',
+      '.changeset/a.md': CHANGESET('Ships a.'),
+    })
+    // …and released, so the changeset that covered it is gone by the time the back-merge happens.
+    // That is the real shape: the back-merge carries the source without the note.
+    git('rm', '-q', '.changeset/a.md')
+    writeFileSync(join(repo, 'packages/relay/CHANGELOG.md'), '# relay\n\n## 0.2.0\n')
+    git('add', '-A'); git('commit', '-q', '-m', 'chore: release v0.2.0')
+
+    git('checkout', '-q', 'long-running')
+    git('merge', '--no-ff', '-q', 'main', '-m', "Merge remote-tracking branch 'origin/main' into long-running")
+    git('checkout', '-q', 'main')
+    git('merge', '--no-ff', '-q', 'long-running', '-m', 'Merge pull request #202 from me/long-running')
+
+    expect(audit().code).toBe(0)
+  })
+
+  it('ignores a merge that only touched a private package', () => {
+    // A test-only helper nobody installs. The PR gate got this right and the audit did not, which
+    // is how one repository came to hold two answers about the same commit.
+    mergePr(203, 'helpers', {
+      'packages/test-utils/package.json': '{"name":"@tapflowio/test-utils","private":true}\n',
+      'packages/test-utils/src/socket.ts': 'export const wait = () => {}\n',
+    })
+    expect(audit().code).toBe(0)
+  })
+
+  it('still reports a new published package, which has no manifest to judge it by yet', () => {
+    // The direction that must not be traded away for the two above: a package appearing for the
+    // first time is the case that most needs a release note.
+    mergePr(204, 'new-pkg', {
+      'packages/flow-capture/package.json': '{"name":"@tapflowio/flow-capture"}\n',
+      'packages/flow-capture/src/index.ts': 'export const capture = () => {}\n',
+    })
+    const { code, out } = audit()
+    expect(code).toBe(1)
+    expect(out).toContain('#204')
+  })
 })
