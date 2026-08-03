@@ -13,14 +13,36 @@
 // decision someone writes down, not something that happens by forgetting.
 import { execFileSync } from 'child_process'
 import { pathToFileURL } from 'url'
-import { realpathSync } from 'fs'
+import { readFileSync, realpathSync } from 'fs'
 
 // Inverted on purpose: everything under `packages/` ships unless named here. Listing what
 // ships instead left a NEW published package invisible to the gate — the case that most needs
-// a release note — while the comment below claimed the opposite. `dashboard` is deliberately
-// absent from this list: it is `private`, but it is built into the relay's `public/` and
-// shipped inside that package, and it is tapflow's primary user surface.
+// a release note. These two are directories that are not packages at all.
 const NOT_SHIPPED_PACKAGES = ['docs', 'playground']
+
+// `dashboard` is `private` yet reaches users: it is built into the relay's `public/` and ships
+// inside that package. Every other private package ships nothing, which `packagePublishesAt`
+// reads from the manifest rather than from a list — the list this replaced still named `docs`
+// and `playground`, which have not been under `packages/` for some time, while
+// `@tapflowio/test-utils`, added later, was absent and so counted as shipped.
+const SHIPS_DESPITE_PRIVATE = ['@tapflowio/dashboard']
+
+/**
+ * Whether `packages/<dir>` published anything, judged by its manifest **at `rev`**.
+ *
+ * At `rev`, not on disk: the audit walks history, and a package deleted since — or added by the
+ * very merge under examination — must be judged as it was then. Absent or unreadable counts as
+ * publishing, so the gate asks rather than waves through; that is also what keeps a brand-new
+ * package visible, which is the case that most needs a release note.
+ */
+export function packagePublishesAt(readManifest, dir) {
+  const raw = readManifest(dir)
+  if (raw === null) return true
+  try {
+    const m = JSON.parse(raw)
+    return !m.private || SHIPS_DESPITE_PRIVATE.includes(m.name)
+  } catch { return true }
+}
 
 // Deny by default. An earlier version listed what ships — `src/**` with a TypeScript extension —
 // and so ignored `.sql` migrations, `bin/`, `proto/`, `schema/`, `xctest-runner/`, the dashboard
@@ -38,6 +60,38 @@ const EXEMPT = [
 ]
 
 const PACKAGE_FILE = /^packages\/([^/]+)\//
+
+/**
+ * Whether a `package.json` edit can reach a user. `package.json` is deliberately not in EXEMPT —
+ * `dependencies`, `exports`, `bin` and `files` all ship — but `devDependencies` never does, and
+ * wiring up a private test helper touches every consumer's manifest. At v0.18.0 the audit called
+ * #453 a missing changeset on the strength of four such lines, while the PR-time gate had already
+ * (correctly) said no changeset was required. Two gates, two answers, same repository.
+ *
+ * Anything unreadable counts as shipping: a manifest we cannot parse is not one to wave through.
+ */
+export function manifestChangeShips(before, after) {
+  // Key order is not content. `JSON.stringify` preserves insertion order, so a formatter or a
+  // `npm pkg set` that rewrites the manifest without changing a value would compare as different
+  // and ask for a changeset that nothing earned — the same spurious signal this file exists to
+  // remove, arriving from the other side.
+  const stable = (v) =>
+    v === null || typeof v !== 'object' ? v
+      : Array.isArray(v) ? v.map(stable)
+        : Object.fromEntries(Object.keys(v).sort().map((k) => [k, stable(v[k])]))
+
+  const strip = (raw) => {
+    if (raw === null) return null                    // added or deleted outright — that ships
+    try {
+      const { devDependencies: _drop, ...rest } = JSON.parse(raw)
+      return JSON.stringify(stable(rest))
+    } catch { return null }
+  }
+  const a = strip(before)
+  const b = strip(after)
+  if (a === null || b === null) return true
+  return a !== b
+}
 /**
  * PR number of a merge commit, from its subject. `null` for anything else (a hand-made merge,
  * a squash). Exported for the tests.
@@ -90,6 +144,27 @@ export function shipsToUsers(f) {
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim()
 
+/** File content at a revision, or null when it does not exist there. */
+const blobAt = (rev, file) => {
+  // stderr silenced: "exists on disk, but not in <rev>" is the answer to a question, not a
+  // failure, and git says it straight to the console on the way to throwing.
+  try { return execFileSync('git', ['show', `${rev}:${file}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) }
+  catch { return null }
+}
+
+/**
+ * `shipsToUsers`, plus the one question a path cannot answer: a `package.json` whose only change
+ * is under `devDependencies` ships nothing. Both call sites go through this so the audit and the
+ * PR gate cannot give different answers about the same commit again.
+ */
+function shipsBetween(file, before, after) {
+  if (!shipsToUsers(file)) return false
+  const pkg = file.match(PACKAGE_FILE)?.[1]
+  if (pkg && !packagePublishesAt((d) => blobAt(after, `packages/${d}/package.json`), pkg)) return false
+  if (!/(^|\/)package\.json$/.test(file)) return true
+  return manifestChangeShips(blobAt(before, file), blobAt(after, file))
+}
+
 /**
  * Pull `<!-- no-changeset: reason -->` out of a PR body.
  *
@@ -136,6 +211,36 @@ export function extractReason(body) {
   return ''
 }
 
+/**
+ * Packages `changeset version` refuses to see. A changeset that names one of these ALONGSIDE a
+ * published package is rejected outright — "Mixed changesets that contain both ignored and not
+ * ignored packages are not allowed" — and nothing catches it until release day, because the gate
+ * below only asks whether a changeset exists and never opens one. Four such changesets stopped
+ * the v0.18.0 release, written across four different PRs that all went green.
+ */
+function ignoredPackages() {
+  try {
+    return new Set(JSON.parse(readFileSync('.changeset/config.json', 'utf8')).ignore ?? [])
+  } catch { return new Set() }
+}
+
+/** The package names a changeset's frontmatter bumps. */
+export function packagesNamedIn(source) {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(source)
+  if (!front) return []
+  return [...front[1].matchAll(/^\s*["']([^"']+)["']\s*:\s*(major|minor|patch)\s*$/gm)].map((m) => m[1])
+}
+
+/** Changesets that mix an ignored package with a published one, as `{file, ignored, published}`. */
+export function mixedChangesets(files, ignored, read) {
+  return files.flatMap((f) => {
+    const named = packagesNamedIn(read(f))
+    const inIgnore = named.filter((n) => ignored.has(n))
+    const rest = named.filter((n) => !ignored.has(n))
+    return inIgnore.length && rest.length ? [{ file: f, ignored: inIgnore, published: rest }] : []
+  })
+}
+
 function main() {
   // `--audit [since]` walks merges instead of the current branch: the PR gate cannot help with
   // anything already on main, and that is exactly how #410–#413 slipped through. Run at release
@@ -156,7 +261,12 @@ function main() {
     let mergeLog
     try {
       // stderr silenced so git's own "ambiguous argument" dump does not precede our message.
-      mergeLog = execFileSync('git', ['log', `${since}..HEAD`, '--merges', '--format=%H %s'],
+      // `--first-parent`: only merges that landed ONTO main. Without it, a `Merge remote-tracking
+      // branch 'origin/main' into <feature>` — someone refreshing their branch — is counted as a
+      // merge of its own, and it is diffed `^1..sha` where `^1` is the branch tip and `^2` is
+      // main. That diff is everything main did since the branch forked, each part of which
+      // already had its own changeset. One such commit reported 32 files at v0.18.0.
+      mergeLog = execFileSync('git', ['log', `${since}..HEAD`, '--first-parent', '--merges', '--format=%H %s'],
         { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
     } catch {
       // Exit 2, not 1: a typo'd revision must not look like a finding.
@@ -225,7 +335,7 @@ function main() {
     }
 
     const gaps = []
-    for (const { subject, files, touched, consumed, index } of perMerge) {
+    for (const { sha, subject, files, touched, consumed, index } of perMerge) {
       // Same exemption the CI job makes. Without it the audit reports a bot's dependency bump as
       // a permanent gap: the gate never asked for that changeset, so nobody can ever close it.
       if (/dependabot|renovate/i.test(subject)) continue
@@ -236,7 +346,7 @@ function main() {
       const pr = prNumberOf(subject)
       const claimedAt = pr === null ? undefined : claims.get(pr)
       if (claimedAt !== undefined && claimedAt < index) continue
-      const shipped = files.filter((f) => shipsToUsers(f))
+      const shipped = files.filter((f) => shipsBetween(f, `${sha}^1`, sha))
       if (shipped.length > 0 && touched.length === 0) gaps.push({ subject, shipped })
     }
 
@@ -285,7 +395,7 @@ function main() {
   }
 
   const changed = git('diff', '--name-only', `${mergeBase}...HEAD`).split('\n').filter(Boolean)
-  const shipped = changed.filter((f) => shipsToUsers(f))
+  const shipped = changed.filter((f) => shipsBetween(f, mergeBase, 'HEAD'))
 
   if (shipped.length === 0) {
     console.log('No published source changed — no changeset required.')
@@ -308,6 +418,20 @@ function main() {
   if (isReleaseBranch(consumed, changed)) {
     console.log(`Release branch: ${consumed.length} changeset(s) consumed into a changelog.`)
     process.exit(0)
+  }
+
+  const mixed = mixedChangesets(added, ignoredPackages(), (f) => readFileSync(f, 'utf8'))
+  if (mixed.length > 0) {
+    console.error('Changeset names an ignored package alongside a published one:\n')
+    for (const { file, ignored, published } of mixed) {
+      console.error(`  ${file}`)
+      console.error(`    ignored:   ${ignored.join(', ')}`)
+      console.error(`    published: ${published.join(', ')}`)
+    }
+    console.error('\n`changeset version` rejects this outright, and it is not discovered until')
+    console.error('release day. Name the package that actually ships the change — for a dashboard')
+    console.error('change that is `@tapflowio/relay`, which builds it into its `public/`.')
+    process.exit(1)
   }
 
   if (added.length > 0) {

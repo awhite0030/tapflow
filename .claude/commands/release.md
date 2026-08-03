@@ -48,11 +48,40 @@ model: claude-opus-4-8
 
 ## 7. 이 레포 전용 수동 단계 (놓치기 가장 쉬움)
 
-- **`@experimental` dist-tag 정리**: `@tapflowio/mcp-server`는 v0.14.0 graduation 전까지 `X.Y.Z-experimental.N`으로 20개를 발행했고 그 채널이 `experimental` dist-tag였다. graduation 이후 prerelease는 한 번도 나오지 않았다 — **개념은 사라졌고 npm 태그만 남았다.**
-  - 당시 절차는 "새 버전으로 당기거나, 제거를 안내하거나"였고 앞쪽만 수행돼 태그가 `0.14.0`을 가리킨다. **그 1회성 조치가 문제를 재생산했다**: `latest`가 0.16.0으로 가는 동안 태그는 그대로라, 문서가 진단했던 "업데이트가 끊긴다"가 한 버전 뒤에서 그대로 반복됐다. 1회성으로 설계한 것이 원인이지 누가 빠뜨린 것이 아니다.
-  - 지금 태그는 두 가지로 틀렸다: 이름이 가리키는 `0.14.0`은 실험판이 아니라 정식 릴리즈이고, `latest`보다 뒤처져 "최신 실험판"도 아니다.
-  - **제거가 맞다.** 가리킬 prerelease 스트림이 없고, `latest`와 동기화해 유지하면 순수한 별칭이라 잊어버릴 거리만 늘린다. 제거하면 `@experimental` 설치가 소리내어 실패해 사용자가 `latest`로 옮길 신호를 받는다 — 3주 지난 버전을 조용히 설치하는 것보다 낫다.
-  - 사용자에게 영향이 가므로 **실행 전 확인**을 받는다: `npm dist-tag rm @tapflowio/mcp-server experimental`
+- **떠도는 dist-tag 훑기**: 배포 패키지 전부의 dist-tag를 나열하고 `latest`가 **아닌** 것을 찾는다.
+
+  ```sh
+  set -o pipefail
+  pkgs=$(pnpm list -r --depth -1 --json \
+    | python3 -c 'import json,sys; print("\n".join(p["name"] for p in json.load(sys.stdin) if p.get("name") and not p.get("private")))')
+  [ "$(printf '%s' "$pkgs" | grep -c .)" -ge 2 ] || { echo "workspace discovery returned $(printf '%s' "$pkgs" | grep -c .) package(s) — refusing to report on that"; exit 1; }
+  printf '%s\n' "$pkgs" | while read -r n; do
+    tags=$(npm view "$n" dist-tags --json) || { echo "npm view $n failed"; exit 1; }
+    printf '%-30s %s\n' "$n" "$(printf '%s' "$tags" | tr -d '\n ')"
+  done
+  ```
+
+  Two things this deliberately does **not** do, both learned by getting them wrong here:
+
+  - **The package list is derived, not typed.** An earlier version of this step listed the nine names — in a paragraph whose whole point is that hardcoded inventories go stale. A package added after the list is written is a package this step cannot see, and a new package is exactly when a forgotten tag does damage.
+  - **A failure at any stage is not silence.** Three ways this reported "clean" while checking nothing, each found the same way — by breaking it on purpose:
+    - `npm view … 2>/dev/null` prints nothing and leaves the loop exiting 0, so an outage or a typo'd name reads identically to "no stray tags".
+    - Without `pipefail`, `pnpm list` or the parser dying leaves the `while` with no input: zero iterations, **exit 0**. Measured.
+    - `pipefail` alone still does not catch a stage that succeeds while returning nothing, so the package count is checked before anything is reported. Fewer than two published packages in this workspace means discovery broke, not that the repo shrank.
+
+  **이 항목이 훑기인 이유**: 이전 판은 `@tapflowio/mcp-server`의 `experimental` 태그 하나를 이름으로 지목했다. 그 문단은 "1회성으로 설계한 것이 원인"이라고 스스로 진단해놓고, 특정 패키지와 태그를 박은 **또 하나의 1회성 조치**를 적었다. 결과는 예측대로였다 — 2026-08-03 v0.18.0 준비 때 그 태그는 이미 없어 항목이 no-op이었고, 대신 문서가 모르는 세 개가 살아 있었다:
+
+  | 태그 | 가리킨 버전 | 그때 `latest`와 차이 |
+  |---|---|---|
+  | `tapflow@alpha` | `0.1.0-alpha.8` (2026-05-20) | 2개월, 16 minor |
+  | `tapflow@next` | `0.8.1-next.0` (2026-06-11) | 6주, 9 minor |
+  | `@tapflowio/relay@next` | `0.8.1-next.0` (2026-06-11) | 6주, 9 minor |
+
+  `next`는 사람들이 관습적으로 시도하는 이름이라 `experimental`보다 나빴다. **이름을 박지 말고 매번 훑는다.**
+
+- **판정 기준**: `latest`가 아닌 태그는 그것을 먹여주는 prerelease 스트림이 **지금도 흐르는지**만 본다. 흐르면 최신 prerelease로 당긴다. 아니면 제거한다 — `latest`와 동기화해 유지하는 것은 순수한 별칭이라 잊어버릴 거리만 늘리고, 방치하면 매 릴리즈마다 격차가 벌어진다. 제거하면 그 설치가 소리내어 실패해 사용자가 옮길 신호를 받는다. 버전 자체는 지워지지 않으므로 `pkg@1.2.3-next.0` 직접 설치는 계속 동작한다.
+- 사용자에게 영향이 가므로 **실행 전 확인**을 받는다: `npm dist-tag rm <pkg> <tag>`
+  - **2FA 계정에서는 이 명령이 `EOTP`로 실패한다** — 브라우저 인증이 필요해 자동화할 수 없다. 사용자에게 명령을 넘긴다.
 - **루트 `CHANGELOG.md`**: changeset 관리 밖(Keep a Changelog 수동) → `[Unreleased]`를 `[X.Y.Z] - YYYY-MM-DD`(오늘 날짜)로 승격하고 Added/Changed/Fixed를 채운다.
   - **하단 compare 링크도 함께 갱신**(놓치기 쉬움): `[Unreleased]`를 `vX.Y.Z...HEAD`로 바꾸고, `[X.Y.Z]: .../compare/v{직전}...vX.Y.Z` 링크를 새로 추가한다. 직전 릴리즈 링크가 빠져 있으면 이번에 함께 메운다.
 - **dashboard**: private + `ignore` → 건드리지 않는다.
