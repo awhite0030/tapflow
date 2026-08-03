@@ -51,18 +51,23 @@ model: claude-opus-4-8
 - **떠도는 dist-tag 훑기**: 배포 패키지 전부의 dist-tag를 나열하고 `latest`가 **아닌** 것을 찾는다.
 
   ```sh
-  pnpm list -r --depth -1 --json \
-    | python3 -c 'import json,sys; print("\n".join(p["name"] for p in json.load(sys.stdin) if p.get("name") and not p.get("private")))' \
-    | while read -r n; do
-        tags=$(npm view "$n" dist-tags --json) || { echo "npm view $n failed"; exit 1; }
-        printf '%-30s %s\n' "$n" "$(printf '%s' "$tags" | tr -d '\n ')"
-      done
+  set -o pipefail
+  pkgs=$(pnpm list -r --depth -1 --json \
+    | python3 -c 'import json,sys; print("\n".join(p["name"] for p in json.load(sys.stdin) if p.get("name") and not p.get("private")))')
+  [ "$(printf '%s' "$pkgs" | grep -c .)" -ge 2 ] || { echo "workspace discovery returned $(printf '%s' "$pkgs" | grep -c .) package(s) — refusing to report on that"; exit 1; }
+  printf '%s\n' "$pkgs" | while read -r n; do
+    tags=$(npm view "$n" dist-tags --json) || { echo "npm view $n failed"; exit 1; }
+    printf '%-30s %s\n' "$n" "$(printf '%s' "$tags" | tr -d '\n ')"
+  done
   ```
 
   Two things this deliberately does **not** do, both learned by getting them wrong here:
 
   - **The package list is derived, not typed.** An earlier version of this step listed the nine names — in a paragraph whose whole point is that hardcoded inventories go stale. A package added after the list is written is a package this step cannot see, and a new package is exactly when a forgotten tag does damage.
-  - **A registry failure is not silence.** `npm view … 2>/dev/null` prints nothing and leaves the loop exiting 0, so an outage or a typo'd name reads identically to "no stray tags" — the one answer this step must never guess at.
+  - **A failure at any stage is not silence.** Three ways this reported "clean" while checking nothing, each found the same way — by breaking it on purpose:
+    - `npm view … 2>/dev/null` prints nothing and leaves the loop exiting 0, so an outage or a typo'd name reads identically to "no stray tags".
+    - Without `pipefail`, `pnpm list` or the parser dying leaves the `while` with no input: zero iterations, **exit 0**. Measured.
+    - `pipefail` alone still does not catch a stage that succeeds while returning nothing, so the package count is checked before anything is reported. Fewer than two published packages in this workspace means discovery broke, not that the repo shrank.
 
   **이 항목이 훑기인 이유**: 이전 판은 `@tapflowio/mcp-server`의 `experimental` 태그 하나를 이름으로 지목했다. 그 문단은 "1회성으로 설계한 것이 원인"이라고 스스로 진단해놓고, 특정 패키지와 태그를 박은 **또 하나의 1회성 조치**를 적었다. 결과는 예측대로였다 — 2026-08-03 v0.18.0 준비 때 그 태그는 이미 없어 항목이 no-op이었고, 대신 문서가 모르는 세 개가 살아 있었다:
 
