@@ -59,7 +59,7 @@ tapflow agent start --relay ws://192.168.x.x:4000
 
 - macOS
 - iOS Simulator Runtime이 설치된 Xcode
-- Node.js ≥ 20
+- Node.js ≥ 22
 
 ### 시뮬레이터 확인
 
@@ -75,7 +75,7 @@ tapflow devices
 
 ```
 Common
-  ✓ Node v20.x
+  ✓ Node v22.x
 
 iOS
   ✓ Xcode 26.0
@@ -107,7 +107,7 @@ AVD를 생성할 때 시스템 이미지 선택에 주의하세요:
 ```sh
 tapflow doctor
 # Common
-#   ✓ Node v20.x
+#   ✓ Node v22.x
 #
 # Android
 #   ✓ adb found: /usr/local/bin/adb

@@ -18,7 +18,7 @@
 
   <p>
     <a href="https://github.com/jo-duchan/tapflow/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License" /></a>
-    <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Node.js ≥ 20" /></a>
+    <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen" alt="Node.js ≥ 22" /></a>
     <img src="https://img.shields.io/badge/platform-macOS%20agent-lightgrey" alt="macOS Agent" />
     <a href="https://github.com/jo-duchan/tapflow/releases"><img src="https://img.shields.io/github/v/release/jo-duchan/tapflow?include_prereleases&sort=semver" alt="Latest release" /></a>
     <a href="https://github.com/jo-duchan/tapflow/commits/main"><img src="https://img.shields.io/github/last-commit/jo-duchan/tapflow" alt="Last commit" /></a>
@@ -136,9 +136,9 @@ Navigate to `http://localhost:4000` and sign in with the account you just create
 
 | Component | Requirements |
 |-----------|-------------|
-| **Relay server** | Node.js ≥ 20, any OS (Linux/macOS), ~512 MB RAM |
-| **iOS Agent** | macOS, Xcode + iOS Simulator runtime (or run `tapflow setup ios`), Node.js ≥ 20 |
-| **Android Agent** | macOS, Java + Android SDK with an AVD (or run `tapflow setup android`), Node.js ≥ 20 |
+| **Relay server** | Node.js ≥ 22, any OS (Linux/macOS), ~512 MB RAM |
+| **iOS Agent** | macOS, Xcode + iOS Simulator runtime (or run `tapflow setup ios`), Node.js ≥ 22 |
+| **Android Agent** | macOS, Java + Android SDK with an AVD (or run `tapflow setup android`), Node.js ≥ 22 |
 | **Browser (QA)** | Any modern browser — Chrome, Firefox, Safari, Edge |
 
 > Agents run on **macOS only** (they drive the iOS Simulator and Android emulator on a Mac). The relay runs anywhere.
@@ -239,7 +239,7 @@ Full docs: **[www.tapflow.dev](https://www.tapflow.dev)**
 
 tapflow is actively developed and PRs are welcome — see [CONTRIBUTING.md](https://github.com/jo-duchan/tapflow/blob/main/CONTRIBUTING.md) for branch strategy, commit conventions, and an architecture overview. For deep dives, the [contributor notes](https://github.com/jo-duchan/tapflow/blob/main/CONTRIBUTING.md#technical-internals) cover the SimulatorKit reverse-engineering and the streaming render pipeline.
 
-**Requirements**: Node.js ≥ 20, pnpm ≥ 9
+**Requirements**: Node.js ≥ 22, pnpm ≥ 9
 
 ```sh
 git clone https://github.com/jo-duchan/tapflow.git

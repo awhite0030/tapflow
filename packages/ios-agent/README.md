@@ -7,7 +7,7 @@ Controls iOS simulators via `xcrun simctl`, streams frames using SimulatorKit IO
 ## Requirements
 
 - macOS only
-- Node.js ≥ 20
+- Node.js ≥ 22
 - Xcode Command Line Tools (`xcrun`)
 
 ## Usage

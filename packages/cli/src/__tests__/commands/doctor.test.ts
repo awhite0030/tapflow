@@ -27,7 +27,7 @@ describe('cmdDoctor', () => {
 
   it('모든 체크 통과 시 "All checks passed" 출력', async () => {
     mockRunDoctorChecks.mockResolvedValue({
-      common: [{ label: 'Node v20.0.0', ok: true }],
+      common: [{ label: 'Node v22.0.0', ok: true }],
       ios: [{ label: 'Xcode 15.0', ok: true }],
       android: null,
     })
@@ -38,7 +38,7 @@ describe('cmdDoctor', () => {
 
   it('platform 인자를 runDoctorChecks에 전달', async () => {
     mockRunDoctorChecks.mockResolvedValue({
-      common: [{ label: 'Node v20.0.0', ok: true }],
+      common: [{ label: 'Node v22.0.0', ok: true }],
       ios: null,
       android: [{ label: 'adb found: /x', ok: true }],
     })
@@ -56,7 +56,7 @@ describe('cmdDoctor', () => {
 
   it('실패 체크 있으면 "Some checks failed" 출력 후 exit(1)', async () => {
     mockRunDoctorChecks.mockResolvedValue({
-      common: [{ label: 'Node v18.0.0', ok: false, detail: 'Node ≥ 20 required.' }],
+      common: [{ label: 'Node v20.0.0', ok: false, detail: 'Node ≥ 22 required.' }],
       ios: null,
       android: null,
     })
@@ -68,7 +68,7 @@ describe('cmdDoctor', () => {
 
   it('iOS 섹션 있으면 iOS 헤더 출력', async () => {
     mockRunDoctorChecks.mockResolvedValue({
-      common: [{ label: 'Node v20.0.0', ok: true }],
+      common: [{ label: 'Node v22.0.0', ok: true }],
       ios: [
         { label: 'Xcode 15.0', ok: true },
         { label: 'xcrun simctl', ok: true },
@@ -83,7 +83,7 @@ describe('cmdDoctor', () => {
 
   it('Android 섹션 있으면 Android 헤더 출력', async () => {
     mockRunDoctorChecks.mockResolvedValue({
-      common: [{ label: 'Node v20.0.0', ok: true }],
+      common: [{ label: 'Node v22.0.0', ok: true }],
       ios: null,
       android: [
         { label: 'adb found: /usr/local/bin/adb', ok: true },
@@ -97,19 +97,19 @@ describe('cmdDoctor', () => {
 
   it('실패 체크의 detail 메시지 출력', async () => {
     mockRunDoctorChecks.mockResolvedValue({
-      common: [{ label: 'Node v18.0.0', ok: false, detail: 'Node ≥ 20 required.' }],
+      common: [{ label: 'Node v20.0.0', ok: false, detail: 'Node ≥ 22 required.' }],
       ios: null,
       android: null,
     })
 
     await expect(cmdDoctor()).rejects.toThrow('process.exit')
-    expect(logLines.join('\n')).toContain('Node ≥ 20 required.')
+    expect(logLines.join('\n')).toContain('Node ≥ 22 required.')
   })
 
   describe('--json', () => {
     it('유효한 JSON + ok=true + {ok, common, ios, android} 형태', async () => {
       mockRunDoctorChecks.mockResolvedValue({
-        common: [{ label: 'Node v20.0.0', ok: true }],
+        common: [{ label: 'Node v22.0.0', ok: true }],
         ios: [{ label: 'Xcode 15.0', ok: true }],
         android: null,
       })
@@ -125,7 +125,7 @@ describe('cmdDoctor', () => {
 
     it('실패 체크 있으면 ok=false + exit(1)', async () => {
       mockRunDoctorChecks.mockResolvedValue({
-        common: [{ label: 'Node v18.0.0', ok: false, detail: 'Node ≥ 20 required.' }],
+        common: [{ label: 'Node v20.0.0', ok: false, detail: 'Node ≥ 22 required.' }],
         ios: null,
         android: null,
       })
@@ -138,7 +138,7 @@ describe('cmdDoctor', () => {
 
     it('warn만 있으면 ok=true (warn은 실패 아님)', async () => {
       mockRunDoctorChecks.mockResolvedValue({
-        common: [{ label: 'Node v20.0.0', ok: true }],
+        common: [{ label: 'Node v22.0.0', ok: true }],
         ios: [{ label: 'Simulator', ok: false, warn: true, detail: 'No simulator is running.' }],
         android: null,
       })
@@ -151,7 +151,7 @@ describe('cmdDoctor', () => {
 
     it('ANSI 색 코드 미포함', async () => {
       mockRunDoctorChecks.mockResolvedValue({
-        common: [{ label: 'Node v20.0.0', ok: true }],
+        common: [{ label: 'Node v22.0.0', ok: true }],
         ios: null,
         android: null,
       })
@@ -162,7 +162,7 @@ describe('cmdDoctor', () => {
 
     it('detail/warn 필드를 그대로 직렬화', async () => {
       mockRunDoctorChecks.mockResolvedValue({
-        common: [{ label: 'Node v20.0.0', ok: true }],
+        common: [{ label: 'Node v22.0.0', ok: true }],
         ios: null,
         android: [
           {

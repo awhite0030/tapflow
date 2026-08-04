@@ -7,7 +7,15 @@ on:
     branches: [main]
 
 jobs:
-  ci:
+  # 22 is the floor `engines.node` declares; 24 is what Docker and the release job run. Testing
+  # both is what keeps the floor honest — `>=20.12.0` was declared for a year and never exercised
+  # on 20.12, which is how it drifted below what undici already required.
+  test:
+    strategy:
+      # Without this, a failure on 22 cancels 24 and hides whether the break is version-specific.
+      fail-fast: false
+      matrix:
+        node: [22, 24]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -20,7 +28,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -38,6 +46,28 @@ jobs:
       - run: pnpm --filter tapflow --filter @tapflowio/mcp-server build
 
       - run: pnpm test
+
+  # `protect-main` requires the status check named `ci`. A matrix reports per-leg contexts
+  # (`test (22)`, `test (24)`) and never one called `ci`, so the matrix lives in `test` and this
+  # job carries the required name. Changing the matrix stays a code change — the ruleset, which
+  # is repo state outside version control and invisible to review, never has to move with it.
+  #
+  # Both `if: always()` and the explicit assertion are load bearing. Without `always()` this job
+  # is SKIPPED when `test` fails, and a skipped required check counts as passing here — that is
+  # exactly how the `changeset` job below exempts bot PRs. Without the assertion it has no step
+  # that can fail, so it always succeeds. Either omission makes the gate decorative.
+  ci:
+    needs: [test]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # `needs.test.result` rolls up the whole matrix: it is `success` only if every leg was.
+      # `failure`, `cancelled` and `skipped` all fail the assertion, so every path fails safe.
+      - run: |
+          echo "test result: ${{ needs.test.result }}"
+          [ "${{ needs.test.result }}" = "success" ]
 
   changeset:
     permissions:
@@ -60,9 +90,11 @@ jobs:
           fetch-depth: 0            # the check diffs against the merge base
           persist-credentials: false   # this job runs PR-supplied code; it needs no token
 
+      # Not the matrix — this job runs one script and has nothing version-specific to prove.
+      # `.nvmrc` rather than a literal so "what we run" has a single source.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
 
       - name: Require a changeset for published source changes
         env:

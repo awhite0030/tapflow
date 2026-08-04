@@ -6,7 +6,7 @@ Handles NAT traversal between browser clients and device agents, session routing
 
 ## Requirements
 
-- Node.js ≥ 20
+- Node.js ≥ 22
 
 ## Usage
 

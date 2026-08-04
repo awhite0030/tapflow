@@ -2,7 +2,7 @@
 
 ## 릴레이 서버
 
-- Node.js ≥ 20
+- Node.js ≥ 22
 - macOS 또는 모든 서버 OS (릴레이는 트래픽 라우팅만 담당)
 - RAM 512MB, vCPU 1개로 충분
 
@@ -11,7 +11,7 @@
 에이전트는 macOS에서 실행됩니다. iOS와 Android를 한 Mac에서 함께 실행할 수 있습니다.
 
 - macOS
-- Node.js ≥ 20
+- Node.js ≥ 22
 
 ### iOS
 

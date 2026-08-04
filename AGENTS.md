@@ -51,7 +51,7 @@ For the product direction and philosophy behind these — Manual First, Flow Cap
 ## HOW
 
 ### Language & Stack
-- TypeScript throughout. No `any`. Node.js ≥ 20. Everything else is in each package's `package.json`.
+- TypeScript throughout. No `any`. Node.js ≥ 22. Everything else is in each package's `package.json`.
 
 ### Branches, Commits & Releases
 → [CONTRIBUTING.md](./CONTRIBUTING.md)
@@ -136,7 +136,7 @@ pnpm dev:down          # stops relay / agents / vite for THIS checkout
 `concurrently -k` cleans up on a normal exit, not when the terminal goes away or the machine sleeps.
 
 ### Changesets
-A PR that changes published source needs a changeset. The CI `changeset` job fails without one — it only *blocks* a merge once it is a required status check on the `protect-main` ruleset, which it is not yet. Opt out only by writing the reason in the PR body, on its own line:
+A PR that changes published source needs a changeset. The CI `changeset` job fails without one, and it is a required status check on the `protect-main` ruleset, so that failure blocks the merge. Note that the job is *skipped* for bot PRs, and a skipped required check counts as passing — the gate is deliberately not applied to them. Opt out only by writing the reason in the PR body, on its own line:
 ```
 <!-- no-changeset: comment-only follow-up to #123 -->
 ```

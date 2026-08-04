@@ -180,11 +180,11 @@ function checkBootedSimulator(): DoctorCheck {
 function checkNodeVersion(): DoctorCheck {
   const version = process.version
   const [, major] = version.match(/^v(\d+)/) ?? []
-  const ok = Number(major) >= 20
+  const ok = Number(major) >= 22
   return {
     label: `Node ${version}`,
     ok,
-    detail: ok ? undefined : 'Node ≥ 20 required. Install from https://nodejs.org/',
+    detail: ok ? undefined : 'Node ≥ 22 required. Install from https://nodejs.org/',
   }
 }
 

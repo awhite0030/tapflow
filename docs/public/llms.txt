@@ -14,7 +14,7 @@
 
 - [Introduction](https://tapflow.dev/guide/introduction): Architecture overview, key concepts (Relay, Agent, Dashboard, MCP Server), and streaming format by platform.
 - [Quick Start](https://tapflow.dev/guide/getting-started): Install tapflow, start the relay and agent, create the admin account, and open the dashboard — under 10 minutes.
-- [Requirements](https://tapflow.dev/guide/requirements): Node.js ≥ 20 for relay and agent; Xcode for iOS; Android SDK + AVD for Android; any modern browser for the dashboard.
+- [Requirements](https://tapflow.dev/guide/requirements): Node.js ≥ 22 for relay and agent; Xcode for iOS; Android SDK + AVD for Android; any modern browser for the dashboard.
 
 ## Setup
 

@@ -129,25 +129,28 @@ describe('runDoctorChecks', () => {
     expect(adbCheck?.detail).toContain('setup android')
   })
 
-  it('Node 버전 >= 20이면 ok', async () => {
+  it('Node 버전 >= 22이면 ok', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux')
-    vi.spyOn(process, 'version', 'get').mockReturnValue('v20.0.0')
+    vi.spyOn(process, 'version', 'get').mockReturnValue('v22.0.0')
     mockExecSync.mockImplementation(() => { throw new Error('not found') })
 
     const result = await runDoctorChecks()
     expect(result.common.find((c) => c.label.includes('Node'))?.ok).toBe(true)
   })
 
-  it('Node 버전 < 20이면 실패 + detail 포함', async () => {
+  // v20 specifically: Node 20 went EOL 2026-04-30 and doctor used to pass it. Pinning the old
+  // floor as a failure is what proves this check moved with `engines`, rather than a lower one
+  // that would still fail either way.
+  it('Node 버전 20이면 실패 + detail 포함 (EOL, 하한이 22로 올라감)', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux')
-    vi.spyOn(process, 'version', 'get').mockReturnValue('v18.0.0')
+    vi.spyOn(process, 'version', 'get').mockReturnValue('v20.0.0')
     mockPortAvailable(true)
     mockExecSync.mockImplementation(() => { throw new Error('not found') })
 
     const result = await runDoctorChecks()
     const nodeCheck = result.common.find((c) => c.label.includes('Node'))
     expect(nodeCheck?.ok).toBe(false)
-    expect(nodeCheck?.detail).toContain('Node ≥ 20')
+    expect(nodeCheck?.detail).toContain('Node ≥ 22')
   })
 
   it('Port 4000이 사용 가능하면 common 진단에서 ok로 표시', async () => {
