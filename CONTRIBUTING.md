@@ -45,6 +45,12 @@ docs/             ← documentation site (VitePress)
 playground/       ← local integration test environment
 ```
 
+## Claiming an issue
+
+Issues are not assigned in advance. Open a draft PR or post your findings on the issue and it is yours — a comment reserving one does not hold it, so no issue sits blocked behind an intent that never lands.
+
+Check the labels before you start: `requires: macOS` means the change runs against a real simulator or emulator and cannot be verified without a Mac (Xcode / Android SDK). A `good first issue` without that label needs only Node.js and pnpm.
+
 ## Branches & releases
 
 - `main` is always deployable. Direct commits are not allowed. Start work on a `feature/{topic}` branch → PR → merge.
