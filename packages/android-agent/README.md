@@ -6,7 +6,7 @@ Controls Android emulators via ADB and streams H.264 video using [scrcpy](https:
 
 ## Requirements
 
-- Node.js ≥ 20
+- Node.js ≥ 22
 - Android SDK with `adb` (`$ANDROID_HOME` or `$ADB_PATH` must be set)
 - AVD with `google_apis/arm64-v8a` system image (android-34 recommended)
 

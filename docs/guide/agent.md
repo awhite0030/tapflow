@@ -59,7 +59,7 @@ Connecting to a remote relay without a token (or with an expired or revoked one)
 
 - macOS
 - Xcode with iOS Simulator Runtime installed
-- Node.js ≥ 20
+- Node.js ≥ 22
 
 ### List available simulators
 
@@ -75,7 +75,7 @@ Each Mac supports 2–4 simultaneous simulators depending on available RAM. The 
 
 ```
 Common
-  ✓ Node v20.x
+  ✓ Node v22.x
 
 iOS
   ✓ Xcode 26.0
@@ -107,7 +107,7 @@ The agent boots the emulator automatically, waits for `sys.boot_completed`, then
 ```sh
 tapflow doctor
 # Common
-#   ✓ Node v20.x
+#   ✓ Node v22.x
 #
 # Android
 #   ✓ adb found: /usr/local/bin/adb

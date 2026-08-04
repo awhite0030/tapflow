@@ -7,7 +7,7 @@ Taps a host process's audio by PID — no device routing, no dylib injection, no
 ## Requirements
 
 - macOS 14.2+ (Core Audio process taps)
-- Node.js ≥ 20
+- Node.js ≥ 22
 
 ## Usage
 

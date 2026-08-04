@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc   # single source for "what we run"; the floor lives in engines
           cache: pnpm
           registry-url: https://registry.npmjs.org
 

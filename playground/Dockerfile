@@ -1,7 +1,9 @@
-FROM node:20-slim
+FROM node:24-slim
 
 RUN apt-get update && apt-get install -y python3 make g++ git && rm -rf /var/lib/apt/lists/*
-RUN npm install -g pnpm
+# Pinned to match the root Dockerfile and `packageManager`. Unpinned, whatever pnpm floats in with
+# the base image has to agree with a lockfile written by 9.15.1, against --frozen-lockfile below.
+RUN npm install -g pnpm@9.15.1
 
 WORKDIR /app
 

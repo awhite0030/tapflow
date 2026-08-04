@@ -60,7 +60,7 @@
     "@testing-library/user-event": "^14.6.1",
     "@tweakpane/core": "^2.0.5",
     "@types/d3-array": "^3.2.2",
-    "@types/node": "^20.19.43",
+    "@types/node": "^22.20.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.0.0",
     "@types/stats.js": "^0.17.4",

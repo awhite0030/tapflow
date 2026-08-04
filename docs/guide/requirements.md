@@ -2,7 +2,7 @@
 
 ## Relay Server
 
-- Node.js ≥ 20
+- Node.js ≥ 22
 - macOS or any server OS (the relay only routes traffic)
 - ~512 MB RAM, 1 vCPU is sufficient
 
@@ -11,7 +11,7 @@
 The agent runs on macOS. iOS and Android can run together on the same Mac.
 
 - macOS
-- Node.js ≥ 20
+- Node.js ≥ 22
 
 ### iOS
 
