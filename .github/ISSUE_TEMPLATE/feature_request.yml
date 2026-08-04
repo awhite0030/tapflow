@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please search existing issues first — and note tapflow's scope: it is self-hosted, and it does not send app data or streams to external services. A proposal that requires an outside service will not be accepted.
+        Please search existing issues first — and note tapflow's scope: it is self-hosted, and app data and streams never leave your network. A proposal that routes them through an outside service will not be accepted.
 
         Reporting something broken instead? Use the [Bug Report](https://github.com/jo-duchan/tapflow/issues/new?template=bug_report.yml) template.
 
