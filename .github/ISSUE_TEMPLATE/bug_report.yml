@@ -68,6 +68,18 @@ body:
       label: macOS version (iOS agent only)
       placeholder: "e.g. macOS 15.4 — leave blank if not applicable"
 
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Mac architecture (the machine running the agent)
+      description: "Run `uname -m`. Apple Silicon reports `arm64`, Intel reports `x86_64`."
+      options:
+        - arm64 (Apple Silicon)
+        - x86_64 (Intel)
+        - Not applicable (no agent involved)
+    validations:
+      required: true
+
   - type: input
     id: xcode
     attributes:

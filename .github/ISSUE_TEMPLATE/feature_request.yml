@@ -1,0 +1,52 @@
+name: Feature Request
+description: Propose a new capability or an improvement to an existing one
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search existing issues first — and note tapflow's scope: it is self-hosted, and app data and streams never leave your network. A proposal that routes them through an outside service will not be accepted.
+
+        Reporting something broken instead? Use the [Bug Report](https://github.com/jo-duchan/tapflow/issues/new?template=bug_report.yml) template.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation you hit, not the solution you have in mind. What were you trying to do, and where did tapflow get in the way?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like tapflow to do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part does this touch?
+      options:
+        - iOS (simulator)
+        - Android (emulator)
+        - Both platforms
+        - Relay / dashboard / CLI
+        - MCP server (AI-agent path)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including anything you tried as a workaround, and why it was not enough.
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to work on this
