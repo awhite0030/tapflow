@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A dropped real-device connection could take down every other Android device with it.** The scrcpy server process spawned for a real-device session had no error handler; an unhandled error on it (e.g. killing the session after the device had already disconnected) crashed the whole android-agent process, ending every session it was managing, not just the one that dropped. It's now logged instead.
+
 ## [0.18.0] - 2026-08-03
 
 ### Added

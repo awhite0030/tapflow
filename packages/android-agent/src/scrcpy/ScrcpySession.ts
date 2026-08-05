@@ -110,6 +110,9 @@ export class ScrcpySession {
       const msg = d.toString().trim()
       if (msg) logger.debug(msg)
     })
+    // Without a handler, an unhandled 'error' event (e.g. kill() on an already-exited
+    // process) throws and crashes the whole agent — taking down every device it manages.
+    serverProc.on('error', (e) => logger.warn(`server process: ${e.message}`))
     serverProc.unref()
 
     try {
