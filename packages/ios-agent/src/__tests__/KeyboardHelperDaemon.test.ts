@@ -14,7 +14,7 @@ function makeFakeProc() {
   proc.stdin = Object.assign(new EventEmitter(), { writable: true, write: vi.fn() }) as never
   proc.stdout = new EventEmitter()
   proc.stderr = new EventEmitter()
-  proc.kill = vi.fn()
+  proc.kill = vi.fn(() => true) // matches ChildProcess.kill() on a live process
   return proc
 }
 
