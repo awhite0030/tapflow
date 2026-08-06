@@ -119,7 +119,7 @@ Covering every consumer uniformly means covering the ones that cannot read TypeS
 per tool is the point, not the cost.
 
 ### Test Hygiene
-Tests run through `pnpm --filter <pkg> test`, never `npx vitest` — not even from inside the package directory, and not for a single file. npm rewrites the root `package.json` on its way through and collapses `pnpm.overrides` to `pnpm: {}`, leaving `pnpm-lock.yaml` rewritten beside it, and it reports none of that. Reviewing #474 cost exactly this: one `npx vitest` on one test file, and the entire override block was gone with only `git status` to say so. `git checkout HEAD -- package.json pnpm-lock.yaml` puts both back.
+Tests run through `pnpm --filter <pkg> test`, never `npx vitest` — not even from inside the package directory, and not for a single file. npm rewrites the root `package.json` on its way through and collapses `pnpm.overrides` to `pnpm: {}`, leaving `pnpm-lock.yaml` rewritten beside it, and it reports none of that. Reviewing #474 cost exactly this: one `npx vitest` on one test file, and the entire override block was gone with only `git status` to say so. `git checkout HEAD -- package.json pnpm-lock.yaml` puts both back — check `git diff` on them first if you were editing either on purpose, since that discards everything uncommitted in both.
 
 After running tests (especially repeated or looped runs), always check for zombie vitest processes and kill them:
 ```bash
