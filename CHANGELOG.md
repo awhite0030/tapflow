@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A dropped real-device connection could take down every other Android device with it.** The scrcpy server process spawned for a real-device session had no error handler; an unhandled error on it (e.g. killing the session after the device had already disconnected) crashed the whole android-agent process, ending every session it was managing, not just the one that dropped. It's now logged instead.
+- **A scrcpy server process error could take down every Android device the agent manages, not just the one session.** The scrcpy server process spawned for a real-device session had no error handler; an unhandled error on it (e.g. the server process failing to spawn, or a permission error on kill) crashed the whole android-agent process, ending every session it was managing. It's now logged instead.
 
 ## [0.18.0] - 2026-08-03
 

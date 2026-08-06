@@ -96,7 +96,7 @@ describe('ScrcpySession', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     // An EventEmitter throws a synchronous, uncaught error on 'error' with no listener
-    // attached — e.g. serverProc.kill() on an already-exited process — which would
+    // attached — e.g. spawn() failing (ENOENT/EACCES) or EPERM from kill() — which would
     // crash the whole agent (all devices it manages), not just this session.
     expect(() => proc.emit('error', new Error('EPIPE'))).not.toThrow()
 
