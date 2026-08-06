@@ -30,8 +30,14 @@ export class TouchHelper {
   }
 
   stop(): void {
-    this.proc?.kill()
+    const proc = this.proc
     this.proc = null
+    if (!proc) return
+    proc.kill('SIGTERM')
+    // SIGKILL fallback if SIGTERM did not take — mirrors ScreenCaptureStreamer / XCUITreeReader.
+    const killTimer = setTimeout(() => proc.kill('SIGKILL'), 1000)
+    killTimer.unref?.()
+    proc.once('exit', () => clearTimeout(killTimer))
   }
 
   touchStart(x: number, y: number): void {

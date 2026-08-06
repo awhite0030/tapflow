@@ -22,8 +22,15 @@ export class KeyboardHelperDaemon {
   hide(udid: string): Promise<void> { return this.enqueue(`hide ${udid}`) }
 
   stop(): void {
-    this.proc?.kill()
+    const proc = this.proc
     this.proc = null
+    if (proc) {
+      proc.kill('SIGTERM')
+      // SIGKILL fallback if SIGTERM did not take — mirrors ScreenCaptureStreamer / XCUITreeReader.
+      const killTimer = setTimeout(() => proc.kill('SIGKILL'), 1000)
+      killTimer.unref?.()
+      proc.once('exit', () => clearTimeout(killTimer))
+    }
     const err = new Error('keyboard-helper daemon stopped')
     this.pending?.reject(err)
     this.pending = null

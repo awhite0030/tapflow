@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `TouchHelper` and `KeyboardHelperDaemon` could leave a wedged helper process running after `stop()` — only `SIGTERM` was sent, with no fallback. Both now escalate to `SIGKILL` after 1s if the process hasn't exited, matching `ScreenCaptureStreamer` and `XCUITreeReader`.
+
 ## [0.18.0] - 2026-08-03
 
 ### Added
