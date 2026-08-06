@@ -14,6 +14,12 @@
 import { execFileSync } from 'child_process'
 import { pathToFileURL } from 'url'
 import { readFileSync, realpathSync } from 'fs'
+import {
+  changedOverrideKeys,
+  overrideKeyName,
+  prodReachableNames,
+  prodVersionChanges,
+} from './prod-reach.mjs'
 
 // Inverted on purpose: everything under `packages/` ships unless named here. Listing what
 // ships instead left a NEW published package invisible to the gate — the case that most needs
@@ -149,7 +155,29 @@ const blobAt = (rev, file) => {
   // stderr silenced: "exists on disk, but not in <rev>" is the answer to a question, not a
   // failure, and git says it straight to the console on the way to throwing.
   try { return execFileSync('git', ['show', `${rev}:${file}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) }
-  catch { return null }
+  catch {
+    // A rev that is not in the clone is a different thing from a file that was not in that rev,
+    // and only the second one means "nothing shipped". Conflating them made a shallow clone read
+    // as an empty manifest and an empty lockfile, so every change waved through — silently, which
+    // is how it reached CI as a wrong verdict rather than an error.
+    assertRevPresent(rev)
+    return null
+  }
+}
+
+const revChecked = new Set()
+
+function assertRevPresent(rev) {
+  if (revChecked.has(rev)) return
+  try {
+    execFileSync('git', ['rev-parse', '--verify', `${rev}^{commit}`], { stdio: 'ignore' })
+    revChecked.add(rev)
+  } catch {
+    throw new Error(
+      `${rev} is not in this clone — history is too shallow to judge what changed.\n` +
+        'Check out with `fetch-depth: 0`.',
+    )
+  }
 }
 
 /**
@@ -157,7 +185,74 @@ const blobAt = (rev, file) => {
  * is under `devDependencies` ships nothing. Both call sites go through this so the audit and the
  * PR gate cannot give different answers about the same commit again.
  */
+/**
+ * Workspace importers that publish, at `rev`. `.` is the private root; `docs`/`playground` are not
+ * packages. Judged from each manifest rather than a list, for the reason `packagePublishesAt` gives.
+ */
+export function publishedImportersAt(rev) {
+  return blobAt(rev, 'pnpm-lock.yaml')
+    .split('\n')
+    .filter((l) => /^  packages\/[^/]+:$/.test(l))
+    .map((l) => l.trim().slice(0, -1))
+    .filter((path) => packagePublishesAt((d) => blobAt(rev, `packages/${d}/package.json`), path.slice('packages/'.length)))
+}
+
+/**
+ * The importers whose PRODUCTION tree ends up inside the Docker image.
+ *
+ * Narrower than "everything published", and deliberately so. `pnpm.overrides` and the lockfile
+ * decide resolved versions for THIS workspace; they do not propagate into a published tarball,
+ * where a consumer resolves each intermediary's own declared range instead. So an override that
+ * moves a package inside `@tapflowio/mcp-server` changes nothing anyone installs — asking for a
+ * release note there teaches people the gate is noise.
+ *
+ * The image is `Dockerfile:34`, `pnpm deploy --filter @tapflowio/relay --prod`, plus the dashboard,
+ * which vite bundles into the relay's `public/` and which therefore ships inside it. That is the
+ * same pair `SHIPS_DESPITE_PRIVATE` already names, for the same reason.
+ */
+const IMAGE_PACKAGES = ['relay', 'dashboard']
+
+function imageImportersAt(rev) {
+  return IMAGE_PACKAGES.map((d) => `packages/${d}`).filter(
+    (path) => blobAt(rev, `${path}/package.json`) !== null,
+  )
+}
+
+/**
+ * Does a change to the root manifest or the lockfile move something a user runs?
+ *
+ * Root `package.json` is `private` with zero `dependencies`, so classifying it by path — as
+ * `shipsToUsers` does — meant it never qualified whatever it contained. Its one route to a shipped
+ * artifact is `pnpm.overrides`, and four override commits merged with no changelog line before
+ * anything asked (#472). Judged against the image (see `imageImportersAt`), not against every
+ * published package, because that is the only artifact these files decide the contents of.
+ *
+ * The lockfile is checked for the same reason and by the same measure. `AGENTS.md` now says to try
+ * `pnpm update` before adding an override; without this, taking that advice would move the blind
+ * spot rather than close it.
+ */
+export function rootDependencyChangeShips(file, before, after) {
+  const importers = imageImportersAt(after)
+  if (!importers.length) return false
+
+  if (file === 'package.json') {
+    const changed = changedOverrideKeys(blobAt(before, file), blobAt(after, file))
+    if (!changed.length) return false
+    // Reachability is read at `after`: an override that ADDS a package to the production tree is
+    // invisible in the older graph, and that is the direction most worth catching.
+    const reachable = prodReachableNames(blobAt(after, 'pnpm-lock.yaml'), importers)
+    return changed.some((k) => reachable.has(overrideKeyName(k)))
+  }
+
+  return (
+    prodVersionChanges(blobAt(before, file), blobAt(after, file), importers).length > 0
+  )
+}
+
 function shipsBetween(file, before, after) {
+  if (file === 'package.json' || file === 'pnpm-lock.yaml') {
+    return rootDependencyChangeShips(file, before, after)
+  }
   if (!shipsToUsers(file)) return false
   const pkg = file.match(PACKAGE_FILE)?.[1]
   if (pkg && !packagePublishesAt((d) => blobAt(after, `packages/${d}/package.json`), pkg)) return false
