@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import { createInterface } from 'readline'
 import { join } from 'path'
 import { createLogger } from '@tapflowio/agent-core'
+import { killWithSigkillFallback } from './childProcessKill.js'
 
 const logger = createLogger('ios-agent:keyboard-helper')
 
@@ -22,15 +23,8 @@ export class KeyboardHelperDaemon {
   hide(udid: string): Promise<void> { return this.enqueue(`hide ${udid}`) }
 
   stop(): void {
-    const proc = this.proc
+    killWithSigkillFallback(this.proc)
     this.proc = null
-    if (proc) {
-      proc.kill('SIGTERM')
-      // SIGKILL fallback if SIGTERM did not take — mirrors ScreenCaptureStreamer / XCUITreeReader.
-      const killTimer = setTimeout(() => proc.kill('SIGKILL'), 1000)
-      killTimer.unref?.()
-      proc.once('exit', () => clearTimeout(killTimer))
-    }
     const err = new Error('keyboard-helper daemon stopped')
     this.pending?.reject(err)
     this.pending = null

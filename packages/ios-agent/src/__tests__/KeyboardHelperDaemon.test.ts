@@ -28,39 +28,21 @@ async function setupDaemon() {
   return { daemon, proc, showPromise }
 }
 
+// Timer-precision cases (SIGKILL suppressed/fired) are covered by childProcessKill.test.ts —
+// these check KeyboardHelperDaemon actually wires stop() to it, and that the queue/pending
+// rejection logic runs independently of the fallback timer.
 describe('KeyboardHelperDaemon.stop()', () => {
   afterEach(() => vi.useRealTimers())
 
-  it('sends SIGTERM on stop', async () => {
-    const { daemon, proc, showPromise } = await setupDaemon()
-    daemon.stop()
-
-    await expect(showPromise).rejects.toThrow('keyboard-helper daemon stopped')
-    expect(proc.kill).toHaveBeenCalledWith('SIGTERM')
-  })
-
-  it('does not send SIGKILL when the process exits within the fallback window', async () => {
+  it('sends SIGTERM, then escalates to SIGKILL if the process never exits', async () => {
     vi.useFakeTimers()
     const { daemon, proc, showPromise } = await setupDaemon()
     showPromise.catch(() => {})
 
     daemon.stop()
-    proc.emit('exit', 0)
-    await vi.advanceTimersByTimeAsync(1000)
-
     expect(proc.kill).toHaveBeenCalledWith('SIGTERM')
-    expect(proc.kill).not.toHaveBeenCalledWith('SIGKILL')
-  })
 
-  it('sends SIGKILL if the process does not exit within the fallback window', async () => {
-    vi.useFakeTimers()
-    const { daemon, proc, showPromise } = await setupDaemon()
-    showPromise.catch(() => {})
-
-    daemon.stop()
     await vi.advanceTimersByTimeAsync(1000)
-
-    expect(proc.kill).toHaveBeenCalledWith('SIGTERM')
     expect(proc.kill).toHaveBeenCalledWith('SIGKILL')
   })
 

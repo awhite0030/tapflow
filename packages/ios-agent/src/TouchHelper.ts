@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { createLogger } from '@tapflowio/agent-core'
+import { killWithSigkillFallback } from './childProcessKill.js'
 
 const logger = createLogger('ios-agent:touch-helper')
 
@@ -30,14 +31,8 @@ export class TouchHelper {
   }
 
   stop(): void {
-    const proc = this.proc
+    killWithSigkillFallback(this.proc)
     this.proc = null
-    if (!proc) return
-    proc.kill('SIGTERM')
-    // SIGKILL fallback if SIGTERM did not take — mirrors ScreenCaptureStreamer / XCUITreeReader.
-    const killTimer = setTimeout(() => proc.kill('SIGKILL'), 1000)
-    killTimer.unref?.()
-    proc.once('exit', () => clearTimeout(killTimer))
   }
 
   touchStart(x: number, y: number): void {
