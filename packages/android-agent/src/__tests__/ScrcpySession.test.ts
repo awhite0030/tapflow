@@ -76,4 +76,31 @@ describe('ScrcpySession', () => {
     await expect(session.start('emulator-5554')).rejects.toThrow('push failed')
     expect(proc.kill).not.toHaveBeenCalled()
   })
+
+  it('does not crash the process when serverProc emits an error', async () => {
+    vi.useFakeTimers()
+
+    const proc = makeFakeProc()
+    vi.mocked(spawn).mockReturnValue(proc as never)
+    vi.mocked(execFile)
+      .mockImplementationOnce(cbSuccess as never)                            // push: success
+      .mockImplementationOnce(cbFail(new Error('forward failed')) as never) // forward: fail
+
+    const { ScrcpySession } = await import('../scrcpy/ScrcpySession.js')
+    const session = new ScrcpySession()
+
+    const startPromise = session.start('emulator-5554').catch(() => {})
+
+    // Flush the awaited push (execFileAsync) so start() reaches the spawn() call and
+    // attaches its listeners before we emit — spawn() itself runs after that await.
+    await vi.advanceTimersByTimeAsync(0)
+
+    // An EventEmitter throws a synchronous, uncaught error on 'error' with no listener
+    // attached — e.g. spawn() failing (ENOENT/EACCES) or EPERM from kill() — which would
+    // crash the whole agent (all devices it manages), not just this session.
+    expect(() => proc.emit('error', new Error('EPIPE'))).not.toThrow()
+
+    await vi.advanceTimersByTimeAsync(1500)
+    await startPromise
+  })
 })

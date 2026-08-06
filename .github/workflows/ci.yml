@@ -22,6 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # `scripts/__tests__/prodReach.test.mjs` pins the changeset gate against six real merges,
+          # so it needs their blobs. The default shallow clone does not have them, and `git show`
+          # on a missing rev is indistinguishable from "that file was not there" — the gate would
+          # have read every one of them as "nothing shipped".
+          fetch-depth: 0
           persist-credentials: false   # runs PR-supplied code; needs no token afterwards
 
       - uses: pnpm/action-setup@v4
