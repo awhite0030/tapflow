@@ -27,8 +27,8 @@ function makeRaw(overrides: Partial<RawEmulatorController> = {}): RawEmulatorCon
   const base: RawEmulatorController = {
     streamScreenshot: vi.fn() as unknown as RawEmulatorController['streamScreenshot'],
     streamAudio: vi.fn() as unknown as RawEmulatorController['streamAudio'],
-    sendTouch: vi.fn((_e, cb) => cb(null)),
-    sendKey: vi.fn((_e, cb) => cb(null)),
+    sendTouch: vi.fn((_e, _o, cb) => cb(null)),
+    sendKey: vi.fn((_e, _o, cb) => cb(null)),
     sendMouse: vi.fn((_e, cb) => cb(null)),
     sendWheel: vi.fn((_e, cb) => cb(null)),
     getClipboard: vi.fn((_e, _o, cb) => cb(null, { text: '' })),
@@ -112,7 +112,7 @@ describe('EmulatorGrpcClient', () => {
   })
 
   it('touchDown/Move send pressure>0, touchUp sends pressure 0 to close the slot', async () => {
-    const sendTouch = vi.fn((_e: unknown, cb: (e: Error | null) => void) => cb(null))
+    const sendTouch = vi.fn((_e: unknown, _o: unknown, cb: (e: Error | null) => void) => cb(null))
     const client = new EmulatorGrpcClient('x', makeRaw({ sendTouch: sendTouch as never }))
 
     await client.touchDown(0, 100, 200)
@@ -125,7 +125,7 @@ describe('EmulatorGrpcClient', () => {
   })
 
   it('pinch sends two distinct identifiers, released on pinchEnd', async () => {
-    const sendTouch = vi.fn((_e: unknown, cb: (e: Error | null) => void) => cb(null))
+    const sendTouch = vi.fn((_e: unknown, _o: unknown, cb: (e: Error | null) => void) => cb(null))
     const client = new EmulatorGrpcClient('x', makeRaw({ sendTouch: sendTouch as never }))
 
     await client.pinchStart(10, 20, 30, 40)
@@ -146,7 +146,7 @@ describe('EmulatorGrpcClient', () => {
   it('rejects when a touch RPC errors', async () => {
     const boom = new Error('grpc down')
     const client = new EmulatorGrpcClient('x', makeRaw({
-      sendTouch: ((_e: unknown, cb: (e: Error | null) => void) => cb(boom)) as never,
+      sendTouch: ((_e: unknown, _o: unknown, cb: (e: Error | null) => void) => cb(boom)) as never,
     }))
     await expect(client.touchDown(0, 1, 2)).rejects.toThrow('grpc down')
   })
@@ -210,5 +210,32 @@ describe('clipboard', () => {
       cb(new Error('14 UNAVAILABLE: no connection')))
     const client = new EmulatorGrpcClient('x', makeRaw({ getClipboard }))
     await expect(client.getClipboard()).rejects.toThrow(/UNAVAILABLE/)
+  })
+})
+
+describe('EmulatorGrpcClient — input readiness and deadline', () => {
+  it('stops reporting ready once closed, so no RPC is fired at a dead client', () => {
+    const client = new EmulatorGrpcClient('x', makeRaw())
+    expect(client.isReady()).toBe(true)
+    client.close()
+    expect(client.isReady()).toBe(false)
+  })
+
+  it('carries a deadline on input RPCs — unlike scrcpy, this backend can be genuinely cancelled', async () => {
+    const sendTouch = vi.fn((_e: unknown, _o: unknown, cb: (e: Error | null) => void) => cb(null))
+    const sendKey = vi.fn((_e: unknown, _o: unknown, cb: (e: Error | null) => void) => cb(null))
+    const client = new EmulatorGrpcClient('x', makeRaw({ sendTouch: sendTouch as never, sendKey: sendKey as never }))
+
+    await client.touchDown(0, 1, 2)
+    await client.sendKey({ key: 'a' })
+
+    // A deadline is what makes answering failure safe to retry: the emulator did not get it.
+    for (const spy of [sendTouch, sendKey]) {
+      const opts = spy.mock.calls[0][1] as { deadline?: number }
+      expect(typeof opts.deadline).toBe('number')
+      expect(opts.deadline! - Date.now()).toBeGreaterThan(0)
+      // Under the window the MCP client waits before falling back to optimistic success.
+      expect(opts.deadline! - Date.now()).toBeLessThan(2_000)
+    }
   })
 })

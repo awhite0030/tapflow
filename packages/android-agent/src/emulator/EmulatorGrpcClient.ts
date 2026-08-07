@@ -61,14 +61,19 @@ interface ClipDataMsg { text: string }
 // settles would wedge every later copy/paste on that device, so they all carry a deadline.
 // (The video/audio streams deliberately have none — they are long-lived by design.)
 const CLIPBOARD_DEADLINE_MS = 5_000
+// Input carries a deadline for a different reason than clipboard does. gRPC deadlines are real
+// cancellation, so an exceeded one means the emulator did not get the input — which makes answering
+// failure safe to retry. Kept under the 2s window the MCP client waits before falling back to
+// optimistic success, so a dead emulator produces an answer rather than that fallback.
+const INPUT_DEADLINE_MS = 1_500
 type ClipCb = (err: Error | null, res?: ClipDataMsg) => void
 
 /** The subset of the generated EmulatorController stub we use. Injectable for tests. */
 export interface RawEmulatorController {
   streamScreenshot(format: ImageFormatMsg): ClientReadableStream<ImageMsg>
   streamAudio(format: AudioFormatMsg): ClientReadableStream<AudioPacketMsg>
-  sendTouch(event: TouchEventMsg, cb: UnaryCb): void
-  sendKey(event: KeyboardEventMsg, cb: UnaryCb): void
+  sendTouch(event: TouchEventMsg, options: CallOptions, cb: UnaryCb): void
+  sendKey(event: KeyboardEventMsg, options: CallOptions, cb: UnaryCb): void
   sendMouse(event: MouseEventMsg, cb: UnaryCb): void
   sendWheel(event: WheelEventMsg, cb: UnaryCb): void
   getClipboard(empty: Record<string, never>, options: CallOptions, cb: ClipCb): void
@@ -102,6 +107,7 @@ function loadController(): EmulatorControllerCtor {
  */
 export class EmulatorGrpcClient {
   private readonly raw: RawEmulatorController
+  private closed = false
 
   /** `raw` is injectable so tests can drive it without a live emulator. */
   constructor(addr: string, raw?: RawEmulatorController) {
@@ -158,7 +164,11 @@ export class EmulatorGrpcClient {
 
   private touch(touches: TouchMsg[], display = 0): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.raw.sendTouch({ touches, display }, (err) => (err ? reject(err) : resolve()))
+      this.raw.sendTouch(
+        { touches, display },
+        { deadline: Date.now() + INPUT_DEADLINE_MS },
+        (err) => (err ? reject(err) : resolve()),
+      )
     })
   }
 
@@ -199,6 +209,7 @@ export class EmulatorGrpcClient {
     return new Promise((resolve, reject) => {
       this.raw.sendKey(
         { codeType: event.codeType ?? 'XKB', eventType: event.eventType ?? 'keypress', ...event },
+        { deadline: Date.now() + INPUT_DEADLINE_MS },
         (err) => (err ? reject(err) : resolve()),
       )
     })
@@ -227,7 +238,17 @@ export class EmulatorGrpcClient {
     })
   }
 
+  /**
+   * Whether a write now has a client to go through. Unlike the scrcpy backend this one also reports
+   * failure by rejecting, so this is the cheap synchronous half: it avoids firing an RPC at a
+   * client we already closed and then waiting out its rejection.
+   */
+  isReady(): boolean {
+    return !this.closed
+  }
+
   close(): void {
+    this.closed = true
     this.raw.close()
   }
 }

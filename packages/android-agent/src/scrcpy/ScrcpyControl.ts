@@ -15,6 +15,25 @@ export class ScrcpyControl {
     private screenHeight: number,
   ) {}
 
+  /**
+   * Whether a write now reaches the device — as far as anything local can tell.
+   *
+   * `socket.write()` does **not** throw for a dead peer (it reports asynchronously, via the write
+   * callback or `'error'`), so there is no result to inspect and this flag is the only signal this
+   * backend has. It is a **local-end** flag, not a liveness probe: it goes false after our own
+   * destroy, after a FIN (`allowHalfOpen` defaults false, so node ends the writable side for us),
+   * or after an error has already been observed — which means it is edge-triggered and one turn
+   * late, so the first input after a silent death still reads `true`. It cannot see a live socket
+   * whose guest has stopped consuming at all; those bytes queue and look delivered. The ack this
+   * feeds promises delivery, not landing, so that is consistent — but do not read more into it.
+   *
+   * A pure query on purpose: the writes below stay ungated so `AndroidAgent` owns the decision in
+   * one place, next to the ack it has to send.
+   */
+  isReady(): boolean {
+    return this.socket.writable
+  }
+
   updateScreenSize(width: number, height: number): void {
     this.screenWidth = width
     this.screenHeight = height
