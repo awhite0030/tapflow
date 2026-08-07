@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { createLogger } from '@tapflowio/agent-core'
+import { killWithSigkillFallback } from './childProcessKill.js'
 
 const logger = createLogger('ios-agent:touch-helper')
 
@@ -30,7 +31,7 @@ export class TouchHelper {
   }
 
   stop(): void {
-    this.proc?.kill()
+    killWithSigkillFallback(this.proc)
     this.proc = null
   }
 
