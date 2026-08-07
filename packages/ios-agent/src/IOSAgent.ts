@@ -1153,7 +1153,7 @@ export class IOSAgent implements DeviceAgent {
           // Same reason as input:type: the deadline above proves the pasteboard took the text,
           // not that the chord reached the device, so a dead channel here would answer
           // clipboard:write-done having pasted nothing.
-          if (!state.touchHelper.sendKey(KEY_CODE_MAP['KeyV'], MODIFIER_BITS['MetaLeft'])) {
+          if (!state.touchHelper?.sendKey(KEY_CODE_MAP['KeyV'], MODIFIER_BITS['MetaLeft'])) {
             throw new PlatformError('Cannot press paste — no input channel to the device')
           }
         }

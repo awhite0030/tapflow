@@ -83,7 +83,7 @@ import { AudioCaptureStreamer } from '../AudioCaptureStreamer'
 import { launchAudioHelper } from '@tapflowio/audiotap-helper'
 import { SimctlWrapper } from '../SimctlWrapper'
 import { TouchHelper } from '../TouchHelper'
-import { waitForOpen, waitForType } from '@tapflowio/test-utils'
+import { waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 const MockTouchHelper = vi.mocked(TouchHelper)
 const MockAudioStreamer = vi.mocked(AudioCaptureStreamer)
 const mockLaunchAudioHelper = vi.mocked(launchAudioHelper)
@@ -626,11 +626,16 @@ describe('IOSAgent', () => {
       browser.close()
     })
 
-    it('does not install a helper onto a state that teardown has already dropped', async () => {
-      // `cleanupDeviceState` bumps bootSeq for this: a boot awaiting simctl holds its own
-      // reference to the state, and `deviceStates.clear()` does not reach it. Without the bump it
-      // runs on to build a TouchHelper nobody owns — and a self-reviving one would respawn for
-      // the life of the agent with nothing left to stop it.
+    it('does not install a helper onto a state that a reconnect has already dropped', async () => {
+      // What `cleanupDeviceState`'s bootSeq bump is actually for. A boot awaiting simctl holds its
+      // own reference to the state, and `_scheduleReconnect`'s `deviceStates.clear()` does not
+      // reach it. `sendChromeData`'s `!this.ws` guard covers the window only until the reconnect
+      // completes — after that the socket is live again and the abandoned boot goes on to build a
+      // TouchHelper nobody owns, which a self-reviving helper would keep respawning for the life
+      // of the agent with nothing left to stop it.
+      //
+      // Driving the reconnect is the whole point: an `agent.disconnect()` version of this test
+      // passes with the bump deleted, because ws stays null forever and the guard above catches it.
       const simctl = mockSimctl(false)
       let releaseBoot = (): void => {}
       ;(simctl.boot as ReturnType<typeof vi.fn>).mockImplementation(
@@ -638,7 +643,7 @@ describe('IOSAgent', () => {
       )
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
-      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      const agent = new IOSAgent({ intervalMs: 50, reconnectDelays: [20] }, simctl)
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
@@ -649,13 +654,35 @@ describe('IOSAgent', () => {
       await vi.waitFor(() => expect(simctl.boot).toHaveBeenCalled(), { timeout: 500 })
       expect(MockTouchHelper.mock.results).toHaveLength(0)
 
-      agent.disconnect() // tears the state down while the boot is still awaiting simctl
-      releaseBoot()
-      await new Promise((r) => setTimeout(r, 150)) // let the abandoned boot run as far as it will
+      // Drop the relay and bring it back on the same port so the agent's own reconnect runs.
+      browser.close()
+      await relay.stop()
+      relay = new RelayServer({ port })
+      await relay.start()
+      const rejoined = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(rejoined)
+      // A join only succeeds once the agent has re-registered, so this is the barrier that says
+      // the socket is live again — and therefore that `!this.ws` no longer guards anything.
+      let joined = null
+      for (let i = 0; i < 20 && joined === null; i++) {
+        rejoined.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+        joined = await waitForTypeOrNull(rejoined, 'session:joined', 150)
+      }
+      expect(joined).not.toBeNull()
 
+      // The abandoned boot returns at the seq check *before* its second `listDevices`, so that
+      // call not happening is the assertion — no sleep, and it fails if the bump is removed
+      // (the boot then runs on to `listDevices` and builds the helper). `setImmediate` drains the
+      // microtask queue, which is all the guarded path needs to reach its early return.
+      const listCallsBeforeRelease = (simctl.listDevices as ReturnType<typeof vi.fn>).mock.calls.length
+      releaseBoot()
+      await new Promise((r) => setImmediate(r))
+
+      expect(simctl.listDevices).toHaveBeenCalledTimes(listCallsBeforeRelease)
       expect(MockTouchHelper.mock.results).toHaveLength(0)
 
-      browser.close()
+      agent.disconnect()
+      rejoined.close()
     })
 
     it('answers input:type-error when the paste chord is dropped', async () => {

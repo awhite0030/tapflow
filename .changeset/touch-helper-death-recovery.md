@@ -9,8 +9,9 @@ every write returned early at a `stdin.writable` guard. The session accepted no 
 the rest of its life while the stream kept running, so the viewer tapped a screen that updated
 normally and nothing happened — and nothing was reported to the browser or to an MCP caller.
 
-- The helper is now replaced as soon as it dies, not on the next input, so the first tap after a
-  death does not wait for the replacement to start up.
+- The helper is now replaced when it dies rather than on the next input — as soon as the spawn
+  budget below allows it — so the first tap after a death does not wait for the replacement to
+  start up.
 - Replacing is bounded to 3 spawns in any 30-second window, which self-clears, so a helper that
   cannot run does not churn processes and a transient failure is not permanent.
 - A helper that never announces readiness at all is replaced after a deadline. Otherwise

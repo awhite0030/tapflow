@@ -78,9 +78,10 @@ When changing the Swift source, **always update both locations simultaneously**:
 
 `touch-helper` can die on its own, and when it did the session accepted no further input for the
 rest of its life while the stream kept flowing — the viewer tapped a screen that updated normally
-and nothing happened (#482). `TouchHelper` now replaces the process **as soon as it dies** rather
-than on the next input, so the first tap after a death does not pay the helper's start-up cost
-(`xcode-select -p`, two `dlopen`s, a `SimServiceContext` device lookup).
+and nothing happened (#482). `TouchHelper` now replaces the process **when it dies** rather than on
+the next input — immediately, when the spawn budget below allows it — so the first tap after a death
+does not pay the helper's start-up cost (`xcode-select -p`, two `dlopen`s, a `SimServiceContext`
+device lookup).
 
 Five things about it are easy to undo by accident:
 

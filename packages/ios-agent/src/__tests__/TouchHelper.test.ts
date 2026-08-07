@@ -110,6 +110,7 @@ describe('TouchHelper.stop()', () => {
 // between is silently ineffective — which is #482's failure in a narrower window, so it must not
 // be reported as delivered.
 describe('TouchHelper — a helper that is running but not yet ready', () => {
+  afterEach(() => vi.useRealTimers())
   it('reports failure for a frame written before the helper announces itself', async () => {
     const proc = makeFakeProc()
     const { helper } = await loadHelper([proc])
@@ -192,7 +193,6 @@ describe('TouchHelper — a helper that is running but not yet ready', () => {
 
     announceReady(second)
     expect(helper.isReady()).toBe(true)
-    vi.useRealTimers()
   })
 
   it('does not replace a helper that announced itself in time', async () => {
@@ -204,7 +204,6 @@ describe('TouchHelper — a helper that is running but not yet ready', () => {
     expect(spawn).toHaveBeenCalledTimes(1)
     expect(proc.kill).not.toHaveBeenCalled()
     expect(helper.isReady()).toBe(true)
-    vi.useRealTimers()
   })
 
   it('does not let a superseded process mark its replacement ready', async () => {
@@ -440,6 +439,7 @@ describe('TouchHelper — respawn budget', () => {
 // latches at zero and would release the touch at (0,0) while reporting success. Confirmed on a
 // real simulator: the guard holds, and the next fresh gesture works, so nothing stays held.
 describe('TouchHelper — a gesture belongs to the process that opened it', () => {
+  afterEach(() => vi.useRealTimers())
   const continuations: Array<[string, (h: TouchHelperType) => boolean]> = [
     ['touchEnd', (h) => h.touchEnd()],
     ['touchMove', (h) => h.touchMove(0.5, 0.7)],
@@ -491,7 +491,6 @@ describe('TouchHelper — a gesture belongs to the process that opened it', () =
 
     expect(helper.isReady()).toBe(true)
     expect(helper.touchEnd()).toBe(false)
-    vi.useRealTimers()
   })
 })
 
