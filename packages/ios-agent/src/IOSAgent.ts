@@ -692,6 +692,22 @@ export class IOSAgent implements DeviceAgent {
     return (this.parkedSentinels.get(deviceId) ?? 0) > 0
   }
 
+  // A terminal input naming a session this agent holds no state for. Reachable in a way that is
+  // genuinely disputed: `sessionRebind.test.ts` records that a restarted agent is re-seeded from
+  // `agent:registered`, so `!state` should never fire — but `registeredSessions` carries one entry
+  // per *device* (`RelayServer.ts`, `byDeviceId`), and the relay's own comment there notes that one
+  // device can now sit behind two sessions, which leaves the second unseeded. Answering costs four
+  // lines; staying silent costs a terminal input swallowed and the caller's own fallback reporting
+  // success. Android already answers, and `channel-unavailable` is what it maps this to.
+  private ackNoSession(sessionId: string | undefined): void {
+    if (!sessionId) return
+    this.ws?.send(JSON.stringify({
+      type: 'input:error', sessionId,
+      message: INPUT_ERROR_MESSAGES['channel-unavailable'],
+      reason: 'channel-unavailable' satisfies InputErrorReason,
+    }))
+  }
+
   /**
    * Why a write was refused. The helper's boolean says only "no".
    *
@@ -817,7 +833,7 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:touch:end': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state) break
+        if (!state) { this.ackNoSession(msg.sessionId); break }
         // The helper's answer, not its existence: a helper whose process has died reports every
         // write as dropped, and that is what the caller needs to hear (#482).
         const helper = state.touchHelper
@@ -842,7 +858,7 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:pinch:end': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state) break
+        if (!state) { this.ackNoSession(msg.sessionId); break }
         const pinchHelper = state.touchHelper
         void this.ackInput(state, pinchHelper?.pinchEnd() ? 'delivered' : this.refusalReason(pinchHelper, 'continuation'))
         break
@@ -924,7 +940,7 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:key': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state) break
+        if (!state) { this.ackNoSession(msg.sessionId); break }
         this.ensureTouchHelper(state)
         const { code, modifiers } = msg.payload as { code: string; modifiers?: number }
         const usage = KEY_CODE_MAP[code]
@@ -959,7 +975,7 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:button': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state) break
+        if (!state) { this.ackNoSession(msg.sessionId); break }
         this.ensureTouchHelper(state)
         const { name, phase } = msg.payload as { name: string; phase?: 'down' | 'up' }
         // Map the cross-platform button vocabulary (used by MCP) onto this

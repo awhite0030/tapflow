@@ -47,6 +47,18 @@ guard that two reviews already fought over — and neither `tsc` nor eslint woul
 (`no-unnecessary-condition` is not enabled, and tests are excluded from both). The reason is derived
 at the ack site instead, which is safe because writes here are synchronous.
 
+- **A terminal input for a session this agent has no state for answers too** (#489). It used to
+  `break` silently in all four terminal handlers, so nothing answered at all and the caller waited out
+  its own timeout — which MCP's fallback then reports as success. It maps to `channel-unavailable`,
+  the same reason Android's `wireReason()` gives it. Reachability is disputed and deliberately not
+  claimed: `relay/src/__tests__/sessionRebind.test.ts` records that a restarted agent is re-seeded
+  from `agent:registered`, which argues it never fires — but that message carries one entry per
+  *device* (`RelayServer.ts`, `byDeviceId`) and the relay's own comment there notes one device can now
+  sit behind two sessions, which would leave the second unseeded. The answer costs four lines and the
+  silence costs a swallowed input reported as success, so the asymmetry in cost decided it.
+  **Opening** frames stay silent: they carry no ack obligation, and answering them would invent a
+  reply the caller is not waiting for.
+
 An unmapped **button** still answers success: the device genuinely has no such button (#484). An
 unmapped **key code** answers `unsupported` and keeps its existing prose, which names the code. That
 asymmetry is a decision, and it is why iOS never sends `unsupported` for a button while Android does.

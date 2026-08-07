@@ -28,6 +28,10 @@ wire contract stays the same size while the platforms stay different.
   retrying or giving up. Ownership is checked before readiness, because a gesture whose opening frame
   was refused inside the start-up window owns nothing — reading readiness first told that caller
   "never retry" for the very case `channel-starting` exists to serve.
+- **iOS answers a terminal input for a session it lost state for** (#489), where all four terminal
+  handlers used to return silently. Nothing answered, so the caller waited out its own timeout — and
+  MCP's fallback reports that as success. Both agents now map it to `channel-unavailable`. Opening
+  frames stay silent, since nothing is waiting on them.
 - **`message` stays free prose.** That is what lets iOS keep `unknown key code: KeyFoo` while adding
   `reason: 'unsupported'` — the machine field is separate, so parameterised wording survives.
 - `mcp-server` includes the reason in the error it raises. Acting on it — retrying `channel-starting`

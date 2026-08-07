@@ -454,6 +454,80 @@ describe('IOSAgent', () => {
       agent.disconnect()
       browser.close()
     })
+
+    // A terminal input naming a session this agent holds no state for. Nothing used to answer it —
+    // `if (!state) break` — so the caller waited out its own timeout, which its fallback then
+    // reported as success. Reachability is genuinely disputed (see `ackNoSession`'s comment), which
+    // is why the state is manufactured here rather than driven through a relay sequence: the only
+    // shape that produces it needs the relay to hold two sessions for one device, and this suite
+    // cannot stand that up. What the test pins is the answer, not the route to it.
+    // Asserted on what the agent sends rather than on what reaches the browser, for the same reason
+    // the Android suite does: the relay answers these types on an agent's behalf when the socket is
+    // down, so a round trip would risk testing the relay's fallback instead of this branch.
+    describe('terminal inputs for a session whose state is gone (#489)', () => {
+      async function connectedAgent() {
+        const browser = new WebSocket(`ws://localhost:${port}`)
+        await waitForOpen(browser)
+        const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+        await agent.connect(`ws://localhost:${port}`)
+        browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+        await waitForType(browser, 'session:joined')
+        return { agent, browser }
+      }
+
+      type Internals = {
+        ws: WebSocket
+        deviceStates: Map<string, unknown>
+        handleRelayMessage(msg: { type: string; sessionId?: string; payload?: unknown }): void
+      }
+      const internals = (a: IOSAgent): Internals => a as unknown as Internals
+
+      function inputErrors(spy: ReturnType<typeof vi.spyOn>) {
+        return spy.mock.calls
+          .map(([raw]) => JSON.parse(raw as string) as { type: string; sessionId?: string; message?: string; reason?: string })
+          .filter((m) => m.type === 'input:error')
+      }
+
+      for (const [type, payload] of [
+        ['input:touch:end', { x: 0.5, y: 0.5 }],
+        ['input:pinch:end', { f0: { x: 0.5, y: 0.5 }, f1: { x: 0.5, y: 0.5 } }],
+        ['input:button', { name: 'home' }],
+        ['input:key', { code: 'KeyA' }],
+      ] as Array<[string, Record<string, unknown>]>) {
+        it(`answers input:error with reason channel-unavailable for ${type}`, async () => {
+          const { agent, browser } = await connectedAgent()
+          // Captured first: `sessionId` is derived from `deviceStates`, so clearing the map would
+          // also make the id null and the ack would have nothing to address.
+          const sessionId = agent.sessionId
+          const sent = vi.spyOn(internals(agent).ws, 'send')
+          internals(agent).deviceStates.clear()
+
+          internals(agent).handleRelayMessage({ type, sessionId: sessionId!, payload })
+
+          const acks = inputErrors(sent)
+          expect(acks).toHaveLength(1)
+          expect(acks[0]!.sessionId).toBe(sessionId)
+          expect(acks[0]!.reason).toBe('channel-unavailable')
+
+          agent.disconnect()
+          browser.close()
+        })
+      }
+
+      it('stays silent for an opening frame — those carry no ack obligation', async () => {
+        const { agent, browser } = await connectedAgent()
+        const sessionId = agent.sessionId
+        const sent = vi.spyOn(internals(agent).ws, 'send')
+        internals(agent).deviceStates.clear()
+
+        internals(agent).handleRelayMessage({ type: 'input:touch:start', sessionId: sessionId!, payload: { x: 0.5, y: 0.5 } })
+
+        expect(inputErrors(sent)).toHaveLength(0)
+
+        agent.disconnect()
+        browser.close()
+      })
+    })
   })
 
   // #482: the helper process dies, the session keeps streaming, and every input is dropped.
