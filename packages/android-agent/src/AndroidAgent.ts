@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto'
 import { WebSocket } from 'ws'
 import type { AndroidButton, ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
+import { outcomeMessage, type InputOutcome } from './inputOutcome.js'
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
@@ -163,6 +164,10 @@ interface DeviceState {
 // and EmulatorGrpcClient (gRPC backend) — identical method shapes, so the input handlers stay
 // backend-agnostic. Methods may be sync (scrcpy) or async (gRPC); callers fire-and-forget.
 interface PointerControl {
+  /** Whether a write now reaches the device. Each backend answers from what it actually has — a
+   *  socket's local writability for scrcpy, a closed flag for gRPC — because the two have nothing
+   *  in common: `socket.write()` never throws, and a gRPC call rejects. See the implementations. */
+  isReady(): boolean
   touchDown(pointerId: number, x: number, y: number): void | Promise<void>
   touchMove(pointerId: number, x: number, y: number): void | Promise<void>
   touchUp(pointerId: number, x?: number, y?: number): void | Promise<void>
@@ -901,15 +906,51 @@ export class AndroidAgent implements DeviceAgent {
     }))
   }
 
-  // Ack a terminal input (mirrors ios-agent.ackInput): input:done = dispatched to a booted device (not a landing guarantee); input:error = no live pointer channel / not booted.
-  private async ackInput(state: DeviceState, dispatched: boolean): Promise<void> {
-    const booted = dispatched && (state.booted || (await this.isBooted(state.deviceId)))
-    if (booted) state.booted = true // cache the post-reconnect verify so later inputs skip adb
+  // Ack a terminal input. `input:done` = the input reached a live channel on a booted device (not a
+  // landing guarantee — `adb shell input` and HID are both fire-and-forget once accepted).
+  // Everything else is `input:error` with the reason, because collapsing the reasons would report a
+  // dead channel for an input we simply do not implement. See inputOutcome.ts.
+  // `seq` is the boot generation observed when the message arrived — captured by the caller, before
+  // it awaited the dispatch. Reading it here would be too late: a reboot that started under that
+  // await would already have been counted, and caching `booted` across it poisons every later input
+  // on the session, since they all skip the verify.
+  private async ackInput(state: DeviceState, outcome: InputOutcome, seq: number): Promise<void> {
+    // Only worth verifying the device when we believe we dispatched: every other outcome already
+    // knows why it failed, and asking adb would add a round trip to say the same thing.
+    const resolved: InputOutcome = outcome !== 'delivered'
+      ? outcome
+      : (state.booted || (await this.isBooted(state.deviceId))) ? 'delivered' : 'not-booted'
+    if (resolved === 'delivered' && seq === state.bootSeq) state.booted = true // cache the verify
     this.ws?.send(JSON.stringify(
-      booted
+      resolved === 'delivered'
         ? { type: 'input:done', sessionId: state.sessionId }
-        : { type: 'input:error', sessionId: state.sessionId, message: dispatched ? 'device not booted' : 'input channel not ready' },
+        : { type: 'input:error', sessionId: state.sessionId, message: outcomeMessage(resolved) },
     ))
+  }
+
+  // A terminal input naming a session this agent holds no state for. `deviceStates` is never
+  // deleted, so this is an unregistered sessionId rather than an evicted one — and the relay only
+  // answers on an agent's behalf when the agent is *offline*, so nothing else would answer at all
+  // and the caller would wait out its own timeout.
+  private ackNoSession(sessionId: string | undefined): void {
+    if (!sessionId) return
+    this.ws?.send(JSON.stringify({
+      type: 'input:error', sessionId, message: outcomeMessage('no-session'),
+    }))
+  }
+
+  // Await a pointer-channel write and turn it into an outcome. scrcpy's methods are synchronous and
+  // return void, so `await` is a no-op there and `isReady()` is the whole signal; gRPC rejects (with
+  // a deadline, so an exceeded call is genuinely cancelled and answering failure is safe to retry).
+  private async dispatchTo(pc: PointerControl, write: () => void | Promise<void>): Promise<InputOutcome> {
+    if (!pc.isReady()) return 'channel-down'
+    try {
+      await write()
+      return 'delivered'
+    } catch (e) {
+      logger.error(`pointer dispatch failed: ${e instanceof Error ? e.message : String(e)}`)
+      return 'failed'
+    }
   }
 
   private async isBooted(deviceId: string): Promise<boolean> {
@@ -1011,14 +1052,17 @@ export class AndroidAgent implements DeviceAgent {
       }
       case 'input:touch:end': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state) break
+        if (!state) { this.ackNoSession(msg.sessionId); break }
         const pc = this.pointerControl(state)
-        if (pc) {
-          this.fire(pc.touchUp(0, state.lastTouchPx.x, state.lastTouchPx.y))
-        } else {
-          state.touchHelper?.touchEnd()
-        }
-        void this.ackInput(state, pc !== null || state.touchHelper !== null) // terminal of a tap/swipe → ack the gesture
+        const helper = state.touchHelper
+        const seq = state.bootSeq
+        // terminal of a tap/swipe → ack the gesture, on what the dispatch actually reported
+        void (async () => this.ackInput(state,
+          pc ? await this.dispatchTo(pc, () => pc.touchUp(0, state.lastTouchPx.x, state.lastTouchPx.y))
+            : helper ? await helper.touchEnd()
+            : 'channel-down',
+          seq,
+        ))().catch((e) => logger.error('input:touch:end ack failed:', e))
         break
       }
       case 'input:pinch:start': {
@@ -1051,14 +1095,16 @@ export class AndroidAgent implements DeviceAgent {
       }
       case 'input:pinch:end': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state) break
+        if (!state) { this.ackNoSession(msg.sessionId); break }
         const pc = this.pointerControl(state)
-        if (pc) {
-          this.fire(pc.pinchEnd())
-        } else {
-          state.touchHelper?.pinchEnd()
-        }
-        void this.ackInput(state, pc !== null || state.touchHelper !== null)
+        const helper = state.touchHelper
+        const seq = state.bootSeq
+        void (async () => this.ackInput(state,
+          pc ? await this.dispatchTo(pc, () => pc.pinchEnd())
+            : helper ? helper.pinchEnd()   // 'unsupported' — the adb path has no pinch at all
+            : 'channel-down',
+          seq,
+        ))().catch((e) => logger.error('input:pinch:end ack failed:', e))
         break
       }
       case 'input:rotate': {
@@ -1077,10 +1123,19 @@ export class AndroidAgent implements DeviceAgent {
       }
       case 'input:button': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state) break
-        const { name } = msg.payload as { name: string }
-        state.touchHelper?.pressButton(name)
-        void this.ackInput(state, state.touchHelper !== null)
+        if (!state) { this.ackNoSession(msg.sessionId); break }
+        // Buttons go through the adb helper on BOTH backends — this is the path that actually runs
+        // a command in production, so its outcome is the one that matters most here.
+        // Destructuring inside the async body: doing it out here would throw synchronously on a
+        // malformed payload, and the ws dispatch swallows that, leaving the caller with no ack.
+        const seq = state.bootSeq
+        void (async () => {
+          const { name } = (msg.payload ?? {}) as { name?: string }
+          const helper = state.touchHelper
+          if (name === undefined) return this.ackInput(state, 'malformed', seq)
+          if (!helper) return this.ackInput(state, 'channel-down', seq)
+          return this.ackInput(state, await helper.pressButton(name), seq)
+        })().catch((e) => logger.error('input:button ack failed:', e))
         break
       }
       case 'stream:request-idr': {
@@ -1121,6 +1176,10 @@ export class AndroidAgent implements DeviceAgent {
           this.ws?.send(JSON.stringify({ type: 'input:type-error', sessionId, message: 'No booted device' }))
           break
         }
+        // Empty text is a successful no-op, not a failure: the caller asked for nothing and nothing
+        // was needed, so there is no claim to be false about. iOS answers the same way, and both the
+        // flow schema and the MCP `type_text` tool accept `""`. (The lie this change removes is
+        // "dispatched nothing while claiming otherwise" — not "dispatched nothing".)
         // Ack on completion so a following input step (e.g. pressKey Enter) is
         // only sent after the text has actually landed.
         Promise.resolve(text ? this.adb.inputText(serial, text) : undefined)
@@ -1134,13 +1193,17 @@ export class AndroidAgent implements DeviceAgent {
       }
       case 'input:key': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state) break
-        const serial = this.adb.getSerial(state.deviceId)
-        // `modifiers` is optional in the contract and iOS already defaults it; match that here so
-        // both agents read the same message the same way.
-        const { code, modifiers } = msg.payload as { code: string; modifiers?: number }
-        if (serial) this.handleKeyInput(serial, code, modifiers ?? 0).catch(() => {})
-        void this.ackInput(state, serial !== undefined)
+        if (!state) { this.ackNoSession(msg.sessionId); break }
+        const seq = state.bootSeq
+        void (async () => {
+          const serial = this.adb.getSerial(state.deviceId)
+          if (!serial) return this.ackInput(state, 'channel-down', seq)
+          // `modifiers` is optional in the contract and iOS already defaults it; match that here so
+          // both agents read the same message the same way.
+          const { code, modifiers } = (msg.payload ?? {}) as { code?: string; modifiers?: number }
+          if (code === undefined) return this.ackInput(state, 'malformed', seq)
+          return this.ackInput(state, await this.handleKeyInput(serial, code, modifiers ?? 0), seq)
+        })().catch((e) => logger.error('input:key ack failed:', e))
         break
       }
       case 'screenshot:request': {
@@ -1363,7 +1426,7 @@ export class AndroidAgent implements DeviceAgent {
     }
   }
 
-  private async handleKeyInput(serial: string, code: string, modifiers: number): Promise<void> {
+  private async handleKeyInput(serial: string, code: string, modifiers: number): Promise<InputOutcome> {
     const SPECIAL: Record<string, string> = {
       Backspace: '67', Enter: '66', Tab: '61', Space: '62', Escape: '111',
       ArrowLeft: '21', ArrowRight: '22', ArrowUp: '19', ArrowDown: '20',
@@ -1371,17 +1434,23 @@ export class AndroidAgent implements DeviceAgent {
       F1: '131', F2: '132', F3: '133', F4: '134', F5: '135',
       F6: '136', F7: '137', F8: '138', F9: '139', F10: '140', F11: '141', F12: '142',
     }
-    if (SPECIAL[code]) {
-      await this.adb.sendKeyEvent(serial, SPECIAL[code])
-      return
+    // Every exit below reports whether it dispatched, not merely whether it threw. Two of them
+    // deliberately send nothing, and answering `delivered` for those would be the same lie this
+    // vocabulary exists to remove.
+    // `Object.hasOwn`, not truthiness: `code` comes off the wire, and `'constructor'` would
+    // otherwise resolve up the prototype chain to a function and be dispatched as a keycode.
+    if (Object.hasOwn(SPECIAL, code)) {
+      return this.dispatchKey(() => this.adb.sendKeyEvent(serial, SPECIAL[code]))
     }
     // A Ctrl/Cmd chord is a command, not text. `input text` can't do chords, so map the
     // clipboard shortcuts to dedicated keycodes (a Mac viewer sends Cmd = meta 0x08; treat
     // meta and ctrl alike). Any other chord+letter (e.g. Cmd+A) must NOT type the raw letter.
     if (modifiers & (0x01 | 0x08)) {
       const CLIP: Record<string, string> = { KeyC: 'KEYCODE_COPY', KeyV: 'KEYCODE_PASTE', KeyX: 'KEYCODE_CUT' }
-      if (CLIP[code]) await this.adb.sendKeyEvent(serial, CLIP[code])
-      return
+      // Anything else — Cmd+A, Ctrl+S — is intentionally not sent. The channel is fine; we do not
+      // implement it.
+      if (!Object.hasOwn(CLIP, code)) return 'unsupported'
+      return this.dispatchKey(() => this.adb.sendKeyEvent(serial, CLIP[code]))
     }
     const shift = Boolean(modifiers & 0x02)
     let char: string | null = null
@@ -1403,9 +1472,22 @@ export class AndroidAgent implements DeviceAgent {
         Quote: ["'", '"'], Comma: [',', '<'],
         Period: ['.', '>'], Slash: ['/', '?'], Backquote: ['`', '~'],
       }
-      if (PUNCT[code]) char = shift ? PUNCT[code][1] : PUNCT[code][0]
+      if (Object.hasOwn(PUNCT, code)) char = shift ? PUNCT[code][1] : PUNCT[code][0]
     }
-    if (char) await this.adb.sendInput(serial, 'text', char)
+    // CapsLock, F13+, IntlBackslash, Numpad… — no character mapping, so nothing goes out.
+    if (!char) return 'unsupported'
+    const text = char
+    return this.dispatchKey(() => this.adb.sendInput(serial, 'text', text))
+  }
+
+  private async dispatchKey(send: () => Promise<void>): Promise<InputOutcome> {
+    try {
+      await send()
+      return 'delivered'
+    } catch (e) {
+      logger.error(`key dispatch failed: ${e instanceof Error ? e.message : String(e)}`)
+      return 'failed'
+    }
   }
 
   listDevices(): Promise<Device[]> { return this.adb.listDevices() }
@@ -1476,10 +1558,12 @@ export class AndroidAgent implements DeviceAgent {
     return Promise.resolve()
   }
 
-  touchEnd(): Promise<void> {
+  // The platform-neutral DeviceAgent contract has no ack channel, so the outcome is dropped on
+  // purpose — but it must be consumed rather than left floating: the helper now returns a promise,
+  // and an adb failure escaping here would be an unhandled rejection.
+  async touchEnd(): Promise<void> {
     const first = this.deviceStates.values().next().value
-    first?.touchHelper?.touchEnd()
-    return Promise.resolve()
+    await first?.touchHelper?.touchEnd()
   }
 
   async openUrl(url: string): Promise<void> {

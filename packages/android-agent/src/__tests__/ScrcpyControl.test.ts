@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ScrcpyControl } from '../scrcpy/ScrcpyControl'
-import type { Socket } from 'net'
+import { createServer, connect, type Socket } from 'net'
+import { once } from 'events'
 
 function mockSocket(): Socket {
-  return { write: vi.fn() } as unknown as Socket
+  return { write: vi.fn(), writable: true } as unknown as Socket
 }
 
 describe('ScrcpyControl', () => {
@@ -123,5 +124,62 @@ describe('ScrcpyControl', () => {
       expect(buf.length).toBe(1)
       expect(buf.readUInt8(0)).toBe(17)
     })
+  })
+})
+
+// `socket.write()` never throws for a dead peer, so `writable` is the only signal this backend has
+// for whether an input can still reach the device. Everything else about it is a fake, so this is
+// the one place the claim is settled against a real socket rather than a stub.
+describe('ScrcpyControl.isReady() against a real socket', () => {
+  it('is true while the peer is connected and false once it goes away', async () => {
+    const server = createServer()
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const { port } = server.address() as { port: number }
+
+    const client = connect(port, '127.0.0.1')
+    const [peer] = await Promise.all([once(server, 'connection').then(([s]) => s as Socket), once(client, 'connect')])
+    const ctrl = new ScrcpyControl(client, 1080, 2400)
+
+    expect(ctrl.isReady()).toBe(true)
+
+    // Waiting for 'close' means this pins "a peer that went away makes it false", not the FIN
+    // half-close mechanism specifically — by then the socket is destroyed, which is sufficient on
+    // its own. The edge-triggered, one-turn-late property is documented in AGENTS.md and is not
+    // exercised here.
+    //
+    // `client.on('error')` before the wait, not `once(client, 'close')` alone: `events.once`
+    // attaches its own error listener and REJECTS on it, and a destroy against a peer holding
+    // unread data sends RST, so ECONNRESET can beat 'close'. Measured 38/40 rejections when the
+    // client had written first. This test does not write, which is the only reason it passes
+    // without the guard — one added write away from flaking.
+    client.on('error', () => { /* ECONNRESET is the point of this test, not a failure */ })
+    peer.destroy()
+    await once(client, 'close')
+
+    expect(ctrl.isReady()).toBe(false)
+
+    client.destroy()
+    server.close()
+    await once(server, 'close')
+  })
+
+  it('is false after our own end destroys the socket', async () => {
+    const server = createServer()
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const { port } = server.address() as { port: number }
+
+    const client = connect(port, '127.0.0.1')
+    await once(client, 'connect')
+    const ctrl = new ScrcpyControl(client, 1080, 2400)
+    client.on('error', () => { /* see above */ })
+
+    client.destroy()
+
+    expect(ctrl.isReady()).toBe(false)
+
+    server.close()
+    await once(server, 'close')
   })
 })

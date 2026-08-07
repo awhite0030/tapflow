@@ -9,11 +9,11 @@ vi.mock('../AndroidTouchHelper', () => ({
     stop: vi.fn(),
     touchStart: vi.fn(),
     touchMove: vi.fn(),
-    touchEnd: vi.fn(),
-    pinchStart: vi.fn(),
-    pinchMove: vi.fn(),
-    pinchEnd: vi.fn(),
-    pressButton: vi.fn(),
+    touchEnd: vi.fn(async () => 'delivered'),
+    pinchStart: vi.fn(() => 'unsupported'),
+    pinchMove: vi.fn(() => 'unsupported'),
+    pinchEnd: vi.fn(() => 'unsupported'),
+    pressButton: vi.fn(async () => 'delivered'),
   }) }),
 }))
 
@@ -41,6 +41,7 @@ vi.mock('../scrcpy/ScrcpySession', () => ({
       })),
     },
     control: {
+      isReady: vi.fn(() => true),
       touchDown: vi.fn(),
       touchMove: vi.fn(),
       touchUp: vi.fn(),
@@ -82,6 +83,7 @@ let grpcClipboardApplyDelayMs = 0
 
 vi.mock('../emulator/EmulatorGrpcClient', () => ({
   EmulatorGrpcClient: vi.fn(function () { return ({
+    isReady: vi.fn(() => true),
     close: vi.fn(),
     touchDown: vi.fn(), touchMove: vi.fn(), touchUp: vi.fn(),
     pinchStart: vi.fn(), pinchMove: vi.fn(), pinchEnd: vi.fn(),
@@ -137,10 +139,16 @@ interface TestState {
   emulatorVideo: unknown | null
   grpcClient: unknown | null
   streamWs: WebSocket | null
-  touchHelper: { pressButton: (name: string) => void } | null
+  touchHelper: {
+    pressButton: ReturnType<typeof vi.fn>
+    touchEnd: ReturnType<typeof vi.fn>
+    pinchEnd: ReturnType<typeof vi.fn>
+  } | null
   videoWidth: number
   videoHeight: number
   landscape: boolean
+  booted: boolean
+  bootSeq: number
 }
 
 // Test-only view of AndroidAgent internals (device state + reconnect fields are private).
@@ -797,6 +805,17 @@ describe('AndroidAgent', () => {
         expect((await ack).sessionId).toBe(agent.sessionId)
       })
 
+      // Empty text is a successful no-op on both platforms, and the flow schema and MCP `type_text`
+      // both accept `""`. Answering an error for it would trade this change's real fix — "dispatched
+      // nothing while claiming otherwise" — for a false failure.
+      it('acks input:type-done for empty text without touching adb', async () => {
+        const inputText = vi.spyOn(adb, 'inputText')
+        const ack = waitForType(browser, 'input:type-done')
+        inject({ type: 'input:type', payload: { text: '' } })
+        await ack
+        expect(inputText).not.toHaveBeenCalled()
+      })
+
       it('acks input:type-error when the text is rejected', async () => {
         vi.spyOn(adb, 'inputText').mockRejectedValue(new Error('ASCII only'))
         const ack = waitForType(browser, 'input:type-error')
@@ -882,10 +901,211 @@ describe('AndroidAgent', () => {
     })
 
     describe('input — no session', () => {
-      it('ignores touch input for an unknown session without throwing', () => {
+      it('ignores an opening frame for an unknown session without throwing', () => {
+        // Opening frames have no ack obligation, so silence is the right answer here.
         expect(() =>
           internals(agent).handleRelayMessage({ type: 'input:touch:start', sessionId: 'nope', payload: { x: 0.5, y: 0.5 } }),
         ).not.toThrow()
+      })
+
+      // A *terminal* frame is different: the caller is waiting. The reachable shape is a session
+      // the relay still routes for while the agent holds no state for it — an agent that restarted
+      // with a dashboard tab still attached (#426). The relay answers on an agent's behalf only
+      // when the agent is *offline*, so here nothing would answer at all and the caller waits out
+      // its own timeout, which its fallback then reports as success.
+      // Asserted on what the agent sends, not on what arrives at the browser: the relay answers
+      // `agent offline` for these types on its own when the agent socket is down, so routing a
+      // reply through it would test the relay's fallback rather than the agent's.
+      for (const [type, payload] of [
+        ['input:touch:end', { x: 0.5, y: 0.5 }],
+        ['input:pinch:end', { f0: { x: 0.5, y: 0.5 }, f1: { x: 0.5, y: 0.5 } }],
+        ['input:button', { name: 'back' }],
+        ['input:key', { code: 'KeyA' }],
+      ] as Array<[string, Record<string, unknown>]>) {
+        it(`answers input:error for ${type} when the agent has lost the session's state`, () => {
+          // Captured first: `agent.sessionId` is derived from `deviceStates`, so clearing the map
+          // would also make the id null — and then the ack has nothing to address.
+          const sessionId = agent.sessionId
+          const sent = vi.spyOn(internals(agent).ws!, 'send')
+          internals(agent).deviceStates.clear()
+
+          internals(agent).handleRelayMessage({ type, sessionId, payload })
+
+          const acks = sent.mock.calls
+            .map(([raw]) => JSON.parse(raw as string) as { type: string; message?: string })
+            .filter((m) => m.type === 'input:error')
+          expect(acks).toHaveLength(1)
+          expect(acks[0].message).toContain('no active session')
+        })
+      }
+    })
+
+    // Every terminal ack used to be computed from a proxy — a channel reference, a helper object
+    // that has no process, or a resolvable serial — rather than from what the dispatch reported.
+    describe('input acks report the dispatch, not a proxy', () => {
+      it('answers channel-down without writing when the channel is not ready', async () => {
+        const control = getState().scrcpySession!.control
+        control.isReady.mockReturnValue(false)
+
+        const errored = waitForType(browser, 'input:error')
+        inject({ type: 'input:touch:start', payload: { x: 0.5, y: 0.5 } })
+        inject({ type: 'input:touch:end', payload: { x: 0.5, y: 0.5 } })
+
+        expect((await errored)['message']).toBe('input channel not ready')
+        expect(control.touchUp).not.toHaveBeenCalled()
+      })
+
+      // Deliberately driven through the *helper*, not the scrcpy control: this describe is pinned to
+      // the scrcpy backend, whose writes are synchronous and void, so a rejecting pointer channel
+      // there would only be testing the mock's contract. The gRPC backend is the one that can
+      // genuinely reject, and `EmulatorGrpcClient.test.ts` covers that end of it.
+      it('answers failed when a dispatch rejects on a live path', async () => {
+        const state = getState()
+        state.scrcpySession = null
+        state.grpcClient = null
+        state.touchHelper!.touchEnd.mockResolvedValue('failed')
+
+        const errored = waitForType(browser, 'input:error')
+        inject({ type: 'input:touch:start', payload: { x: 0.5, y: 0.5 } })
+        inject({ type: 'input:touch:end', payload: { x: 0.5, y: 0.5 } })
+
+        expect((await errored)['message']).toBe('the device rejected the input')
+      })
+
+      it('answers failed when the button dispatch rejects', async () => {
+        // Buttons go through the adb helper on both backends — the path that actually runs a
+        // command in production.
+        const helper = getState().touchHelper!
+        helper.pressButton.mockResolvedValue('failed')
+
+        const errored = waitForType(browser, 'input:error')
+        inject({ type: 'input:button', payload: { name: 'back' } })
+
+        expect((await errored)['message']).toBe('the device rejected the input')
+      })
+
+      it('answers unsupported for a button name the helper has no mapping for', async () => {
+        const helper = getState().touchHelper!
+        helper.pressButton.mockResolvedValue('unsupported')
+
+        const errored = waitForType(browser, 'input:error')
+        inject({ type: 'input:button', payload: { name: 'not_a_button' } })
+
+        expect((await errored)['message']).toContain('not supported')
+      })
+
+      it('answers unsupported for a pinch that fell back to the adb path', async () => {
+        // No pointer channel → the adb helper, which implements no pinch at all and used to accept
+        // the frames and answer success.
+        const state = getState()
+        state.scrcpySession = null
+        state.grpcClient = null
+
+        const errored = waitForType(browser, 'input:error')
+        inject({ type: 'input:pinch:end', payload: { f0: { x: 0.5, y: 0.5 }, f1: { x: 0.5, y: 0.5 } } })
+
+        expect((await errored)['message']).toContain('not supported')
+      })
+
+      it('answers channel-down for a tap with neither a channel nor a helper', async () => {
+        const state = getState()
+        state.scrcpySession = null
+        state.grpcClient = null
+        state.touchHelper = null
+
+        const errored = waitForType(browser, 'input:error')
+        inject({ type: 'input:touch:end', payload: { x: 0.5, y: 0.5 } })
+
+        expect((await errored)['message']).toBe('input channel not ready')
+      })
+
+      // The ws dispatch swallows synchronous throws, so destructuring out in the handler body left
+      // the caller with no ack at all. The *reason* matters as much as the answer: a payload problem
+      // is not a dead channel, and saying so would be the lie this vocabulary exists to prevent.
+      for (const type of ['input:button', 'input:key']) {
+        it(`answers malformed — not channel-down — for a ${type} with no payload`, async () => {
+          const errored = waitForType(browser, 'input:error')
+          internals(agent).handleRelayMessage({ type, sessionId: agent.sessionId })
+          expect((await errored)['message']).toContain('missing what it needs')
+        })
+      }
+
+      it('does not cache the boot verify across a reboot that started under the dispatch', async () => {
+        // The ack is now sent after an awaited dispatch, so a `device:boot` can land in between.
+        // Caching `booted` from a verify that raced it would let every later input on the session
+        // skip the check while the device is still coming up.
+        const state = getState()
+        state.scrcpySession = null
+        state.grpcClient = null
+        state.booted = false
+        let release: (v: string) => void = () => {}
+        state.touchHelper!.touchEnd.mockReturnValue(new Promise((r) => { release = r }))
+
+        const done = waitForType(browser, 'input:done')
+        inject({ type: 'input:touch:start', payload: { x: 0.5, y: 0.5 } })
+        inject({ type: 'input:touch:end', payload: { x: 0.5, y: 0.5 } })
+        state.bootSeq += 1 // a reboot begins while the dispatch is still in flight
+        release('delivered')
+        await done
+
+        expect(state.booted).toBe(false)
+      })
+
+      // The mutation this missed: `state.booted` was cached from the verify without checking the
+      // outcome, so the *second* input on an unbooted session skipped the verify and answered done.
+      it('does not cache the boot verify when the device is not booted', async () => {
+        const listDevices = vi.spyOn(adb, 'listDevices').mockResolvedValue([
+          { id: 'avd:Pixel_8_API_34', name: 'Pixel 8', platform: 'android', status: 'shutdown', osVersion: '14' },
+        ])
+        getState().booted = false
+
+        for (const attempt of [1, 2]) {
+          const errored = waitForType(browser, 'input:error')
+          inject({ type: 'input:touch:start', payload: { x: 0.5, y: 0.5 } })
+          inject({ type: 'input:touch:end', payload: { x: 0.5, y: 0.5 } })
+          expect((await errored)['message'], `attempt ${attempt}`).toBe('device not booted')
+        }
+        // Re-verified rather than trusting a cache that the first attempt must not have written.
+        expect(listDevices.mock.calls.length).toBeGreaterThanOrEqual(2)
+      })
+    })
+
+    // `handleKeyInput` resolves without sending anything in two branches. Judging by "did it throw"
+    // reproduced the very lie this change removes.
+    describe('input — key outcomes', () => {
+      it('answers unsupported for a chord it deliberately does not send', async () => {
+        const sendKeyEvent = vi.spyOn(adb, 'sendKeyEvent')
+        const errored = waitForType(browser, 'input:error')
+        inject({ type: 'input:key', payload: { code: 'KeyA', modifiers: 0x08 } }) // Cmd+A
+        expect((await errored)['message']).toContain('not supported')
+        expect(sendKeyEvent).not.toHaveBeenCalled()
+      })
+
+      it('answers unsupported for a code that is only a prototype member', async () => {
+        const sendKeyEvent = vi.spyOn(adb, 'sendKeyEvent')
+        const errored = waitForType(browser, 'input:error')
+        inject({ type: 'input:key', payload: { code: 'constructor', modifiers: 0 } })
+        expect((await errored)['message']).toContain('not supported')
+        expect(sendKeyEvent).not.toHaveBeenCalled()
+      })
+
+      it('answers unsupported for a code with no character mapping', async () => {
+        const errored = waitForType(browser, 'input:error')
+        inject({ type: 'input:key', payload: { code: 'CapsLock', modifiers: 0 } })
+        expect((await errored)['message']).toContain('not supported')
+      })
+
+      it('answers failed when the key dispatch rejects', async () => {
+        vi.spyOn(adb, 'sendInput').mockRejectedValue(new Error('offline'))
+        const errored = waitForType(browser, 'input:error')
+        inject({ type: 'input:key', payload: { code: 'KeyA', modifiers: 0 } })
+        expect((await errored)['message']).toBe('the device rejected the input')
+      })
+
+      it('still answers input:done for a key it does send', async () => {
+        const done = waitForType(browser, 'input:done')
+        inject({ type: 'input:key', payload: { code: 'Enter', modifiers: 0 } })
+        await done
       })
     })
 
