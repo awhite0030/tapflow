@@ -1176,16 +1176,13 @@ export class AndroidAgent implements DeviceAgent {
           this.ws?.send(JSON.stringify({ type: 'input:type-error', sessionId, message: 'No booted device' }))
           break
         }
-        // Empty or missing text dispatched nothing, so it must not answer done — that is the same
-        // "reported success, sent nothing" shape as the input acks above, in a separate reply
-        // series that #485 will not be watching.
-        if (!text) {
-          this.ws?.send(JSON.stringify({ type: 'input:type-error', sessionId, message: 'no text to type' }))
-          break
-        }
+        // Empty text is a successful no-op, not a failure: the caller asked for nothing and nothing
+        // was needed, so there is no claim to be false about. iOS answers the same way, and both the
+        // flow schema and the MCP `type_text` tool accept `""`. (The lie this change removes is
+        // "dispatched nothing while claiming otherwise" — not "dispatched nothing".)
         // Ack on completion so a following input step (e.g. pressKey Enter) is
         // only sent after the text has actually landed.
-        this.adb.inputText(serial, text)
+        Promise.resolve(text ? this.adb.inputText(serial, text) : undefined)
           .then(() => this.ws?.send(JSON.stringify({ type: 'input:type-done', sessionId })))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
@@ -1440,7 +1437,9 @@ export class AndroidAgent implements DeviceAgent {
     // Every exit below reports whether it dispatched, not merely whether it threw. Two of them
     // deliberately send nothing, and answering `delivered` for those would be the same lie this
     // vocabulary exists to remove.
-    if (SPECIAL[code]) {
+    // `Object.hasOwn`, not truthiness: `code` comes off the wire, and `'constructor'` would
+    // otherwise resolve up the prototype chain to a function and be dispatched as a keycode.
+    if (Object.hasOwn(SPECIAL, code)) {
       return this.dispatchKey(() => this.adb.sendKeyEvent(serial, SPECIAL[code]))
     }
     // A Ctrl/Cmd chord is a command, not text. `input text` can't do chords, so map the
@@ -1450,7 +1449,7 @@ export class AndroidAgent implements DeviceAgent {
       const CLIP: Record<string, string> = { KeyC: 'KEYCODE_COPY', KeyV: 'KEYCODE_PASTE', KeyX: 'KEYCODE_CUT' }
       // Anything else — Cmd+A, Ctrl+S — is intentionally not sent. The channel is fine; we do not
       // implement it.
-      if (!CLIP[code]) return 'unsupported'
+      if (!Object.hasOwn(CLIP, code)) return 'unsupported'
       return this.dispatchKey(() => this.adb.sendKeyEvent(serial, CLIP[code]))
     }
     const shift = Boolean(modifiers & 0x02)
@@ -1473,7 +1472,7 @@ export class AndroidAgent implements DeviceAgent {
         Quote: ["'", '"'], Comma: [',', '<'],
         Period: ['.', '>'], Slash: ['/', '?'], Backquote: ['`', '~'],
       }
-      if (PUNCT[code]) char = shift ? PUNCT[code][1] : PUNCT[code][0]
+      if (Object.hasOwn(PUNCT, code)) char = shift ? PUNCT[code][1] : PUNCT[code][0]
     }
     // CapsLock, F13+, IntlBackslash, Numpad… — no character mapping, so nothing goes out.
     if (!char) return 'unsupported'

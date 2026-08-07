@@ -33,4 +33,11 @@ This is the Android half of what #484 fixed on iOS, though not the same defect: 
 - A terminal input for a session this agent holds no state for now answers instead of returning
   silently. The relay only replies on an agent's behalf when the agent is *offline*, so nothing
   answered at all and the caller waited out its own timeout.
-- `input:type` with empty text no longer answers `input:type-done` having dispatched nothing.
+- A key code or button name is looked up with `Object.hasOwn`, so a name arriving off the wire that
+  happens to be a prototype member (`constructor`) answers `unsupported` instead of being dispatched
+  as a keycode and answering `failed`.
+
+Callers that treat an `input:error` as fatal will see failures they did not see before, because those
+failures were previously reported as success: a `press_key` for a modifier chord, or for a key with no
+character mapping, now answers an error rather than silently doing nothing. Empty `type_text` is
+unchanged — it stays a successful no-op, matching iOS.

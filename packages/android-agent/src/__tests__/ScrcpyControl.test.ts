@@ -147,6 +147,13 @@ describe('ScrcpyControl.isReady() against a real socket', () => {
     // half-close mechanism specifically — by then the socket is destroyed, which is sufficient on
     // its own. The edge-triggered, one-turn-late property is documented in AGENTS.md and is not
     // exercised here.
+    //
+    // `client.on('error')` before the wait, not `once(client, 'close')` alone: `events.once`
+    // attaches its own error listener and REJECTS on it, and a destroy against a peer holding
+    // unread data sends RST, so ECONNRESET can beat 'close'. Measured 38/40 rejections when the
+    // client had written first. This test does not write, which is the only reason it passes
+    // without the guard — one added write away from flaking.
+    client.on('error', () => { /* ECONNRESET is the point of this test, not a failure */ })
     peer.destroy()
     await once(client, 'close')
 
@@ -166,6 +173,7 @@ describe('ScrcpyControl.isReady() against a real socket', () => {
     const client = connect(port, '127.0.0.1')
     await once(client, 'connect')
     const ctrl = new ScrcpyControl(client, 1080, 2400)
+    client.on('error', () => { /* see above */ })
 
     client.destroy()
 

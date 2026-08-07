@@ -212,6 +212,16 @@ describe('AndroidTouchHelper — outcomes', () => {
     expect(adb.sendInput).toHaveBeenCalledWith('emulator-5554', 'tap', '250', '250')
   })
 
+  // The name arrives off the wire. Indexing the map by truthiness lets a prototype member resolve to
+  // a function, which then gets dispatched as a keycode and answers `failed` — a wrong reason, and a
+  // wasted adb call, for something we simply do not support.
+  it('reports unsupported for a name that is only a prototype member', async () => {
+    for (const name of ['constructor', 'toString', 'hasOwnProperty']) {
+      await expect(helper.pressButton(name), name).resolves.toBe('unsupported')
+    }
+    expect(adb.sendKeyEvent).not.toHaveBeenCalled()
+  })
+
   it('reports delivered for a mapped button, failed when adb rejects', async () => {
     await expect(helper.pressButton('back')).resolves.toBe('delivered')
     ;(adb.sendKeyEvent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('offline'))

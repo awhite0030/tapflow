@@ -109,7 +109,9 @@ export class AndroidTouchHelper {
     // Not "the device has no such button" — this map is ours, so an unmapped name means we do not
     // support it. iOS answers success for its own unmapped case because there the button genuinely
     // does not exist on the device; see inputOutcome.ts.
-    if (!keyCode) { logger.error(`Unknown button: ${name}`); return 'unsupported' }
+    // `Object.hasOwn`: `name` comes off the wire, so a prototype member would otherwise resolve to
+    // a function and be dispatched as a keycode — answering `failed` where `unsupported` is true.
+    if (!Object.hasOwn(BUTTON_KEY_MAP, name)) { logger.error(`Unknown button: ${name}`); return 'unsupported' }
     try {
       await this.adb.sendKeyEvent(this.serial, keyCode)
       return 'delivered'

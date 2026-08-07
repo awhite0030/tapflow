@@ -139,10 +139,16 @@ interface TestState {
   emulatorVideo: unknown | null
   grpcClient: unknown | null
   streamWs: WebSocket | null
-  touchHelper: { pressButton: (name: string) => void } | null
+  touchHelper: {
+    pressButton: ReturnType<typeof vi.fn>
+    touchEnd: ReturnType<typeof vi.fn>
+    pinchEnd: ReturnType<typeof vi.fn>
+  } | null
   videoWidth: number
   videoHeight: number
   landscape: boolean
+  booted: boolean
+  bootSeq: number
 }
 
 // Test-only view of AndroidAgent internals (device state + reconnect fields are private).
@@ -799,6 +805,17 @@ describe('AndroidAgent', () => {
         expect((await ack).sessionId).toBe(agent.sessionId)
       })
 
+      // Empty text is a successful no-op on both platforms, and the flow schema and MCP `type_text`
+      // both accept `""`. Answering an error for it would trade this change's real fix — "dispatched
+      // nothing while claiming otherwise" — for a false failure.
+      it('acks input:type-done for empty text without touching adb', async () => {
+        const inputText = vi.spyOn(adb, 'inputText')
+        const ack = waitForType(browser, 'input:type-done')
+        inject({ type: 'input:type', payload: { text: '' } })
+        await ack
+        expect(inputText).not.toHaveBeenCalled()
+      })
+
       it('acks input:type-error when the text is rejected', async () => {
         vi.spyOn(adb, 'inputText').mockRejectedValue(new Error('ASCII only'))
         const ack = waitForType(browser, 'input:type-error')
@@ -1060,6 +1077,14 @@ describe('AndroidAgent', () => {
         const sendKeyEvent = vi.spyOn(adb, 'sendKeyEvent')
         const errored = waitForType(browser, 'input:error')
         inject({ type: 'input:key', payload: { code: 'KeyA', modifiers: 0x08 } }) // Cmd+A
+        expect((await errored)['message']).toContain('not supported')
+        expect(sendKeyEvent).not.toHaveBeenCalled()
+      })
+
+      it('answers unsupported for a code that is only a prototype member', async () => {
+        const sendKeyEvent = vi.spyOn(adb, 'sendKeyEvent')
+        const errored = waitForType(browser, 'input:error')
+        inject({ type: 'input:key', payload: { code: 'constructor', modifiers: 0 } })
         expect((await errored)['message']).toContain('not supported')
         expect(sendKeyEvent).not.toHaveBeenCalled()
       })
