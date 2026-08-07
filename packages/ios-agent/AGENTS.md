@@ -39,25 +39,113 @@ touch-helper <udid|booted>
 
 Injects HID events directly into the iOS Simulator via `SimDeviceLegacyHIDClient` + IndigoHID.
 
-stdin protocol (variable-length frames):
-- types 1–5, 9 : 9 bytes — `[type:u8][a:u8/f32BE][b:f32BE]`
-- types 6–8    : 17 bytes — `[type:u8][x1:f32BE][y1:f32BE][x2:f32BE][y2:f32BE]`
+stdin protocol (variable-length frames). Note the payload is **not** one layout: two of the four
+rows carry integers and two carry floats, so reading the whole table as "two floats" is how a frame
+ends up carrying garbage:
 
-| type | action |
-|------|--------|
-| 1 | touch start (x, y normalized 0–1) |
-| 2 | touch move (x, y) |
-| 3 | touch end |
-| 4 | HID button (a=usagePage, b=usage) |
-| 5 | legacy button (a=code) |
-| 6 | pinch start (x1,y1 = finger0, x2,y2 = finger1) |
-| 7 | pinch move |
-| 8 | pinch end |
-| 9 | key press ([0]=modifierBitmap, [4–7]=hidUsage u32BE) |
+| types | size | payload |
+|-------|------|---------|
+| 1–3 | 9 bytes | `[type:u8][x:f32BE][y:f32BE]` |
+| 4, 5, 10, 11 | 9 bytes | `[type:u8][a:u32BE][b:u32BE]` |
+| 9 | 9 bytes | `[type:u8][modifiers:u8][pad:u8 ×3][usage:u32BE]` |
+| 6–8 | 17 bytes | `[type:u8][x1:f32BE][y1:f32BE][x2:f32BE][y2:f32BE]` |
+
+The **gesture role** column decides how a frame is treated when the helper process has been
+replaced — see "Helper death and recovery" below. A frame that *continues* a gesture is delivered
+only to the process that received the frame that opened it, and never revives a dead helper.
+
+| type | action | gesture role |
+|------|--------|--------------|
+| 1 | touch start (x, y normalized 0–1) | opens |
+| 2 | touch move (x, y) | continues — a move with no preceding down is not the gesture the tester made, and on the digitizer path the injected message is identical to a touch start's (`mask`/`contact` derive only from `isUp`), so a lone move lands as a fresh tap |
+| 3 | touch end | continues — **injects `lastX/lastY`, ignoring the coordinates in the frame** |
+| 4 | HID button (a=usagePage, b=usage) | self-contained — down→50ms→up completes inside the helper |
+| 5 | legacy button (a=code) | self-contained — same |
+| 6 | pinch start (x1,y1 = finger0, x2,y2 = finger1) | opens |
+| 7 | pinch move | continues — as with type 2, a move with no preceding down is not the gesture the tester made, and that is the whole reason. Unlike type 2 the injected message *does* differ from a down (`injectTwoFinger` passes `direction` separately as well as deriving `eventType`), so the "reads as a fresh tap" argument does not apply here |
+| 8 | pinch end | continues — **injects `pinchLast*`; `TouchHelper.pinchEnd()` sends all-zero coordinates precisely because the helper does not read them** |
+| 9 | key press | self-contained — modifier down/up completes inside the frame |
+| 10 | button down (a=usagePage, b=usage) | self-contained |
+| 11 | button up (a=usagePage, b=usage) | self-contained — the helper keeps no record of which buttons are down, so a paired down is not a precondition |
 
 When changing the Swift source, **always update both locations simultaneously**:
 1. `src/touch-helper.swift` — stdin protocol changes
-2. `src/TouchHelper.ts` — byte layout in the `write()` method
+2. `src/TouchHelper.ts` — byte layout in the frame builders (`coordFrame` / `buttonFrame` / `twoFingerFrame`) and in `sendKey`, which builds its own
+
+---
+
+### Helper death and recovery
+
+`touch-helper` can die on its own, and when it did the session accepted no further input for the
+rest of its life while the stream kept flowing — the viewer tapped a screen that updated normally
+and nothing happened (#482). `TouchHelper` now replaces the process **when it dies** rather than on
+the next input — immediately, when the spawn budget below allows it — so the first tap after a death
+does not pay the helper's start-up cost (`xcode-select -p`, two `dlopen`s, a `SimServiceContext`
+device lookup).
+
+Five things about it are easy to undo by accident:
+
+- **Running is not usable, and the helper says which it is.** It announces itself on stderr once it
+  holds its HID client and is about to read stdin (`touch-helper.swift:281`). Measured on a real
+  simulator: **186–247ms** after spawn (n=5), and a gesture written before that announcement lands
+  **nothing** — the frames sit in the pipe and are drained in one go when it finally starts reading,
+  collapsing a swipe into microseconds. So `isReady()` requires the announcement and `isRunning()`
+  does not, and they answer different questions: writes are gated on the first, replacement
+  decisions on the second. Gating replacement on readiness would spawn a second helper while the
+  first was still starting.
+  This window is not only reached after a death. `sendChromeData` starts the helper and
+  `device:ready` follows a local socket connect later — tens of ms — so **an MCP caller that taps
+  as soon as `boot_device` returns lands inside it**, which is how it was found.
+  A helper that never announces itself is replaced after `READY_DEADLINE_MS`. Without that,
+  running-but-never-ready has no exit at all: nothing asks for a replacement because it is running,
+  and every input is refused because it is not ready, so a wedge in the CoreSimulator device lookup
+  would strand the session until the device was rebooted. The replacement goes through the same
+  death path, so the rolling window bounds it.
+- **A pid is what says the exec succeeded.** When the binary is missing, non-executable, or the
+  wrong architecture (#464), libuv still returns an open stdin pipe and reports the failure a tick
+  later. Measured: `stdin.writable` is `true` on a process that does not exist, and
+  `stdin.write()` returning `false` is indistinguishable from ordinary backpressure. `spawnHelper`
+  checks `proc.pid` and is the only gate — a process without one never becomes the active helper,
+  and recovery from an exec failure is therefore lazy — the next self-contained frame retries.
+  Not because node stays silent (it does emit `'error'`, which is why that branch attaches its own
+  logger) but because the branch returns before wiring `handleDeath`, so nothing eagerly replaces
+  a process that never lived.
+- **A gesture belongs to the process that *received* its opening frame.** Because replacement is
+  eager, a mid-gesture death normally leaves a healthy process standing by — so checking liveness
+  is not enough. `TouchHelper` records the process that took the opening frame and refuses the rest
+  of the gesture if it is no longer the current one. Writing a touch end to a fresh process would
+  release the touch at (0,0), because that process's latches are zero, **and report it as
+  delivered**.
+  The ownership is recorded **only when the opening frame was actually delivered**, and that
+  condition is load-bearing rather than defensive. Recording it unconditionally looks equivalent —
+  "if the open failed there is nothing live to record" — and stops being equivalent the moment
+  readiness exists: during the start-up window the open is refused while the process is alive and
+  about to become ready, so identity would then pass and the continuation would reach a process
+  that never saw the down. This was removed once as untestable and put back after a review found
+  the case; see `.work/reviews/fix__touch-helper-death-recovery.md`.
+- **Replacing is bounded by a rolling window** — at most 3 spawns in any 30s. Deliberately not a
+  count of consecutive fast failures: the helper's start-up is expensive, so "died too fast" cannot
+  be separated from "died slowly" without guessing how long start-up takes, and a helper that
+  reliably dies just past that guess would reset such a counter every time and churn a process
+  every few seconds for the life of the agent, with no input and no user involved. The window
+  bounds it whatever the lifetime, and it self-clears, so a session that briefly could not start a
+  helper is not left without input until the device is rebooted.
+- **A helper must never outlive the reference to it.** `sendChromeData` stops the outgoing helper,
+  and `cleanupDeviceState` bumps `bootSeq` so a boot still awaiting simctl cannot install one onto
+  a state that reconnect has already dropped. Both used to leak a single child process; a
+  self-reviving one would respawn for the life of the agent with nothing left to stop it.
+
+Every write reports whether it reached a helper that is ready to inject — not whether the device
+acted on it, which HID is fire-and-forget about — and `IOSAgent.ackInput` answers on that rather
+than on `state.touchHelper !== null`. The wrapper object outlives its process, which is what made
+the original failure silent.
+
+Verified on a real simulator (iPhone 17 Pro, iOS 26.5), with an idle screenshot pair byte-identical
+as the control: killing the helper while idle and swiping again opens Spotlight, so input recovers
+without a reconnect; a gesture attempted inside the start-up window reports failure on every frame
+and indeed changes nothing; and killing it mid-gesture leaves `isReady()` true — the replacement is
+genuinely up — while the terminal frame is still refused, after which a fresh gesture works, so no
+touch is left held.
 
 Compile (output to `bin/`):
 ```bash

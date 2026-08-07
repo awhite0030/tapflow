@@ -353,6 +353,12 @@ export class IOSAgent implements DeviceAgent {
   }
 
   private cleanupDeviceState(state: DeviceState): void {
+    // Invalidate any boot still in flight against this state. `_scheduleReconnect` drops the map,
+    // but a `handleDeviceBoot` awaiting simctl holds its own reference and its seq still matched,
+    // so it would go on to build a TouchHelper on a state nobody owns. That used to leak one
+    // child process; a self-reviving helper would respawn for the life of the agent with no
+    // reference left to stop it.
+    state.bootSeq++
     void state.streamReader?.cancel()
     state.streamReader = null
     state.captureStreamer = null // reader.cancel() kills the helper proc; drop the ref so a stale requestKeyframe() no-ops
@@ -370,6 +376,10 @@ export class IOSAgent implements DeviceAgent {
 
   private sendChromeData(state: DeviceState, device: Device): void {
     if (!this.ws) return
+    // Stop the outgoing helper before dropping the reference. This used to leak a child process;
+    // now that a helper revives itself on death, an orphan would also keep respawning with
+    // nobody left holding a reference to stop it.
+    state.touchHelper?.stop()
     state.touchHelper = new TouchHelper(device.id)
     state.touchHelper.start()
     this.ws.send(JSON.stringify({
@@ -556,6 +566,11 @@ export class IOSAgent implements DeviceAgent {
       if (seq !== state.bootSeq) return
 
       const refreshed = await this.simctl.listDevices()
+      // Another await, and `sendChromeData` below starts a helper process. A shutdown or a newer
+      // boot arriving in this gap would otherwise get a helper installed for the device it is
+      // taking down — and one that revives itself, so the stale reference outlives the boot that
+      // returns just below.
+      if (seq !== state.bootSeq) return
       const refreshedDevice = refreshed.find((d) => d.id === deviceId) ?? target
       this.sendChromeData(state, {
         ...refreshedDevice,
@@ -752,8 +767,10 @@ export class IOSAgent implements DeviceAgent {
       case 'input:touch:end': {
         const state = this.deviceStates.get(msg.sessionId!)
         if (!state) break
-        state.touchHelper?.touchEnd()
-        void this.ackInput(state, state.touchHelper !== null) // terminal of a tap/swipe → ack the gesture
+        // The helper's answer, not its existence: a helper whose process has died reports every
+        // write as dropped, and that is what the caller needs to hear (#482).
+        const dispatched = state.touchHelper?.touchEnd() ?? false
+        void this.ackInput(state, dispatched) // terminal of a tap/swipe → ack the gesture
         break
       }
       case 'input:pinch:start': {
@@ -774,8 +791,7 @@ export class IOSAgent implements DeviceAgent {
       case 'input:pinch:end': {
         const state = this.deviceStates.get(msg.sessionId!)
         if (!state) break
-        state.touchHelper?.pinchEnd()
-        void this.ackInput(state, state.touchHelper !== null)
+        void this.ackInput(state, state.touchHelper?.pinchEnd() ?? false)
         break
       }
       case 'input:rotate': {
@@ -832,7 +848,13 @@ export class IOSAgent implements DeviceAgent {
             state.softKeyboardVisible = false
             await this.simctl.hideSoftwareKeyboard(state.deviceId).catch(() => {})
           }
-          state.touchHelper?.sendKey(KEY_CODE_MAP['KeyV'], MODIFIER_BITS['MetaLeft'])
+          // Throwing routes into the input:type-error below. Without it a dropped chord still
+          // answers input:type-done: the text sits on the device pasteboard, nothing was pasted
+          // into the app, and the caller moves on. Unlike the copy path in clipboard:read there
+          // is no pasteboard deadline here to fail loudly in its place.
+          if (!state.touchHelper?.sendKey(KEY_CODE_MAP['KeyV'], MODIFIER_BITS['MetaLeft'])) {
+            throw new PlatformError('Cannot paste the text — no input channel to the device')
+          }
         }
         // Ack on completion so a following input step (e.g. pressKey Enter) is
         // only sent after the paste has actually landed.
@@ -861,16 +883,16 @@ export class IOSAgent implements DeviceAgent {
           // Hide the SW keyboard first so iOS re-initialises the HW keyboard
           // context. Skipping this causes input-source desync (qks / ㅂㅏㄴ symptoms).
           state.softKeyboardVisible = false
-          this.simctl.hideSoftwareKeyboard(state.deviceId)
-            .then(() => state.touchHelper?.sendKey(usage, modifiers ?? 0))
-            .catch((e: unknown) => {
-              logger.error('hideSoftwareKeyboard (on key) failed:', e)
-              state.touchHelper?.sendKey(usage, modifiers ?? 0)
-            })
+          // The ack belongs after the deferred chord, not beside it. Acking out here ran before
+          // the key was ever written, so the answer could only be a guess — and the guess was
+          // "delivered". The hide failing is not fatal (the key still goes out), so the catch
+          // resolves and the send happens exactly once either way.
+          void this.simctl.hideSoftwareKeyboard(state.deviceId)
+            .catch((e: unknown) => { logger.error('hideSoftwareKeyboard (on key) failed:', e) })
+            .then(() => this.ackInput(state, state.touchHelper?.sendKey(usage, modifiers ?? 0) ?? false))
         } else {
-          state.touchHelper?.sendKey(usage, modifiers ?? 0)
+          void this.ackInput(state, state.touchHelper?.sendKey(usage, modifiers ?? 0) ?? false)
         }
-        void this.ackInput(state, state.touchHelper !== null)
         break
       }
       case 'input:button': {
@@ -882,19 +904,24 @@ export class IOSAgent implements DeviceAgent {
         // device's actual chrome button names. Dashboard already sends the raw
         // chrome names (e.g. "volume-up"), which pass through unchanged.
         const chromeName = IOS_BUTTON_ALIASES[name] ?? name
+        // Two branches below deliberately write nothing — a home press-down, and a button this
+        // device's chrome has no HID mapping for. Neither is a dropped input, so they answer
+        // with the channel's health instead of a write result; reporting an error there would
+        // trade this issue's false success for a false failure.
+        let dispatched = state.touchHelper?.isReady() ?? false
         if (chromeName === 'home') {
           // Home has no HID down/up split — always a single legacy press. Send once on release
           // (or on a phase-less legacy message) so a down+up pair doesn't fire it twice.
-          if (phase !== 'down') state.touchHelper?.pressLegacyButton(0)
+          if (phase !== 'down') dispatched = state.touchHelper?.pressLegacyButton(0) ?? false
         } else {
           const btn = state.loadedChrome?.buttons.find((b) => b.name === chromeName)
           if (btn && btn.usagePage > 0 && btn.usage > 0) {
-            if (phase === 'down') state.touchHelper?.pressButtonDown(btn.usagePage, btn.usage)
-            else if (phase === 'up') state.touchHelper?.pressButtonUp(btn.usagePage, btn.usage)
-            else state.touchHelper?.pressButton(btn.usagePage, btn.usage)
+            if (phase === 'down') dispatched = state.touchHelper?.pressButtonDown(btn.usagePage, btn.usage) ?? false
+            else if (phase === 'up') dispatched = state.touchHelper?.pressButtonUp(btn.usagePage, btn.usage) ?? false
+            else dispatched = state.touchHelper?.pressButton(btn.usagePage, btn.usage) ?? false
           }
         }
-        void this.ackInput(state, state.touchHelper !== null)
+        void this.ackInput(state, dispatched)
         break
       }
       case 'open-url': {
@@ -1123,7 +1150,12 @@ export class IOSAgent implements DeviceAgent {
             state.softKeyboardVisible = false
             await this.simctl.hideSoftwareKeyboard(state.deviceId).catch(() => {})
           }
-          state.touchHelper.sendKey(KEY_CODE_MAP['KeyV'], MODIFIER_BITS['MetaLeft'])
+          // Same reason as input:type: the deadline above proves the pasteboard took the text,
+          // not that the chord reached the device, so a dead channel here would answer
+          // clipboard:write-done having pasted nothing.
+          if (!state.touchHelper?.sendKey(KEY_CODE_MAP['KeyV'], MODIFIER_BITS['MetaLeft'])) {
+            throw new PlatformError('Cannot press paste — no input channel to the device')
+          }
         }
         // Ack only once the write (and the paste, when asked for) actually landed.
         this.clipboardQueue(state.deviceId, write)
