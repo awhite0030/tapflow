@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { EventEmitter } from 'events'
 
 vi.mock('child_process', () => {
   const mockStdin = {
@@ -6,8 +7,15 @@ vi.mock('child_process', () => {
     write: vi.fn(),
   }
   const mockProc = {
+    // A pid is what tells TouchHelper the exec succeeded — libuv leaves it undefined when the
+    // binary never ran, while still handing back a writable stdin pipe.
+    pid: 1234,
     stdin: mockStdin,
-    stderr: { on: vi.fn() },
+    // A real emitter: the helper's readiness announcement arrives here, and nothing is written
+    // to the device before it. The process object is shared across every test in this file, so
+    // each TouchHelper adds another listener to it — uncapped, or node warns about a leak partway
+    // through the file. The stale listeners are harmless: `ready` is per-instance.
+    stderr: new EventEmitter().setMaxListeners(0),
     on: vi.fn(),
     kill: vi.fn(),
   }
@@ -27,6 +35,13 @@ function capturedHex(): string {
   return buf.toString('hex').replace(/(.{2})/g, '$1 ').trimEnd()
 }
 
+// Mid-gesture frames are only delivered to the process that received the gesture's opening
+// frame (#482), so a snapshot of one has to open the gesture first and then look past it.
+function openThenClear(open: () => void): void {
+  open()
+  ;(vi.mocked(spawn) as ReturnType<typeof vi.fn>).mock.results[0]!.value.stdin.write.mockClear()
+}
+
 describe('TouchHelper stdin byte protocol snapshots', () => {
   let helper: TouchHelper
 
@@ -34,6 +49,8 @@ describe('TouchHelper stdin byte protocol snapshots', () => {
     vi.clearAllMocks()
     helper = new TouchHelper('dev-1')
     helper.start()
+    const proc = vi.mocked(spawn).mock.results[0]!.value as { stderr: EventEmitter }
+    proc.stderr.emit('data', Buffer.from('info: touch-helper ready (udid=dev-1) digitizer=true\n'))
   })
 
   afterEach(() => vi.restoreAllMocks())
@@ -46,14 +63,14 @@ describe('TouchHelper stdin byte protocol snapshots', () => {
 
   // ── type 2: touchMove ────────────────────────────────────────────────────
   it('type 2 — touchMove(0.25, 0.75) → 9 bytes', () => {
+    openThenClear(() => helper.touchStart(0, 0))
     helper.touchMove(0.25, 0.75)
     expect(capturedHex()).toMatchInlineSnapshot(`"02 3e 80 00 00 3f 40 00 00"`)
   })
 
   // ── type 3: touchEnd ─────────────────────────────────────────────────────
   it('type 3 — touchEnd() carries lastX/lastY set by touchStart', () => {
-    helper.touchStart(0.1, 0.2)
-    vi.mocked(spawn).mock.results[0]!.value.stdin.write.mockClear()
+    openThenClear(() => helper.touchStart(0.1, 0.2))
     helper.touchEnd()
     expect(capturedHex()).toMatchInlineSnapshot(`"03 3d cc cc cd 3e 4c cc cd"`)
   })
@@ -80,6 +97,7 @@ describe('TouchHelper stdin byte protocol snapshots', () => {
 
   // ── type 7: pinchMove ────────────────────────────────────────────────────
   it('type 7 — pinchMove(0.3, 0.4, 0.6, 0.7) → 17 bytes', () => {
+    openThenClear(() => helper.pinchStart(0, 0, 0, 0))
     helper.pinchMove(0.3, 0.4, 0.6, 0.7)
     expect(capturedHex()).toMatchInlineSnapshot(
       `"07 3e 99 99 9a 3e cc cc cd 3f 19 99 9a 3f 33 33 33"`,
@@ -88,6 +106,7 @@ describe('TouchHelper stdin byte protocol snapshots', () => {
 
   // ── type 8: pinchEnd ─────────────────────────────────────────────────────
   it('type 8 — pinchEnd() → 17 bytes all zero coords', () => {
+    openThenClear(() => helper.pinchStart(0, 0, 0, 0))
     helper.pinchEnd()
     expect(capturedHex()).toMatchInlineSnapshot(
       `"08 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"`,

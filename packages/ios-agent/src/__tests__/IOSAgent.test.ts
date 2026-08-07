@@ -6,23 +6,35 @@ import { spawnSync } from 'child_process'
 import { ValidationError, PlatformError, MAX_CLIPBOARD_BYTES } from '@tapflowio/agent-core'
 import { ClipboardTooLargeError } from '../SimctlWrapper.js'
 
+// A live helper. Since #482 every write reports whether it reached the helper process and the
+// agent acks on that answer, so the mock has to state it — returning undefined would model a
+// helper that silently drops everything. `killHelper()` below flips one over to that state.
 vi.mock('../TouchHelper', () => ({
   TouchHelper: vi.fn(function () { return ({
     start: vi.fn(),
     stop: vi.fn(),
-    touchStart: vi.fn(),
-    touchMove: vi.fn(),
-    touchEnd: vi.fn(),
-    pressButton: vi.fn(),
-    pressButtonDown: vi.fn(),
-    pressButtonUp: vi.fn(),
-    pressLegacyButton: vi.fn(),
-    pinchStart: vi.fn(),
-    pinchMove: vi.fn(),
-    pinchEnd: vi.fn(),
-    sendKey: vi.fn(),
+    isReady: vi.fn(() => true),
+    touchStart: vi.fn(() => true),
+    touchMove: vi.fn(() => true),
+    touchEnd: vi.fn(() => true),
+    pressButton: vi.fn(() => true),
+    pressButtonDown: vi.fn(() => true),
+    pressButtonUp: vi.fn(() => true),
+    pressLegacyButton: vi.fn(() => true),
+    pinchStart: vi.fn(() => true),
+    pinchMove: vi.fn(() => true),
+    pinchEnd: vi.fn(() => true),
+    sendKey: vi.fn(() => true),
   }) }),
 }))
+
+// The #482 state: the helper object is still there and the stream is still running, but its
+// child process is gone, so every write is dropped.
+function killHelper(th: Record<string, ReturnType<typeof vi.fn>>): void {
+  for (const [name, fn] of Object.entries(th)) {
+    if (name !== 'start' && name !== 'stop') fn.mockReturnValue(false)
+  }
+}
 
 // Mock the capture streamer so codec-negotiation tests can read the codec arg the
 // agent picked, without spawning the real helper binary. start() returns a stream
@@ -422,6 +434,239 @@ describe('IOSAgent', () => {
       const e = await errored
       expect(e.sessionId).toBe(agent.sessionId)
       expect(e.message).toBe('device not booted')
+
+      agent.disconnect()
+      browser.close()
+    })
+  })
+
+  // #482: the helper process dies, the session keeps streaming, and every input is dropped.
+  // The agent used to ack on `state.touchHelper !== null` — the wrapper object, which is still
+  // there — so the caller was told each dropped input had been delivered.
+  describe('input acks when the helper process has died (#482)', () => {
+    beforeEach(() => { MockTouchHelper.mockClear() })
+
+    async function bootedSession(simctl = mockSimctl(true)) {
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:ready')
+      // device:ready is not a sync point for the helper — wait on the mock itself.
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      return { browser, agent, simctl, th: MockTouchHelper.mock.results[0].value }
+    }
+
+    it('answers input:error for a tap the dead helper dropped', async () => {
+      const { browser, agent, th } = await bootedSession()
+      killHelper(th)
+
+      const errored = waitForType(browser, 'input:error')
+      browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+
+      // The device is still booted — this is the input channel failing, not the device.
+      expect((await errored).message).toBe('input channel not ready')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('answers input:error for a pinch the dead helper dropped', async () => {
+      const { browser, agent, th } = await bootedSession()
+      killHelper(th)
+
+      const errored = waitForType(browser, 'input:error')
+      const f0 = { x: 0.2, y: 0.2 }, f1 = { x: 0.8, y: 0.8 }
+      browser.send(JSON.stringify({ type: 'input:pinch:start', sessionId: agent.sessionId, payload: { f0, f1 } }))
+      browser.send(JSON.stringify({ type: 'input:pinch:end', sessionId: agent.sessionId, payload: { f0, f1 } }))
+      expect((await errored).message).toBe('input channel not ready')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('answers input:done again once the helper has recovered, without a reconnect', async () => {
+      const { browser, agent, th } = await bootedSession()
+      killHelper(th)
+      const errored = waitForType(browser, 'input:error')
+      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      await errored
+
+      // TouchHelper respawns itself, so the session heals in place — the same object starts
+      // reporting delivery again. Nothing re-issues the session.
+      th.touchEnd.mockReturnValue(true)
+      th.isReady.mockReturnValue(true)
+
+      const done = waitForType(browser, 'input:done')
+      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      expect((await done).sessionId).toBe(agent.sessionId)
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('answers input:error for a button the dead helper dropped', async () => {
+      const { browser, agent, th } = await bootedSession()
+      killHelper(th)
+
+      const errored = waitForType(browser, 'input:error')
+      browser.send(JSON.stringify({ type: 'input:button', sessionId: agent.sessionId, payload: { name: 'home' } }))
+      expect((await errored).message).toBe('input channel not ready')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    // The two branches that deliberately write nothing answer with the channel's health. Both
+    // directions need pinning: a seed of `false` invents a failure on a healthy channel, and a
+    // seed of `true` is the silent success this whole issue is about.
+    const noWriteBranches: Array<[string, Record<string, unknown>]> = [
+      ['a home press-down', { name: 'home', phase: 'down' }],
+      // `mockSimctl` reports no typeId, so DeviceChromeLoader finds nothing and `loadedChrome`
+      // stays null for this whole suite — this pair covers the "no chrome button matched" branch.
+      // The narrower `usagePage > 0 && usage > 0` sub-guard inside it is unreached here and
+      // untested; it predates this change.
+      ['a button with no chrome entry', { name: 'volume-up' }],
+    ]
+
+    for (const [label, payload] of noWriteBranches) {
+      it(`does not invent a failure for ${label} on a healthy channel`, async () => {
+        const { browser, agent, th } = await bootedSession()
+
+        const done = waitForType(browser, 'input:done')
+        browser.send(JSON.stringify({ type: 'input:button', sessionId: agent.sessionId, payload }))
+        expect((await done).sessionId).toBe(agent.sessionId)
+        expect(th.pressLegacyButton).not.toHaveBeenCalled()
+        expect(th.pressButtonDown).not.toHaveBeenCalled()
+
+        agent.disconnect()
+        browser.close()
+      })
+
+      it(`does not claim success for ${label} on a dead channel`, async () => {
+        const { browser, agent, th } = await bootedSession()
+        killHelper(th)
+
+        const errored = waitForType(browser, 'input:error')
+        browser.send(JSON.stringify({ type: 'input:button', sessionId: agent.sessionId, payload }))
+        expect((await errored).message).toBe('input channel not ready')
+
+        agent.disconnect()
+        browser.close()
+      })
+    }
+
+    it('answers input:error for a key the dead helper dropped', async () => {
+      const { browser, agent, th } = await bootedSession()
+      killHelper(th)
+
+      const errored = waitForType(browser, 'input:error')
+      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
+      expect((await errored).message).toBe('input channel not ready')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('answers input:error for a key deferred behind hiding the software keyboard', async () => {
+      // The branch the ack used to race: the chord is sent inside the hide's continuation, so
+      // acking beside it answered before the key had been written at all.
+      const { browser, agent, simctl, th } = await bootedSession()
+      browser.send(JSON.stringify({ type: 'input:keyboard:toggle', sessionId: agent.sessionId }))
+      await waitForType(browser, 'keyboard:toggled')
+      killHelper(th)
+
+      const errored = waitForType(browser, 'input:error')
+      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
+      expect((await errored).message).toBe('input channel not ready')
+      expect(simctl.hideSoftwareKeyboard).toHaveBeenCalledWith('dev-1')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('stops a helper that input created while a boot was still in flight', async () => {
+      // handleDeviceBoot clears the helper up front and then awaits simctl. An input arriving
+      // inside that window builds a fresh one through ensureTouchHelper, and sendChromeData
+      // later replaces it. That used to leak one child process; now the orphan revives itself
+      // for the life of the agent with nothing left holding a reference to stop it.
+      const simctl = mockSimctl(false)
+      let releaseBoot = (): void => {}
+      ;(simctl.boot as ReturnType<typeof vi.fn>).mockImplementation(
+        () => new Promise<void>((resolve) => { releaseBoot = () => resolve() }),
+      )
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      const booting = waitForType(browser, 'device:booting')
+      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await booting
+      await vi.waitFor(() => expect(simctl.boot).toHaveBeenCalled(), { timeout: 500 })
+
+      browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results).toHaveLength(1), { timeout: 500 })
+      const orphan = MockTouchHelper.mock.results[0].value
+
+      const ready = waitForType(browser, 'device:ready')
+      releaseBoot()
+      await ready
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results).toHaveLength(2), { timeout: 1000 })
+
+      expect(orphan.stop).toHaveBeenCalled()
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('does not install a helper onto a state that teardown has already dropped', async () => {
+      // `cleanupDeviceState` bumps bootSeq for this: a boot awaiting simctl holds its own
+      // reference to the state, and `deviceStates.clear()` does not reach it. Without the bump it
+      // runs on to build a TouchHelper nobody owns — and a self-reviving one would respawn for
+      // the life of the agent with nothing left to stop it.
+      const simctl = mockSimctl(false)
+      let releaseBoot = (): void => {}
+      ;(simctl.boot as ReturnType<typeof vi.fn>).mockImplementation(
+        () => new Promise<void>((resolve) => { releaseBoot = () => resolve() }),
+      )
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      const booting = waitForType(browser, 'device:booting')
+      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await booting
+      await vi.waitFor(() => expect(simctl.boot).toHaveBeenCalled(), { timeout: 500 })
+      expect(MockTouchHelper.mock.results).toHaveLength(0)
+
+      agent.disconnect() // tears the state down while the boot is still awaiting simctl
+      releaseBoot()
+      await new Promise((r) => setTimeout(r, 150)) // let the abandoned boot run as far as it will
+
+      expect(MockTouchHelper.mock.results).toHaveLength(0)
+
+      browser.close()
+    })
+
+    it('answers input:type-error when the paste chord is dropped', async () => {
+      // No pasteboard deadline guards this path, unlike the copy in clipboard:read — the text
+      // lands on the device clipboard and nothing reaches the app under test.
+      const { browser, agent, th } = await bootedSession()
+      killHelper(th)
+
+      const errored = waitForType(browser, 'input:type-error')
+      browser.send(JSON.stringify({ type: 'input:type', sessionId: agent.sessionId, payload: { text: 'hello' } }))
+      expect((await errored).message).toContain('no input channel')
 
       agent.disconnect()
       browser.close()
@@ -1952,6 +2197,26 @@ describe('IOSAgent', () => {
       await done
       expect(th.sendKey).toHaveBeenCalledWith(0x19, 0x08)   // KeyV + MetaLeft
       expect(simctl.setPasteboard).toHaveBeenCalledWith('dev-1', 'x')
+
+      agent.disconnect(); browser.close()
+    })
+
+    it('answers clipboard:error when the paste chord is dropped (#482)', async () => {
+      // The pasteboard deadline above proves the device took the text, not that the chord
+      // reached it — so a dead input channel here used to answer clipboard:write-done having
+      // pasted nothing into the app.
+      const simctl = mockSimctl(true)
+      const { agent, browser } = await bootWith(simctl)
+      await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
+      const th = MockTouchHelper.mock.results[MockTouchHelper.mock.results.length - 1].value
+      th.sendKey.mockClear()
+      killHelper(th)
+
+      const errored = waitForType(browser, 'clipboard:error')
+      browser.send(JSON.stringify({
+        type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'r6b', payload: { text: 'x', pasteAfter: true },
+      }))
+      expect((await errored).message).toContain('no input channel')
 
       agent.disconnect(); browser.close()
     })
