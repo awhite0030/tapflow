@@ -21,6 +21,36 @@ status: living
 - Capture frames via SimulatorKit IOSurface and stream H.264 (default) or JPEG frames as WebSocket binary messages (≤30 fps).
 - `connect` only registers devices with the relay — it never boots one. Booting is on-demand via `device:boot` (dashboard / MCP). The `deviceFilter` option (CLI `--device`) narrows which devices are exposed to the relay (parity with android-agent), not a boot target.
 
+### Input acks carry a reason
+
+`ackInput` answers `'delivered'` or an `InputErrorReason` from `@tapflowio/protocol` (the contract and
+the consumer rules are documented there). The mapping is small but two parts are easy to get wrong:
+
+- **`channel-starting` is not `channel-unavailable`.** `TouchHelper.inputState()` separates them, and
+  the difference is the measured 186–247ms in which the helper is up and injecting nothing. Telling a
+  caller the channel is gone there sends it to reconnect when it only had to wait.
+- **A refusal from a *ready* helper is `no-gesture`, not a channel error.** That is the
+  gesture-ownership guard, and the reason carries its own advice: open a new gesture.
+- **Ownership is asked before readiness, and the order is the whole point.** The two are decided at
+  different times — readiness is about now, ownership was settled when the gesture opened. A gesture
+  whose opening frame was refused inside the start-up window owns nothing, so by the time its terminal
+  frame arrives the helper reads `ready` and a readiness-first derivation answered `malformed`
+  ("never retry") for exactly the sequence `channel-starting` exists to serve. MCP's `swipe` defaults
+  to 300ms, comfortably past the measured 247ms, so it lands there.
+  A consequence worth knowing: `channel-starting` is **unreachable for a continuation frame**. Owning
+  a gesture requires an opening frame to have landed, which requires readiness — so only standalone
+  inputs (a key, a button) are ever refused merely because the channel is coming up.
+
+`TouchHelper`'s write methods still return `boolean` **on purpose**. Every member of a string union is
+truthy, so converting them would silently invert `this.gestureProc = sent ? this.proc : null` — the
+guard that two reviews already fought over — and neither `tsc` nor eslint would say a word
+(`no-unnecessary-condition` is not enabled, and tests are excluded from both). The reason is derived
+at the ack site instead, which is safe because writes here are synchronous.
+
+An unmapped **button** still answers success: the device genuinely has no such button (#484). An
+unmapped **key code** answers `unsupported` and keeps its existing prose, which names the code. That
+asymmetry is a decision, and it is why iOS never sends `unsupported` for a button while Android does.
+
 ## HOW NOT
 
 - Do not expose iOS-specific methods as public API if they are not in the `DeviceAgent` interface.

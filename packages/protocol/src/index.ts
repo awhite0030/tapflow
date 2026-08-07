@@ -142,6 +142,52 @@ export type RelayToAgent =
  */
 export type SessionTerminatedReason = 'agent-disconnected'
 
+/**
+ * Why a terminal input was not delivered — the machine-readable half of `input:error`.
+ *
+ * The set is derived from **what a consumer has to do differently**, not from how many internal
+ * states an agent has. Those differ per platform (one HID helper on iOS; a scrcpy socket, an
+ * emulator gRPC channel and `adb shell input` on Android) and each agent maps its own states onto
+ * these. A closed set that is smaller than either agent's internals is the point.
+ *
+ * | reason | consumer should |
+ * |---|---|
+ * | `not-booted` | boot the device |
+ * | `channel-unavailable` | reconnect or rebind; do not blindly retry |
+ * | `channel-starting` | **retry shortly** — the channel exists and is coming up |
+ * | `dispatch-failed` | may retry once |
+ * | `unsupported` | never retry; this agent does not implement it |
+ * | `malformed` | fix the call; never retry |
+ * | `no-gesture` | **open a new gesture** — retrying this frame can never land |
+ *
+ * `channel-starting` is the one that had no name. On iOS the input helper needs a measured
+ * 186–247ms after spawn before an injected frame reaches the device, and `device:ready` can arrive
+ * inside that window — so a caller that taps as soon as a boot returns was being told the channel
+ * was gone when it was merely coming up.
+ *
+ * **A consumer that meets a reason it does not know must treat it as `channel-unavailable`** — the
+ * conservative reading. The field is optional precisely so an older agent can omit it, so absence
+ * means "unknown", never "fine".
+ *
+ * A string literal union rather than an enum, per this package's HOW NOT: it must erase under
+ * `import type` so it never lands in the dashboard's bundle.
+ */
+export type InputErrorReason =
+  | 'not-booted'
+  | 'channel-unavailable'
+  | 'channel-starting'
+  | 'dispatch-failed'
+  | 'unsupported'
+  | 'malformed'
+  /**
+   * A frame that only means something as part of a gesture arrived with no gesture behind it — the
+   * opening frame never landed, or the process serving it was replaced. Distinct from `malformed`
+   * because the advice differs: the message was well-formed and the channel may be perfectly
+   * healthy, but *this* frame can never be delivered, so the caller re-opens the gesture rather than
+   * giving up. Distinct from `channel-starting` for the same reason — waiting does not help.
+   */
+  | 'no-gesture'
+
 // ── relay → browser ──────────────────────────────────────────────────────────
 //
 // `stream:registered` goes to a stream socket rather than a viewer. It is grouped here because the
@@ -182,7 +228,7 @@ export type RelayToBrowser =
   | { type: 'device:boot-error'; sessionId: string; message: string }
   | { type: 'open-url:error'; sessionId: string; message: string }
   | { type: 'app:clear-state-error'; sessionId: string; message: string }
-  | { type: 'input:error'; sessionId: string; message: string }
+  | { type: 'input:error'; sessionId: string; message: string; reason?: InputErrorReason }
   | { type: 'clipboard:error'; sessionId: string; requestId: string; message: string }
 
 /** Everything the relay originates. Messages it merely forwards keep their inbound type — they are

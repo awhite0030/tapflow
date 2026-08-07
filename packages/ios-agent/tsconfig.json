@@ -29,6 +29,9 @@
       "path": "../agent-core"
     },
     {
+      "path": "../protocol"
+    },
+    {
       "path": "../audiotap-helper"
     }
   ]

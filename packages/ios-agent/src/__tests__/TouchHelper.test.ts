@@ -111,6 +111,57 @@ describe('TouchHelper.stop()', () => {
 // be reported as delivered.
 describe('TouchHelper — a helper that is running but not yet ready', () => {
   afterEach(() => vi.useRealTimers())
+  // The ack needs these three apart: `starting` tells a caller to retry in a moment, `unavailable`
+  // tells it to reconnect. A write refusal alone cannot tell them apart, and the agent's own tests
+  // mock this class, so this is the only layer where the distinction is observable.
+  it('reports the three input states apart', async () => {
+    const proc = makeFakeProc()
+    const { helper } = await loadHelper([proc, makeFakeProc()])
+
+    expect(helper.inputState()).toBe('unavailable') // never started
+
+    helper.start()
+    expect(helper.inputState()).toBe('starting')    // running, not yet announced
+
+    announceReady(proc)
+    expect(helper.inputState()).toBe('ready')
+
+    proc.stdin.writable = false
+    expect(helper.inputState()).toBe('unavailable') // pipe gone
+  })
+
+  // The case the agent's own tests cannot see, because they mock this class and a mocked
+  // `inputState()` is a constant: the *transition*. An opening frame refused during start-up owns
+  // nothing, so its terminal frame can never land — however ready the helper has since become.
+  it('owns no gesture when the opening frame was refused, even after it becomes ready', async () => {
+    const proc = makeFakeProc()
+    const { helper } = await loadHelper([proc])
+    helper.start()
+
+    expect(helper.touchStart(0.5, 0.5)).toBe(false) // inside the start-up window
+    announceReady(proc)
+
+    expect(helper.inputState()).toBe('ready')  // the channel is fine now …
+    expect(helper.ownsGesture()).toBe(false)   // … but this gesture never opened
+    expect(helper.touchEnd()).toBe(false)
+  })
+
+  it('owns the gesture once an opening frame lands, and lets it go when the process changes', async () => {
+    const first = makeFakeProc()
+    const second = makeFakeProc()
+    const { helper } = await startedHelper([first, second])
+
+    expect(helper.touchStart(0.4, 0.6)).toBe(true)
+    expect(helper.ownsGesture()).toBe(true)
+
+    die(first)
+    announceReady(second)
+
+    // The replacement is ready, and the gesture it never saw is not its to finish.
+    expect(helper.inputState()).toBe('ready')
+    expect(helper.ownsGesture()).toBe(false)
+  })
+
   it('reports failure for a frame written before the helper announces itself', async () => {
     const proc = makeFakeProc()
     const { helper } = await loadHelper([proc])

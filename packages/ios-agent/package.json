@@ -60,6 +60,7 @@
   },
   "dependencies": {
     "@tapflowio/agent-core": "workspace:*",
+    "@tapflowio/protocol": "workspace:*",
     "@tapflowio/audiotap-helper": "workspace:*",
     "ws": "^8.21.1"
   },

@@ -72,6 +72,36 @@ export class TouchHelper {
     return this.proc?.stdin?.writable === true
   }
 
+  /**
+   * Why a write would be refused right now, for the ack to report.
+   *
+   * `starting` is the state that had no name: measured 186–247ms after spawn, the pipe is open and
+   * frames written to it land nowhere, and a caller that retries a moment later succeeds. Answering
+   * "no channel" for it — which is what a bare boolean forced — told the caller to reconnect when it
+   * should simply have waited.
+   *
+   * Safe to read at the ack site rather than inside the write: writes here are synchronous, so
+   * nothing can have changed between the two.
+   */
+  inputState(): 'ready' | 'starting' | 'unavailable' {
+    if (this.isReady()) return 'ready'
+    return this.isRunning() ? 'starting' : 'unavailable'
+  }
+
+  /**
+   * Whether a gesture is currently owned by the live process — i.e. whether a continuation frame
+   * could land at all.
+   *
+   * Separate from `inputState()` because the two answer questions decided at different times.
+   * Readiness is about now; ownership was decided when the opening frame was written. A gesture whose
+   * open was refused (during the start-up window, say) leaves nothing owned, and no amount of waiting
+   * makes its terminal frame deliverable — the caller has to open a new gesture. Reading readiness
+   * alone at the ack site turned that into "the message is malformed, never retry".
+   */
+  ownsGesture(): boolean {
+    return this.proc !== null && this.proc === this.gestureProc
+  }
+
   touchStart(x: number, y: number): boolean {
     this.lastX = x
     this.lastY = y

@@ -51,6 +51,24 @@ Measured against a killed emulator: the gRPC RPC rejects in **4ms** with `14 UNA
 - `ANDROID_HOME` or `ADB_PATH` environment variable is required. Missing → clear error and immediate exit.
 - Apple Silicon Mac: `system-images;android-34;google_apis;arm64-v8a` image required.
 
+### Mapping internal reasons onto the wire
+
+`inputOutcome.ts` keeps this agent's seven internal reasons; `wireReason()` maps them onto the closed
+set in `@tapflowio/protocol`. One collapses, and it is recorded rather than assumed:
+
+- `no-session` → `channel-unavailable`. The consumer's move is the same, and promoting it would add a
+  wire reason whose reachability is disputed — `relay/src/__tests__/sessionRebind.test.ts` records
+  that a restarted agent is re-seeded with its sessions, so `!state` may never fire.
+
+`no-gesture` passes through rather than collapsing into `malformed`, which was the first attempt: its
+advice differs. `malformed` tells a caller to fix the call and never retry; a terminal frame with no
+gesture behind it is well-formed on a channel that may be healthy, and the caller's move is to open a
+new gesture. iOS reaches the same reason by a different route (its gesture-ownership guard).
+
+**This agent produces no `channel-starting`.** iOS has a measured window where its helper is up but
+not yet injecting; here a path either has a channel or does not. Written down so the gap is a fact
+about the platform rather than an oversight.
+
 ## HOW NOT
 
 - Do not hardcode the ADB path — use `$ANDROID_HOME/platform-tools/adb` or `$ADB_PATH`.

@@ -192,7 +192,12 @@ export class TapflowClient {
       throw e
     }
     if (msg['type'] === 'input:error') {
-      throw new Error((msg['message'] as string) ?? 'Input failed')
+      // Surface the machine-readable reason alongside the prose. Acting on it — retrying a
+      // `channel-starting` instead of failing, and dropping the optimistic timeout fallback above
+      // for reasons that say "never retry" — is #457, not this change.
+      const reason = msg['reason'] as string | undefined
+      const prose = (msg['message'] as string) ?? 'Input failed'
+      throw new Error(reason ? `${prose} (${reason})` : prose)
     }
   }
 

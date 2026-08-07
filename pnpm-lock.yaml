@@ -97,6 +97,9 @@ importers:
       '@tapflowio/audiotap-helper':
         specifier: workspace:*
         version: link:../audiotap-helper
+      '@tapflowio/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       ws:
         specifier: ^8.21.1
         version: 8.21.1
@@ -405,6 +408,9 @@ importers:
       '@tapflowio/audiotap-helper':
         specifier: workspace:*
         version: link:../audiotap-helper
+      '@tapflowio/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       ws:
         specifier: ^8.21.1
         version: 8.21.1

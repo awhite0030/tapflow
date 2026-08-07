@@ -1,3 +1,5 @@
+import type { InputErrorReason } from '@tapflowio/protocol'
+
 /**
  * What happened to a terminal input, in the vocabulary the ack speaks.
  *
@@ -58,4 +60,33 @@ const MESSAGES: Record<Exclude<InputOutcome, 'delivered'>, string> = {
 
 export function outcomeMessage(outcome: Exclude<InputOutcome, 'delivered'>): string {
   return MESSAGES[outcome]
+}
+
+/**
+ * The internal reason mapped onto the wire's closed set (`@tapflowio/protocol`).
+ *
+ * The wire set is smaller than this one. It is derived from what a *consumer* must do
+ * differently, and two of our reasons ask for the same thing:
+ *
+ * - `no-gesture` passes through: it earned its own wire reason because the advice differs from
+ *   `malformed`. The message was well-formed and the channel may be healthy — the caller re-opens the
+ *   gesture rather than giving up.
+ * - `no-session` → `channel-unavailable`: the consumer's move is the same (re-join or re-boot), and
+ *   promoting it would add a wire reason whose reachability is disputed — `sessionRebind.test.ts`
+ *   records that a restarted agent is re-seeded with its sessions, so `!state` may never fire.
+ *
+ * `channel-starting` has no producer here. iOS has a measured window where its helper is up but not
+ * yet injecting; the Android paths either have a channel or do not. Recorded rather than left blank
+ * so the gap is a fact about the platform and not an oversight.
+ */
+export function wireReason(outcome: Exclude<InputOutcome, 'delivered'>): InputErrorReason {
+  switch (outcome) {
+    case 'not-booted': return 'not-booted'
+    case 'channel-down': return 'channel-unavailable'
+    case 'no-session': return 'channel-unavailable'
+    case 'failed': return 'dispatch-failed'
+    case 'unsupported': return 'unsupported'
+    case 'malformed': return 'malformed'
+    case 'no-gesture': return 'no-gesture'
+  }
 }
