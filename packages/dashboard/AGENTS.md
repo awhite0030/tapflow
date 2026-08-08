@@ -47,6 +47,39 @@ The audience is the whole team (PO, PM, designers, backend, QA) — not just QA.
 - Components that combine multiple `useEffect` + `react-hook-form` `Controller` + `useWatch` (e.g. `DefaultSettings`) can hang in jsdom under full render. `vitest.config.ts` has `testTimeout: 10000` as a safety net — a timeout failure means the test setup needs fixing, not more retries.
 - When mocking `fetch` in a component that fires multiple concurrent `useEffect` fetches (e.g. `GET /api/v1/settings` + `GET /api/v1/apps`), use URL-based dispatch (`mockImplementation((url) => {...})`) instead of `mockResolvedValueOnce` chains — call order is non-deterministic.
 
+### `input:error` is shown per input, and there is no session-level input state
+
+A failed input surfaces as a toast keyed on the wire `reason` (`lib/inputErrorNotice.ts`), or is shown
+nowhere for the two reasons that fix themselves. `input:done` is **not handled at all**.
+
+A latched "input unavailable" line on the status card was designed and discarded, and it will look
+like the obvious improvement to whoever reads this next. It cannot be made honest on the current
+protocol, for three independent reasons:
+
+- **Nothing announces recovery.** iOS replaces a dead helper eagerly and is injecting again ~200ms
+  later, with no message to the browser. And `channel-unavailable`'s own advice is *do not blindly
+  retry*, so the only edge that could clear a latch requires the tester to do what the UI just told
+  them not to.
+- **The acks are unordered.** `ackInput` awaits a `simctl` / `adb` child on the success path and sends
+  refusals synchronously, so an earlier input's `input:done` can arrive after a later input's
+  `input:error` and clear a latch that is still true.
+- **An ack does not say which channel answered.** On Android a button always takes the adb path while
+  touch takes the pointer channel, so pressing Home to check whether input works at all succeeds — and
+  under the latch that success erased the warning about the dead touch channel.
+
+Instead the toast's own lifetime carries the state: repeats reuse `id`, which sonner refreshes rather
+than stacks, so it stays up while inputs keep failing and fades on its own when they stop. **Being
+observed rather than stored is the point** — there is no clear edge to get wrong.
+
+Copy lives here rather than in the agents because `message` on the wire is free prose each agent owns
+and cannot be localised; `reason` is the contract. `message` rides along as the description, where its
+diagnostic detail (`unknown key code: KeyFoo`) belongs. Absent or unrecognised reasons resolve to
+`channel-unavailable` — absence means *unknown*, never *fine*.
+
+A persistent indicator needs a protocol-level input-health signal, or acks that identify their channel
+and arrive in order. Two tests guard the decision (`DeviceViewer.inputError.test.tsx`): `input:done`
+must do nothing, and a success between two failures must change nothing.
+
 ## HOW NOT
 
 - Do not reintroduce the `next` package.
