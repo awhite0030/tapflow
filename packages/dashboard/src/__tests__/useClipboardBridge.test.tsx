@@ -2,9 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { useClipboardBridge, isBridgedChord, AGENT_WORST_MS, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge'
+import { useClipboardBridge, isBridgedChord, AGENT_WORST_MS, type ClipboardBridgeMessage, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge'
 
 type Sent = { type: string; requestId?: string; payload?: unknown }
+
+// The reply fixtures name a real wire message minus the two ids the helper fills in. Distributive,
+// so each union member keeps its own payload — a plain `Omit` would collapse them into one shape and
+// stop checking which payload goes with which type.
+type WithoutIds<T> = T extends unknown ? Omit<T, 'sessionId' | 'requestId'> : never
 
 function setup(opts: { active?: boolean; supported?: boolean } = {}) {
   const sent: Sent[] = []
@@ -22,9 +27,12 @@ function setup(opts: { active?: boolean; supported?: boolean } = {}) {
     onError: (m) => errors.push(m),
   }))
 
-  const reply = (msg: Omit<Sent, 'requestId'> & { message?: string }, ofType: string) => {
+  const reply = (msg: WithoutIds<ClipboardBridgeMessage>, ofType: string) => {
     const req = [...sent].reverse().find((s) => s.type === ofType)
-    act(() => { handlerRef.current?.({ ...msg, requestId: req?.requestId } as never) })
+    // Annotated rather than cast. This call used to end in `as never`, which accepts anything — so
+    // the fixtures were free to disagree with the wire and the suite would not have said so.
+    const full: ClipboardBridgeMessage = { ...msg, sessionId: 's1', requestId: req?.requestId ?? 'no-request' }
+    act(() => { handlerRef.current?.(full) })
   }
 
   return { sent, chords, errors, reply }
@@ -129,6 +137,34 @@ describe('useClipboardBridge', () => {
     expect(errors).toEqual([])
   })
 
+
+  // A reply correlated to the right requestId but carrying the wrong message means an agent answered
+  // under someone else's id. Before the wire union reached this file the read path could not tell:
+  // its declared shape was `{ payload?: unknown }`, so a `write-done` read as "no text" and took the
+  // empty-clipboard path — cancelling the claim with nothing said. Silence is the one outcome this
+  // whole class of bug is being cleared out of, so it is reported.
+  it('reports a write-done that answers a read instead of cancelling silently', async () => {
+    const { reply, errors, chords } = setup()
+    press('KeyC')
+    await waitFor(() => expect(writeCalls).toBe(1))
+    const claim = written[0].catch(() => 'cancelled')
+    reply({ type: 'clipboard:write-done' }, 'clipboard:read')
+
+    await waitFor(() => expect(errors).toEqual(['Clipboard read failed']))
+    await expect(claim).resolves.toBe('cancelled')
+    // No fallback chord: nothing here says whether a sentinel is parked, and pressing on that
+    // uncertainty is what pastes a stale value into the app under test.
+    expect(chords).toEqual([])
+  })
+
+  it('reports clipboard:data answering a write, and presses nothing', async () => {
+    const { reply, errors, chords } = setup()
+    pastes('from my mac')
+    reply({ type: 'clipboard:data', payload: { text: 'wrong reply' } }, 'clipboard:write')
+
+    await waitFor(() => expect(errors).toEqual(['Clipboard write failed']))
+    expect(chords).toEqual([])
+  })
 
   it('surfaces an agent-side error instead of writing', async () => {
     const { reply, errors } = setup()
@@ -235,7 +271,7 @@ describe('useClipboardBridge', () => {
   })
 
   it('paste sends the text and lets the agent press paste', async () => {
-    const { sent, chords, reply } = setup()
+    const { sent, chords, reply, errors } = setup()
     pastes('pasted from my mac')
 
     const write = sent.find((s) => s.type === 'clipboard:write')
@@ -245,12 +281,15 @@ describe('useClipboardBridge', () => {
     reply({ type: 'clipboard:write-done' }, 'clipboard:write')
     await new Promise((r) => setTimeout(r, 20))
     expect(chords).toEqual([])     // the agent pressed it; pressing again would double-paste
+    // A success says nothing. Without this the whole success branch could be deleted and every test
+    // still passed: the paste lands and the tester is told it failed.
+    expect(errors).toEqual([])
   })
 
   // Regression: with an image/file on the OS clipboard there is no text to send, but the
   // device must still paste its own clipboard — that worked before the bridge existed.
   it('falls back to the plain chord when the OS clipboard holds no text', async () => {
-    const { sent, chords } = setup()
+    const { sent, chords, errors } = setup()
     pastes('')
     expect(sent).toEqual([])
     expect(chords).toEqual([['KeyV', 0x08]])
@@ -296,7 +335,7 @@ describe('useClipboardBridge', () => {
   // M5: copy needs a secure context, paste never did. A LAN deployment must keep pasting.
   it('paste still works on plain HTTP', async () => {
     secureContext(false)
-    const { sent, chords, reply } = setup()
+    const { sent, chords, reply, errors } = setup()
     pastes('from my mac')
     const write = sent.find((s) => s.type === 'clipboard:write')
     expect((write?.payload as { text: string }).text).toBe('from my mac')
@@ -304,6 +343,7 @@ describe('useClipboardBridge', () => {
     reply({ type: 'clipboard:write-done' }, 'clipboard:write')
     await new Promise((r) => setTimeout(r, 20))
     expect(chords).toEqual([])   // the agent pressed paste itself
+    expect(errors).toEqual([])
   })
 
   // A Windows viewer sends Ctrl+C, but iOS only understands Cmd — the device chord is

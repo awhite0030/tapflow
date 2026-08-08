@@ -7,11 +7,11 @@ import { usePerfMode } from '@/hooks/usePerfMode';
 import { IOSViewer } from './device/IOSViewer';
 import { AndroidViewer } from './device/AndroidViewer';
 import { SimulatorInfoCard } from './device/shared/SimulatorInfoCard';
-import type { AndroidChrome, ChromeData, RelayMessage } from '@/lib/types';
+import type { AndroidChrome, ChromeData, BrowserInbound } from '@/lib/types';
 import type { FrameTiming, PerfHook } from './perf/types';
 import { parseEnvelopeHeader, HEADER_SIZE, CODEC_H264, CODEC_AUDIO, type BinaryFrameHandler } from '@/lib/envelope';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
-import type { ClipboardBridgeMessage, ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
+import type { ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
 import { canDecodeH264 } from '@/lib/decoders/pickDecoder';
 import { resolveInputError } from '@/lib/inputErrorNotice';
 import { StatsOverlay } from './perf/StatsOverlay';
@@ -98,15 +98,19 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // muting is delegated to the emulator's own volume keys.
   const { pushFrame: pushAudioFrame } = useAudioPlayback();
 
-  const handleMessage = useCallback((msg: RelayMessage) => {
+  const handleMessage = useCallback((msg: BrowserInbound) => {
     // Anything addressed to another session is not ours to act on. Before #445 an
     // `app:install-error` arrived unattributed and was applied to whichever viewer was mounted.
     //
-    // This gate is wider than the union suggests: the relay forwards agent messages verbatim and
-    // both agents stamp `sessionId` on nearly all of them — `device:ready`, `device:booting`,
-    // `session:chrome` and others carry one on the wire while the local type says they do not.
-    // The check is `in msg`, so it is live on all of those. That is safe because of an invariant
-    // the types do not express: the relay only ever forwards a session-scoped message to that
+    // The union now declares `sessionId` on every message that carries one, so this reads as a normal
+    // narrowing rather than the widening it used to be — it was `in msg` because the local copy of
+    // this union omitted the field on messages the wire always stamped it on.
+    //
+    // Three messages still reach here without one: `device:ready`, `session:chrome` and
+    // `session:deviceInfo` are `sessionId?` because the relay *replays* them to a re-joining viewer
+    // from its own cache and does not stamp them, while both agents do. The `&& msg.sessionId`
+    // truthiness check is what lets those through, and they are safe to accept unscoped for the same
+    // reason the gate is safe at all: the relay only ever sends a session-scoped message to that
     // session's own `browserSocket`, so a mismatch means a stale socket, not normal traffic.
     // If that ever stops holding, a dropped `session:terminated` strands the tab — which is the
     // defect #426 existed to fix, so there is a test for exactly that below.
@@ -266,12 +270,12 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     if (msg.type === 'app:launch-error') { setLaunching(false); }
     if (msg.type === 'session:chrome') { setChrome(msg.payload); }
     if (msg.type === 'keyboard:toggled') {
-      const { visible } = msg.payload as { visible: boolean };
+      const { visible } = msg.payload;
       setSwKeyboardVisible(visible);
       setSwKeyboardPending(false);
     }
     if (msg.type === 'clipboard:data' || msg.type === 'clipboard:write-done' || msg.type === 'clipboard:error') {
-      clipboardHandlerRef.current?.(msg as unknown as ClipboardBridgeMessage);
+      clipboardHandlerRef.current?.(msg);
     }
     if (msg.type === 'open-url:done') { toast.success('Deeplink opened'); }
     if (msg.type === 'open-url:error') { toast.error(msg.message); }

@@ -39,6 +39,50 @@ The cost of a broad name is ambiguity about what belongs — answered by the two
 - **The binary frame envelope (TFFE).** That is a separate wire format with its own header layout — see [`contributing/frame-envelope.md`](../../contributing/frame-envelope.md). It is currently implemented separately in the relay and the dashboard, which is the same kind of drift risk, but unifying it is not this package's job today.
 - **Domain types that are not on the wire.** `Build`, `ReleaseGroup`, UI view models — those stay in their own packages.
 
+## Browser-inbound messages are split by producer, and one union is shared
+
+A browser receives 28 message types. They come from two producers, and the difference matters to the
+**relay**, not to the consumer:
+
+- **`RelayToBrowser`** — the relay builds these itself, so `sendTo(socket, msg: RelayOutbound)` holds
+  them to the union. The compiler is the check.
+- **`AgentToBrowser`** — an agent builds these and the relay forwards them with
+  `JSON.stringify(msg)`. Nothing on the relay's send path references them, so **no compiler sees
+  them.** That is why all twelve forward-only messages were absent from this file until L3, and why
+  `scripts/__tests__/browserInboundRouting.test.mjs` exists: it compares the relay's forward case
+  labels against this union in both directions.
+- **`RelayOrAgentToBrowser`** — the ten with *both* producers (the relay replays session state to a
+  re-joining viewer, and answers a request it cannot deliver). Declared **once** and referenced by
+  both unions. Two copies of one message drift, which is not hypothetical: the dashboard kept its own
+  copy of this whole surface and four members had diverged with nothing reporting it.
+
+**Consumers should use `BrowserInbound`** — the union of both. A viewer does not care who sent it.
+
+`RelayToStream` is its own direction for one message (`stream:registered`). It sat in
+`RelayToBrowser` while that union meant "everything that is not an agent"; its consumer is
+`agent-core`'s stream registration and no browser reads it.
+
+### `sessionId` stays required, even where the relay cannot prove it
+
+The relay reaches seven of its own error sites through `msg.sessionId!` — an assertion the compiler
+cannot verify — and `JSON.stringify` drops a key whose value is `undefined`. The fix is **not** to
+widen the declaration:
+
+- Every in-repo sender does supply one. `BrowserToRelay` declares `sessionId: string` on every member
+  but `agents:list`, and the untyped senders (`mcp-server`, `flow-runner`) set it too.
+- `'Session not found'` answers a sessionId that did not **match** — a stale tab, a terminated
+  session — not one that was absent.
+- `{ type: 'error'; message: string }` is the escape hatch for a genuinely uncorrelatable failure. So
+  the right move when there is no sessionId is to send *that*, and the required field is what forces
+  the choice.
+
+Widening would let #444 delete those `!` with no consumer forced to care, and the guarantee would go
+quietly with them. It is also close to irreversible: once optional, every consumer grows a guard.
+
+The same reasoning applies to "no producer sends this yet, so leave it open." `mcp-server` has no
+clipboard tool today; when one is added, `requestId` being **required** is what makes a missing id a
+compile error instead of a reply the dashboard drops on `if (!msg.requestId) return`.
+
 ## `input:error` carries a reason
 
 `input:error` used to travel with a human-readable `message` and nothing else, so a consumer could

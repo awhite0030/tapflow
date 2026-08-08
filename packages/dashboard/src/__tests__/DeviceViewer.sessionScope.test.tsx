@@ -1,15 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
-import type { RelayMessage } from '@/lib/types'
+import type { BrowserInbound } from '@/lib/types'
 
 // #445: the relay now carries `sessionId` on app failures. A field nobody reads is not a fix — the
 // viewer has to act differently on an error that is not its own. Before this, an `app:install-error`
 // from any session was applied to whichever viewer was mounted.
 const send = vi.fn()
-let deliver: ((msg: RelayMessage) => void) | null = null
+let deliver: ((msg: BrowserInbound) => void) | null = null
 
 vi.mock('@/hooks/useRelay', () => ({
-  useRelay: (onMessage: (msg: RelayMessage) => void) => {
+  useRelay: (onMessage: (msg: BrowserInbound) => void) => {
     deliver = onMessage
     return { send, connected: true }
   },
@@ -32,13 +32,13 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
 
   it('does not show an install failure belonging to a different session', () => {
     render(<DeviceViewer sessionId="mine" deviceId="dev-1" />)
-    act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:joined' } as BrowserInbound) })
     // The card shows "Starting device…" until this arrives, and that would mask the install error
     // regardless of the filter — the two tests have to sit past it to mean anything.
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as BrowserInbound) })
 
     act(() => {
-      deliver!({ type: 'app:install-error', sessionId: 'someone-else', message: 'Build not found' } as RelayMessage)
+      deliver!({ type: 'app:install-error', sessionId: 'someone-else', message: 'Build not found' } as BrowserInbound)
     })
 
     expect(screen.queryByText(/Install failed/)).not.toBeInTheDocument()
@@ -46,11 +46,11 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
 
   it('does show one that is its own', () => {
     render(<DeviceViewer sessionId="mine" deviceId="dev-1" />)
-    act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:joined' } as BrowserInbound) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } } as BrowserInbound) })
 
     act(() => {
-      deliver!({ type: 'app:install-error', sessionId: 'mine', message: 'Build not found' } as RelayMessage)
+      deliver!({ type: 'app:install-error', sessionId: 'mine', message: 'Build not found' } as BrowserInbound)
     })
 
     expect(screen.getByText(/Install failed: Build not found/)).toBeInTheDocument()
@@ -61,7 +61,7 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
     // silence them.
     render(<DeviceViewer sessionId="mine" deviceId="dev-1" />)
 
-    act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:joined' } as BrowserInbound) })
 
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'device:boot' }))
   })
@@ -71,7 +71,7 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
     // above is not what arrives in production. This is.
     render(<DeviceViewer sessionId="mine" deviceId="dev-1" />)
 
-    act(() => { deliver!({ type: 'session:joined', sessionId: 'mine' } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 'mine' } as BrowserInbound) })
 
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'device:boot' }))
   })
@@ -83,7 +83,7 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
     render(<DeviceViewer sessionId="mine" deviceId="dev-1" onSessionEnded={onSessionEnded} />)
 
     act(() => {
-      deliver!({ type: 'session:terminated', sessionId: 'mine', reason: 'agent-disconnected' } as RelayMessage)
+      deliver!({ type: 'session:terminated', sessionId: 'mine', reason: 'agent-disconnected' } as BrowserInbound)
     })
 
     expect(onSessionEnded).toHaveBeenCalledWith('agent-disconnected')
@@ -94,7 +94,7 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
     render(<DeviceViewer sessionId="mine" deviceId="dev-1" onSessionEnded={onSessionEnded} />)
 
     act(() => {
-      deliver!({ type: 'session:terminated', sessionId: 'other', reason: 'agent-disconnected' } as RelayMessage)
+      deliver!({ type: 'session:terminated', sessionId: 'other', reason: 'agent-disconnected' } as BrowserInbound)
     })
 
     expect(onSessionEnded).not.toHaveBeenCalled()

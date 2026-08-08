@@ -1,17 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import type { BrowserToRelay } from '@tapflowio/protocol'
-import type { RelayMessage } from '@/lib/types'
+import type { BrowserInbound } from '@/lib/types'
 
 // #426 stage 2. When an agent restarts, the relay re-points the session at the new socket and sends
 // `session:rebound`. The relay cannot restart the stream on its own — the codec negotiation and the
 // tier ride in the browser's own `device:boot` payload — so the viewer has to ask for the device
 // again. Until it does, every flag here still describes the agent that died.
 const send = vi.fn<(msg: BrowserToRelay) => void>()
-let deliver: ((msg: RelayMessage) => void) | null = null
+let deliver: ((msg: BrowserInbound) => void) | null = null
 
 vi.mock('@/hooks/useRelay', () => ({
-  useRelay: (onMessage: (msg: RelayMessage) => void) => {
+  useRelay: (onMessage: (msg: BrowserInbound) => void) => {
     deliver = onMessage
     return { send, connected: true }
   },
@@ -48,8 +48,8 @@ function live(buildId?: number) {
   render(<DeviceViewer sessionId="s1" deviceId="dev-1" buildId={buildId} />)
   act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
   act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
-  act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
-  if (buildId) act(() => { deliver!({ type: 'app:install-done' }) })
+  act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as BrowserInbound) })
+  if (buildId) act(() => { deliver!({ type: 'app:install-done', sessionId: 's1' }) })
 }
 
 const rebound = (capabilities: string[] = []) =>
@@ -101,7 +101,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     expect(document.querySelectorAll('[data-active="true"]').length).toBeGreaterThan(0)
 
     rebound()
-    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
+    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as BrowserInbound) })
 
     expect(document.querySelectorAll('[data-active="true"]')).toHaveLength(0)
   })
@@ -121,7 +121,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     expect(kbd().disabled).toBe(true)
 
     rebound()
-    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
+    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as BrowserInbound) })
 
     expect(kbd().disabled).toBe(false)
   })
@@ -136,9 +136,9 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     send.mockClear()
 
     rebound()
-    act(() => { deliver!({ type: 'device:booting' }) })
+    act(() => { deliver!({ type: 'device:booting', sessionId: 's1' }) })
     act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
-    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
+    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as BrowserInbound) })
 
     expect(installs()).toHaveLength(0)
     // Naming the control is what makes this an assertion rather than a proxy: counting buttons
@@ -151,7 +151,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // simply disabled installing for the life of the mount.
     live(7)
     rebound()
-    act(() => { deliver!({ type: 'device:booting' }) })
+    act(() => { deliver!({ type: 'device:booting', sessionId: 's1' }) })
     act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
     send.mockClear()
 
@@ -181,7 +181,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     expect(launch().disabled).toBe(true)
 
     rebound()
-    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
+    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as BrowserInbound) })
 
     expect(launch().disabled).toBe(false)
   })
@@ -197,9 +197,9 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     send.mockClear()
 
     rebound()
-    act(() => { deliver!({ type: 'device:booting' }) })
+    act(() => { deliver!({ type: 'device:booting', sessionId: 's1' }) })
     act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
-    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as RelayMessage) })
+    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as BrowserInbound) })
 
     expect(installs()).toHaveLength(1)
     // ...and no Launch control until that install reports back. This query is only meaningful
@@ -215,7 +215,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // would be suppressed for the rest of the mount rather than for one recovery.
     live(7)
     rebound()
-    act(() => { deliver!({ type: 'device:booting' }) }) // ...and then silence
+    act(() => { deliver!({ type: 'device:booting', sessionId: 's1' }) }) // ...and then silence
     send.mockClear()
 
     act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })

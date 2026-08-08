@@ -3,7 +3,7 @@ import { render, screen, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { BreadcrumbProvider, useBreadcrumb } from '@/hooks/useBreadcrumb'
-import type { RelayMessage, SessionInfo } from '@/lib/types'
+import type { BrowserInbound, SessionInfo } from '@/lib/types'
 
 // The two halves of the #439 fix only meet here: the hook decides what the reset is, the viewer
 // decides how often it is sent, and QASession is the wiring between them. Both halves have their
@@ -14,10 +14,10 @@ const { viewerMounts, send } = vi.hoisted(() => ({
   send: vi.fn(),
 }))
 
-let deliver: ((msg: RelayMessage) => void) | null = null
+let deliver: ((msg: BrowserInbound) => void) | null = null
 
 vi.mock('@/hooks/useRelay', () => ({
-  useRelay: (onMessage: (msg: RelayMessage) => void) => {
+  useRelay: (onMessage: (msg: BrowserInbound) => void) => {
     deliver = onMessage
     return { send, connected: true }
   },
@@ -78,7 +78,7 @@ async function openDeviceList(user: ReturnType<typeof userEvent.setup>, agents =
     </MemoryRouter>,
   )
   await vi.waitFor(() => expect(deliver).not.toBeNull())
-  await act(async () => { deliver!({ type: 'agents:listed', sessions: agents } as RelayMessage) })
+  await act(async () => { deliver!({ type: 'agents:listed', sessions: agents } as BrowserInbound) })
   await user.click(await screen.findByText('studio-mac'))
 }
 

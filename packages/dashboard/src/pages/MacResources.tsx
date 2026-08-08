@@ -14,7 +14,7 @@ import { useTooltip } from '@visx/tooltip'
 import { localPoint } from '@visx/event'
 import { curveMonotoneX } from '@visx/curve'
 import { bisector } from 'd3-array'
-import type { RelayMessage, SessionInfo } from '@/lib/types'
+import type { BrowserInbound, SessionInfo } from '@/lib/types'
 
 interface ResourcePoint {
   cpu_percent: number
@@ -57,7 +57,7 @@ export function MacResources() {
     return () => setBreadcrumb(null)
   }, [setBreadcrumb])
 
-  const handleMessage = useCallback((msg: RelayMessage) => {
+  const handleMessage = useCallback((msg: BrowserInbound) => {
     if (msg.type === 'agents:listed') setSessions(msg.sessions ?? [])
   }, [])
   const { send, connected } = useRelay(handleMessage)
