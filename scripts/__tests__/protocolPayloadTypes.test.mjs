@@ -24,29 +24,43 @@ const PROTOCOL = join(ROOT, 'packages/protocol/src/index.ts')
  * the identity.
  *
  * Both forms, and a body that fits on one line, because a pre-PR review planted five duplicates and an
- * earlier version of this reported **one**: it required the `interface` keyword and a closing brace at
- * the start of a line, so a `type` alias and a single-line interface both walked past. A check whose
- * whole purpose is to be un-bypassable has to accept every form the duplicate can take.
+ * earlier version reported **one**: it required the `interface` keyword and a closing brace at the
+ * start of a line, so a `type` alias and a single-line interface both walked past.
+ *
+ * The body is found by **counting braces**, not by a lazy `[\s\S]*?` to the first `}`. That version
+ * truncated at the first nested object literal, so `ChromeData` was guarded as its first 6 fields
+ * instead of 11 and `ChromeButton` as 5 instead of 13 — a real duplicate of either would not have
+ * matched the truncated key at all. The by-name assertion below did not catch it, because a name being
+ * present says nothing about its field set being complete; that is why `FIELD_COUNTS` exists.
  */
 function interfaces(src) {
   const out = new Map()
-  const re = /(?:export\s+)?(?:interface\s+(\w+)(?:\s+extends\s+([\w,\s]+?))?\s*|type\s+(\w+)\s*=\s*)\{([\s\S]*?)\}/g
-  for (const m of src.matchAll(re)) {
-    const [, iName, ext, tName, body] = m
-    const name = iName ?? tName
-    const fields = []
+  const head = /(?:export\s+)?(?:interface\s+(\w+)(?:\s+extends\s+([\w,\s]+?))?\s*|type\s+(\w+)\s*=\s*)\{/g
+  for (const m of src.matchAll(head)) {
+    const name = m[1] ?? m[3]
+    const ext = m[2]
+    // Walk from the opening brace to its match.
     let depth = 0
+    let i = m.index + m[0].length - 1
+    const start = i + 1
+    for (; i < src.length; i++) {
+      if (src[i] === '{') depth++
+      else if (src[i] === '}' && --depth === 0) break
+    }
+    const body = src.slice(start, i)
+    const fields = []
+    let d = 0
     for (const raw of body.split(/[\n;]/)) {
       const line = raw.replace(/\/\/.*/, '').trim()
       if (!line) continue
-      // Only top-level members count; an inline object literal's own keys are not fields of this type.
-      if (depth === 0) {
+      // Only top-level members count; a nested literal's own keys are not fields of this type.
+      if (d === 0) {
         const f = line.match(/^(\w+\??)\s*:/)
         if (f) fields.push(f[1])
       }
-      depth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
+      d += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
     }
-    out.set(name, { fields, extends: ext ? ext.split(',').map((s) => s.trim()) : [] })
+    out.set(name, { fields, extends: ext ? ext.split(',').map((x) => x.trim()) : [] })
   }
   return out
 }
@@ -61,6 +75,25 @@ function resolved(decls, name, seen = new Set()) {
 }
 
 const key = (fields) => [...new Set(fields)].sort().join(',')
+
+/**
+ * Workspace members, from `pnpm-workspace.yaml` rather than a hardcoded list — a new top-level member
+ * is then scanned without an edit here, which is what "every workspace member" has to mean to be true.
+ */
+function workspaceRoots() {
+  const yaml = readFileSync(join(ROOT, 'pnpm-workspace.yaml'), 'utf8')
+  const globs = [...yaml.matchAll(/^\s*-\s*'([^']+)'/gm)].map((m) => m[1])
+  const roots = []
+  for (const g of globs) {
+    if (g.endsWith('/*')) {
+      const parent = g.slice(0, -2)
+      for (const entry of readdirSync(join(ROOT, parent))) roots.push([parent, entry])
+    } else {
+      roots.push(['.', g])
+    }
+  }
+  return roots
+}
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir)) {
@@ -98,6 +131,17 @@ describe('wire payload types are declared once, in @tapflowio/protocol', () => {
   // A count floor is the wrong assertion: 13 shapes are guarded, so losing three still passed, and
   // converting one protocol `interface` to a `type` alias used to drop it from the guard silently —
   // taking every duplicate of that shape with it. Name the ones that must be there.
+  // A name being guarded says nothing about its field set being complete — which is exactly how the
+  // truncating body capture hid for a round. Pin the counts of the shapes with nested literals, since
+  // those are the ones a lazy match gets wrong.
+  it('guards complete field sets, not truncated ones', () => {
+    const count = (name) => new Set(resolved(protoDecls, name)).size
+    expect(count('ChromeData')).toBe(11)
+    expect(count('ChromeButton')).toBe(13)
+    expect(count('DeviceSummary')).toBe(7)
+    expect(count('SessionInfo')).toBe(4)
+  })
+
   it('guards the payload shapes by name, so a shape cannot silently leave', () => {
     const byName = new Set(guarded.values())
     for (const name of [
@@ -110,17 +154,21 @@ describe('wire payload types are declared once, in @tapflowio/protocol', () => {
 
   it('no other package re-declares a protocol payload shape', () => {
     const offenders = []
-    // Every workspace member, not just `packages/*`: `playground` is one and `playground/mock-agent.ts`
-    // builds an `AgentResources` of its own. A duplicate there drifts exactly like one in a package.
-    const roots = [
-      ...readdirSync(join(ROOT, 'packages')).map((p) => ['packages', p]),
-      ['.', 'playground'],
-    ]
-    for (const [parent, pkg] of roots) {
+    const scanned = []
+    for (const [parent, pkg] of workspaceRoots()) {
       if (pkg === 'protocol') continue
       const base = join(ROOT, parent, pkg)
       let files
-      try { files = walk(base) } catch { continue }
+      try {
+        files = walk(base)
+      } catch (e) {
+        // Only "not a directory" is tolerated. Swallowing everything let a permission error or a
+        // broken symlink skip a whole member while the test still reported green — a duplicate inside
+        // it would be invisible, which defeats the point of the check.
+        if (e.code === 'ENOTDIR' || e.code === 'ENOENT') continue
+        throw e
+      }
+      scanned.push(pkg)
       for (const file of files) {
         const src = readFileSync(file, 'utf8')
         const decls = interfaces(src)
@@ -133,6 +181,11 @@ describe('wire payload types are declared once, in @tapflowio/protocol', () => {
         }
       }
     }
+    // Coverage is asserted, not assumed: a member silently dropped from the walk is the other way this
+    // check goes quietly useless. `playground` is named because it is the one non-`packages/` member
+    // and it builds an `AgentResources` of its own.
+    expect(scanned).toContain('playground')
+    expect(scanned.length).toBeGreaterThanOrEqual(readdirSync(join(ROOT, 'packages')).length)
     expect(offenders).toEqual([])
   })
 })
