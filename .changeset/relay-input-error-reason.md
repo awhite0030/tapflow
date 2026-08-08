@@ -10,11 +10,12 @@ own timeout, which its fallback would report as success. That reply carried no `
 relay the last producer of `input:error` without one, and the one whose answer was least in doubt: an
 agent infers a reason from its own state, while the relay is looking straight at the socket.
 
-It now sends `reason: 'channel-unavailable'`. What visibly changes today is `mcp-server`, which puts the
-reason in the error it raises. The dashboard's output does not change — its unknown-reason rule already
-resolves to this same reason, and while the agent is away it suppresses the notice entirely — so the
-value here is that **absence of the field now means an agent older than it and nothing else**, which is
-what makes it possible to require the field later.
+It now sends `reason: 'channel-unavailable'`. Two things change visibly: `mcp-server` puts the reason in
+the error it raises, and the dashboard's guidance for this reason is reworded (below). What does *not*
+change is the dashboard's branching — its unknown-reason rule already resolved to this same reason, and
+while the agent is away it suppresses the notice entirely. So the field itself buys something narrower
+and more durable: **absence now means an agent older than it and nothing else**, which is what makes it
+possible to require the field later.
 
 The prose was also wrong for half the cases it covered. Two situations reach that reply: the session
 is held with a socket that is no longer open, or there is no such session — evicted after the reconnect
