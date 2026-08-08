@@ -71,6 +71,14 @@ export const REASON_ADVICE: Record<InputErrorReason, string> = {
   'not-booted': 'The device is not running. Call boot_device for this session before sending input.',
   'channel-unavailable': 'The input channel is gone. Reconnect the session before sending more input; repeating this input will not help.',
   'channel-starting': 'The input channel is still coming up. The same input is safe to send again in a moment.',
+  // Deliberately stricter than the protocol table, which says "may retry once". The only producer is
+  // Android's pointer dispatch, and `android-agent/AGENTS.md` records what the call deadline does and
+  // does not buy: it cancels our call, not a request the emulator already applied, so the case it
+  // actually fires in is a connected-but-unresponsive emulator where "did it land" is unknowable and
+  // "a caller that retries on the error can double it". That analysis postdates and corrects the
+  // source comment on `dispatchTo`, which still reads "safe to retry". Which of the two the protocol
+  // table should follow is open (tapflow#491); until it is settled the advice a model acts on takes
+  // the side that cannot double an input.
   'dispatch-failed': 'The device rejected the input, and whether it landed is not knowable. Do not repeat it.',
   unsupported: 'This input is not supported on the active connection to the device. Do not retry it.',
   malformed: 'The message did not carry what the input needs. This is a bug in tapflow rather than something to retry.',
@@ -130,11 +138,19 @@ export class TapflowClient {
   }
 
   private dispatch(msg: RelayMsg): void {
+    // `input:done` only, and that is load-bearing: the **relay** originates `input:error` to this very
+    // socket for a terminal input it cannot dispatch (`RelayServer.ts`, `'agent offline'` /
+    // `'Session not found'`, both `channel-unavailable`). Counting those would let one agent-offline
+    // blip — or an input for a session this client never joined — mark a session as acking when its
+    // agent may never have answered anything, and every later input would then be reported as
+    // unconfirmed on the strength of evidence the agent did not produce. Nothing in the relay
+    // originates an `input:done`, so that one is the agent's word and no one else's.
+    //
     // Recorded here rather than where the ack is awaited, because the ack that teaches us the most is
     // the one that arrives *late*: it missed its window, was reported optimistically, and still proves
     // this agent acks — so the next input can be judged strictly. A ledger kept at the waiter would
     // never see it.
-    if (msg['type'] === 'input:done' || msg['type'] === 'input:error') {
+    if (msg['type'] === 'input:done') {
       const sid = msg['sessionId']
       if (typeof sid === 'string') this.ackedSessions.add(sid)
     }
@@ -232,8 +248,16 @@ export class TapflowClient {
    * a capability flag would have to be advertised, kept in step across both agents, and then live
    * forever as an inert field once every install has it.
    *
-   * The residual gap is the **first** input of a session, which stays optimistic. Bounded to one input,
-   * and silence there genuinely does mean "an agent that does not ack".
+   * The residual gap is any session that has never had an answer — usually just its first input, but
+   * **not bounded to one**: an agent whose acks never arrive at all keeps the optimistic path
+   * indefinitely, and #457 is unchanged for it. What the gate buys is that the moment a session answers
+   * once, silence after that is reported. Closing the rest needs something that distinguishes "does not
+   * ack" from "did not ack this time", which per-input acks cannot express on their own.
+   *
+   * One thing this does **not** fix: an ack carries no correlation id, so the predicate below matches
+   * any ack for the session. An ack that arrives after its own input timed out is consumed by the next
+   * input's waiter, which then reports the previous input's outcome. Recorded as a known gap rather than
+   * papered over — see the issue linked from `AGENTS.md`.
    */
   private async awaitInputAck(sessionId: string): Promise<void> {
     const strict = this.ackedSessions.has(sessionId)

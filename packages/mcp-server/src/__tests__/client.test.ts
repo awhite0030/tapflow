@@ -240,13 +240,24 @@ describe('TapflowClient', () => {
       expect(err.message).toMatch(/do not repeat/i)
     })
 
-    // An error is an ack: it proves the agent answers. The reason path also skips the device verify, so
-    // it is the cheapest possible proof.
-    it('counts an input:error as evidence that the agent acks', async () => {
+    // Only `input:done` is the agent's word. The relay originates `input:error` to this same socket for
+    // a terminal input it cannot dispatch, so counting errors would let one agent-offline blip mark a
+    // session as acking when its agent may never have answered anything — and every later input would
+    // then be reported as unconfirmed on evidence the agent did not produce.
+    it('does not treat an input:error as evidence that the agent acks', async () => {
       relay.setInputAck('error')
       await expect(client.tap('sess-1', 1, 2)).rejects.toThrow('device not booted')
       relay.setInputAck('none')
-      await expect(client.tap('sess-1', 3, 4)).rejects.toThrow(/could not confirm/i)
+      await expect(client.tap('sess-1', 3, 4)).resolves.toBeUndefined()
+    })
+
+    // The relay's own reply, verbatim: `agent offline` with `channel-unavailable`, which is what an
+    // older agent's session looks like from here. It must not arm the gate against that agent.
+    it('is not armed by the relay answering on an absent agent behalf', async () => {
+      relay.setInputAck('none')
+      relay.send({ type: 'input:error', sessionId: 'sess-1', message: 'agent offline', reason: 'channel-unavailable' })
+      await new Promise((r) => setTimeout(r, 20))
+      await expect(client.tap('sess-1', 1, 2)).resolves.toBeUndefined()
     })
 
     // The ledger is written where messages arrive, not where an ack is awaited — so an ack that missed
@@ -258,7 +269,9 @@ describe('TapflowClient', () => {
       relay.send({ type: 'input:done', sessionId: 'sess-1' })           // the late ack, no waiter armed
       await new Promise((r) => setTimeout(r, 20))
       await expect(client.tap('sess-1', 3, 4)).rejects.toThrow(/could not confirm/i)
-    })
+      // Two serial 2s windows plus a handshake; vitest's unconfigured default is 5s, which this would
+      // otherwise sit at 80% of and flake on a loaded runner.
+    }, 15_000)
 
     // A per-session ledger, not a per-client one: one session's agent acking says nothing about
     // another's. If it were global this would throw.
@@ -549,5 +562,24 @@ describe('REASON_ADVICE', () => {
   // "part of the gesture already landed", and a caller that repeats it may duplicate what did.
   it('warns that no-gesture may already have applied part of the input', () => {
     expect(REASON_ADVICE['no-gesture']).toMatch(/duplicate|already/i)
+  })
+
+  // Uniqueness alone lets two bodies be swapped, which is how a "retry this" could end up on a reason
+  // that must never be retried. These pin the *direction* of each one without freezing its wording —
+  // wording stays a judgement call, per the same rule the dashboard's notices follow.
+  it.each([
+    ['channel-starting', /again/i],          // the only reason whose action is to repeat the input
+    ['dispatch-failed', /do not repeat/i],   // stricter than the protocol table, on purpose
+    ['unsupported', /do not retry/i],
+    ['malformed', /bug/i],
+    ['not-booted', /boot_device/],
+    ['channel-unavailable', /reconnect/i],
+  ] as const)('points %s in the right direction', (reason, expected) => {
+    expect(REASON_ADVICE[reason]).toMatch(expected)
+  })
+
+  // And the two that must not be confusable: one says send it again, the other says never.
+  it('does not tell the caller to repeat an input that may have doubled', () => {
+    expect(REASON_ADVICE['dispatch-failed']).not.toMatch(/safe to send again|try it again/i)
   })
 })

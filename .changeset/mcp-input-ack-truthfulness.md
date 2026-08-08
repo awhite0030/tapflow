@@ -20,10 +20,20 @@ a drop invites a retry, and a retry of a landed input duplicates it. The error t
 input may have landed and to check device state rather than repeat it.
 
 **Whether silence is fatal is decided by what the session has already done.** A session that has
-answered an input before is judged strictly; one that never has keeps the optimistic path, because an
-agent that does not ack at all is exactly what the fallback was for. This degrades in the safe
-direction and needs nothing on the wire. A session's first input stays optimistic, which is the one
-case where silence genuinely does mean "an agent that does not ack".
+answered an input with `input:done` is judged strictly; one that never has keeps the optimistic path,
+because an agent that does not ack at all is exactly what the fallback was for. This degrades in the safe
+direction and needs nothing on the wire.
+
+`input:done` specifically, not any ack: the relay originates `input:error` to the client for a terminal
+input it cannot dispatch, so counting those would let one agent-offline blip mark a session as acking
+when its agent may never have answered anything — and then report every later input as unconfirmed on
+evidence the agent did not produce. A session that has never had an answer keeps the optimistic path
+indefinitely, so #457 is unchanged for an agent whose acks never arrive; what this buys is that once a
+session answers, silence after that is reported.
+
+One gap stays open and is documented rather than papered over: an ack carries no correlation id, so an
+ack arriving after its own input timed out is consumed by the next input's waiter. That needs a field on
+the wire (#499).
 
 **An `input:error` now carries advice, not just prose.** Each reason maps to what the caller should do
 — boot the device, reconnect, send the same input again in a moment, or never retry this one. The

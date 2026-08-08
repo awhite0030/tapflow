@@ -45,13 +45,18 @@ landed to a model that then moved on (#457). Three things about the fix are easy
   invites a retry, and a retry of a landed input duplicates it. The thrown text says the input may have
   landed and to check device state rather than repeat.
 - **Whether silence is fatal is decided by what the session has already done**, not by a negotiated
-  flag: `ackedSessions` records any session that has answered an input, and only those are judged
-  strictly. An agent that never acks is never judged, which is the safe direction, and it needs nothing
-  on the wire. A capability flag was designed for this and discarded — it would have to be advertised by
+  flag: `ackedSessions` records any session that has answered an input with `input:done`, and only
+  those are judged strictly. **`input:done` and not `input:error`**, because the relay originates
+  `input:error` to this same socket for a terminal input it cannot dispatch — counting those would let
+  one agent-offline blip mark a session as acking when its agent may never have answered anything, and
+  then report every later input as unconfirmed on evidence the agent did not produce. Nothing in the
+  relay originates an `input:done`. An agent that never acks is never judged, which is the safe
+  direction, and it needs nothing on the wire. A capability flag was designed for this and discarded — it would have to be advertised by
   both agents, kept in step by a static check, and would then sit inert forever once every install had
   it, unremovable because consumers key on its absence. It would also have pre-decided the fork #491 is
-  open on. The residual gap is a session's **first** input, which stays optimistic; silence there
-  genuinely does mean an agent that does not ack.
+  open on. The residual gap is any session that has never had an answer — usually just its first input,
+  but **not bounded to one**: an agent whose acks never arrive keeps the optimistic path indefinitely.
+  What the gate buys is that once a session answers, silence after that is reported.
   The ledger is written in `dispatch`, not where the ack is awaited, so an ack that missed its own
   window still counts — that is the case worth learning from, and a ledger kept at the waiter would see
   nothing.
@@ -62,6 +67,12 @@ landed to a model that then moved on (#457). Three things about the fix are easy
   `run_flow`, so a retry here makes deterministic replay non-deterministic. Retrying is the caller's
   decision, and `REASON_ADVICE` is what it decides on — including the warning that `no-gesture` may
   already have applied part of the input.
+
+**A known gap this does not close**: an ack carries no correlation id, so the waiter matches any ack for
+the session. An ack that arrives after its own input timed out is consumed by the *next* input's waiter,
+which then reports the previous input's outcome — including reporting an unanswered input as landed. That
+needs a field on the wire and is tracked in #499; it is stated here rather than papered over, because it
+is the one way the gate above can still be defeated.
 
 ## HOW NOT
 
