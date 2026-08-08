@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
-import { TapflowClient } from '../client.js'
+import { TapflowClient, REASON_ADVICE, reasonAdvice } from '../client.js'
 
 // inputAck models the agent's terminal-input ack: 'done' = new agent (booted), 'error' = rejects with prose only, 'error-with-reason' = rejects with the machine-readable reason too, 'none' = older agent that never acks (degradation).
 function createMockRelay(): {
@@ -206,11 +206,109 @@ describe('TapflowClient', () => {
       await expect(client.tap('sess-1', 1, 2)).resolves.toBeUndefined()
     })
 
-    it('rejects (not optimistic) when the relay connection drops mid-input', async () => {
+    // The input is already on the wire by the time the ack is awaited — `tap` sends both frames first —
+    // so a close means "could not confirm", not "was not dispatched". It used to say the latter.
+    it('reports a drop mid-input as unconfirmed, not as undispatched', async () => {
       relay.setInputAck('none') // no ack will arrive
       const p = client.tap('sess-1', 1, 2)
       relay.lastClient().close() // drop the connection while awaiting the ack
-      await expect(p).rejects.toThrow(/closed/i)
+      const err = await p.catch((e: Error) => e)
+      expect(err.message).toMatch(/could not confirm/i)
+      expect(err.message).toMatch(/may have landed/i)
+      expect(err.message).toMatch(/do not repeat/i)
+    })
+
+    // And it does not depend on the ledger: a close is not evidence about whether the agent acks, so a
+    // session that has never answered one still gets the truth rather than an optimistic success.
+    it('reports a drop as unconfirmed even on a session that never acked', async () => {
+      relay.setInputAck('none')
+      const p = client.tap('sess-NEW', 1, 2)
+      relay.lastClient().close()
+      await expect(p).rejects.toThrow(/could not confirm/i)
+    })
+  })
+
+  // #457. Silence used to be reported as success, so a tap that never reached the device was reported
+  // as landed to a model that then moved on. Two decisions carry the fix, and both are tested here:
+  // silence is answered with "could not confirm" rather than "dropped", and whether it is fatal at all
+  // is decided by what this session has already done rather than by a negotiated flag.
+  //
+  // The silent paths each cost the real 2s ack window. Fake timers are not an option — these drive a
+  // real WebSocket — so the count of them is kept deliberately small.
+  describe('input ack truthfulness (#457)', () => {
+    it('throws once a session has acked before and then goes silent', async () => {
+      await client.tap('sess-1', 1, 2)          // acks: this agent demonstrably answers input
+      relay.setInputAck('none')
+      await expect(client.tap('sess-1', 3, 4)).rejects.toThrow(/could not confirm/i)
+    })
+
+    // "Dropped" would invite a retry, and `ackInput` awaits a device verify on the first input after a
+    // boot or reconnect — so an ack past the window can belong to an input that did land. Repeating it
+    // would duplicate it.
+    it('says the input may have landed, and does not call it dropped', async () => {
+      await client.tap('sess-1', 1, 2)
+      relay.setInputAck('none')
+      const err = await client.tap('sess-1', 3, 4).catch((e: Error) => e)
+      expect(err.message).toMatch(/may have landed/i)
+      expect(err.message).not.toMatch(/dropped/i)
+      expect(err.message).toMatch(/do not repeat/i)
+    })
+
+    // Only `input:done` is the agent's word. The relay originates `input:error` to this same socket for
+    // a terminal input it cannot dispatch, so counting errors would let one agent-offline blip mark a
+    // session as acking when its agent may never have answered anything — and every later input would
+    // then be reported as unconfirmed on evidence the agent did not produce.
+    it('does not treat an input:error as evidence that the agent acks', async () => {
+      relay.setInputAck('error')
+      await expect(client.tap('sess-1', 1, 2)).rejects.toThrow('device not booted')
+      relay.setInputAck('none')
+      await expect(client.tap('sess-1', 3, 4)).resolves.toBeUndefined()
+    })
+
+    // The relay's own reply, verbatim: `agent offline` with `channel-unavailable`, which is what an
+    // older agent's session looks like from here. It must not arm the gate against that agent.
+    it('is not armed by the relay answering on an absent agent behalf', async () => {
+      relay.setInputAck('none')
+      relay.send({ type: 'input:error', sessionId: 'sess-1', message: 'agent offline', reason: 'channel-unavailable' })
+      await new Promise((r) => setTimeout(r, 20))
+      await expect(client.tap('sess-1', 1, 2)).resolves.toBeUndefined()
+    })
+
+    // The ledger is written where messages arrive, not where an ack is awaited — so an ack that missed
+    // its own window still teaches us this agent acks. That case is the whole reason for the placement:
+    // a ledger kept at the waiter would learn nothing from it.
+    it('learns from an ack that arrives after its window expired', async () => {
+      relay.setInputAck('none')
+      await expect(client.tap('sess-1', 1, 2)).resolves.toBeUndefined() // optimistic, nothing acked
+      relay.send({ type: 'input:done', sessionId: 'sess-1' })           // the late ack, no waiter armed
+      await new Promise((r) => setTimeout(r, 20))
+      await expect(client.tap('sess-1', 3, 4)).rejects.toThrow(/could not confirm/i)
+      // Two serial 2s windows plus a handshake; vitest's unconfigured default is 5s, which this would
+      // otherwise sit at 80% of and flake on a loaded runner.
+    }, 15_000)
+
+    // A per-session ledger, not a per-client one: one session's agent acking says nothing about
+    // another's. If it were global this would throw.
+    it('does not let one session make another strict', async () => {
+      await client.tap('sess-1', 1, 2)
+      relay.setInputAck('none')
+      await expect(client.tap('sess-OTHER', 3, 4)).resolves.toBeUndefined()
+    })
+
+    // Regression guard for a discarded design. The first plan retried some reasons inside this client;
+    // the design review found that unsafe, because `no-gesture` can mean either "nothing landed" or
+    // "the opening frames landed and only the last was refused" and the wire cannot tell them apart.
+    // Retrying is the caller's decision, so the client must never re-send on its own.
+    it('never re-sends an input on any reason', async () => {
+      relay.setInputAck('error-with-reason')
+      await expect(client.tap('sess-1', 1, 2)).rejects.toThrow()
+      const ends = relay.sentMessages().filter((m) => m['type'] === 'input:touch:end')
+      expect(ends).toHaveLength(1)
+    })
+
+    it('carries the advice for the reason into the thrown message', async () => {
+      relay.setInputAck('error-with-reason') // channel-starting
+      await expect(client.tap('sess-1', 1, 2)).rejects.toThrow(REASON_ADVICE['channel-starting'])
     })
   })
 
@@ -445,5 +543,57 @@ describe('TapflowClient', () => {
       relay.lastClient().close()
       await expect(promise).rejects.toThrow('WebSocket closed')
     })
+  })
+})
+
+// The advice is what a language model acts on, so an entry that is missing, blank, or shared with a
+// reason whose required action differs would send it the wrong way. `tsc` enforces that every reason
+// has a key; none of the rest.
+describe('REASON_ADVICE', () => {
+  const reasons = Object.keys(REASON_ADVICE) as Array<keyof typeof REASON_ADVICE>
+
+  it('gives every reason non-blank advice', () => {
+    for (const r of reasons) expect(REASON_ADVICE[r].trim(), r).not.toBe('')
+  })
+
+  it('gives no two reasons the same advice', () => {
+    const values = reasons.map((r) => REASON_ADVICE[r])
+    expect(new Set(values).size).toBe(values.length)
+  })
+
+  // Absence means an agent older than the field, and an unfamiliar value means one newer than this
+  // build. Both resolve to `channel-unavailable` — the protocol's conservative reading — rather than to
+  // silence, which would be the dangerous direction.
+  it.each([undefined, 'some-future-reason', 'toString'])('resolves %s to the channel-unavailable advice', (r) => {
+    expect(reasonAdvice(r)).toBe(REASON_ADVICE['channel-unavailable'])
+  })
+
+  it('resolves a known reason to its own advice', () => {
+    expect(reasonAdvice('no-gesture')).toBe(REASON_ADVICE['no-gesture'])
+  })
+
+  // The one reason whose advice must warn about duplication: it covers both "nothing landed" and
+  // "part of the gesture already landed", and a caller that repeats it may duplicate what did.
+  it('warns that no-gesture may already have applied part of the input', () => {
+    expect(REASON_ADVICE['no-gesture']).toMatch(/duplicate|already/i)
+  })
+
+  // Uniqueness alone lets two bodies be swapped, which is how a "retry this" could end up on a reason
+  // that must never be retried. These pin the *direction* of each one without freezing its wording —
+  // wording stays a judgement call, per the same rule the dashboard's notices follow.
+  it.each([
+    ['channel-starting', /again/i],          // the only reason whose action is to repeat the input
+    ['dispatch-failed', /do not repeat/i],   // stricter than the protocol table, on purpose
+    ['unsupported', /do not retry/i],
+    ['malformed', /bug/i],
+    ['not-booted', /boot_device/],
+    ['channel-unavailable', /reconnect/i],
+  ] as const)('points %s in the right direction', (reason, expected) => {
+    expect(REASON_ADVICE[reason]).toMatch(expected)
+  })
+
+  // And the two that must not be confusable: one says send it again, the other says never.
+  it('does not tell the caller to repeat an input that may have doubled', () => {
+    expect(REASON_ADVICE['dispatch-failed']).not.toMatch(/safe to send again|try it again/i)
   })
 })

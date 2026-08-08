@@ -940,8 +940,14 @@ export class AndroidAgent implements DeviceAgent {
   }
 
   // Await a pointer-channel write and turn it into an outcome. scrcpy's methods are synchronous and
-  // return void, so `await` is a no-op there and `isReady()` is the whole signal; gRPC rejects (with
-  // a deadline, so an exceeded call is genuinely cancelled and answering failure is safe to retry).
+  // return void, so `await` is a no-op there and `isReady()` is the whole signal; gRPC rejects, with a
+  // deadline on input RPCs.
+  //
+  // The deadline is **not** a licence to retry, and this comment used to say it was. It cancels our
+  // call, not a request the emulator already applied — and since an unreachable emulator rejects on its
+  // own in 4ms, the case the deadline actually fires in is a connected-but-unresponsive emulator, where
+  // whether the input landed is unknowable and a retry can double it. AGENTS.md carries the full
+  // reasoning under "What the deadline does and does not buy".
   private async dispatchTo(pc: PointerControl, write: () => void | Promise<void>): Promise<InputOutcome> {
     if (!pc.isReady()) return 'channel-down'
     try {

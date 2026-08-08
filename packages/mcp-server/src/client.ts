@@ -1,4 +1,4 @@
-import type { BrowserToRelay } from '@tapflowio/protocol'
+import type { BrowserToRelay, InputErrorReason } from '@tapflowio/protocol'
 import { WebSocket } from 'ws'
 
 export interface DeviceInfo {
@@ -56,9 +56,50 @@ interface Waiter {
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
+/**
+ * What the caller should do about a refused input, keyed by the wire reason.
+ *
+ * The caller here is a language model, so this is advice rather than a machine action — and that is
+ * the decision, not a limitation. An automatic retry inside this client would hide a duplicate-input
+ * hazard from the only party able to judge it: `no-gesture` in particular can mean either "nothing
+ * reached the device" or "the opening frames already landed and only the last was refused", and the
+ * wire cannot tell them apart (see the note on tapflow#491). A client that retried would sometimes
+ * apply a drag twice with nobody able to see that it had. `TapflowClient` also drives `run_flow`, so
+ * a retry here would make deterministic replay non-deterministic.
+ */
+export const REASON_ADVICE: Record<InputErrorReason, string> = {
+  'not-booted': 'The device is not running. Call boot_device for this session before sending input.',
+  'channel-unavailable': 'The input channel is gone. Reconnect the session before sending more input; repeating this input will not help.',
+  'channel-starting': 'The input channel is still coming up. The same input is safe to send again in a moment.',
+  // Deliberately stricter than the protocol table, which says "may retry once". The only producer is
+  // Android's pointer dispatch, and `android-agent/AGENTS.md` records what the call deadline does and
+  // does not buy: it cancels our call, not a request the emulator already applied, so the case it
+  // actually fires in is a connected-but-unresponsive emulator where "did it land" is unknowable and
+  // "a caller that retries on the error can double it". That analysis postdates and corrects the
+  // source comment on `dispatchTo`, which still reads "safe to retry". Which of the two the protocol
+  // table should follow is open (tapflow#491); until it is settled the advice a model acts on takes
+  // the side that cannot double an input.
+  'dispatch-failed': 'The device rejected the input, and whether it landed is not knowable. Do not repeat it.',
+  unsupported: 'This input is not supported on the active connection to the device. Do not retry it.',
+  malformed: 'The message did not carry what the input needs. This is a bug in tapflow rather than something to retry.',
+  'no-gesture': 'The gesture this input was completing is gone. Part of it may already have been applied to the device, so repeating it may duplicate what landed.',
+}
+
+export function reasonAdvice(reason: string | undefined): string {
+  // Absent or unrecognised resolves to `channel-unavailable`, per the protocol's conservative rule.
+  // `Object.hasOwn`, not `in`: a reason of `toString` would otherwise return a function.
+  const key: InputErrorReason =
+    reason !== undefined && Object.hasOwn(REASON_ADVICE, reason)
+      ? (reason as InputErrorReason)
+      : 'channel-unavailable'
+  return REASON_ADVICE[key]
+}
+
 export class TapflowClient {
   private ws: WebSocket | null = null
   private waiters: Waiter[] = []
+  /** Sessions that have answered at least one input. See `awaitInputAck`. */
+  private ackedSessions = new Set<string>()
 
   constructor(
     private readonly relayUrl: string,
@@ -97,6 +138,22 @@ export class TapflowClient {
   }
 
   private dispatch(msg: RelayMsg): void {
+    // `input:done` only, and that is load-bearing: the **relay** originates `input:error` to this very
+    // socket for a terminal input it cannot dispatch (`RelayServer.ts`, `'agent offline'` /
+    // `'Session not found'`, both `channel-unavailable`). Counting those would let one agent-offline
+    // blip — or an input for a session this client never joined — mark a session as acking when its
+    // agent may never have answered anything, and every later input would then be reported as
+    // unconfirmed on the strength of evidence the agent did not produce. Nothing in the relay
+    // originates an `input:done`, so that one is the agent's word and no one else's.
+    //
+    // Recorded here rather than where the ack is awaited, because the ack that teaches us the most is
+    // the one that arrives *late*: it missed its window, was reported optimistically, and still proves
+    // this agent acks — so the next input can be judged strictly. A ledger kept at the waiter would
+    // never see it.
+    if (msg['type'] === 'input:done') {
+      const sid = msg['sessionId']
+      if (typeof sid === 'string') this.ackedSessions.add(sid)
+    }
     for (let i = 0; i < this.waiters.length; i++) {
       if (this.waiters[i].predicate(msg)) {
         const [w] = this.waiters.splice(i, 1)
@@ -170,34 +227,74 @@ export class TapflowClient {
     )
   }
 
-  // Awaits the agent's terminal-input ack (sent on the gesture's last message).
-  // input:error → the device wasn't booted / no input channel, so the gesture was
-  // dropped: surface it as a failure. A timeout means an older agent/relay that
-  // doesn't ack input — fall back to optimistic success so tap/swipe keep working
-  // (additive protocol, graceful degradation).
+  /**
+   * Awaits the agent's terminal-input ack, sent on the gesture's last message.
+   *
+   * Silence used to be reported as **success**: the fallback existed for agents predating the ack
+   * protocol, and it outlived them, so a tap that never reached the device was reported as landed to a
+   * model that then moved on (#457).
+   *
+   * Two things make the fix honest.
+   *
+   * **Silence is answered with "could not confirm", never with "dropped".** `ackInput` awaits a
+   * `simctl list` / `adb` device verify on the first input after a boot or reconnect, on the same Mac
+   * the relay gates at 80% CPU — so an ack past the window can belong to an input that *did* land.
+   * Calling that a drop invites a retry, and a retry of a landed input duplicates it.
+   *
+   * **Whether silence is fatal is decided by what this session has already done**, not by a
+   * negotiated flag. If it has answered an input before, the agent demonstrably acks and later silence
+   * is a real anomaly. If it never has, this is an agent that does not ack at all and the optimistic
+   * path is correct for it. That degrades in the safe direction and needs nothing on the wire — where
+   * a capability flag would have to be advertised, kept in step across both agents, and then live
+   * forever as an inert field once every install has it.
+   *
+   * The residual gap is any session that has never had an answer — usually just its first input, but
+   * **not bounded to one**: an agent whose acks never arrive at all keeps the optimistic path
+   * indefinitely, and #457 is unchanged for it. What the gate buys is that the moment a session answers
+   * once, silence after that is reported. Closing the rest needs something that distinguishes "does not
+   * ack" from "did not ack this time", which per-input acks cannot express on their own.
+   *
+   * One thing this does **not** fix: an ack carries no correlation id, so the predicate below matches
+   * any ack for the session. An ack that arrives after its own input timed out is consumed by the next
+   * input's waiter, which then reports the previous input's outcome. Recorded as a known gap rather than
+   * papered over — see the issue linked from `AGENTS.md`.
+   */
   private async awaitInputAck(sessionId: string): Promise<void> {
+    const strict = this.ackedSessions.has(sessionId)
     let msg: RelayMsg
     try {
       msg = await this.waitFor(
         (m) =>
           (m['type'] === 'input:done' || m['type'] === 'input:error') &&
           m['sessionId'] === sessionId,
-        // Short window: acks are near-instant (the reconnect-verify adds one sub-second simctl/adb call); a lapse means an older agent/relay that never acks → optimistic (see catch below).
         2_000,
       )
     } catch (e) {
-      // Only a timeout means an older agent/relay that never acks → assume dispatched.
-      // A WebSocket close (or any other error) means the input was NOT dispatched — surface it.
-      if (e instanceof Error && e.message === 'Request timed out') return
-      throw e
+      if (!(e instanceof Error)) throw e
+      const timedOut = e.message === 'Request timed out'
+      // A dropped connection is *also* unconfirmed, not undispatched. Every caller sends its input
+      // before awaiting the ack — `tap` sends both frames, `swipe` all ten — so by the time the socket
+      // closes the input has left this process and the relay may already have forwarded it. This branch
+      // used to claim the opposite, which is the same false certainty the rest of this method exists to
+      // remove. It is unconfirmed regardless of the ledger: a close says nothing about whether the agent
+      // acks, only that we stopped being able to hear it.
+      const disconnected = e.message === 'WebSocket closed'
+      // The one case the optimistic path is still for: silence from a session that has never answered
+      // an input at all is an agent that does not answer them.
+      if (timedOut && !strict) return
+      if (!timedOut && !disconnected) throw e
+      const cause = timedOut
+        ? 'this session has acknowledged input before, and this one went unanswered'
+        : 'the relay connection dropped before the acknowledgement arrived'
+      throw new Error(
+        `Could not confirm the input reached the device: ${cause}. Do not repeat the input — it may ` +
+        'have landed. Check the device state (screenshot or ui_tree) before deciding what to do next.',
+      )
     }
     if (msg['type'] === 'input:error') {
-      // Surface the machine-readable reason alongside the prose. Acting on it — retrying a
-      // `channel-starting` instead of failing, and dropping the optimistic timeout fallback above
-      // for reasons that say "never retry" — is #457, not this change.
       const reason = msg['reason'] as string | undefined
       const prose = (msg['message'] as string) ?? 'Input failed'
-      throw new Error(reason ? `${prose} (${reason})` : prose)
+      throw new Error(`${prose}${reason ? ` (${reason})` : ''} — ${reasonAdvice(reason)}`)
     }
   }
 
