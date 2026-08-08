@@ -27,11 +27,15 @@ and `no-gesture` (the gesture is gone; a fresh one works). Reporting an error fo
 fixed by the time it is read is noise.
 
 There is **no session-level "input unavailable" state**, which was the first design and was discarded
-after review. Per-input acks cannot support one: nothing on the wire announces that a replaced helper
-is healthy again, the acks are not ordered (a success awaits a child process while a refusal is sent
-synchronously), and an ack does not say which channel answered — so on Android a working Home button
-would have erased a warning about a dead touch channel. The toast's own lifetime carries it instead:
+after review. Per-input acks cannot support one: no message carries evidence that input is working
+again — a replaced helper announces nothing, and an agent restart is not the same as a healthy channel —
+the acks are not ordered (a dispatch is awaited before its ack while a refusal is not), and an ack does
+not say which channel answered, so on Android, where buttons always take the adb path, a working Home
+button would have erased a warning about a dead touch channel. The toast's own lifetime carries it instead:
 repeats reuse one id, so it stays up while inputs keep failing and fades when they stop.
+
+Nothing is shown while the agent is away, either: the relay answers every terminal input itself in that
+state, and the viewer already says the session is being held open and waiting.
 
 Dashboard-only change, released as part of `@tapflowio/relay` because that is the package the built
 dashboard ships inside.

@@ -35,9 +35,15 @@ export const INPUT_ERROR_NOTICE: Record<InputErrorReason, InputErrorNotice | nul
     title: 'The device is not running',
     action: 'Start it again to continue testing.',
   },
-  // Reached on a channel that looked healthy — most often a connected-but-unresponsive Android
-  // emulator, where the gRPC call is refused while the socket still reports itself writable. One
-  // retry is worth it; a repeat means the guest is not answering.
+  // Reached on a channel that looked healthy. The measured producer is an Android emulator that is
+  // gone: on the default backend `isReady()` only means "we have not closed it", so the dispatch is
+  // attempted and the RPC rejects (4ms, `ECONNREFUSED`) — see `android-agent/AGENTS.md`. The protocol
+  // allows one retry, and for that case a retry is free because nothing was applied. It is *not* free
+  // for the narrower case of an emulator still connected but not answering, where the call times out
+  // without saying whether the input landed; `android-agent` records that a retry there can double
+  // the input, and that the eventual answer is a distinct "unknown, do not retry" reason rather than a
+  // shorter deadline. Until that reason exists this cell cannot separate the two, so the copy stops at
+  // one retry rather than inviting repeats.
   'dispatch-failed': {
     title: 'The device rejected that input',
     action: 'Try once more. If it keeps failing, restart the device.',

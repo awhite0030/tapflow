@@ -197,17 +197,32 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       setBootError(msg.message);
     }
     // An input the device never got. Deliberately no session-level state behind this: the acks are
-    // per-input, unordered (a success awaits a `simctl`/`adb` child while a refusal is sent
-    // synchronously) and do not say which channel answered — on Android buttons always take the adb
-    // path while touch takes the pointer channel. A latch built on them cleared itself on an
-    // unrelated success, and nothing on the wire announces that a replaced helper is healthy again,
-    // so it had no honest clear edge either. The toast's own lifetime is the state: repeats reuse
+    // per-input, unordered (a dispatch is awaited before its ack while a refusal is not) and do not
+    // say which channel answered — on Android buttons always take the adb path while touch takes the
+    // pointer channel on any streaming session. A latch built on them cleared itself on an unrelated
+    // success, and no message carries evidence that input is working again, so it had no honest clear
+    // edge either. The toast's own lifetime is the state: repeats reuse
     // `id`, which sonner refreshes rather than stacks, so it stays up while inputs keep failing and
     // fades on its own when they stop. See `.work/2026-08-08-dashboard-input-error-plan.md`.
     if (msg.type === 'input:error') {
+      // Suppressed while the agent is away, matching what `device:boot-error` does two branches down
+      // and for a sharper reason: an absent agent cannot send this, so in that state the *relay*
+      // answers every terminal input itself (`RelayServer.ts`, reasonless `'agent offline'`). A
+      // tapping tester would refresh this toast indefinitely, and its advice would contradict the
+      // status card — which already says the relay is holding the session open and waiting.
+      if (agentAway) return;
       const { key, notice } = resolveInputError(msg.reason);
       if (notice) {
-        toast.error(notice.title, { id: `input:${key}`, description: `${notice.action} (${msg.message})`, duration: 6000 });
+        // `sessionId` in the id so a toast still on screen from the session just left cannot be
+        // refreshed by a failure in the next one.
+        toast.error(notice.title, {
+          id: `input:${sessionId}:${key}`,
+          description: `${notice.action} (${msg.message})`,
+          // The only "state" this design has. A finite lifetime is what makes the toast disappear
+          // when inputs stop failing, with no clear signal — set explicitly and above sonner's
+          // 4000ms default, which is short enough to lapse between two unhurried taps.
+          duration: 6000,
+        });
       } else {
         console.debug(`[tapflow] input refused, shown nowhere: ${key} — ${msg.message}`);
       }
