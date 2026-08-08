@@ -56,8 +56,13 @@ export const relayCannotOriginateKeyboard: RelayOutbound = { type: 'keyboard:tog
 export const inboundFromAgent: BrowserInbound = { type: 'input:done', sessionId: 's' }
 export const inboundFromRelay: BrowserInbound = { type: 'error', message: 'x' }
 
-// @ts-expect-error - sessionId is required on every forwarded message
+// @ts-expect-error - sessionId is required on every one of the twelve forward-only messages
 export const forwardWithoutSession: AgentToBrowser = { type: 'app:install-done' }
+
+// The shape an agent actually sends for the three shared messages the relay also replays. `sessionId`
+// is optional on the shared declaration because the replay omits it, so this direction cannot reject
+// the absence — pinning what the agent sends is what the union can state here. L4 tightens it.
+export const agentStampsSession: AgentToBrowser = { type: 'device:ready', sessionId: 's', payload: { deviceId: 'd' } }
 
 // The stream socket's one message is its own direction now, so it is still reachable through
 // `sendTo` but is no longer part of what a browser can receive.

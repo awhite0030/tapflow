@@ -78,7 +78,7 @@ async function openDeviceList(user: ReturnType<typeof userEvent.setup>, agents =
     </MemoryRouter>,
   )
   await vi.waitFor(() => expect(deliver).not.toBeNull())
-  await act(async () => { deliver!({ type: 'agents:listed', sessions: agents } as BrowserInbound) })
+  await act(async () => { deliver!({ type: 'agents:listed', sessions: agents }) })
   await user.click(await screen.findByText('studio-mac'))
 }
 

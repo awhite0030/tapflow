@@ -46,9 +46,9 @@ describe('DeviceViewer — resetMode is consumed once per mount (#439)', () => {
 
     // The relay replays session:joined on every session:start, and useRelay re-sends that whenever
     // the socket reconnects. A Wi-Fi blip must not re-erase the device the tester is looking at.
-    act(() => { deliver!({ type: 'session:joined' } as BrowserInbound) })
-    act(() => { deliver!({ type: 'session:joined' } as BrowserInbound) })
-    act(() => { deliver!({ type: 'session:joined' } as BrowserInbound) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-1', capabilities: [] }) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-1', capabilities: [] }) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-1', capabilities: [] }) })
 
     expect(bootModes()).toEqual(['full-erase', 'app-only', 'app-only'])
   })
@@ -56,8 +56,8 @@ describe('DeviceViewer — resetMode is consumed once per mount (#439)', () => {
   // Guards the inverted condition, not #439 itself: the pre-fix code passed this too.
   it('never asks for an erase when the toggle was off', () => {
     render(<DeviceViewer sessionId="s-1" deviceId="dev-1" resetMode="app-only" />)
-    act(() => { deliver!({ type: 'session:joined' } as BrowserInbound) })
-    act(() => { deliver!({ type: 'session:joined' } as BrowserInbound) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-1', capabilities: [] }) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-1', capabilities: [] }) })
 
     expect(bootModes()).toEqual(['app-only', 'app-only'])
   })
@@ -66,12 +66,12 @@ describe('DeviceViewer — resetMode is consumed once per mount (#439)', () => {
   // actually produces a new mount is QASession's business — see QASession.reset.test.tsx.
   it('a second viewer arms again', () => {
     const first = render(<DeviceViewer sessionId="s-1" deviceId="dev-1" resetMode="full-erase" />)
-    act(() => { deliver!({ type: 'session:joined' } as BrowserInbound) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-1', capabilities: [] }) })
     first.unmount()  // keeps the two viewers from overlapping; `deliver` already points at the next one
     send.mockClear()
 
     render(<DeviceViewer sessionId="s-2" deviceId="dev-2" resetMode="full-erase" />)
-    act(() => { deliver!({ type: 'session:joined' } as BrowserInbound) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-2', capabilities: [] }) })
 
     expect(bootModes()).toEqual(['full-erase'])
   })

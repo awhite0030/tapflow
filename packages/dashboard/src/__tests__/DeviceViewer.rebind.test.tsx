@@ -48,7 +48,7 @@ function live(buildId?: number) {
   render(<DeviceViewer sessionId="s1" deviceId="dev-1" buildId={buildId} />)
   act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
   act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
-  act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as BrowserInbound) })
+  act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
   if (buildId) act(() => { deliver!({ type: 'app:install-done', sessionId: 's1' }) })
 }
 
@@ -101,7 +101,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     expect(document.querySelectorAll('[data-active="true"]').length).toBeGreaterThan(0)
 
     rebound()
-    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as BrowserInbound) })
+    act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
 
     expect(document.querySelectorAll('[data-active="true"]')).toHaveLength(0)
   })
@@ -121,7 +121,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     expect(kbd().disabled).toBe(true)
 
     rebound()
-    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as BrowserInbound) })
+    act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
 
     expect(kbd().disabled).toBe(false)
   })
@@ -138,7 +138,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     rebound()
     act(() => { deliver!({ type: 'device:booting', sessionId: 's1' }) })
     act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
-    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as BrowserInbound) })
+    act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
 
     expect(installs()).toHaveLength(0)
     // Naming the control is what makes this an assertion rather than a proxy: counting buttons
@@ -181,7 +181,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     expect(launch().disabled).toBe(true)
 
     rebound()
-    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as BrowserInbound) })
+    act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
 
     expect(launch().disabled).toBe(false)
   })
@@ -199,7 +199,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     rebound()
     act(() => { deliver!({ type: 'device:booting', sessionId: 's1' }) })
     act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
-    act(() => { deliver!({ type: 'session:chrome', payload: CHROME } as unknown as BrowserInbound) })
+    act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
 
     expect(installs()).toHaveLength(1)
     // ...and no Launch control until that install reports back. This query is only meaningful
@@ -238,6 +238,30 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
 
     expect(boots()).toHaveLength(2)
     expect(installs()).toHaveLength(0)
+  })
+
+  // The one fixture in this file that deliberately disagrees with the wire, and it says so.
+  //
+  // `session:joined.capabilities` is required in `@tapflowio/protocol`, so `?? []` in the handler is
+  // dead against any conforming producer — but nothing validates inbound JSON (see
+  // packages/protocol/AGENTS.md), and this package is where a non-conforming agent's message lands.
+  // Without the `??` the viewer throws on `agentCapabilities.includes('clipboard')` and the whole tab
+  // goes blank.
+  //
+  // This test exists because #503 removed the accidental cover it had: every `session:joined` fixture
+  // in the suite used to be `{ type: 'session:joined' } as BrowserInbound`, omitting the field, so the
+  // fallback was exercised everywhere and guarded nowhere. Typing the fixtures correctly is right and
+  // it left the fallback with no test at all.
+  it('survives a producer that omits capabilities, rather than blanking the tab', async () => {
+    render(<DeviceViewer sessionId="s1" deviceId="dev-1" />)
+    // `live()` minus a conforming join.
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1' } as unknown as BrowserInbound) })
+    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
+
+    // Streaming at all: an unguarded `.includes` on `undefined` throws while the platform viewer
+    // renders, and the tree comes down with it.
+    expect(document.querySelectorAll('img[src^="data:image/png;base64,"]').length).toBe(1)
   })
 
   it('says the agent is away instead of leaving a frame that stopped updating', async () => {

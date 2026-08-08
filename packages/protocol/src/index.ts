@@ -313,9 +313,26 @@ export type RelayToBrowser =
  *  than re-creating them, so it never constructs one — which is exactly why they were missing from
  *  this file until L3: nothing on the relay's own send path referenced them.
  *
- *  Every member carries `sessionId`, on two independent grounds: both agents include it in every
- *  send literal, and the relay's forward gate resolves `sessions.get(msg.sessionId!)` before
- *  forwarding, so a message with no sessionId never reaches a browser by this path. */
+ *  The twelve declared below carry `sessionId` as required, on two independent grounds: both agents
+ *  include it in every send literal, and the relay's forward gate resolves `sessions.get(msg.sessionId!)`
+ *  before forwarding, so a message with no sessionId never reaches a browser by this path.
+ *
+ *  The ten inherited from `RelayOrAgentToBrowser` are **not** all required — three are `sessionId?`,
+ *  which is looser than what an agent actually sends. Tightening them here needs the three declared
+ *  twice, or the shared union mapped through `Omit<T,'sessionId'> & { sessionId: string }`. Both were
+ *  weighed and rejected for this layer:
+ *
+ *  - Declaring them twice reintroduces the thing this layer exists to remove. Two copies of one
+ *    message drift; that is the whole finding — four of them, between this file and the dashboard's.
+ *  - The mapped version turns those members into intersections, so `Extract<BrowserInbound, …>` stops
+ *    yielding a single member. `useClipboardBridge` depends on that (its three replies are read
+ *    without a cast because each `Extract` resolves to one declaration).
+ *
+ *  And no consumer could read the stricter claim today: `BrowserInbound` merges both directions, and a
+ *  union merge collapses to the looser field. Nothing consumes `AgentToBrowser` on its own — the relay
+ *  forwards untyped. **L4 is where it pays**: once the relay's forward path is narrowed to this union,
+ *  required `sessionId` is checkable, and the relay's replay (`RelayServer.ts:1079,1082,1089`) is
+ *  brought up to the agents' shape in the same change. Tracked there rather than left implicit. */
 export type AgentToBrowser =
   | RelayOrAgentToBrowser
   | { type: 'device:booting'; sessionId: string }

@@ -110,7 +110,7 @@ describe('useAgentSession', () => {
     const { result } = renderHook(() => useAgentSession('android'))
     const sessions = [makeSession({ agentName: 'mac-1' })]
 
-    act(() => capturedOnMessage({ type: 'agents:listed', sessions } as BrowserInbound))
+    act(() => capturedOnMessage({ type: 'agents:listed', sessions }))
 
     expect(result.current.sessions).toEqual(sessions)
   })
@@ -123,7 +123,7 @@ describe('useAgentSession', () => {
     })
     expect(result.current.booting).toBe(true)
 
-    act(() => capturedOnMessage({ type: 'session:joined' } as BrowserInbound))
+    act(() => capturedOnMessage({ type: 'session:joined', sessionId: 'avd:Pixel_7', capabilities: [] }))
     expect(result.current.booting).toBe(false)
     expect(result.current.status).toBe('Connected')
   })
@@ -132,7 +132,7 @@ describe('useAgentSession', () => {
     const { result } = renderHook(() => useAgentSession('android'))
 
     act(() => result.current.startDevice(makeDevice()))
-    act(() => capturedOnMessage({ type: 'error', message: 'boom' } as BrowserInbound))
+    act(() => capturedOnMessage({ type: 'error', message: 'boom' }))
 
     expect(result.current.booting).toBe(false)
     expect(result.current.status).toBe('Error: boom')
