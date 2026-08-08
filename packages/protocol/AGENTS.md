@@ -64,10 +64,17 @@ therefore means *unknown*, never *fine*, and **a consumer meeting a reason it do
 treat it as `channel-unavailable`** — the conservative reading. Making the field required is the
 breaking step and has not been taken.
 
+Every in-repo producer now sends one. The relay was the last that did not (#492) — it answers a
+terminal input it cannot dispatch, and being the only producer that reads a socket rather than
+inferring from its own state, it was the one whose reason was least in doubt. So absence today means
+an agent older than this field and nothing else, which is what #491 needs before the field can become
+required.
+
 There is deliberately **no shared message table**. One would be a runtime value, and this entry point
 must erase under `import type` (see HOW NOT) — so each agent owns its own wording. A static check in
-`scripts/__tests__/inputErrorReason.test.mjs` holds both producers to the one union, since neither
-agent's own test suite can see the other.
+`scripts/__tests__/inputErrorReason.test.mjs` holds both **agents** to the one union, since neither
+agent's own test suite can see the other. The relay is the third producer and needs no such check: it
+sends through `sendTo(socket, msg: RelayOutbound)`, so its literal is checked by the compiler.
 
 ## HOW NOT
 

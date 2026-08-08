@@ -27,7 +27,11 @@ export const INPUT_ERROR_NOTICE: Record<InputErrorReason, InputErrorNotice | nul
   // action names the agent rather than the device.
   'channel-unavailable': {
     title: 'Input is not reaching this device',
-    action: 'Reconnect, or check the agent on the Mac running it.',
+    // Names no cause. The reason covers two of them — an agent that is gone, and a session this relay
+    // no longer has — and the second says nothing about any agent's health, so an action that sent the
+    // reader to the Mac was wrong for it (#492). The specific cause arrives in `message` and is shown
+    // beside this.
+    action: 'Rejoin the session to continue.',
   },
   // Deliberately not folded into the line above: the protocol prescribes a *different* action for
   // this one ("boot the device"), and one sentence cannot give both.
@@ -82,9 +86,9 @@ export const INPUT_ERROR_NOTICE: Record<InputErrorReason, InputErrorNotice | nul
  * the case being handled.
  *
  * Absence and unfamiliarity both resolve to `channel-unavailable`: absence means *unknown*, never
- * *fine* (an agent older than #490 omits the field, and the relay's own reasonless `input:error`
- * still does), and the protocol's rule for a reason a consumer does not recognise is the same
- * conservative reading. Resolving the *key* as well as the copy is what keeps two different unknown
+ * *fine* (an agent older than #490 omits the field), and the protocol's rule for a reason a consumer
+ * does not recognise is the same conservative reading. Every in-repo producer now sends one — the
+ * relay was the last that did not (#492) — so absence today means an older agent, nothing else. Resolving the *key* as well as the copy is what keeps two different unknown
  * reasons from stacking two identical toasts.
  *
  * `Object.hasOwn`, not `in` — `'toString' in INPUT_ERROR_NOTICE` is true, and a reason of `toString`

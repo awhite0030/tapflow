@@ -768,10 +768,25 @@ export class RelayServer {
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
         } else if (TERMINAL_INPUT_TYPES.has(msg.type) && ws.readyState === WebSocket.OPEN) {
-          // Agent offline or session evicted: a terminal input can't be dispatched.
-          // Reply to the sender (the MCP/browser socket) so it fails truthfully
-          // instead of falling through to its optimistic 2s timeout.
-          this.sendTo(ws, { type: 'input:error', sessionId: msg.sessionId!, message: 'agent offline' })
+          // A terminal input that cannot be dispatched. Reply to the sender (the MCP/browser socket)
+          // so it fails truthfully instead of falling through to its optimistic 2s timeout.
+          //
+          // Two situations reach here and only one of them is the agent's fault: the session may be
+          // held with a socket that is no longer open, or there may be no such session — evicted
+          // after the reconnect grace expired, or never valid. In the second the agent can be
+          // perfectly healthy, so `agent offline` is a wrong diagnosis, and it is the same pair
+          // `device:boot` already tells apart above for the same reason. Same two strings as there.
+          //
+          // The reason is `channel-unavailable` either way, and that is the point rather than an
+          // approximation: the set is derived from what a consumer must do differently, and both of
+          // these want a reconnect or a re-join. The machine field is right for both and the prose
+          // was wrong for one, which is why the prose is what changed.
+          this.sendTo(ws, {
+            type: 'input:error',
+            sessionId: msg.sessionId!,
+            message: session ? 'agent offline' : 'Session not found',
+            reason: 'channel-unavailable',
+          })
         }
         break
       }

@@ -131,8 +131,9 @@ describe('DeviceViewer — input:error (#485)', () => {
     debug.mockRestore()
   })
 
-  // Absence means unknown, never fine: an agent older than #490 omits the field, and the relay's own
-  // `agent offline` reply still does.
+  // Absence means unknown, never fine: an agent older than #490 omits the field. Every in-repo
+  // producer sends one now — the relay was the last that did not (#492) — so the fixture below is an
+  // old agent rather than any current sender.
   it('treats an absent reason as channel-unavailable', () => {
     mounted()
     inputError(undefined, 'agent offline')
@@ -187,7 +188,7 @@ describe('DeviceViewer — input:error (#485)', () => {
     expect(toastError).not.toHaveBeenCalled()
   })
 
-  // While the agent is away the *relay* answers every terminal input itself, reasonlessly, so a
+  // While the agent is away the *relay* answers every terminal input itself, so a
   // tapping tester would keep this toast alive indefinitely — with advice that contradicts the status
   // card, which already says the relay is holding the session and waiting. `device:boot-error`
   // suppresses in the same state for the same kind of reason.

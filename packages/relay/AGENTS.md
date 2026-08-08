@@ -38,6 +38,22 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
 - Control message protocol: `input:touch:*`, `input:pinch:*`, `input:button`, `input:key`, `input:type`, `input:rotate`, `input:keyboard:toggle`, `device:boot`, `device:shutdown`, `session:start`, `session:end`, `clipboard:read`, `clipboard:write`.
 - **The message shapes live in [`@tapflowio/protocol`](../protocol/AGENTS.md), not here.** Every message the relay *originates* goes through `sendTo(socket, msg: RelayOutbound)`, so adding one means adding it to that union first — the compiler will not let you do it in the other order. Messages the relay only *forwards* keep their inbound type and are re-serialised unchanged.
 - **Clipboard bridge** (`clipboard:*`): browser→agent `clipboard:read` (`payload.press`: `'copy' | 'cut'` presses that chord on the device first) and `clipboard:write` (`payload.text`, `payload.pasteAfter`); agent→browser `clipboard:data` / `clipboard:write-done` / `clipboard:error`, correlated by `requestId`. Unlike the other agent→browser replies these are **bound to the session's own `agentSocket`** — their payload lands on the viewer's host OS clipboard, so a second agent must not be able to address someone else's session. An undeliverable request answers `clipboard:error` immediately rather than letting the caller's deadline expire. Agents advertise `capabilities: ['clipboard']` in `agent:register`; the relay echoes them on `session:joined` so a viewer can tell a capable agent from one that predates the feature instead of inferring it from silence.
+- **A terminal input the relay cannot dispatch is answered here, with a reason.** `input:touch:end` /
+  `input:pinch:end` / `input:key` / `input:button` (`TERMINAL_INPUT_TYPES`) get an `input:error` when
+  the session's agent socket is not open, so an MCP or browser caller fails now instead of waiting out
+  its own timeout — which its fallback would report as success. Everything outside that set gets
+  nothing, and the set is not "the ones that matter": moves and starts have no waiter, but `input:type`
+  does (`input:type-done` / `input:type-error`, awaited in `mcp-server` and `flow-runner`) and receives
+  no answer here, so a type on an offline agent still burns its full deadline. Adding it to this set
+  would not fix that — those waiters key on the `input:type-*` pair and would ignore an `input:error`
+  — so the honest fix is a separate reply, which is why the set was left as it is rather than widened.
+  Two situations reach that reply and only one is the agent's fault, so they carry **different prose
+  and the same reason**: a held session with a closed socket is `agent offline`, while no session at
+  all is `Session not found` — evicted after the reconnect grace, or never valid, and the agent may be
+  perfectly healthy. `device:boot` already told that pair apart with those two strings. The reason is
+  `channel-unavailable` for both because the set is derived from what a consumer must *do* differently
+  and both want a reconnect or a re-join; the machine field was right for both while the prose was
+  wrong for one, which is the concrete case for reading `reason` rather than `message` (#492).
 - JWTs are issued based on team invite links.
 - Serves the `public/` directory as HTTP static files (dashboard build output).
 - The relay does not buffer stream data — it forwards immediately on arrival.
