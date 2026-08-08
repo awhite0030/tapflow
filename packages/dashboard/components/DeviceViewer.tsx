@@ -212,6 +212,14 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // status card — which already says the relay is holding the session open and waiting.
       if (agentAway) return;
       const { key, notice } = resolveInputError(msg.reason);
+      // A reason this build does not know about is normalised away, and without this line it would
+      // vanish with it: the tester correctly sees the conservative copy, but nobody can tell the
+      // dashboard is behind its agents. That is the situation the growth of this union guarantees, so
+      // it needs a trace. Absence is *not* logged — a pre-#490 agent omits the field on every input,
+      // and that case is documented rather than surprising.
+      if (msg.reason !== undefined && msg.reason !== key) {
+        console.debug(`[tapflow] unrecognised input:error reason "${msg.reason}", treated as ${key}`);
+      }
       if (notice) {
         // `sessionId` in the id so a toast still on screen from the session just left cannot be
         // refreshed by a failure in the next one.

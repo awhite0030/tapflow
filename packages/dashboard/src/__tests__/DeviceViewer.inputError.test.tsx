@@ -150,6 +150,29 @@ describe('DeviceViewer — input:error (#485)', () => {
     expect(new Set(opts().map((o) => o.id)).size).toBe(1)
   })
 
+  // Normalising an unknown reason is right for the tester and lossy for everyone else: without a
+  // trace, a dashboard running behind its agents looks identical to one seeing a genuinely dead
+  // channel. The name it did not recognise is the only clue that the union has moved on.
+  it('leaves a trace of a reason it did not recognise', () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    mounted()
+    inputError('some-future-reason')
+    expect(debug).toHaveBeenCalledTimes(1)
+    expect(String(debug.mock.calls[0]![0])).toContain('some-future-reason')
+    debug.mockRestore()
+  })
+
+  // An agent older than #490 omits the field on every single input. Logging that would be noise about
+  // a state the protocol documents as normal.
+  it('does not log for an absent reason', () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    mounted()
+    inputError(undefined, 'agent offline')
+    expect(toastError).toHaveBeenCalledTimes(1)
+    expect(debug).not.toHaveBeenCalled()
+    debug.mockRestore()
+  })
+
   it('does not read a prototype key as a notice', () => {
     mounted()
     inputError('toString')
