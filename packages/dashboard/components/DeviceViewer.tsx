@@ -13,6 +13,7 @@ import { parseEnvelopeHeader, HEADER_SIZE, CODEC_H264, CODEC_AUDIO, type BinaryF
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
 import type { ClipboardBridgeMessage, ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
 import { canDecodeH264 } from '@/lib/decoders/pickDecoder';
+import { resolveInputError } from '@/lib/inputErrorNotice';
 import { StatsOverlay } from './perf/StatsOverlay';
 import { MetricsPanel } from './perf/MetricsPanel';
 import { toast } from 'sonner';
@@ -195,6 +196,48 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       rebindRef.current = { pending: 0, appInstalled: false };
       setBootError(msg.message);
     }
+    // An input the device never got. Deliberately no session-level state behind this: the acks are
+    // per-input, unordered (a dispatch is awaited before its ack while a refusal is not) and do not
+    // say which channel answered — on Android buttons always take the adb path while touch takes the
+    // pointer channel on any streaming session. A latch built on them cleared itself on an unrelated
+    // success, and no message carries evidence that input is working again, so it had no honest clear
+    // edge either. The toast's own lifetime is the state: repeats reuse
+    // `id`, which sonner refreshes rather than stacks, so it stays up while inputs keep failing and
+    // fades on its own when they stop. See `.work/2026-08-08-dashboard-input-error-plan.md`.
+    if (msg.type === 'input:error') {
+      // Suppressed while the agent is away, matching what `device:boot-error` does two branches down
+      // and for a sharper reason: an absent agent cannot send this, so in that state the *relay*
+      // answers every terminal input itself (`RelayServer.ts`, reasonless `'agent offline'`). A
+      // tapping tester would refresh this toast indefinitely, and its advice would contradict the
+      // status card — which already says the relay is holding the session open and waiting.
+      if (agentAway) return;
+      const { key, notice } = resolveInputError(msg.reason);
+      // A reason this build does not know about is normalised away, and without this line it would
+      // vanish with it: the tester correctly sees the conservative copy, but nobody can tell the
+      // dashboard is behind its agents. That is the situation the growth of this union guarantees, so
+      // it needs a trace. Absence is *not* logged — a pre-#490 agent omits the field on every input,
+      // and that case is documented rather than surprising.
+      if (msg.reason !== undefined && msg.reason !== key) {
+        console.debug(`[tapflow] unrecognised input:error reason "${msg.reason}", treated as ${key}`);
+      }
+      if (notice) {
+        // `sessionId` in the id so a toast still on screen from the session just left cannot be
+        // refreshed by a failure in the next one.
+        toast.error(notice.title, {
+          id: `input:${sessionId}:${key}`,
+          description: `${notice.action} (${msg.message})`,
+          // The only "state" this design has. A finite lifetime is what makes the toast disappear
+          // when inputs stop failing, with no clear signal — set explicitly and above sonner's
+          // 4000ms default, which is short enough to lapse between two unhurried taps.
+          duration: 6000,
+        });
+      } else {
+        console.debug(`[tapflow] input refused, shown nowhere: ${key} — ${msg.message}`);
+      }
+    }
+    // `input:done` is deliberately not handled. It was only ever needed to release the latch above,
+    // and there is no latch.
+
     if (msg.type === 'device:booting') {
       setDeviceReady(false);
       setInstalling(false);

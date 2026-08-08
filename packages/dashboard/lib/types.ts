@@ -1,4 +1,4 @@
-import type { SessionTerminatedReason } from '@tapflowio/protocol'
+import type { InputErrorReason, SessionTerminatedReason } from '@tapflowio/protocol'
 
 export interface AgentResources {
   cpuPercent: number
@@ -162,7 +162,7 @@ export type RelayMessage =
   | { type: 'open-url:done'; sessionId: string }
   | { type: 'open-url:error'; sessionId: string; message: string }
   | { type: 'input:done'; sessionId: string }
-  | { type: 'input:error'; sessionId: string; message: string }
+  | { type: 'input:error'; sessionId: string; message: string; reason?: InputErrorReason }
   // agent → browser
   | { type: 'clipboard:data'; sessionId: string; requestId: string; payload: { text: string } }
   | { type: 'clipboard:write-done'; sessionId: string; requestId: string }

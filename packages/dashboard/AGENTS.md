@@ -47,6 +47,53 @@ The audience is the whole team (PO, PM, designers, backend, QA) — not just QA.
 - Components that combine multiple `useEffect` + `react-hook-form` `Controller` + `useWatch` (e.g. `DefaultSettings`) can hang in jsdom under full render. `vitest.config.ts` has `testTimeout: 10000` as a safety net — a timeout failure means the test setup needs fixing, not more retries.
 - When mocking `fetch` in a component that fires multiple concurrent `useEffect` fetches (e.g. `GET /api/v1/settings` + `GET /api/v1/apps`), use URL-based dispatch (`mockImplementation((url) => {...})`) instead of `mockResolvedValueOnce` chains — call order is non-deterministic.
 
+### `input:error` is shown per input, and there is no session-level input state
+
+A failed input surfaces as a toast keyed on the wire `reason` (`lib/inputErrorNotice.ts`), or is shown
+nowhere for the two reasons that fix themselves. `input:done` is **not handled at all**.
+
+A latched "input unavailable" line on the status card was designed and discarded, and it will look
+like the obvious improvement to whoever reads this next. It cannot be made honest on the current
+protocol, for three independent reasons:
+
+- **Nothing announces that input is working again.** iOS replaces a dead helper eagerly and is
+  injecting ~200ms later with no message to the browser, so no edge carries *evidence of input health*.
+  Lifecycle messages do arrive — `session:rebound` on an agent restart, `session:joined` on a socket
+  reconnect, both already handled above — but neither is that evidence: with a helper binary still
+  missing (#464) a rebound would clear the latch and the next tap would raise it again. The only
+  signal that would mean anything is a successful input, and `channel-unavailable`'s own advice is *do
+  not blindly retry*, so a latch's clear edge needs the tester to do what the UI just told them not
+  to.
+- **The acks are unordered.** A success is awaited and a refusal is not, so an earlier input's
+  `input:done` can arrive after a later input's `input:error` and clear a latch that is still true. Not
+  via `ackInput`'s boot verify, which looks like the culprit and is cached on `device:ready` — the
+  paths that reorder on every input are Android awaiting the dispatch itself before acking
+  (`pressButton` → `adb shell input`, measured 26–29ms steady state) and iOS acking a key only after
+  awaiting `hideSoftwareKeyboard`, while a `malformed` or `channel-down` refusal reaches `ws.send`
+  within microtasks.
+- **An ack does not say which channel answered.** On Android a button always takes the adb path, while
+  touch takes the pointer channel whenever a video backend is up — which is every streaming session,
+  the only kind a tester has. So pressing Home to check whether input works at all succeeds on a
+  session whose touch channel is dead, and under the latch that success erased the warning.
+
+Instead the toast's own lifetime carries the state: repeats reuse `id`, which sonner refreshes rather
+than stacks, so it stays up while inputs keep failing and fades on its own when they stop. **Being
+observed rather than stored is the point** — there is no clear edge to get wrong.
+
+Copy lives here rather than in the agents because `message` on the wire is free prose each agent owns
+and cannot be localised; `reason` is the contract. `message` rides along as the description, where its
+diagnostic detail (`unknown key code: KeyFoo`) belongs. Absent or unrecognised reasons resolve to
+`channel-unavailable` — absence means *unknown*, never *fine*.
+
+Suppressed entirely while the agent is away. An absent agent cannot send this, so in that state the
+*relay* answers every terminal input itself with a reasonless `input:error`; a tapping tester would
+refresh the toast indefinitely, with advice contradicting the status card, which already says the relay
+is holding the session open and waiting.
+
+A persistent indicator needs a protocol-level input-health signal, or acks that identify their channel
+and arrive in order. Two tests guard the decision (`DeviceViewer.inputError.test.tsx`): `input:done`
+must do nothing, and a success between two failures must change nothing.
+
 ## HOW NOT
 
 - Do not reintroduce the `next` package.
