@@ -27,7 +27,11 @@ export const INPUT_ERROR_NOTICE: Record<InputErrorReason, InputErrorNotice | nul
   // action names the agent rather than the device.
   'channel-unavailable': {
     title: 'Input is not reaching this device',
-    action: 'Reconnect, or check the agent on the Mac running it.',
+    // Names no cause. The reason covers two of them — an agent that is gone, and a session this relay
+    // no longer has — and the second says nothing about any agent's health, so an action that sent the
+    // reader to the Mac was wrong for it (#492). The specific cause arrives in `message` and is shown
+    // beside this.
+    action: 'Rejoin the session to continue.',
   },
   // Deliberately not folded into the line above: the protocol prescribes a *different* action for
   // this one ("boot the device"), and one sentence cannot give both.

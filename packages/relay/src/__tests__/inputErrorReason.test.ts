@@ -79,8 +79,9 @@ describe('input:error from the relay carries a reason (#492)', () => {
       const { browser, sessionId } = await agentGone()
 
       browser.send(JSON.stringify({ type, sessionId, payload }))
-      // By type, not "the next message": losing the agent also produces a `session:terminated` and
-      // whichever lands first is not this test's subject.
+      // By type, not "the next message": losing the agent also produces a `session:agent-away`, and
+      // whichever lands first is not this test's subject. (Not `session:terminated` — that waits for
+      // the 15s grace to expire, long after this test is over.)
       const err = await waitForType(browser, 'input:error')
       expect(err.sessionId).toBe(sessionId)
       expect(err.reason).toBe('channel-unavailable')
@@ -130,15 +131,30 @@ describe('input:error from the relay carries a reason (#492)', () => {
     browser.close()
   })
 
-  // This change adds a field to an existing reply; it does not widen what gets answered. A move has
-  // no caller waiting on it, and inventing a reply for one would grow the surface the terminal-only
-  // set exists to bound.
-  it('still answers nothing for a non-terminal input', async () => {
-    const { browser, sessionId } = await agentGone()
+  // This change adds a field to an existing reply; it does not widen what gets answered. Every input
+  // type outside `TERMINAL_INPUT_TYPES` is listed, because the two ways of widening it are both
+  // harmful and neither is caught by testing one representative: adding `input:touch:start` would
+  // answer twice per tap, and adding `input:type` would answer a message whose waiters key on
+  // `input:type-done` / `input:type-error` (`mcp-server`, `flow-runner`) — they would ignore it and
+  // wait out the full deadline anyway, which is the failure this reply exists to prevent.
+  const nonTerminals: Array<[string, Record<string, unknown>]> = [
+    ['input:touch:start', { x: 0.5, y: 0.5 }],
+    ['input:touch:move', { x: 0.5, y: 0.5 }],
+    ['input:pinch:start', { f0: { x: 0.4, y: 0.4 }, f1: { x: 0.6, y: 0.6 } }],
+    ['input:pinch:move', { f0: { x: 0.4, y: 0.4 }, f1: { x: 0.6, y: 0.6 } }],
+    ['input:type', { text: 'hello' }],
+    ['input:rotate', { orientation: 'landscapeLeft' }],
+    ['input:keyboard:toggle', {}],
+  ]
 
-    browser.send(JSON.stringify({ type: 'input:touch:move', sessionId, payload: { x: 0.5, y: 0.5 } }))
-    expect(await waitForTypeOrNull(browser, 'input:error', 100)).toBeNull()
+  for (const [type, payload] of nonTerminals) {
+    it(`still answers nothing for ${type}`, async () => {
+      const { browser, sessionId } = await agentGone()
 
-    browser.close()
-  })
+      browser.send(JSON.stringify({ type, sessionId, payload }))
+      expect(await waitForTypeOrNull(browser, 'input:error', 100)).toBeNull()
+
+      browser.close()
+    })
+  }
 })

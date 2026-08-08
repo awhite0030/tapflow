@@ -72,8 +72,9 @@ required.
 
 There is deliberately **no shared message table**. One would be a runtime value, and this entry point
 must erase under `import type` (see HOW NOT) — so each agent owns its own wording. A static check in
-`scripts/__tests__/inputErrorReason.test.mjs` holds both producers to the one union, since neither
-agent's own test suite can see the other.
+`scripts/__tests__/inputErrorReason.test.mjs` holds both **agents** to the one union, since neither
+agent's own test suite can see the other. The relay is the third producer and needs no such check: it
+sends through `sendTo(socket, msg: RelayOutbound)`, so its literal is checked by the compiler.
 
 ## HOW NOT
 

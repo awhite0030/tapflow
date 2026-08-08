@@ -41,8 +41,12 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
 - **A terminal input the relay cannot dispatch is answered here, with a reason.** `input:touch:end` /
   `input:pinch:end` / `input:key` / `input:button` (`TERMINAL_INPUT_TYPES`) get an `input:error` when
   the session's agent socket is not open, so an MCP or browser caller fails now instead of waiting out
-  its own timeout — which its fallback would report as success. Non-terminal inputs get nothing:
-  no caller waits on a move, and answering one would widen the surface that set exists to bound.
+  its own timeout — which its fallback would report as success. Everything outside that set gets
+  nothing, and the set is not "the ones that matter": moves and starts have no waiter, but `input:type`
+  does (`input:type-done` / `input:type-error`, awaited in `mcp-server` and `flow-runner`) and receives
+  no answer here, so a type on an offline agent still burns its full deadline. Adding it to this set
+  would not fix that — those waiters key on the `input:type-*` pair and would ignore an `input:error`
+  — so the honest fix is a separate reply, which is why the set was left as it is rather than widened.
   Two situations reach that reply and only one is the agent's fault, so they carry **different prose
   and the same reason**: a held session with a closed socket is `agent offline`, while no session at
   all is `Session not found` — evicted after the reconnect grace, or never valid, and the agent may be

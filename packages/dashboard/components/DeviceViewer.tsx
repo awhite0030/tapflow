@@ -207,7 +207,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     if (msg.type === 'input:error') {
       // Suppressed while the agent is away, matching what `device:boot-error` does two branches down
       // and for a sharper reason: an absent agent cannot send this, so in that state the *relay*
-      // answers every terminal input itself (`RelayServer.ts`, reasonless `'agent offline'`). A
+      // answers every terminal input itself (`RelayServer.ts`, `channel-unavailable`). A
       // tapping tester would refresh this toast indefinitely, and its advice would contradict the
       // status card — which already says the relay is holding the session open and waiting.
       if (agentAway) return;
