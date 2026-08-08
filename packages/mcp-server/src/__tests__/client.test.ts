@@ -206,11 +206,25 @@ describe('TapflowClient', () => {
       await expect(client.tap('sess-1', 1, 2)).resolves.toBeUndefined()
     })
 
-    it('rejects (not optimistic) when the relay connection drops mid-input', async () => {
+    // The input is already on the wire by the time the ack is awaited — `tap` sends both frames first —
+    // so a close means "could not confirm", not "was not dispatched". It used to say the latter.
+    it('reports a drop mid-input as unconfirmed, not as undispatched', async () => {
       relay.setInputAck('none') // no ack will arrive
       const p = client.tap('sess-1', 1, 2)
       relay.lastClient().close() // drop the connection while awaiting the ack
-      await expect(p).rejects.toThrow(/closed/i)
+      const err = await p.catch((e: Error) => e)
+      expect(err.message).toMatch(/could not confirm/i)
+      expect(err.message).toMatch(/may have landed/i)
+      expect(err.message).toMatch(/do not repeat/i)
+    })
+
+    // And it does not depend on the ledger: a close is not evidence about whether the agent acks, so a
+    // session that has never answered one still gets the truth rather than an optimistic success.
+    it('reports a drop as unconfirmed even on a session that never acked', async () => {
+      relay.setInputAck('none')
+      const p = client.tap('sess-NEW', 1, 2)
+      relay.lastClient().close()
+      await expect(p).rejects.toThrow(/could not confirm/i)
     })
   })
 

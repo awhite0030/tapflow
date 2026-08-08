@@ -39,11 +39,15 @@ Connects to the relay over WebSocket + REST (`TapflowClient`), registers MCP too
 predating the ack protocol and it outlived them, so a tap that never reached the device was reported as
 landed to a model that then moved on (#457). Three things about the fix are easy to undo.
 
-- **Silence is "could not confirm", not "dropped".** `ackInput` on both agents awaits a `simctl list` /
+- **Silence *and a dropped connection* are both "could not confirm", not "dropped".** `ackInput` on both agents awaits a `simctl list` /
   `adb` device verify on the first input after a boot or reconnect, on the same Mac the relay gates at
   80% CPU — so an ack past the window can belong to an input that **did** land. Calling that a drop
   invites a retry, and a retry of a landed input duplicates it. The thrown text says the input may have
   landed and to check device state rather than repeat.
+  The same holds when the socket closes mid-input, and that branch used to claim the opposite: every
+  caller sends its input **before** awaiting the ack, so by then the input has left this process and the
+  relay may have forwarded it. A close says nothing about whether the agent acks — only that we stopped
+  being able to hear it — so it is unconfirmed regardless of the ledger.
 - **Whether silence is fatal is decided by what the session has already done**, not by a negotiated
   flag: `ackedSessions` records any session that has answered an input with `input:done`, and only
   those are judged strictly. **`input:done` and not `input:error`**, because the relay originates

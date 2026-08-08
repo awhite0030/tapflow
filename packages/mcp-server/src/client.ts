@@ -270,13 +270,25 @@ export class TapflowClient {
         2_000,
       )
     } catch (e) {
-      // A WebSocket close (or any error that is not the timeout) means the input was not dispatched.
-      if (!(e instanceof Error) || e.message !== 'Request timed out') throw e
-      if (!strict) return
+      if (!(e instanceof Error)) throw e
+      const timedOut = e.message === 'Request timed out'
+      // A dropped connection is *also* unconfirmed, not undispatched. Every caller sends its input
+      // before awaiting the ack — `tap` sends both frames, `swipe` all ten — so by the time the socket
+      // closes the input has left this process and the relay may already have forwarded it. This branch
+      // used to claim the opposite, which is the same false certainty the rest of this method exists to
+      // remove. It is unconfirmed regardless of the ledger: a close says nothing about whether the agent
+      // acks, only that we stopped being able to hear it.
+      const disconnected = e.message === 'WebSocket closed'
+      // The one case the optimistic path is still for: silence from a session that has never answered
+      // an input at all is an agent that does not answer them.
+      if (timedOut && !strict) return
+      if (!timedOut && !disconnected) throw e
+      const cause = timedOut
+        ? 'this session has acknowledged input before, and this one went unanswered'
+        : 'the relay connection dropped before the acknowledgement arrived'
       throw new Error(
-        'Could not confirm the input reached the device: this session has acknowledged input before, ' +
-        'and this one went unanswered. Do not repeat the input — it may have landed. Check the device ' +
-        'state (screenshot or ui_tree) before deciding what to do next.',
+        `Could not confirm the input reached the device: ${cause}. Do not repeat the input — it may ` +
+        'have landed. Check the device state (screenshot or ui_tree) before deciding what to do next.',
       )
     }
     if (msg['type'] === 'input:error') {

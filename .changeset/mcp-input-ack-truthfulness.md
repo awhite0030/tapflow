@@ -19,6 +19,10 @@ relay gates at 80% CPU, so an ack past the window can belong to an input that *d
 a drop invites a retry, and a retry of a landed input duplicates it. The error tells the caller the
 input may have landed and to check device state rather than repeat it.
 
+A dropped relay connection is answered the same way. It used to be reported as "the input was not
+dispatched", which was wrong: every caller sends its input before awaiting the ack, so by the time the
+socket closes the input has left the process and the relay may already have forwarded it.
+
 **Whether silence is fatal is decided by what the session has already done.** A session that has
 answered an input with `input:done` is judged strictly; one that never has keeps the optimistic path,
 because an agent that does not ack at all is exactly what the fallback was for. This degrades in the safe
