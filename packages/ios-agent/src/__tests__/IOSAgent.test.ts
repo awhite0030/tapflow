@@ -14,6 +14,13 @@ vi.mock('../TouchHelper', () => ({
     start: vi.fn(),
     stop: vi.fn(),
     isReady: vi.fn(() => true),
+    // The agent asks this when a write is refused, to tell "still starting" from "gone" — a mock
+    // without it makes the ws dispatch swallow a TypeError and send no ack at all, which surfaces
+    // as tests hanging with no message rather than failing.
+    inputState: vi.fn(() => 'ready'),
+    // Asked before readiness for a continuation frame: a gesture whose open never landed can never
+    // be finished, however ready the helper becomes.
+    ownsGesture: vi.fn(() => true),
     touchStart: vi.fn(() => true),
     touchMove: vi.fn(() => true),
     touchEnd: vi.fn(() => true),
@@ -34,6 +41,15 @@ function killHelper(th: Record<string, ReturnType<typeof vi.fn>>): void {
   for (const [name, fn] of Object.entries(th)) {
     if (name !== 'start' && name !== 'stop') fn.mockReturnValue(false)
   }
+  th.inputState.mockReturnValue('unavailable')
+  th.ownsGesture.mockReturnValue(false)
+}
+
+// Running but not yet injecting — measured at 186–247ms after spawn on a real simulator. Writes are
+// refused exactly as on a dead channel, so only `inputState()` separates the two.
+function startingHelper(th: Record<string, ReturnType<typeof vi.fn>>): void {
+  killHelper(th)
+  th.inputState.mockReturnValue('starting')
 }
 
 // Mock the capture streamer so codec-negotiation tests can read the codec arg the
@@ -438,6 +454,80 @@ describe('IOSAgent', () => {
       agent.disconnect()
       browser.close()
     })
+
+    // A terminal input naming a session this agent holds no state for. Nothing used to answer it —
+    // `if (!state) break` — so the caller waited out its own timeout, which its fallback then
+    // reported as success. Reachability is genuinely disputed (see `ackNoSession`'s comment), which
+    // is why the state is manufactured here rather than driven through a relay sequence: the only
+    // shape that produces it needs the relay to hold two sessions for one device, and this suite
+    // cannot stand that up. What the test pins is the answer, not the route to it.
+    // Asserted on what the agent sends rather than on what reaches the browser, for the same reason
+    // the Android suite does: the relay answers these types on an agent's behalf when the socket is
+    // down, so a round trip would risk testing the relay's fallback instead of this branch.
+    describe('terminal inputs for a session whose state is gone (#489)', () => {
+      async function connectedAgent() {
+        const browser = new WebSocket(`ws://localhost:${port}`)
+        await waitForOpen(browser)
+        const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+        await agent.connect(`ws://localhost:${port}`)
+        browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+        await waitForType(browser, 'session:joined')
+        return { agent, browser }
+      }
+
+      type Internals = {
+        ws: WebSocket
+        deviceStates: Map<string, unknown>
+        handleRelayMessage(msg: { type: string; sessionId?: string; payload?: unknown }): void
+      }
+      const internals = (a: IOSAgent): Internals => a as unknown as Internals
+
+      function inputErrors(spy: ReturnType<typeof vi.spyOn>) {
+        return spy.mock.calls
+          .map(([raw]) => JSON.parse(raw as string) as { type: string; sessionId?: string; message?: string; reason?: string })
+          .filter((m) => m.type === 'input:error')
+      }
+
+      for (const [type, payload] of [
+        ['input:touch:end', { x: 0.5, y: 0.5 }],
+        ['input:pinch:end', { f0: { x: 0.5, y: 0.5 }, f1: { x: 0.5, y: 0.5 } }],
+        ['input:button', { name: 'home' }],
+        ['input:key', { code: 'KeyA' }],
+      ] as Array<[string, Record<string, unknown>]>) {
+        it(`answers input:error with reason channel-unavailable for ${type}`, async () => {
+          const { agent, browser } = await connectedAgent()
+          // Captured first: `sessionId` is derived from `deviceStates`, so clearing the map would
+          // also make the id null and the ack would have nothing to address.
+          const sessionId = agent.sessionId
+          const sent = vi.spyOn(internals(agent).ws, 'send')
+          internals(agent).deviceStates.clear()
+
+          internals(agent).handleRelayMessage({ type, sessionId: sessionId!, payload })
+
+          const acks = inputErrors(sent)
+          expect(acks).toHaveLength(1)
+          expect(acks[0]!.sessionId).toBe(sessionId)
+          expect(acks[0]!.reason).toBe('channel-unavailable')
+
+          agent.disconnect()
+          browser.close()
+        })
+      }
+
+      it('stays silent for an opening frame — those carry no ack obligation', async () => {
+        const { agent, browser } = await connectedAgent()
+        const sessionId = agent.sessionId
+        const sent = vi.spyOn(internals(agent).ws, 'send')
+        internals(agent).deviceStates.clear()
+
+        internals(agent).handleRelayMessage({ type: 'input:touch:start', sessionId: sessionId!, payload: { x: 0.5, y: 0.5 } })
+
+        expect(inputErrors(sent)).toHaveLength(0)
+
+        agent.disconnect()
+        browser.close()
+      })
+    })
   })
 
   // #482: the helper process dies, the session keeps streaming, and every input is dropped.
@@ -459,6 +549,91 @@ describe('IOSAgent', () => {
       await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
       return { browser, agent, simctl, th: MockTouchHelper.mock.results[0].value }
     }
+
+    // A refusal from a *ready* helper is the gesture-ownership guard: the channel is fine and the
+    // message is well-formed, but this frame's gesture is gone, so the caller has to open a new one
+    // rather than retry or give up.
+    it('answers no-gesture when a ready helper refuses a mid-gesture frame', async () => {
+      const { browser, agent, th } = await bootedSession()
+      th.touchEnd.mockReturnValue(false)
+      th.ownsGesture.mockReturnValue(false)
+
+      const errored = waitForType(browser, 'input:error')
+      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+
+      expect((await errored)['reason']).toBe('no-gesture')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    // The inverted advice both design reviews found: an opening frame refused inside the start-up
+    // window owns nothing, so by the time the terminal frame arrives the helper reads `ready` and the
+    // ack used to say "never retry" — for the exact sequence `channel-starting` exists to serve.
+    // MCP's `swipe` defaults to 300ms, comfortably past the measured 247ms, so it lands here.
+    it('answers no-gesture, not malformed, when the gesture opened inside the start-up window', async () => {
+      const { browser, agent, th } = await bootedSession()
+      startingHelper(th)
+      browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+
+      // the helper finishes starting between the two frames
+      th.inputState.mockReturnValue('ready')
+      th.ownsGesture.mockReturnValue(false) // nothing was owned: the open was refused
+
+      const errored = waitForType(browser, 'input:error')
+      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+
+      const msg = await errored
+      expect(msg['reason']).toBe('no-gesture')
+      expect(msg['message']).toContain('start a new one')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    // A standalone input never consults ownership — only a continuation does.
+    it('answers channel-starting for a key while the helper is coming up', async () => {
+      const { browser, agent, th } = await bootedSession()
+      startingHelper(th)
+
+      const errored = waitForType(browser, 'input:error')
+      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
+
+      expect((await errored)['reason']).toBe('channel-starting')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('carries reason channel-unavailable when the helper is gone', async () => {
+      const { browser, agent, th } = await bootedSession()
+      killHelper(th)
+
+      const errored = waitForType(browser, 'input:error')
+      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+
+      const msg = await errored
+      // No channel at all outranks "no gesture": re-opening one could not help.
+      expect(msg['reason']).toBe('channel-unavailable')
+      expect(msg['message']).toBe('input channel not ready') // wording preserved for consumers
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('carries reason unsupported for an unknown key code, keeping the code in the prose', async () => {
+      const { browser, agent } = await bootedSession()
+
+      const errored = waitForType(browser, 'input:error')
+      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyNope', modifiers: 0 } }))
+
+      const msg = await errored
+      expect(msg['reason']).toBe('unsupported')
+      expect(msg['message']).toBe('unknown key code: KeyNope')
+
+      agent.disconnect()
+      browser.close()
+    })
 
     it('answers input:error for a tap the dead helper dropped', async () => {
       const { browser, agent, th } = await bootedSession()
@@ -567,6 +742,27 @@ describe('IOSAgent', () => {
       const errored = waitForType(browser, 'input:error')
       browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
       expect((await errored).message).toBe('input channel not ready')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    // The deferred branch had no test that drove it with a *starting* helper, so the reason there
+    // could be replaced with the constant `channel-unavailable` and everything stayed green — losing
+    // exactly the distinction this change exists to make, for every key pressed while the software
+    // keyboard is up.
+    it('reasons about the channel in the deferred key branch, not just in the direct one', async () => {
+      const { browser, agent, simctl, th } = await bootedSession()
+      browser.send(JSON.stringify({ type: 'input:keyboard:toggle', sessionId: agent.sessionId }))
+      await waitForType(browser, 'keyboard:toggled')
+      startingHelper(th)
+
+      const errored = waitForType(browser, 'input:error')
+      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
+
+      const msg = await errored
+      expect(msg['reason']).toBe('channel-starting')
+      expect(simctl.hideSoftwareKeyboard).toHaveBeenCalledWith('dev-1')
 
       agent.disconnect()
       browser.close()

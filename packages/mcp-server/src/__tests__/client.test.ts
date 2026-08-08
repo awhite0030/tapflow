@@ -2,20 +2,20 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
 import { TapflowClient } from '../client.js'
 
-// inputAck models the agent's terminal-input ack: 'done' = new agent (booted), 'error' = rejects (not booted / no channel), 'none' = older agent that never acks (degradation).
+// inputAck models the agent's terminal-input ack: 'done' = new agent (booted), 'error' = rejects with prose only, 'error-with-reason' = rejects with the machine-readable reason too, 'none' = older agent that never acks (degradation).
 function createMockRelay(): {
   wss: WebSocketServer
   port: number
   lastClient: () => WebSocket
   send: (msg: Record<string, unknown>) => void
-  setInputAck: (mode: 'done' | 'error' | 'none') => void
+  setInputAck: (mode: 'done' | 'error' | 'error-with-reason' | 'none') => void
   sentMessages: () => Record<string, unknown>[]
   close: () => Promise<void>
 } {
   const wss = new WebSocketServer({ port: 0 })
   const received: Record<string, unknown>[] = []
   let conn: WebSocket | null = null
-  let inputAck: 'done' | 'error' | 'none' = 'done'
+  let inputAck: 'done' | 'error' | 'error-with-reason' | 'none' = 'done'
   const TERMINAL = new Set(['input:touch:end', 'input:key', 'input:button'])
 
   wss.on('connection', (ws) => {
@@ -27,6 +27,8 @@ function createMockRelay(): {
       if (inputAck !== 'none' && TERMINAL.has(msg['type'] as string)) {
         ws.send(JSON.stringify(inputAck === 'error'
           ? { type: 'input:error', sessionId: msg['sessionId'], message: 'device not booted' }
+          : inputAck === 'error-with-reason'
+          ? { type: 'input:error', sessionId: msg['sessionId'], message: 'the input channel is still starting — retry in a moment', reason: 'channel-starting' }
           : { type: 'input:done', sessionId: msg['sessionId'] }))
       }
     })
@@ -182,6 +184,19 @@ describe('TapflowClient', () => {
     })
 
     it('throws when the agent acks input:error (device not booted)', async () => {
+      relay.setInputAck('error')
+      await expect(client.tap('sess-1', 1, 2)).rejects.toThrow('device not booted')
+    })
+
+    // The reason is what lets a caller tell "retry in a moment" from "reconnect" from "never retry".
+    // Acting on it is #457; carrying it is this change.
+    it('includes the machine-readable reason when the agent sends one', async () => {
+      relay.setInputAck('error-with-reason')
+      await expect(client.tap('sess-1', 1, 2)).rejects.toThrow(/channel-starting/)
+    })
+
+    it('behaves exactly as before for an agent that sends no reason', async () => {
+      // The field is optional so an older agent can omit it — absence must not change anything.
       relay.setInputAck('error')
       await expect(client.tap('sess-1', 1, 2)).rejects.toThrow('device not booted')
     })

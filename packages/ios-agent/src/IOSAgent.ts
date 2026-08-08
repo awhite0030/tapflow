@@ -7,11 +7,26 @@ import { spawnSync } from 'child_process'
 import { WebSocket } from 'ws'
 import type { ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
+import type { InputErrorReason } from '@tapflowio/protocol'
 
 const logger = createLogger('ios-agent')
 
 // Typed so a typo cannot ship silently — the viewer gates the whole clipboard bridge on this.
 const AGENT_CAPABILITIES: AgentCapability[] = ['clipboard']
+
+// Human prose for each reason. Not in `@tapflowio/protocol`: that package's main entry must stay
+// runtime-free so it erases under `import type` and never reaches the dashboard bundle — a lookup
+// table is a runtime value. The `reason` on the wire is the machine-readable half; this is only what
+// a human reads, and each agent owns its own wording.
+const INPUT_ERROR_MESSAGES: Record<InputErrorReason, string> = {
+  'not-booted': 'device not booted',
+  'channel-unavailable': 'input channel not ready',
+  'channel-starting': 'the input channel is still starting — retry in a moment',
+  'dispatch-failed': 'the device rejected the input',
+  unsupported: 'this input is not supported on the active connection to the device',
+  malformed: 'this input does not fit what the device is doing',
+  'no-gesture': 'no gesture is in progress to complete — start a new one',
+}
 
 // Cross-platform button name → iOS device-chrome button name. Chrome uses
 // hyphens and "power" (not "lock"); MCP's vocabulary uses underscores. Names
@@ -677,14 +692,66 @@ export class IOSAgent implements DeviceAgent {
     return (this.parkedSentinels.get(deviceId) ?? 0) > 0
   }
 
-  // Ack a terminal input: input:done = dispatched to a booted device (not a landing guarantee — HID is fire-and-forget); input:error = no live channel / not booted. Off the sync inject path, so start/end pairing is unaffected.
-  private async ackInput(state: DeviceState, dispatched: boolean): Promise<void> {
-    const booted = dispatched && (state.booted || (await this.isBooted(state.deviceId)))
-    if (booted) state.booted = true // cache the post-reconnect verify so later inputs skip simctl
+  // A terminal input naming a session this agent holds no state for. Reachable in a way that is
+  // genuinely disputed: `sessionRebind.test.ts` records that a restarted agent is re-seeded from
+  // `agent:registered`, so `!state` should never fire — but `registeredSessions` carries one entry
+  // per *device* (`RelayServer.ts`, `byDeviceId`), and the relay's own comment there notes that one
+  // device can now sit behind two sessions, which leaves the second unseeded. Answering costs four
+  // lines; staying silent costs a terminal input swallowed and the caller's own fallback reporting
+  // success. Android already answers, and `channel-unavailable` is what it maps this to.
+  private ackNoSession(sessionId: string | undefined): void {
+    if (!sessionId) return
+    this.ws?.send(JSON.stringify({
+      type: 'input:error', sessionId,
+      message: INPUT_ERROR_MESSAGES['channel-unavailable'],
+      reason: 'channel-unavailable' satisfies InputErrorReason,
+    }))
+  }
+
+  /**
+   * Why a write was refused. The helper's boolean says only "no".
+   *
+   * `kind` matters because the two questions were decided at different times. Readiness is about now;
+   * a continuation frame's fate was decided when the gesture opened. A gesture whose opening frame
+   * was refused inside the start-up window owns nothing, so its terminal frame can never land no
+   * matter how ready the helper has since become — and reading readiness first answered `malformed`
+   * ("never retry") for precisely the case `channel-starting` exists to serve. Ownership is therefore
+   * checked first for continuations, which is also the right answer when the helper died mid-gesture
+   * and its replacement is still starting: waiting would not help either.
+   *
+   * Safe to read at the ack site rather than inside the write, because iOS writes are synchronous —
+   * but only for the question readiness answers. That is why ownership is asked separately.
+   */
+  private refusalReason(helper: TouchHelper | null, kind: 'continuation' | 'standalone'): InputErrorReason {
+    const state = helper?.inputState() ?? 'unavailable'
+    // No channel at all dominates: the caller must reconnect, and telling it to re-open a gesture
+    // would send it round a loop that cannot succeed.
+    if (state === 'unavailable') return 'channel-unavailable'
+    // Then ownership, and only for a continuation. A gesture whose opening frame never landed owns
+    // nothing, so its terminal frame can never be delivered however ready the helper has become —
+    // which is why readiness must not be consulted first here.
+    //
+    // A consequence worth stating: `channel-starting` is unreachable for a continuation. Owning a
+    // gesture requires an opening frame to have landed, which requires the helper to have been ready,
+    // so a continuation is never refused *merely* because the channel is still coming up. Standalone
+    // inputs — a key, a button — are the ones that get that answer.
+    if (kind === 'continuation' && !helper?.ownsGesture()) return 'no-gesture'
+    return state === 'starting' ? 'channel-starting' : 'no-gesture'
+  }
+
+  // Ack a terminal input. `input:done` = dispatched to a booted device (not a landing guarantee —
+  // HID is fire-and-forget). Otherwise `input:error` carries a machine-readable `reason` so a caller
+  // can tell "retry in a moment" from "reconnect" from "never retry"; `message` stays human prose.
+  // Off the sync inject path, so start/end pairing is unaffected.
+  private async ackInput(state: DeviceState, outcome: 'delivered' | InputErrorReason): Promise<void> {
+    const reason: InputErrorReason | null = outcome !== 'delivered'
+      ? outcome
+      : (state.booted || (await this.isBooted(state.deviceId))) ? null : 'not-booted'
+    if (reason === null) state.booted = true // cache the post-reconnect verify so later inputs skip simctl
     this.ws?.send(JSON.stringify(
-      booted
+      reason === null
         ? { type: 'input:done', sessionId: state.sessionId }
-        : { type: 'input:error', sessionId: state.sessionId, message: dispatched ? 'device not booted' : 'input channel not ready' },
+        : { type: 'input:error', sessionId: state.sessionId, message: INPUT_ERROR_MESSAGES[reason], reason },
     ))
   }
 
@@ -766,11 +833,12 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:touch:end': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state) break
+        if (!state) { this.ackNoSession(msg.sessionId); break }
         // The helper's answer, not its existence: a helper whose process has died reports every
         // write as dropped, and that is what the caller needs to hear (#482).
-        const dispatched = state.touchHelper?.touchEnd() ?? false
-        void this.ackInput(state, dispatched) // terminal of a tap/swipe → ack the gesture
+        const helper = state.touchHelper
+        // terminal of a tap/swipe → ack the gesture
+        void this.ackInput(state, helper?.touchEnd() ? 'delivered' : this.refusalReason(helper, 'continuation'))
         break
       }
       case 'input:pinch:start': {
@@ -790,8 +858,9 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:pinch:end': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state) break
-        void this.ackInput(state, state.touchHelper?.pinchEnd() ?? false)
+        if (!state) { this.ackNoSession(msg.sessionId); break }
+        const pinchHelper = state.touchHelper
+        void this.ackInput(state, pinchHelper?.pinchEnd() ? 'delivered' : this.refusalReason(pinchHelper, 'continuation'))
         break
       }
       case 'input:rotate': {
@@ -871,12 +940,17 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'input:key': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state) break
+        if (!state) { this.ackNoSession(msg.sessionId); break }
         this.ensureTouchHelper(state)
         const { code, modifiers } = msg.payload as { code: string; modifiers?: number }
         const usage = KEY_CODE_MAP[code]
         if (usage === undefined) {
-          this.ws?.send(JSON.stringify({ type: 'input:error', sessionId: msg.sessionId, message: `unknown key code: ${code}` }))
+          // Prose preserved (it names the code), reason added: `unsupported` tells a caller never to
+          // retry, which the message alone could not.
+          this.ws?.send(JSON.stringify({
+            type: 'input:error', sessionId: msg.sessionId,
+            message: `unknown key code: ${code}`, reason: 'unsupported' satisfies InputErrorReason,
+          }))
           break
         }
         if (state.softKeyboardVisible) {
@@ -889,15 +963,19 @@ export class IOSAgent implements DeviceAgent {
           // resolves and the send happens exactly once either way.
           void this.simctl.hideSoftwareKeyboard(state.deviceId)
             .catch((e: unknown) => { logger.error('hideSoftwareKeyboard (on key) failed:', e) })
-            .then(() => this.ackInput(state, state.touchHelper?.sendKey(usage, modifiers ?? 0) ?? false))
+            .then(() => {
+              const h = state.touchHelper
+              return this.ackInput(state, h?.sendKey(usage, modifiers ?? 0) ? 'delivered' : this.refusalReason(h, 'standalone'))
+            })
         } else {
-          void this.ackInput(state, state.touchHelper?.sendKey(usage, modifiers ?? 0) ?? false)
+          const h = state.touchHelper
+          void this.ackInput(state, h?.sendKey(usage, modifiers ?? 0) ? 'delivered' : this.refusalReason(h, 'standalone'))
         }
         break
       }
       case 'input:button': {
         const state = this.deviceStates.get(msg.sessionId!)
-        if (!state) break
+        if (!state) { this.ackNoSession(msg.sessionId); break }
         this.ensureTouchHelper(state)
         const { name, phase } = msg.payload as { name: string; phase?: 'down' | 'up' }
         // Map the cross-platform button vocabulary (used by MCP) onto this
@@ -908,20 +986,29 @@ export class IOSAgent implements DeviceAgent {
         // device's chrome has no HID mapping for. Neither is a dropped input, so they answer
         // with the channel's health instead of a write result; reporting an error there would
         // trade this issue's false success for a false failure.
-        let dispatched = state.touchHelper?.isReady() ?? false
+        const btnHelper = state.touchHelper
+        const wrote = (ok: boolean): 'delivered' | InputErrorReason =>
+          ok ? 'delivered' : this.refusalReason(btnHelper, 'standalone')
+        // The two branches that write nothing answer from the channel's state, which is `delivered`
+        // when it is ready. A button this device's chrome lacks stays a *success* — the device
+        // genuinely has no such button, so an error would be a false failure (#484). That is a
+        // decision, and it is why iOS never sends `unsupported` for a button while Android does.
+        let outcome: 'delivered' | InputErrorReason = btnHelper?.inputState() === 'ready'
+          ? 'delivered'
+          : this.refusalReason(btnHelper, 'standalone')
         if (chromeName === 'home') {
           // Home has no HID down/up split — always a single legacy press. Send once on release
           // (or on a phase-less legacy message) so a down+up pair doesn't fire it twice.
-          if (phase !== 'down') dispatched = state.touchHelper?.pressLegacyButton(0) ?? false
+          if (phase !== 'down') outcome = wrote(btnHelper?.pressLegacyButton(0) ?? false)
         } else {
           const btn = state.loadedChrome?.buttons.find((b) => b.name === chromeName)
           if (btn && btn.usagePage > 0 && btn.usage > 0) {
-            if (phase === 'down') dispatched = state.touchHelper?.pressButtonDown(btn.usagePage, btn.usage) ?? false
-            else if (phase === 'up') dispatched = state.touchHelper?.pressButtonUp(btn.usagePage, btn.usage) ?? false
-            else dispatched = state.touchHelper?.pressButton(btn.usagePage, btn.usage) ?? false
+            if (phase === 'down') outcome = wrote(btnHelper?.pressButtonDown(btn.usagePage, btn.usage) ?? false)
+            else if (phase === 'up') outcome = wrote(btnHelper?.pressButtonUp(btn.usagePage, btn.usage) ?? false)
+            else outcome = wrote(btnHelper?.pressButton(btn.usagePage, btn.usage) ?? false)
           }
         }
-        void this.ackInput(state, dispatched)
+        void this.ackInput(state, outcome)
         break
       }
       case 'open-url': {

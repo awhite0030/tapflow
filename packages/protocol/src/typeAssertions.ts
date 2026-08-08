@@ -39,3 +39,13 @@ export const validInbound: BrowserToRelay = {
 export const validClipboard: BrowserToRelay = {
   type: 'clipboard:write', sessionId: 's', requestId: 'r', payload: { text: 'x', pasteAfter: true },
 }
+
+// ── input:error reason ───────────────────────────────────────────────────────
+// The field is optional on purpose: an agent that predates it omits it, and a consumer must read
+// absence as "unknown" rather than "fine". Making it required is the breaking step.
+
+export const errorWithoutReason: RelayOutbound = { type: 'input:error', sessionId: 's', message: 'agent offline' }
+export const errorWithReason: RelayOutbound = { type: 'input:error', sessionId: 's', message: 'agent offline', reason: 'channel-unavailable' }
+
+// @ts-expect-error - the reason set is closed; a free string would let each agent invent its own
+export const errorWithFreeReason: RelayOutbound = { type: 'input:error', sessionId: 's', message: 'x', reason: 'something-else' }

@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto'
 import { WebSocket } from 'ws'
 import type { AndroidButton, ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
-import { outcomeMessage, type InputOutcome } from './inputOutcome.js'
+import { outcomeMessage, wireReason, type InputOutcome } from './inputOutcome.js'
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
@@ -924,7 +924,7 @@ export class AndroidAgent implements DeviceAgent {
     this.ws?.send(JSON.stringify(
       resolved === 'delivered'
         ? { type: 'input:done', sessionId: state.sessionId }
-        : { type: 'input:error', sessionId: state.sessionId, message: outcomeMessage(resolved) },
+        : { type: 'input:error', sessionId: state.sessionId, message: outcomeMessage(resolved), reason: wireReason(resolved) },
     ))
   }
 
@@ -935,7 +935,7 @@ export class AndroidAgent implements DeviceAgent {
   private ackNoSession(sessionId: string | undefined): void {
     if (!sessionId) return
     this.ws?.send(JSON.stringify({
-      type: 'input:error', sessionId, message: outcomeMessage('no-session'),
+      type: 'input:error', sessionId, message: outcomeMessage('no-session'), reason: wireReason('no-session'),
     }))
   }
 

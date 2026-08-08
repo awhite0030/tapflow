@@ -1,3 +1,5 @@
+import type { InputErrorReason } from '@tapflowio/protocol'
+
 /**
  * What happened to a terminal input, in the vocabulary the ack speaks.
  *
@@ -14,9 +16,9 @@
  * - `unsupported` for an unmapped button IS a decision. iOS answers success there because its
  *   unmapped case means the device genuinely has no such button (#484); ours means we do not know
  *   the name.
- * - `no-session` is NOT a platform difference. iOS's four terminal handlers also `break` silently
- *   on a missing state, and iOS actually clears `deviceStates` on disconnect and reconnect, which
- *   makes it *more* reachable there than here. That is an unfixed asymmetry, not a design choice.
+ * - `no-session` is NOT a platform difference — it was an asymmetry, and it is now closed. iOS's four
+ *   terminal handlers used to `break` silently on a missing state; they answer the same situation as
+ *   of #490, mapped to the same wire reason our `wireReason()` maps it to.
  *
  * `not-booted` and `channel-down` keep their original wording, so the part that does overlap stays
  * symmetric — though note our `channel-down` is narrower than iOS's, because the situations iOS
@@ -58,4 +60,35 @@ const MESSAGES: Record<Exclude<InputOutcome, 'delivered'>, string> = {
 
 export function outcomeMessage(outcome: Exclude<InputOutcome, 'delivered'>): string {
   return MESSAGES[outcome]
+}
+
+/**
+ * The internal reason mapped onto the wire's closed set (`@tapflowio/protocol`).
+ *
+ * The wire set is smaller than this one. It is derived from what a *consumer* must do
+ * differently, and two of our reasons ask for the same thing:
+ *
+ * - `no-gesture` passes through: it earned its own wire reason because the advice differs from
+ *   `malformed`. The message was well-formed and the channel may be healthy — the caller re-opens the
+ *   gesture rather than giving up.
+ * - `no-session` → `channel-unavailable`: the consumer's move is the same (re-join or re-boot), and
+ *   promoting it to its own wire reason would add a surface whose reachability is disputed —
+ *   `sessionRebind.test.ts` records that a restarted agent is re-seeded from `agent:registered`,
+ *   though that message carries one entry per *device* while one device can now sit behind two
+ *   sessions. iOS answers this the same way, so the agents do not differ here.
+ *
+ * `channel-starting` has no producer here. iOS has a measured window where its helper is up but not
+ * yet injecting; the Android paths either have a channel or do not. Recorded rather than left blank
+ * so the gap is a fact about the platform and not an oversight.
+ */
+export function wireReason(outcome: Exclude<InputOutcome, 'delivered'>): InputErrorReason {
+  switch (outcome) {
+    case 'not-booted': return 'not-booted'
+    case 'channel-down': return 'channel-unavailable'
+    case 'no-session': return 'channel-unavailable'
+    case 'failed': return 'dispatch-failed'
+    case 'unsupported': return 'unsupported'
+    case 'malformed': return 'malformed'
+    case 'no-gesture': return 'no-gesture'
+  }
 }

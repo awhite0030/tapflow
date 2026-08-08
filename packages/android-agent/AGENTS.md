@@ -43,13 +43,33 @@ Measured against a killed emulator: the gRPC RPC rejects in **4ms** with `14 UNA
 - **`isReady()` is not a liveness probe.** `socket.writable` is a local-end flag: it goes false after our own destroy, after a FIN (`allowHalfOpen` defaults false, so node ends our writable side), or after an error was already observed. Edge-triggered and one turn late, so the first input after a silent death still reads ready. It cannot see a live socket whose guest stopped consuming. The ack promises delivery, not landing, so that is consistent — do not read more into it.
 - **The adb path is deliberately unbounded.** Racing a timer would not help: the child cannot be killed (`bounded()` records why — killing `input` mid-write can leave the guest worse off), so a timeout would answer failure while the input was still on its way, invite a retry, and land it twice. Unbounded means a wedged guest produces no ack and the caller falls back to its own timeout, which is what happened before this change. One child per input the user actually made is the honest ceiling.
   Measured on a booted emulator (Pixel_6_tapflow): **86ms for the first tap** — it pays the `wm size` lookup, cached after — and **26–29ms steady state**. That is 23× under the MCP client's 2s window on the worst measured call and ~70× on a warm one, so a bound could only ever fire on a guest that is genuinely stuck, which is the one case where firing does harm.
-- **The vocabulary is not identical to iOS's, and only part of that is a decision.** A *decision*: `unsupported` for an unmapped button, because iOS's unmapped case means the device genuinely has no such button (#484) while ours means we do not know the name. **Not** a decision: `no-session`. iOS's four terminal handlers also `break` silently on a missing state, and iOS actually clears `deviceStates` on disconnect and on reconnect, which makes it *more* reachable there than here — so that is an unfixed asymmetry, and the reason `channel-down` is narrower on this side than on iOS's. `not-booted` and `channel-down` keep their exact wording for the meanings that do overlap. Android also answers `failed`, `malformed` and `no-gesture`, none of which iOS distinguishes.
+- **The vocabulary is not identical to iOS's, and only part of that is a decision.** A *decision*: `unsupported` for an unmapped button, because iOS's unmapped case means the device genuinely has no such button (#484) while ours means we do not know the name. **Not** a decision, and no longer a difference: `no-session`. iOS's four terminal handlers used to `break` silently on a missing state — that was an asymmetry, closed in #490, and both sides now answer it as `channel-unavailable`. `channel-down` is still narrower on this side than on iOS's, because the situations iOS folds into it get their own reasons here. `not-booted` and `channel-down` keep their exact wording for the meanings that do overlap. Android also answers `failed`, `malformed` and `no-gesture`, none of which iOS distinguishes.
 - `stream:request-idr` (`AndroidAgent.ts`, `scrcpySession.control.resetVideo()`) writes to the same control socket with no check. It is not an ack surface, so it was left alone — but it shares `isReady()`'s limits.
 - **Downscale**: the gRPC encode size is capped by `TAPFLOW_ANDROID_MAX_SIZE` (or the cross-platform `TAPFLOW_MAX_SIZE`); the per-session tier (native / 1280 / 1000) comes from the viewer context. 16-aligned so H.264 macroblock cropping doesn't show padding on the WASM decoder.
 - **Metrics**: `TAPFLOW_STREAM_METRICS=1` logs the throughput baseline (`stream metrics … fps/KB·s/drop`, every 5 s); gRPC capture fps is set by `TAPFLOW_ANDROID_FPS` (default 30). Full instrumentation surface and the user-facing tuning knobs are in [`contributing/measurement.md`](../../contributing/measurement.md).
 - AVD name is the stable key for `Device.id` (`"avd:<name>"`). ADB serial is kept only in the internal `serialMap`.
 - `ANDROID_HOME` or `ADB_PATH` environment variable is required. Missing → clear error and immediate exit.
 - Apple Silicon Mac: `system-images;android-34;google_apis;arm64-v8a` image required.
+
+### Mapping internal reasons onto the wire
+
+`inputOutcome.ts` keeps this agent's seven internal reasons; `wireReason()` maps them onto the closed
+set in `@tapflowio/protocol`. One collapses, and it is recorded rather than assumed:
+
+- `no-session` → `channel-unavailable`. The consumer's move is the same, and promoting it to its own
+  wire reason would add a surface whose reachability is disputed — `sessionRebind.test.ts` records
+  that a restarted agent is re-seeded from `agent:registered`, though that message carries one entry
+  per *device* while one device can now sit behind two sessions. iOS answers the same way, so the two
+  agents no longer differ here.
+
+`no-gesture` passes through rather than collapsing into `malformed`, which was the first attempt: its
+advice differs. `malformed` tells a caller to fix the call and never retry; a terminal frame with no
+gesture behind it is well-formed on a channel that may be healthy, and the caller's move is to open a
+new gesture. iOS reaches the same reason by a different route (its gesture-ownership guard).
+
+**This agent produces no `channel-starting`.** iOS has a measured window where its helper is up but
+not yet injecting; here a path either has a channel or does not. Written down so the gap is a fact
+about the platform rather than an oversight.
 
 ## HOW NOT
 

@@ -39,6 +39,36 @@ The cost of a broad name is ambiguity about what belongs — answered by the two
 - **The binary frame envelope (TFFE).** That is a separate wire format with its own header layout — see [`contributing/frame-envelope.md`](../../contributing/frame-envelope.md). It is currently implemented separately in the relay and the dashboard, which is the same kind of drift risk, but unifying it is not this package's job today.
 - **Domain types that are not on the wire.** `Build`, `ReleaseGroup`, UI view models — those stay in their own packages.
 
+## `input:error` carries a reason
+
+`input:error` used to travel with a human-readable `message` and nothing else, so a consumer could
+not tell three different situations apart: an input that would land if retried in 200ms, one that
+needs a reconnect, and one that will never work. All three read as the same failure, so a caller had
+nothing to branch on and could only give up or blindly retry. (It is *not* why `mcp-server` falls
+back to optimistic success on a timeout — that path fires when no ack arrives at all, and no field on
+a message that never arrives could inform it. #457 is that one.)
+
+`InputErrorReason` is the machine-readable half. Two rules make it usable:
+
+- **The set comes from what a consumer must do differently**, not from how many internal states an
+  agent has. iOS has one input path (a HID helper process); Android has three (a scrcpy socket, an
+  emulator gRPC channel, `adb shell input`). Each agent maps its own states onto this smaller set —
+  `android-agent`'s `wireReason()` is that map, and it collapses two of its reasons because a
+  consumer's move is identical for them.
+- **`message` stays free prose and `reason` is closed.** That is what lets iOS keep
+  `` `unknown key code: ${code}` `` — the parameterised wording survives because the machine field is
+  separate. Consumers switch on `reason` and display `message`.
+
+The field is **optional**, so an agent that predates it omits it and nothing breaks. Absence
+therefore means *unknown*, never *fine*, and **a consumer meeting a reason it does not know must
+treat it as `channel-unavailable`** — the conservative reading. Making the field required is the
+breaking step and has not been taken.
+
+There is deliberately **no shared message table**. One would be a runtime value, and this entry point
+must erase under `import type` (see HOW NOT) — so each agent owns its own wording. A static check in
+`scripts/__tests__/inputErrorReason.test.mjs` holds both producers to the one union, since neither
+agent's own test suite can see the other.
+
 ## HOW NOT
 
 - **No `enum`, no const objects, no runtime values of any kind — in the main entry.** They compile to JavaScript, so the moment a consumer references one as a value it stops being erased by `import type` and lands in the dashboard's browser bundle. String literal unions only. (`src/typeAssertions.ts` is checked by `tsconfig.assertions.json` and excluded from the build for exactly this reason — it declares values, so it must not reach `dist`.)
