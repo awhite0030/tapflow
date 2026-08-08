@@ -1,22 +1,16 @@
-import type { InputErrorReason, SessionTerminatedReason } from '@tapflowio/protocol'
+// Wire payload types come from `@tapflowio/protocol`, which owns them — this file used to declare
+// its own copies and they drifted (`session:chrome` here lacked three fields `DeviceViewer` reads).
+// `AgentDevice` and `DeviceInfo` were this package's names for shapes protocol calls `DeviceSummary`
+// and `DeviceDetails`; the old `DeviceInfo` also collided with the relay's own `DeviceInfo`, which is
+// the *other* shape. Re-exported so this module stays the one import site for view code.
+import type {
+  AgentResources, AndroidButton, ChromeButton, ChromeData, ChromeRect,
+  AndroidChrome, ChromePayload, ClipboardErrorPayload, DeviceDetails, DeviceSummary, InputErrorReason, SessionInfo, SessionTerminatedReason,
+} from '@tapflowio/protocol'
 
-export interface AgentResources {
-  cpuPercent: number
-  memUsedMB: number
-  memTotalMB: number
-  slotsAvailable: number
-  slotsTotal: number
-  reportedAt: number
-}
-
-export interface AgentDevice {
-  id: string
-  name: string
-  platform: string
-  status: string
-  osVersion?: string
-  sessionId: string
-  busy: boolean
+export type {
+  AgentResources, AndroidButton, ChromeButton, ChromeData, ChromeRect,
+  AndroidChrome, ChromePayload, DeviceDetails, DeviceSummary, SessionInfo,
 }
 
 export interface Comment {
@@ -32,61 +26,6 @@ export interface CommentAttachment {
   id: number
   file_path: string
   mime: string
-}
-
-export interface SessionInfo {
-  agentName?: string
-  platform?: string
-  resources?: AgentResources
-  devices: AgentDevice[]
-}
-
-export interface ChromeRect {
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-export interface ChromeButton {
-  name: string
-  accessibilityTitle: string
-  anchor: string
-  onTop: boolean                            // true = button is above device frame (e.g. home button)
-  normalOffset: { x: number; y: number }   // button center at retracted/default position in 2× composite px
-  rolloverOffset: { x: number; y: number } // button center at extended/hover position in 2× composite px
-  buttonW: number                           // button width in 2× composite px
-  buttonH: number                           // button height in 2× composite px
-  usagePage: number                         // HID usage page for SimulatorKit injection (0 = unknown)
-  usage: number                             // HID usage code (0 = unknown)
-  buttonPng?: string                        // base64 PNG of button at 2× (for CSS-animated overlay)
-  pressedPng?: string                       // base64 PNG of pressed state (imageDown asset)
-  pressedRect?: ChromeRect
-}
-
-export interface AndroidButton {
-  name: string
-  accessibilityTitle: string
-  keyCode: number
-}
-
-export interface ChromeData {
-  framePng: string         // full composite PDF at 2× — device frame visible, screen hole transparent
-  bezelWidth: number
-  bezelHeight: number
-  compositeWidth: number   // full PDF width including devicePadding, at 2× px
-  compositeHeight: number  // full PDF height including devicePadding, at 2× px
-  padding: { left: number; right: number; top: number; bottom: number }
-  screenRect: ChromeRect
-  screenCornerRadius: number  // screen corner radius in 2× px (0 if device has no rounded corners)
-  logicalWidth: number
-  logicalHeight: number
-  buttons: ChromeButton[]
-}
-
-export interface DeviceInfo {
-  deviceName: string
-  osVersion: string
 }
 
 export interface Recording {
@@ -148,8 +87,8 @@ export type RelayMessage =
   | { type: 'session:terminated'; sessionId: string; reason: SessionTerminatedReason }
   | { type: 'session:agent-away'; sessionId: string }
   | { type: 'session:rebound'; sessionId: string; capabilities: string[] }
-  | { type: 'session:chrome'; payload: ChromeData | { buttons: AndroidButton[]; streamType: 'h264' } }
-  | { type: 'session:deviceInfo'; payload: DeviceInfo }
+  | { type: 'session:chrome'; payload: ChromePayload }
+  | { type: 'session:deviceInfo'; payload: DeviceDetails }
   | { type: 'device:booting' }
   | { type: 'device:ready'; payload: { deviceId: string } }
   | { type: 'device:boot-error'; sessionId?: string; message: string }
@@ -166,5 +105,5 @@ export type RelayMessage =
   // agent → browser
   | { type: 'clipboard:data'; sessionId: string; requestId: string; payload: { text: string } }
   | { type: 'clipboard:write-done'; sessionId: string; requestId: string }
-  | { type: 'clipboard:error'; sessionId: string; requestId: string; message: string; payload?: { unsupported?: boolean; sentinelParked?: boolean } }
+  | { type: 'clipboard:error'; sessionId: string; requestId: string; message: string; payload?: ClipboardErrorPayload }
   | { type: 'error'; message: string }

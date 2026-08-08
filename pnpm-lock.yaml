@@ -66,6 +66,9 @@ importers:
 
   packages/agent-core:
     dependencies:
+      '@tapflowio/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       ws:
         specifier: ^8.21.1
         version: 8.21.1
@@ -380,6 +383,9 @@ importers:
       '@tapflowio/agent-core':
         specifier: workspace:*
         version: link:../agent-core
+      '@tapflowio/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       ws:
         specifier: ^8.21.1
         version: 8.21.1

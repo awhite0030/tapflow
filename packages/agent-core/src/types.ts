@@ -1,3 +1,14 @@
+import type { AndroidButton, AgentResources, ClipboardErrorPayload, Point } from '@tapflowio/protocol'
+
+// These three are **wire** payload types, so `@tapflowio/protocol` owns them — it is the leaf both
+// consumers that read them can reach, and this package is not one of them (neither `dashboard` nor
+// `mcp-server` depends on `agent-core`). Re-exported under the same names so agent code and
+// third-party agents built on `AgentRegistry.register()` are unaffected.
+//
+// `export type`, not a bare `export { … } from`: the latter is a real runtime import of protocol's
+// `dist`, which would drag this package into the source-resolution rule in the root AGENTS.md.
+export type { AndroidButton, AgentResources, ClipboardErrorPayload, Point }
+
 export type Platform = string
 
 export type DeviceStatus = 'booted' | 'shutdown' | 'unknown'
@@ -11,26 +22,9 @@ export interface Device {
   osVersion?: string  // e.g. "iOS 18.3"
 }
 
-export interface Point {
-  x: number
-  y: number
-}
 
-export interface AgentResources {
-  cpuPercent: number
-  memUsedMB: number
-  memTotalMB: number
-  slotsAvailable: number
-  slotsTotal: number
-  reportedAt: number  // Date.now()
-}
 
 // Android physical button descriptor sent via session:chrome payload
-export interface AndroidButton {
-  name: string
-  accessibilityTitle: string
-  keyCode: number
-}
 
 // Closed role vocabulary shared by all platforms. Unmappable native roles
 // become 'other'; the platform-native string is preserved in rawRole.
@@ -75,21 +69,6 @@ export interface UIElement {
 // plain string list on the wire rather than a helper nobody on the reading side can call.
 export type AgentCapability = 'clipboard'
 
-/** Payload on every `clipboard:error` from a read. `sentinelParked` answers the one question the
- *  viewer needs to decide its fallback: is a marker still sitting on the device clipboard?
- *
- *  If it is, the agent's restore is about to overwrite whatever the device copies next, so
- *  pressing the plain chord as a fallback would hand the user a stale value — the exact bug the
- *  sentinel exists to prevent. If it is not, the chord is safe and is the only way the copy
- *  happens at all. Absent means "assume parked": an agent from before this field cannot tell us,
- *  and the silent-stale-paste failure is worse than a copy that did not happen.
- *
- *  `unsupported` is narrower — this backend has no clipboard channel whatsoever — and drives the
- *  paste fallback and the wording of the toast. */
-export interface ClipboardErrorPayload {
-  unsupported?: boolean
-  sentinelParked?: boolean
-}
 
 // ── Clipboard bridge shared contract ────────────────────────────────────────
 // Both agents implement the same protocol, so the limits and the sentinel vocabulary

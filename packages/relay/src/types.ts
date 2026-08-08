@@ -67,18 +67,14 @@ export type { AgentResources, UIElement }
 
 // The wire contract lives in @tapflowio/protocol so the relay, the dashboard and mcp-server cannot
 // drift apart. `DeviceInfo` is kept as an alias while call sites move over.
-import type { DeviceSummary, SessionTerminatedReason } from '@tapflowio/protocol'
-export type { DeviceReport, DeviceSummary, SessionTerminatedReason } from '@tapflowio/protocol'
+import type { DeviceSummary, SessionInfo, SessionTerminatedReason } from '@tapflowio/protocol'
+export type { DeviceDetails, DeviceReport, DeviceSummary, SessionInfo, SessionTerminatedReason } from '@tapflowio/protocol'
 
 export type DeviceInfo = DeviceSummary
 
-// agents:listed response groups devices by agent machine
-export interface SessionInfo {
-  agentName?: string
-  platform?: string
-  resources?: AgentResources
-  devices: DeviceInfo[]
-}
+// `agents:listed` groups devices by agent machine. Protocol owns the shape; this file used to
+// declare an identical copy. Its `devices` element is protocol's `DeviceSummary`, which the alias
+// below already points at.
 
 export interface RelayMessage {
   type: MessageType

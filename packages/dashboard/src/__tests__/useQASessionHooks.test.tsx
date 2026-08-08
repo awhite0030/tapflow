@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import type { AgentDevice, Build, RelayMessage, SessionInfo } from '@/lib/types'
+import type { DeviceSummary, Build, RelayMessage, SessionInfo } from '@/lib/types'
 
 vi.mock('@/lib/queries', () => ({
   getBuild: vi.fn(),
@@ -25,7 +25,7 @@ const makeSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
   ...overrides,
 })
 
-const makeDevice = (overrides: Partial<AgentDevice> = {}): AgentDevice => ({
+const makeDevice = (overrides: Partial<DeviceSummary> = {}): DeviceSummary => ({
   id: 'avd:Pixel_7',
   name: 'Pixel 7',
   platform: 'android',
@@ -197,7 +197,7 @@ describe('useAgentSession', () => {
 // ─── useDeviceSelector ─────────────────────────────────────────────────────────
 
 describe('useDeviceSelector', () => {
-  const devices: AgentDevice[] = [
+  const devices: DeviceSummary[] = [
     makeDevice({ id: 'd1', name: 'Pixel 7', osVersion: 'Android 14', platform: 'android' }),
     makeDevice({ id: 'd2', name: 'Pixel 6', osVersion: 'Android 13', platform: 'android' }),
     makeDevice({ id: 'd3', name: 'iPhone 15', osVersion: 'iOS 17', platform: 'ios' }),
@@ -221,7 +221,7 @@ describe('useDeviceSelector', () => {
   })
 
   it('returns osVersions sorted descending (newest first)', () => {
-    const mixedDevices: AgentDevice[] = [
+    const mixedDevices: DeviceSummary[] = [
       makeDevice({ osVersion: 'Android 13', platform: 'android' }),
       makeDevice({ osVersion: 'Android 15', platform: 'android' }),
       makeDevice({ osVersion: 'Android 14', platform: 'android' }),

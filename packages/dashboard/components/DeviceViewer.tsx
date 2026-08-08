@@ -7,7 +7,7 @@ import { usePerfMode } from '@/hooks/usePerfMode';
 import { IOSViewer } from './device/IOSViewer';
 import { AndroidViewer } from './device/AndroidViewer';
 import { SimulatorInfoCard } from './device/shared/SimulatorInfoCard';
-import type { AndroidButton, ChromeData, RelayMessage } from '@/lib/types';
+import type { AndroidChrome, ChromeData, RelayMessage } from '@/lib/types';
 import type { FrameTiming, PerfHook } from './perf/types';
 import { parseEnvelopeHeader, HEADER_SIZE, CODEC_H264, CODEC_AUDIO, type BinaryFrameHandler } from '@/lib/envelope';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
@@ -29,8 +29,6 @@ interface Props {
    *  the parent decides where to go. */
   onSessionEnded?: (reason: SessionTerminatedReason) => void;
 }
-
-type AndroidChrome = { buttons: AndroidButton[]; streamType: 'h264'; screenWidth?: number; screenHeight?: number; cornerRadius?: number };
 
 export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecordingUploaded, onSessionEnded }: Props) {
   const sendRef = useRef<(msg: BrowserToRelay) => void>(() => {});

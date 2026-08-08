@@ -27,7 +27,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { SearchInput } from '@/components/ui/search-input';
-import type { AgentDevice, SessionInfo } from '@/lib/types';
+import type { DeviceSummary, SessionInfo } from '@/lib/types';
 import { getResourceHealth, type ResourceHealth } from '@/lib/resource-health';
 
 // Keyed by the reason so a new one cannot be added without deciding what the user is told. A
@@ -78,7 +78,7 @@ export function QASession() {
   //
   // Consumed on click, not on success — a failed boot does not re-arm it. Asking again means
   // turning it on again, which keeps an irreversible action tied to an explicit act.
-  const handleStartDevice = useCallback((d: AgentDevice) => {
+  const handleStartDevice = useCallback((d: DeviceSummary) => {
     consumeResetMode();
     startDevice(d);
   }, [consumeResetMode, startDevice]);
@@ -248,7 +248,7 @@ export function QASession() {
                 </p>
               ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-2">
-                  {versionedDevices.map((d: AgentDevice) => {
+                  {versionedDevices.map((d: DeviceSummary) => {
                     const isBooted = d.status === 'booted'
                     const isBusy = d.busy
                     const statusLabel = isBusy ? 'In use' : isBooted ? 'Booted' : 'Available'
