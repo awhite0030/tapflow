@@ -1,5 +1,7 @@
-/** Normalized screen coordinate, each axis in [0, 1]. */
-export type NormPoint = { x: number; y: number }
+// The normalized 0-1 screen coordinate is the wire's own `Point` — the payload of
+// `input:touch:*`. Re-exported under this package's name, which says the units out loud.
+import type { Point } from '@tapflowio/protocol'
+export type { Point as NormPoint }
 
 /**
  * Convert a raw pointer position to a normalized screen coordinate for iOS.
@@ -13,13 +15,13 @@ export type NormPoint = { x: number; y: number }
  * (chrome JSON stores 2× values; the caller divides by 2 before passing here).
  */
 export function iosToNormScreen(
-  point: NormPoint,
+  point: Point,
   rect: { left: number; top: number; width: number; height: number },
   compositeW: number,
   compositeH: number,
   screenRect: { x: number; y: number; width: number; height: number },
   isLandscape: boolean,
-): NormPoint | null {
+): Point | null {
   const { x: sx, y: sy, width: sw, height: sh } = screenRect
   let cx: number, cy: number
   if (isLandscape) {
@@ -42,10 +44,10 @@ export function iosToNormScreen(
  *   portrait_x = yv,  portrait_y = 1 - xv
  */
 export function androidToNorm(
-  point: NormPoint,
+  point: Point,
   rect: { left: number; top: number; width: number; height: number },
   needsCSSRotation: boolean,
-): NormPoint | null {
+): Point | null {
   const xv = (point.x - rect.left) / rect.width
   const yv = (point.y - rect.top) / rect.height
   if (xv < 0 || xv > 1 || yv < 0 || yv > 1) return null
@@ -57,7 +59,7 @@ export function androidToNorm(
  * Given the second finger's normalized position, return both finger positions
  * for a pinch gesture. The first finger is the point-symmetric counterpart.
  */
-export function toPinchFingers(f1: NormPoint): { f0: NormPoint; f1: NormPoint } {
+export function toPinchFingers(f1: Point): { f0: Point; f1: Point } {
   return { f0: { x: 1 - f1.x, y: 1 - f1.y }, f1 }
 }
 

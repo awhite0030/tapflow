@@ -24,7 +24,7 @@
     "dist",
     "node_modules"
   ],
-  "references": [
+  "references": [{ "path": "../protocol" },
     {
       "path": "../agent-core"
     }

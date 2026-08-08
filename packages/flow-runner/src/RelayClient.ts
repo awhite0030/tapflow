@@ -1,3 +1,4 @@
+import type { DeviceSummary } from '@tapflowio/protocol'
 import { WebSocket } from 'ws'
 import type { UIElement } from '@tapflowio/agent-core'
 import { PlatformError } from '@tapflowio/agent-core'
@@ -16,20 +17,14 @@ class RelayHttpError extends PlatformError {
 // (agent/foreground-race 502, idle-timeout 504, 5xx, network 0) is retryable.
 const PERMANENT_QUERY_STATUSES = new Set([400, 401, 403, 404, 409])
 
-export interface DeviceInfo {
-  id: string
-  name: string
-  platform: string
-  status: string
-  osVersion?: string
-  sessionId: string
-  busy: boolean
-}
+// Protocol owns the wire shape. The name stays `DeviceInfo` because it is exported from this
+// package's public entry and `@tapflowio/cli` imports it — renaming would be a breaking change.
+export type { DeviceSummary as DeviceInfo } from '@tapflowio/protocol'
 
 export interface AgentSession {
   agentName?: string
   platform?: string
-  devices: DeviceInfo[]
+  devices: DeviceSummary[]
 }
 
 type RelayMsg = Record<string, unknown>

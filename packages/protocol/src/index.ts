@@ -66,11 +66,13 @@ export interface ChromeButton {
   anchor: string
   /** true = button is above the device frame (e.g. home button) */
   onTop: boolean
-  /** button center at retracted/default position, in 2× composite px */
+  /** button center in the **expanded composite** space at 2× px (retracted/default) */
   normalOffset: { x: number; y: number }
-  /** button center at extended/hover position, in 2× composite px */
+  /** button center at the rollover (extended/hover) position, same space */
   rolloverOffset: { x: number; y: number }
+  /** button width in 2× composite px */
   buttonW: number
+  /** button height in 2× composite px */
   buttonH: number
   /** HID usage page for SimulatorKit injection (0 = unknown) */
   usagePage: number
@@ -80,6 +82,7 @@ export interface ChromeButton {
   buttonPng?: string
   /** base64 PNG of the pressed state (imageDown asset) */
   pressedPng?: string
+  /** position + size in the **expanded composite** space at 2× px */
   pressedRect?: ChromeRect
 }
 
@@ -89,20 +92,55 @@ export interface AndroidButton {
   keyCode: number
 }
 
-/** iOS device chrome — the bezel artwork and hit regions the viewer composites around the screen. */
+/** Payload on every `clipboard:error` from a read. `sentinelParked` answers the one question the
+ *  viewer needs to decide its fallback: is a marker still sitting on the device clipboard?
+ *
+ *  If it is, the agent's restore is about to overwrite whatever the device copies next, so
+ *  pressing the plain chord as a fallback would hand the user a stale value — the exact bug the
+ *  sentinel exists to prevent. If it is not, the chord is safe and is the only way the copy
+ *  happens at all. Absent means "assume parked": an agent from before this field cannot tell us,
+ *  and the silent-stale-paste failure is worse than a copy that did not happen.
+ *
+ *  `unsupported` is narrower — this backend has no clipboard channel whatsoever — and drives the
+ *  paste fallback and the wording of the toast. */
+export interface ClipboardErrorPayload {
+  unsupported?: boolean
+  sentinelParked?: boolean
+}
+
+/**
+ * iOS device chrome — the bezel artwork and hit regions the viewer composites around the screen.
+ *
+ * **Two coordinate spaces exist here and the field names do not distinguish them.** The composite
+ * PDF is the device frame; the *expanded* composite is that canvas grown by the button margins, and
+ * it is the space the viewer lays out against. `compositeWidth`/`Height`, `screenRect` and every
+ * `ChromeButton` offset are in the **expanded** space; `padding` is the device's own padding inside
+ * the un-expanded one. Getting this wrong puts buttons at an offset that looks almost right.
+ *
+ * These descriptions come from the producer (`ios-agent`'s `DeviceChromeLoader`, which computes
+ * `expandedW = pdfSize.width + buttonMargins`). They were previously accurate only in that file —
+ * this declaration said `compositeWidth` was "full PDF width including devicePadding", a different
+ * quantity — so they moved here with the type rather than being lost with it.
+ */
 export interface ChromeData {
-  /** full composite PDF at 2× — device frame visible, screen hole transparent */
+  /** composite with buttons baked in, at 2× — screen hole transparent */
   framePng: string
+  /** composite minus devicePadding, at 2× px */
   bezelWidth: number
   bezelHeight: number
-  /** full PDF width including devicePadding, at 2× px */
+  /** **expanded** canvas width — composite + button margins — at 2× px */
   compositeWidth: number
+  /** **expanded** canvas height, at 2× px */
   compositeHeight: number
+  /** devicePadding at 2× px, inside the un-expanded composite */
   padding: { left: number; right: number; top: number; bottom: number }
+  /** screen position in the **expanded** composite space, at 2× px */
   screenRect: ChromeRect
   /** screen corner radius in 2× px (0 if the device has no rounded corners) */
   screenCornerRadius: number
+  /** screen width in iOS logical pixels (pt) */
   logicalWidth: number
+  /** screen height in iOS logical pixels (pt) */
   logicalHeight: number
   buttons: ChromeButton[]
 }
@@ -229,7 +267,7 @@ export type RelayToBrowser =
   | { type: 'open-url:error'; sessionId: string; message: string }
   | { type: 'app:clear-state-error'; sessionId: string; message: string }
   | { type: 'input:error'; sessionId: string; message: string; reason?: InputErrorReason }
-  | { type: 'clipboard:error'; sessionId: string; requestId: string; message: string }
+  | { type: 'clipboard:error'; sessionId: string; requestId: string; message: string; payload?: ClipboardErrorPayload }
 
 /** Everything the relay originates. Messages it merely forwards keep their inbound type — they are
  *  not re-created, so they are not checked against this union. */

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRelay } from '@/hooks/useRelay'
-import type { AgentDevice, RelayMessage, SessionInfo } from '@/lib/types'
+import type { DeviceSummary, RelayMessage, SessionInfo } from '@/lib/types'
 
 export function useAgentSession(os: string) {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
@@ -43,7 +43,7 @@ export function useAgentSession(os: string) {
 
   const agentGroups = sessions.filter((s) => s.devices.some((d) => d.platform === os))
 
-  const startDevice = useCallback((d: AgentDevice) => {
+  const startDevice = useCallback((d: DeviceSummary) => {
     setDeviceId(d.id)
     setBooting(true)
     setStatus('Booting…')

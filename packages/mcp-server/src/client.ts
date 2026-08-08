@@ -1,20 +1,15 @@
-import type { BrowserToRelay, InputErrorReason } from '@tapflowio/protocol'
-import { WebSocket } from 'ws'
+import type { BrowserToRelay, DeviceSummary, InputErrorReason } from '@tapflowio/protocol'
 
-export interface DeviceInfo {
-  id: string
-  name: string
-  platform: string
-  status: string
-  osVersion?: string
-  sessionId: string
-  busy: boolean
-}
+// Protocol owns the wire shape; this file used to declare an identical copy under a name the
+// relay uses for a *different* shape. Kept exported as `DeviceInfo` because that is this
+// package's public name for it.
+export type { DeviceSummary as DeviceInfo }
+import { WebSocket } from 'ws'
 
 export interface AgentSession {
   agentName?: string
   platform?: string
-  devices: DeviceInfo[]
+  devices: DeviceSummary[]
 }
 
 export interface BuildInfo {

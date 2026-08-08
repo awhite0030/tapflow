@@ -6,7 +6,7 @@ import path from 'path'
 import { randomUUID } from 'crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import { SessionManager } from './SessionManager.js'
-import type { RelayMessage, UIElement } from './types.js'
+import type { DeviceDetails, RelayMessage, UIElement } from './types.js'
 import type { ChromePayload, RelayOutbound } from '@tapflowio/protocol'
 import { Router, json } from './router.js'
 import { requireViewAuth, requireAuth, getAuth, verifyPat } from './middleware/auth.js'
@@ -629,7 +629,7 @@ export class RelayServer {
       case 'session:deviceInfo': {
         const session = this.sessions.get(msg.sessionId!)
         if (!session) break
-        this.sessions.setDeviceInfo(session.id, msg.payload as { deviceName: string; osVersion: string })
+        this.sessions.setDeviceInfo(session.id, msg.payload as DeviceDetails)
         if (session.browserSocket?.readyState === WebSocket.OPEN) {
           session.browserSocket.send(JSON.stringify(msg))
         }

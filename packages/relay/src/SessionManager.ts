@@ -3,7 +3,7 @@ import { WebSocket } from 'ws'
 import type { DeviceStatus } from '@tapflowio/agent-core'
 import { ValidationError } from '@tapflowio/agent-core'
 import type { AgentResources, SessionInfo } from './types.js'
-import type { ChromePayload, DeviceDetails } from '@tapflowio/protocol'
+import type { ChromePayload, DeviceDetails, DeviceReport } from '@tapflowio/protocol'
 
 export interface Session {
   id: string
@@ -30,8 +30,6 @@ export interface Session {
   deviceInfo?: DeviceDetails
   idleTimer: ReturnType<typeof setTimeout> | null
 }
-
-type RawDevice = { id: string; name: string; platform: string; status: string; osVersion?: string }
 
 /** What an `agent:register` says about the agent itself, as opposed to its devices. */
 export type AgentIdentity = {
@@ -65,7 +63,7 @@ export class SessionManager {
    */
   private static agentFields(
     agent: AgentIdentity,
-    device: RawDevice,
+    device: DeviceReport,
   ): Pick<Session, 'agentId' | 'agentName' | 'agentPlatform' | 'agentCapabilities' | 'deviceName' | 'devicePlatform' | 'deviceStatus' | 'deviceOsVersion'> {
     return {
       agentId: agent.agentId,
@@ -79,7 +77,7 @@ export class SessionManager {
     }
   }
 
-  create(agentSocket: WebSocket, devices: RawDevice[] = [], agentName?: string, agentPlatform?: string, agentId?: string, agentCapabilities?: string[]): string[] {
+  create(agentSocket: WebSocket, devices: DeviceReport[] = [], agentName?: string, agentPlatform?: string, agentId?: string, agentCapabilities?: string[]): string[] {
     const agentIds = this.agentSocketIndex.get(agentSocket) ?? new Set<string>()
     const agent: AgentIdentity = { agentId, agentName, agentPlatform, agentCapabilities }
     return devices.map((d) => {
@@ -189,7 +187,7 @@ export class SessionManager {
    * field refresh has to stay in step with `create()`. Written inline in `RelayServer`, the next
    * field added to `create()` would be missed on this path alone, and silently.
    */
-  rebind(sessionId: string, agentSocket: WebSocket, device: RawDevice, agent: AgentIdentity): void {
+  rebind(sessionId: string, agentSocket: WebSocket, device: DeviceReport, agent: AgentIdentity): void {
     const session = this.sessions.get(sessionId)
     if (!session) return
     const old = session.agentSocket
@@ -277,7 +275,7 @@ export class SessionManager {
     if (session) session.chromeData = data
   }
 
-  setDeviceInfo(sessionId: string, info: { deviceName: string; osVersion: string }): void {
+  setDeviceInfo(sessionId: string, info: DeviceDetails): void {
     const session = this.sessions.get(sessionId)
     if (session) session.deviceInfo = info
   }

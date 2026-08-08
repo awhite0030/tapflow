@@ -4,47 +4,17 @@ import { execFileSync } from 'child_process'
 import { existsSync, readFileSync, writeFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+// The chrome types are the wire payload of `session:chrome`, so `@tapflowio/protocol` owns them.
+// Their field descriptions — including the expanded-composite coordinate space this file computes —
+// moved there with them.
+import type { ChromeData, ChromeButton, ChromeRect } from '@tapflowio/protocol'
 
 const CHROME_MAP_PATH = '/Library/Developer/DeviceKit/chrome_map.plist'
 const CHROME_DIR = '/Library/Developer/DeviceKit/Chrome'
 const PROFILES_DIR = '/Library/Developer/CoreSimulator/Profiles/DeviceTypes'
 
-export interface ChromeRect {
-  x: number
-  y: number
-  width: number
-  height: number
-}
 
-export interface ChromeButton {
-  name: string
-  accessibilityTitle: string
-  anchor: string
-  onTop: boolean                            // true = button is above device frame (e.g. home button)
-  normalOffset: { x: number; y: number }   // button center in expanded composite 2× px (retracted/default)
-  rolloverOffset: { x: number; y: number } // button center at rollover (extended/hover) position
-  buttonW: number                           // button width in 2× composite px
-  buttonH: number                           // button height in 2× composite px
-  usagePage: number                         // HID usage page for SimulatorKit injection (0 = unknown)
-  usage: number                             // HID usage code (0 = unknown)
-  buttonPng?: string                        // base64 PNG of button at 2× (for CSS-animated overlay)
-  pressedPng?: string                       // base64 PNG of pressed state (imageDown asset)
-  pressedRect?: ChromeRect                  // position + size in expanded composite 2× px
-}
 
-export interface ChromeData {
-  framePng: string         // composite + buttons baked in at 2× — screen hole transparent
-  bezelWidth: number       // composite minus devicePadding, at 2× px
-  bezelHeight: number
-  compositeWidth: number   // expanded canvas width (composite + button margins), at 2× px
-  compositeHeight: number  // expanded canvas height, at 2× px
-  padding: { left: number; right: number; top: number; bottom: number }  // devicePadding at 2× px
-  screenRect: ChromeRect   // screen position in expanded composite coordinate space, at 2× px
-  screenCornerRadius: number  // screen corner radius in 2× px (0 if device has no rounded corners)
-  logicalWidth: number     // screen width in iOS logical pixels (pt)
-  logicalHeight: number    // screen height in iOS logical pixels (pt)
-  buttons: ChromeButton[]
-}
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -867,3 +837,5 @@ export class DeviceChromeLoader {
     }
   }
 }
+
+export type { ChromeData, ChromeButton, ChromeRect }
