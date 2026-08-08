@@ -86,9 +86,9 @@ diagnostic detail (`unknown key code: KeyFoo`) belongs. Absent or unrecognised r
 `channel-unavailable` — absence means *unknown*, never *fine*.
 
 Suppressed entirely while the agent is away. An absent agent cannot send this, so in that state the
-*relay* answers every terminal input itself with a reasonless `input:error`; a tapping tester would
-refresh the toast indefinitely, with advice contradicting the status card, which already says the relay
-is holding the session open and waiting.
+*relay* answers every terminal input itself (`agent offline`, `channel-unavailable` since #492); a
+tapping tester would refresh the toast indefinitely, with advice contradicting the status card, which
+already says the relay is holding the session open and waiting.
 
 A persistent indicator needs a protocol-level input-health signal, or acks that identify their channel
 and arrive in order. Two tests guard the decision (`DeviceViewer.inputError.test.tsx`): `input:done`
