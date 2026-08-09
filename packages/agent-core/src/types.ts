@@ -1,4 +1,6 @@
-import type { AndroidButton, AgentResources, ClipboardErrorPayload, Point } from '@tapflowio/protocol'
+import type {
+  AndroidButton, AgentResources, ClipboardErrorPayload, Point, UIElement, UIElementFrame, UIElementRole,
+} from '@tapflowio/protocol'
 
 // These three are **wire** payload types, so `@tapflowio/protocol` owns them — it is the leaf both
 // consumers that read them can reach, and this package is not one of them (neither `dashboard` nor
@@ -7,7 +9,7 @@ import type { AndroidButton, AgentResources, ClipboardErrorPayload, Point } from
 //
 // `export type`, not a bare `export { … } from`: the latter is a real runtime import of protocol's
 // `dist`, which would drag this package into the source-resolution rule in the root AGENTS.md.
-export type { AndroidButton, AgentResources, ClipboardErrorPayload, Point }
+export type { AndroidButton, AgentResources, ClipboardErrorPayload, Point, UIElement, UIElementFrame, UIElementRole }
 
 export type Platform = string
 
@@ -25,39 +27,6 @@ export interface Device {
 
 
 // Android physical button descriptor sent via session:chrome payload
-
-// Closed role vocabulary shared by all platforms. Unmappable native roles
-// become 'other'; the platform-native string is preserved in rawRole.
-export type UIElementRole =
-  | 'button'
-  | 'text'
-  | 'input'
-  | 'image'
-  | 'checkbox'
-  | 'switch'
-  | 'slider'
-  | 'list'
-  | 'cell'
-  | 'tab'
-  | 'other'
-
-// Normalized to 0-1 in the same coordinate space the touch input path
-// consumes, so a frame center can be fed straight into tap without conversion.
-export interface UIElementFrame {
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-export interface UIElement {
-  role: UIElementRole
-  label: string
-  identifier?: string
-  frame: UIElementFrame
-  enabled: boolean
-  rawRole?: string
-}
 
 // ── Agent capabilities ──────────────────────────────────────────────────────
 // Advertised in `agent:register` so a viewer can tell what the agent on the other

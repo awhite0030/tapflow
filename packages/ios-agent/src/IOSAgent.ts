@@ -7,7 +7,7 @@ import { spawnSync } from 'child_process'
 import { WebSocket } from 'ws'
 import type { ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
-import type { InputErrorReason } from '@tapflowio/protocol'
+import type { AgentControlOutbound, InputErrorReason, ClipboardReplyBody } from '@tapflowio/protocol'
 
 const logger = createLogger('ios-agent')
 
@@ -144,6 +144,25 @@ export class IOSAgent implements DeviceAgent {
   private readonly token?: string
   private readonly handshakeTimeoutMs: number
   private ws: WebSocket | null = null
+
+  /** Send on the control socket, if there is one. The `?.` is the point: 66 call sites relied on a send
+   *  being a no-op between reconnects, and this preserves that exactly.
+   *
+   *  Typed with `AgentControlOutbound`, which is why this exists — an agent's literal used to reach `ws.send`
+   *  with nothing checking it, and #489/#490 are what that cost. */
+  private sendMsg(msg: AgentControlOutbound): void {
+    this.ws?.send(JSON.stringify(msg))
+  }
+
+  /** Send on a socket the caller has already established. Takes the socket **as an argument** rather than
+   *  reading `this.ws`, and that is deliberate: the call sites that use it sit behind an entry guard
+   *  (`if (!this.ws) return`), and today deleting one of those guards is a compile error. Reading
+   *  `this.ws` here — or asserting it with `!` — would make the guard optional to the compiler and turn
+   *  its removal into a runtime `TypeError` instead. It also serves the `agent:register` send, which runs
+   *  inside `onopen` on a local socket. */
+  private sendOn(ws: WebSocket, msg: AgentControlOutbound): void {
+    ws.send(JSON.stringify(msg))
+  }
   private deviceStates = new Map<string, DeviceState>()
   // Last app launched per device (deviceId → bundleId). The XCUITest tree backend
   // queries by bundleId; kept outside DeviceState so it survives a relay reconnect
@@ -205,7 +224,7 @@ export class IOSAgent implements DeviceAgent {
 
       ws.once('open', () => {
         disableNagle(ws)
-        ws.send(JSON.stringify({
+        this.sendOn(ws, {
           type: 'agent:register',
           platform: 'ios',
           // Lets a viewer tell a clipboard-capable agent from one that predates the
@@ -220,7 +239,7 @@ export class IOSAgent implements DeviceAgent {
             status: d.status,
             osVersion: d.osVersion,
           })),
-        }))
+        })
       })
 
       ws.once('message', (data) => {
@@ -243,7 +262,15 @@ export class IOSAgent implements DeviceAgent {
             msg.registeredSessions as Array<{ deviceId: string; sessionId: string }>,
           )
           ws.on('message', (d) => {
-            try { this.handleRelayMessage(JSON.parse(d.toString())) } catch { /* ignore malformed */ }
+            try {
+              const m = JSON.parse(d.toString()) as { type?: unknown; sessionId?: unknown }
+              // Every type `handleRelayMessage` dispatches is session-scoped, and the relay resolves the
+              // session before forwarding — so a message without one did not come from that path. Rejecting
+              // it here is what lets the dispatcher declare `sessionId: string` instead of threading an
+              // optional through 30 sends and asserting it with `!` at each one.
+              if (typeof m.type !== 'string' || typeof m.sessionId !== 'string') return
+              this.handleRelayMessage(m as { type: string; sessionId: string; payload?: unknown })
+            } catch { /* ignore malformed */ }
           })
           this.reportResources()
           this.resourcesTimer = setInterval(() => this.reportResources(), 5000)
@@ -354,7 +381,7 @@ export class IOSAgent implements DeviceAgent {
     const bootedCount = Array.from(this.deviceStates.values()).filter((s) => s.streamReader !== null).length
     const slotsTotal = this.deviceStates.size
     const { memUsedMB, memTotalMB } = this.resources.getMemoryUsage()
-    this.ws.send(JSON.stringify({
+    this.sendOn(this.ws, {
       type: 'agent:resources',
       resources: {
         cpuPercent: this.resources.getCpuPercent(),
@@ -364,7 +391,7 @@ export class IOSAgent implements DeviceAgent {
         slotsTotal,
         reportedAt: Date.now(),
       },
-    }))
+    })
   }
 
   private cleanupDeviceState(state: DeviceState): void {
@@ -397,21 +424,21 @@ export class IOSAgent implements DeviceAgent {
     state.touchHelper?.stop()
     state.touchHelper = new TouchHelper(device.id)
     state.touchHelper.start()
-    this.ws.send(JSON.stringify({
+    this.sendOn(this.ws, {
       type: 'session:deviceInfo',
       sessionId: state.sessionId,
       payload: {
         deviceName: device.name,
         osVersion: device.osVersion ?? '',
       },
-    }))
+    })
     state.loadedChrome = this.chromeLoader.load(device.typeId ?? device.name)
     if (!state.loadedChrome) return
-    this.ws.send(JSON.stringify({
+    this.sendOn(this.ws, {
       type: 'session:chrome',
       sessionId: state.sessionId,
       payload: state.loadedChrome,
-    }))
+    })
   }
 
   private startBinaryStream(state: DeviceState, streamWs: WebSocket): void {
@@ -524,7 +551,7 @@ export class IOSAgent implements DeviceAgent {
     state.streamWs?.close()
     state.streamWs = null
 
-    this.ws.send(JSON.stringify({ type: 'device:booting', sessionId }))
+    this.sendOn(this.ws, { type: 'device:booting', sessionId })
 
     try {
       const devices = await this.simctl.listDevices()
@@ -603,7 +630,7 @@ export class IOSAgent implements DeviceAgent {
       // — never blocks/affects the video path.
       if (this.audioEnabled()) this.startAudioCapture(state, streamWs, deviceId)
       state.booted = true
-      this.ws?.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId } }))
+      this.sendMsg({ type: 'device:ready', sessionId, payload: { deviceId } })
 
       // Sync AppleKeyboards after ready — fire-and-forget so streaming isn't delayed.
       // hw=Automatic lets the hardware layout follow the active input source on LANG1/CapsLock.
@@ -615,7 +642,7 @@ export class IOSAgent implements DeviceAgent {
     } catch (e) {
       if (seq !== state.bootSeq) return
       const message = e instanceof Error ? e.message : String(e)
-      this.ws?.send(JSON.stringify({ type: 'device:boot-error', sessionId, message }))
+      this.sendMsg({ type: 'device:boot-error', sessionId, message })
     }
   }
 
@@ -653,11 +680,11 @@ export class IOSAgent implements DeviceAgent {
 
     try {
       await this.simctl.shutdown(deviceId)
-      this.ws?.send(JSON.stringify({
+      this.sendMsg({
         type: 'device:shutdown-done',
         sessionId,
         payload: { deviceId },
-      }))
+      })
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       logger.error('shutdown failed:', message)
@@ -699,13 +726,15 @@ export class IOSAgent implements DeviceAgent {
   // device can now sit behind two sessions, which leaves the second unseeded. Answering costs four
   // lines; staying silent costs a terminal input swallowed and the caller's own fallback reporting
   // success. Android already answers, and `channel-unavailable` is what it maps this to.
-  private ackNoSession(sessionId: string | undefined): void {
-    if (!sessionId) return
-    this.ws?.send(JSON.stringify({
+  private ackNoSession(sessionId: string): void {
+    // The `if (!sessionId) return` this used to open with is gone: the dispatcher now declares
+    // `sessionId: string`, so there is no undefined to guard against and the guard would have been a
+    // silent drop with nothing left that could reach it.
+    this.sendMsg({
       type: 'input:error', sessionId,
       message: INPUT_ERROR_MESSAGES['channel-unavailable'],
       reason: 'channel-unavailable' satisfies InputErrorReason,
-    }))
+    })
   }
 
   /**
@@ -748,11 +777,10 @@ export class IOSAgent implements DeviceAgent {
       ? outcome
       : (state.booted || (await this.isBooted(state.deviceId))) ? null : 'not-booted'
     if (reason === null) state.booted = true // cache the post-reconnect verify so later inputs skip simctl
-    this.ws?.send(JSON.stringify(
+    this.sendMsg(
       reason === null
         ? { type: 'input:done', sessionId: state.sessionId }
-        : { type: 'input:error', sessionId: state.sessionId, message: INPUT_ERROR_MESSAGES[reason], reason },
-    ))
+        : { type: 'input:error', sessionId: state.sessionId, message: INPUT_ERROR_MESSAGES[reason], reason })
   }
 
   private async isBooted(deviceId: string): Promise<boolean> {
@@ -762,18 +790,18 @@ export class IOSAgent implements DeviceAgent {
     } catch { return false }
   }
 
-  private handleRelayMessage(msg: { type: string; sessionId?: string; payload?: unknown }): void {
+  private handleRelayMessage(msg: { type: string; sessionId: string; payload?: unknown }): void {
     switch (msg.type) {
       case 'device:boot': {
         const { deviceId, resetMode, acceptH264, secureContext, external } = msg.payload as { deviceId: string; resetMode?: string; acceptH264?: boolean; secureContext?: boolean; external?: boolean }
-        const sessionId = msg.sessionId!
+        const sessionId = msg.sessionId
         this.handleDeviceBoot(sessionId, deviceId, resetMode === 'full-erase', acceptH264 === true, { secureContext: !!secureContext, external: !!external })
           .catch((e) => logger.error('handleDeviceBoot failed:', e))
         break
       }
       case 'device:shutdown': {
         const { deviceId } = msg.payload as { deviceId: string }
-        const sessionId = msg.sessionId!
+        const sessionId = msg.sessionId
         this.handleDeviceShutdown(sessionId, deviceId)
           .catch((e) => logger.error('handleDeviceShutdown failed:', e))
         break
@@ -783,14 +811,14 @@ export class IOSAgent implements DeviceAgent {
         const sessionId = msg.sessionId
         const installState = this.deviceStates.get(sessionId!)
         if (!installState) {
-          this.ws?.send(JSON.stringify({ type: 'app:install-error', sessionId, message: 'No booted device' }))
+          this.sendMsg({ type: 'app:install-error', sessionId, message: 'No booted device' })
           break
         }
         this.installBuild(installState.deviceId, filePath, bundleId)
-          .then(() => this.ws?.send(JSON.stringify({ type: 'app:install-done', sessionId })))
+          .then(() => this.sendMsg({ type: 'app:install-done', sessionId }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'app:install-error', sessionId, message }))
+            this.sendMsg({ type: 'app:install-error', sessionId, message })
           })
         break
       }
@@ -799,7 +827,7 @@ export class IOSAgent implements DeviceAgent {
         const sessionId = msg.sessionId
         const launchState = this.deviceStates.get(sessionId!)
         if (!launchState) {
-          this.ws?.send(JSON.stringify({ type: 'app:launch-error', sessionId, message: 'No booted device' }))
+          this.sendMsg({ type: 'app:launch-error', sessionId, message: 'No booted device' })
           break
         }
         this.simctl.launchApp(launchState.deviceId, bundleId)
@@ -808,16 +836,16 @@ export class IOSAgent implements DeviceAgent {
             this.lastBundleIds.set(launchState.deviceId, bundleId)
             // Audio: the whole-sim tap's poll picks up the launched app process within one interval;
             // no per-launch helper needed.
-            this.ws?.send(JSON.stringify({ type: 'app:launch-done', sessionId }))
+            this.sendMsg({ type: 'app:launch-done', sessionId })
           })
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'app:launch-error', sessionId, message }))
+            this.sendMsg({ type: 'app:launch-error', sessionId, message })
           })
         break
       }
       case 'input:touch:start': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) break
         this.ensureTouchHelper(state)
         const { x, y } = msg.payload as { x: number; y: number }
@@ -825,14 +853,14 @@ export class IOSAgent implements DeviceAgent {
         break
       }
       case 'input:touch:move': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state?.touchHelper) break
         const { x, y } = msg.payload as { x: number; y: number }
         state.touchHelper.touchMove(x, y)
         break
       }
       case 'input:touch:end': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) { this.ackNoSession(msg.sessionId); break }
         // The helper's answer, not its existence: a helper whose process has died reports every
         // write as dropped, and that is what the caller needs to hear (#482).
@@ -842,7 +870,7 @@ export class IOSAgent implements DeviceAgent {
         break
       }
       case 'input:pinch:start': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) break
         this.ensureTouchHelper(state)
         const { f0, f1 } = msg.payload as { f0: { x: number; y: number }; f1: { x: number; y: number } }
@@ -850,21 +878,21 @@ export class IOSAgent implements DeviceAgent {
         break
       }
       case 'input:pinch:move': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state?.touchHelper) break
         const { f0, f1 } = msg.payload as { f0: { x: number; y: number }; f1: { x: number; y: number } }
         state.touchHelper.pinchMove(f0.x, f0.y, f1.x, f1.y)
         break
       }
       case 'input:pinch:end': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) { this.ackNoSession(msg.sessionId); break }
         const pinchHelper = state.touchHelper
         void this.ackInput(state, pinchHelper?.pinchEnd() ? 'delivered' : this.refusalReason(pinchHelper, 'continuation'))
         break
       }
       case 'input:rotate': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) break
         state.orientation = state.orientation === 'portrait' ? 'landscapeRight' : 'portrait'
         this.simctl.rotate(state.deviceId, state.orientation)
@@ -873,11 +901,11 @@ export class IOSAgent implements DeviceAgent {
       }
       case 'stream:request-idr': {
         // Relay drop-to-keyframe recovery: force an IDR so the stream resyncs fast.
-        this.deviceStates.get(msg.sessionId!)?.captureStreamer?.requestKeyframe()
+        this.deviceStates.get(msg.sessionId)?.captureStreamer?.requestKeyframe()
         break
       }
       case 'input:keyboard:toggle': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) break
         const showing = !state.softKeyboardVisible
         const op = showing
@@ -885,11 +913,11 @@ export class IOSAgent implements DeviceAgent {
           : this.simctl.hideSoftwareKeyboard(state.deviceId)
         op.then(() => {
           state.softKeyboardVisible = showing
-          this.ws?.send(JSON.stringify({
+          this.sendMsg({
             type: 'keyboard:toggled',
             sessionId: state.sessionId,
             payload: { visible: showing },
-          }))
+          })
         }).catch((e: unknown) => {
           logger.error('keyboard toggle failed:', e)
         })
@@ -901,7 +929,7 @@ export class IOSAgent implements DeviceAgent {
         if (state) this.ensureTouchHelper(state)
         const { text } = (msg.payload ?? {}) as { text?: string }
         if (!state?.touchHelper) {
-          this.ws?.send(JSON.stringify({ type: 'input:type-error', sessionId, message: 'No booted device' }))
+          this.sendMsg({ type: 'input:type-error', sessionId, message: 'No booted device' })
           break
         }
         // simctl pbcopy → Cmd+V paste. Works for arbitrary Unicode (unlike a
@@ -930,16 +958,16 @@ export class IOSAgent implements DeviceAgent {
         // Shares the clipboard queue: this writes the pasteboard, so running it alongside a
         // clipboard:read would overwrite that read's sentinel and be returned as "copied".
         this.clipboardQueue(state.deviceId, doType)
-          .then(() => this.ws?.send(JSON.stringify({ type: 'input:type-done', sessionId })))
+          .then(() => this.sendMsg({ type: 'input:type-done', sessionId }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
             logger.error('input:type (pbcopy+paste) failed:', e)
-            this.ws?.send(JSON.stringify({ type: 'input:type-error', sessionId, message }))
+            this.sendMsg({ type: 'input:type-error', sessionId, message })
           })
         break
       }
       case 'input:key': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) { this.ackNoSession(msg.sessionId); break }
         this.ensureTouchHelper(state)
         const { code, modifiers } = msg.payload as { code: string; modifiers?: number }
@@ -947,10 +975,10 @@ export class IOSAgent implements DeviceAgent {
         if (usage === undefined) {
           // Prose preserved (it names the code), reason added: `unsupported` tells a caller never to
           // retry, which the message alone could not.
-          this.ws?.send(JSON.stringify({
+          this.sendMsg({
             type: 'input:error', sessionId: msg.sessionId,
             message: `unknown key code: ${code}`, reason: 'unsupported' satisfies InputErrorReason,
-          }))
+          })
           break
         }
         if (state.softKeyboardVisible) {
@@ -974,7 +1002,7 @@ export class IOSAgent implements DeviceAgent {
         break
       }
       case 'input:button': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) { this.ackNoSession(msg.sessionId); break }
         this.ensureTouchHelper(state)
         const { name, phase } = msg.payload as { name: string; phase?: 'down' | 'up' }
@@ -1016,14 +1044,14 @@ export class IOSAgent implements DeviceAgent {
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         if (!state) {
-          this.ws?.send(JSON.stringify({ type: 'open-url:error', sessionId, message: 'no booted device' }))
+          this.sendMsg({ type: 'open-url:error', sessionId, message: 'no booted device' })
           break
         }
         this.simctl.openUrl(state.deviceId, url)
-          .then(() => this.ws?.send(JSON.stringify({ type: 'open-url:done', sessionId })))
+          .then(() => this.sendMsg({ type: 'open-url:done', sessionId }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'open-url:error', sessionId, message }))
+            this.sendMsg({ type: 'open-url:error', sessionId, message })
           })
         break
       }
@@ -1033,7 +1061,7 @@ export class IOSAgent implements DeviceAgent {
         const sessionId = msg.sessionId
         const shotState = this.deviceStates.get(sessionId!)
         if (!shotState) {
-          this.ws?.send(JSON.stringify({ type: 'screenshot:error', sessionId, requestId, message: 'No booted device' }))
+          this.sendMsg({ type: 'screenshot:error', sessionId, requestId, message: 'No booted device' })
           break
         }
         // Note for anyone widening this signature again: before the udid parameter existed this
@@ -1041,16 +1069,16 @@ export class IOSAgent implements DeviceAgent {
         // type error — the format string simply became the device id. The compiler cannot help
         // here; the test that scans exec arguments is what does.
         this.simctl.screenshot(shotState.deviceId, format ?? 'png')
-          .then((buf) => this.ws?.send(JSON.stringify({
+          .then((buf) => this.sendMsg({
             type: 'screenshot:done',
             sessionId,
             requestId,
             format: format ?? 'png',
             data: buf.toString('base64'),
-          })))
+          }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'screenshot:error', sessionId, requestId, message }))
+            this.sendMsg({ type: 'screenshot:error', sessionId, requestId, message })
           })
         break
       }
@@ -1059,14 +1087,14 @@ export class IOSAgent implements DeviceAgent {
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         if (!state || !bundleId) {
-          this.ws?.send(JSON.stringify({ type: 'app:clear-state-error', sessionId, message: !state ? 'No booted device' : 'bundleId missing' }))
+          this.sendMsg({ type: 'app:clear-state-error', sessionId, message: !state ? 'No booted device' : 'bundleId missing' })
           break
         }
         this.simctl.clearAppData(state.deviceId, bundleId)
-          .then(() => this.ws?.send(JSON.stringify({ type: 'app:clear-state-done', sessionId })))
+          .then(() => this.sendMsg({ type: 'app:clear-state-done', sessionId }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'app:clear-state-error', sessionId, message }))
+            this.sendMsg({ type: 'app:clear-state-error', sessionId, message })
           })
         break
       }
@@ -1075,14 +1103,22 @@ export class IOSAgent implements DeviceAgent {
       // await hideSoftwareKeyboard first), and reading too early returns the PREVIOUS
       // pasteboard — a stale value the user would never notice.
       case 'clipboard:read': {
-        const { requestId } = msg as unknown as { requestId?: string }
+        // `requestId: string`, matching the screenshot and ui:tree casts a few cases below — clipboard was
+        // the only one reading it as optional, for the same wire guarantee. `ClipboardRequest.requestId` is
+        // required and the only requester goes through a typed `send()`, so nothing in-repo omits it.
+        //
+        // It is still an assertion about unvalidated JSON, as those other two are: a third-party client
+        // could omit it, and then the reply would carry `undefined` and be uncorrelatable. That is inbound
+        // validation (#444), not producer typing, and making it optional here instead would just move the
+        // same hole into every reply this case sends.
+        const { requestId } = msg as unknown as { requestId: string }
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         if (!state) {
-          this.ws?.send(JSON.stringify({
+          this.sendMsg({
             type: 'clipboard:error', sessionId, requestId, message: 'No booted device',
             payload: { sentinelParked: false } satisfies ClipboardErrorPayload,
-          }))
+          })
           break
         }
         const { press } = (msg.payload ?? {}) as { press?: 'copy' | 'cut' }
@@ -1090,8 +1126,8 @@ export class IOSAgent implements DeviceAgent {
         // executes AFTER this — so the viewer hears back as soon as the outcome is known and
         // does not wait out the restore window. The queue is still held until the restore
         // finishes, which is what actually matters: the next operation must not see a sentinel.
-        const respond = (body: object) =>
-          this.ws?.send(JSON.stringify({ sessionId, requestId, ...body }))
+        const respond = (body: ClipboardReplyBody) =>
+          this.sendMsg({ sessionId, requestId, ...body })
         const read = async (): Promise<void> => {
           if (!press) {
             respond({ type: 'clipboard:data', payload: { text: await this.simctl.getPasteboard(state.deviceId) } })
@@ -1199,23 +1235,31 @@ export class IOSAgent implements DeviceAgent {
         break
       }
       case 'clipboard:write': {
-        const { requestId } = msg as unknown as { requestId?: string }
+        // `requestId: string`, matching the screenshot and ui:tree casts a few cases below — clipboard was
+        // the only one reading it as optional, for the same wire guarantee. `ClipboardRequest.requestId` is
+        // required and the only requester goes through a typed `send()`, so nothing in-repo omits it.
+        //
+        // It is still an assertion about unvalidated JSON, as those other two are: a third-party client
+        // could omit it, and then the reply would carry `undefined` and be uncorrelatable. That is inbound
+        // validation (#444), not producer typing, and making it optional here instead would just move the
+        // same hole into every reply this case sends.
+        const { requestId } = msg as unknown as { requestId: string }
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         if (!state) {
-          this.ws?.send(JSON.stringify({
+          this.sendMsg({
             type: 'clipboard:error', sessionId, requestId, message: 'No booted device',
             payload: { sentinelParked: false } satisfies ClipboardErrorPayload,
-          }))
+          })
           break
         }
         const { text, pasteAfter } = (msg.payload ?? {}) as { text?: string; pasteAfter?: boolean }
         if (clipboardByteLength(text ?? '') > MAX_CLIPBOARD_BYTES) {
-          this.ws?.send(JSON.stringify({
+          this.sendMsg({
             type: 'clipboard:error', sessionId, requestId,
             message: `Clipboard is too large (max ${Math.floor(MAX_CLIPBOARD_BYTES / 1024)} KB)`,
             payload: { sentinelParked: this.sentinelParked(state.deviceId) } satisfies ClipboardErrorPayload,
-          }))
+          })
           break
         }
         const write = async (): Promise<void> => {
@@ -1246,13 +1290,13 @@ export class IOSAgent implements DeviceAgent {
         }
         // Ack only once the write (and the paste, when asked for) actually landed.
         this.clipboardQueue(state.deviceId, write)
-          .then(() => this.ws?.send(JSON.stringify({ type: 'clipboard:write-done', sessionId, requestId })))
+          .then(() => this.sendMsg({ type: 'clipboard:write-done', sessionId, requestId }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({
+            this.sendMsg({
               type: 'clipboard:error', sessionId, requestId, message,
               payload: { sentinelParked: this.sentinelParked(state.deviceId) } satisfies ClipboardErrorPayload,
-            }))
+            })
           })
         break
       }
@@ -1262,14 +1306,14 @@ export class IOSAgent implements DeviceAgent {
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         if (!state) {
-          this.ws?.send(JSON.stringify({ type: 'ui:tree:error', sessionId, requestId, message: 'No booted device' }))
+          this.sendMsg({ type: 'ui:tree:error', sessionId, requestId, message: 'No booted device' })
           break
         }
         this.readUITree(state)
-          .then((elements) => this.ws?.send(JSON.stringify({ type: 'ui:tree:response', sessionId, requestId, elements })))
+          .then((elements) => this.sendMsg({ type: 'ui:tree:response', sessionId, requestId, elements }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'ui:tree:error', sessionId, requestId, message }))
+            this.sendMsg({ type: 'ui:tree:error', sessionId, requestId, message })
           })
         break
       }

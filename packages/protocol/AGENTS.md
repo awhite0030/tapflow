@@ -81,6 +81,23 @@ The per-message bindings in `typeAssertions.ts` (`_InputDone: InputDone['type'] 
 two copies of one fact, so they catch an author who edits one of them; measured, editing both left every
 assertion green.
 
+## Every direction is declared, and an agent's send is typed
+
+The six unions cover the whole wire: `BrowserToRelay`, `AgentToRelay`, `RelayToAgent`, `RelayToBrowser`,
+`AgentToBrowser`, `RelayToStream` / `StreamToRelay`. `AgentOutbound` is the union an agent sends over either of
+its sockets, and both agents route every send through two typed helpers rather than touching `ws.send`
+(`scripts/__tests__/agentSendTyped.test.mjs` holds them to it).
+
+That mattered because an agent's literal was the one thing no compiler saw — the relay forwards replies with
+`JSON.stringify(msg)`, so nothing typed re-creates them. #489 and #490 are what the gap cost, and
+`inputErrorReason.test.mjs` exists because a script had to stand in for a compiler.
+
+**`screenshot:error` and `ui:tree:error` do not extend `SessionError`, and that is the boundary of the
+family.** `SessionError` is for a failure a *session* is waiting on. Those two are request-scoped: the relay
+resolves the pending promise by `requestId` alone and never reads their `sessionId`. Declaring it required
+would also be false, since the agents pass through an optional one — so the only way to satisfy it would be
+the `msg.sessionId!` that #444 exists to remove.
+
 ## Browser-inbound messages are split by producer, and one union is shared
 
 A browser receives 28 message types. They come from two producers, and the difference matters to the

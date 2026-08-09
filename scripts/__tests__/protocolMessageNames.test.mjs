@@ -35,7 +35,7 @@ const assertions = assertionsRaw.replace(/^\s*\/\/.*$/gm, '')
 /** Every `export interface` that declares a `type: '<literal>'` — i.e. every wire message.
  *
  *  Bodies are found by counting braces, not by matching a run of two-space lines. The regex version
- *  skipped any interface with a blank line in its body — and `expect(messages.size).toBe(58)` was then
+ *  skipped any interface with a blank line in its body — and `expect(messages.size).toBe(65)` was then
  *  satisfied *because* of the skip, so a new message with no binding passed all seventeen assertions.
  *  A count is only coverage if the parser cannot lose a declaration. */
 function messageInterfaces(text) {
@@ -73,6 +73,10 @@ function derivedName(literal) {
 // `Error` would shadow the global.
 const NAME_EXCEPTIONS = new Map([
   ['GenericError', 'error'],
+  // `agent:resources` derives `AgentResources`, which protocol already exports — as the *payload* shape
+  // this message carries. Renaming that one is a breaking change to a published type that `agent-core`,
+  // `relay` and `dashboard` all re-export, so the message takes a different name instead.
+  ['AgentResourceReport', 'agent:resources'],
   ['AppInstallToAgent', 'app:install'],
   ['AppInstallToRelay', 'app:install'],
   ['AppLaunchToAgent', 'app:launch'],
@@ -86,8 +90,9 @@ describe('protocol message interfaces', () => {
     // Without this the two assertions below pass on an empty map. The count is pinned rather than
     // derived so that a parser that stops matching says so, instead of reporting full coverage of
     // nothing. L2 shipped that exact failure in the other direction. 58 is 57 from L1's conversion plus
-    // `InputKey`, which was already named and is a message like any other.
-    expect(messages.size).toBe(58)
+    // `InputKey`, which was already named and is a message like any other. L4a added the seven agent→relay
+    // messages, the last direction that had none.
+    expect(messages.size).toBe(65)
     // `InputKey` predates L1 and has always been named; it must be in here too.
     expect(messages.has('InputKey')).toBe(true)
   })
@@ -120,13 +125,18 @@ describe('protocol message interfaces', () => {
     }
     expect(offenders).toEqual([])
     // Pinned so an exception cannot be added quietly to make a rename compile.
-    expect(NAME_EXCEPTIONS.size).toBe(5)
+    expect(NAME_EXCEPTIONS.size).toBe(6)
   })
+
+  // Failures addressed to a *request*, not to a session: the relay resolves both by `requestId` alone
+  // (`RelayServer.ts:1293-1312`). Listing them draws the boundary of `SessionError` rather than widening it —
+  // the base is for a failure a session is waiting on.
+  const REQUEST_SCOPED = new Set(['screenshot:error', 'ui:tree:error'])
 
   it('a session-scoped failure declares extends SessionError', () => {
     const offenders = []
     for (const [name, { literal, extends: base, body }] of messages) {
-      const isFailure = /error$/.test(literal)
+      const isFailure = /error$/.test(literal) && !REQUEST_SCOPED.has(literal)
       const hasSession = /^ {2}sessionId[?]?:/m.test(body) || base === 'SessionError'
       // `error` is the escape hatch for a failure that cannot be attributed to a session, so it has no
       // `sessionId` and cannot be a `SessionError`. That is the member's nature, not an exception.
@@ -135,8 +145,19 @@ describe('protocol message interfaces', () => {
     }
     expect(offenders).toEqual([])
     expect([...messages].filter(([, m]) => m.extends === 'SessionError')).toHaveLength(8)
-    // The one failure that deliberately does not inherit.
+    // The failures that deliberately do not inherit, each for its own reason.
     expect(messages.get('GenericError')).toMatchObject({ literal: 'error', extends: null })
+    expect(REQUEST_SCOPED.size).toBe(2)
+    for (const literal of REQUEST_SCOPED) {
+      const entry = [...messages].find(([, m]) => m.literal === literal)
+      expect(entry, `${literal} is gone`).toBeDefined()
+      expect(entry[1].extends, `${literal} now extends something`).toBeNull()
+      // What makes them request-scoped is `requestId`, not a weak `sessionId`. An earlier draft asserted
+      // the field was *optional* and took that as the evidence — but every producer has one, so declaring
+      // it optional described a message nobody sends. Required, and out of the family.
+      expect(entry[1].body).toMatch(/^ {2}sessionId: string$/m)
+      expect(entry[1].body).toMatch(/^ {2}requestId: string$/m)
+    }
     // What the base carries, pinned. `browserInboundRouting`'s signatures resolve `extends` and sort,
     // so they cannot tell an inherited field from an own-declared one: moving `sessionId` out of the
     // base and into all eight subclasses leaves every signature identical and every check green.

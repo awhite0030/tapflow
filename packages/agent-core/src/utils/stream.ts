@@ -1,3 +1,4 @@
+import type { StreamToRelay } from '@tapflowio/protocol'
 import { WebSocket } from 'ws'
 import type { Logger } from '../logger.js'
 
@@ -137,7 +138,10 @@ export function registerStreamWs(ws: WebSocket, sessionId: string): Promise<void
   return new Promise((resolve, reject) => {
     ws.once('open', () => {
       disableNagle(ws) // stream socket carries the video frames — keep it un-delayed on LAN
-      ws.send(JSON.stringify({ type: 'stream:register', sessionId }))
+      // Typed at the send site rather than through an agent helper: this is the stream socket, handed in as
+      // an argument, and it is the only agent send that does not go through `this.ws`.
+      const register: StreamToRelay = { type: 'stream:register', sessionId }
+      ws.send(JSON.stringify(register))
     })
 
     const onMsg = (data: Buffer) => {

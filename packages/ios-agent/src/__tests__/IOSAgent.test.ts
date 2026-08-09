@@ -370,6 +370,41 @@ describe('IOSAgent', () => {
       return { browser, agent }
     }
 
+    // The socket boundary requires a string `sessionId` before dispatching, and that is what lets the
+    // dispatcher declare it required — which removed 25 `msg.sessionId!` assertions. Without a test the guard
+    // could be deleted and nothing would notice until one of those `!` was needed again.
+    //
+    // Driven by emitting on the agent's own socket rather than sending through the relay, because **the relay
+    // already blocks this**: its forward gate resolves `sessions.get(msg.sessionId)` and answers the browser
+    // itself for a terminal input, so a frame with no sessionId never reaches an agent by that path. That is
+    // the same fact the required declaration rests on — and it means the guard exists for a client that
+    // connects to the agent directly, which no relay-level test can simulate. Two earlier versions of this
+    // test went through the relay and passed the mutation for exactly that reason.
+    it('does not dispatch a frame with no sessionId', async () => {
+      const { browser, agent } = await joinBootlessSession()
+      const ws = internals(agent).ws
+      const sent = vi.spyOn(ws, 'send')
+
+      for (const frame of [
+        { type: 'input:touch:end', payload: { x: 0.4, y: 0.6 } },
+        { type: 'input:touch:end', sessionId: 42, payload: { x: 0.4, y: 0.6 } },
+      ]) ws.emit('message', Buffer.from(JSON.stringify(frame)))
+
+      const answers = () => sent.mock.calls
+        .map(([f]) => JSON.parse(String(f)) as { type: string })
+        .filter((m) => m.type === 'input:error' || m.type === 'input:done')
+      expect(answers()).toEqual([])
+
+      // A well-formed frame on the same path is still dispatched, so the guard is not rejecting everything.
+      ws.emit('message', Buffer.from(JSON.stringify(
+        { type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.4, y: 0.6 } },
+      )))
+      await vi.waitFor(() => expect(answers()).toHaveLength(1), { timeout: 500 })
+
+      agent.disconnect()
+      browser.close()
+    })
+
     it('lazily creates TouchHelper when input arrives with no device:boot for the session', async () => {
       const { browser, agent } = await joinBootlessSession()
 

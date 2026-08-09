@@ -1,4 +1,4 @@
-import type { BrowserToRelay, DeviceSummary, InputErrorReason } from '@tapflowio/protocol'
+import type { BrowserToRelay, DeviceSummary, InputErrorReason, UIElement } from '@tapflowio/protocol'
 
 // Protocol owns the wire shape; this file used to declare an identical copy under a name the
 // relay uses for a *different* shape. Kept exported as `DeviceInfo` because that is this
@@ -29,16 +29,10 @@ export interface AppInfo {
   builds: BuildInfo[]
 }
 
-// Unified element schema produced agent-side (mirrors @tapflowio/agent-core UIElement).
-// Frames are normalized 0-1 in the same coordinate space the tap path consumes.
-export interface UIElement {
-  role: 'button' | 'text' | 'input' | 'image' | 'checkbox' | 'switch' | 'slider' | 'list' | 'cell' | 'tab' | 'other'
-  label: string
-  identifier?: string
-  frame: { x: number; y: number; width: number; height: number }
-  enabled: boolean
-  rawRole?: string
-}
+// One node of `ui:tree:response`. This used to be a hand-written mirror of `agent-core`'s `UIElement`,
+// with a comment saying so — the drift `@tapflowio/protocol` exists to remove. L4a moved the type into
+// protocol (a leaf both this package and the agents can reach) and this re-export is what is left.
+export type { UIElement } from '@tapflowio/protocol'
 
 type RelayMsg = Record<string, unknown>
 
