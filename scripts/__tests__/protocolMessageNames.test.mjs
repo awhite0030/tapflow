@@ -14,7 +14,7 @@ import { join } from 'node:path'
 //
 // The bindings in `typeAssertions.ts` (`export const _InputDone: InputDone['type'] = 'input:done'`)
 // are what catch it, and this file asserts every message interface has one — a guard you can forget an
-// entry of is a guard with 56-of-57 coverage, and the missing one is invisible.
+// entry of is a guard with 57-of-58 coverage, and the missing one is invisible.
 //
 // **2. That a session-scoped failure declares `extends SessionError`.** This cannot be asserted with a
 // type: every object with `{ sessionId, message }` is assignable to `SessionError`, so the assignment
@@ -85,7 +85,7 @@ describe('protocol message interfaces', () => {
   it('found every message interface — the parser is not quietly empty', () => {
     // Without this the two assertions below pass on an empty map. The count is pinned rather than
     // derived so that a parser that stops matching says so, instead of reporting full coverage of
-    // nothing. L2 shipped that exact failure in the other direction. 57 came from L1's conversion plus
+    // nothing. L2 shipped that exact failure in the other direction. 58 is 57 from L1's conversion plus
     // `InputKey`, which was already named and is a message like any other.
     expect(messages.size).toBe(58)
     // `InputKey` predates L1 and has always been named; it must be in here too.

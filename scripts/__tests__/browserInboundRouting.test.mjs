@@ -311,7 +311,11 @@ describe('browser-inbound routing matches the protocol union', () => {
 
     // L1 replaced the `Extract<>` with named members, so the expected set comes from resolving those
     // names to their literals — still derived from the bridge's own declaration, not restated here.
-    const declared = bridge.match(/export type ClipboardBridgeMessage = ([\w |]+)\n/)
+    // Up to the next blank line, not the next newline. A one-line capture truncates the moment the
+    // declaration wraps, and it truncates *silently*: `wanted` loses the trailing members, and if the
+    // author also forgot to route them then `routed` is short by the same ones and the sets match. The
+    // count pin below does not help — the truncation lands on exactly the old count.
+    const declared = bridge.match(/export type ClipboardBridgeMessage =([\s\S]*?)\n\s*\n/)
     expect(declared, 'ClipboardBridgeMessage is no longer a union of named wire messages').not.toBeNull()
     const wanted = declared[1].split('|').map((n) => n.trim()).filter(Boolean).map((n) => {
       const lit = literalOf(n)
