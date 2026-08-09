@@ -6,7 +6,7 @@
 // `@ts-expect-error` is itself a compile error. So the guard cannot rot silently, which is exactly
 // the failure mode this whole package was built to remove.
 
-import type { BrowserToRelay, RelayOutbound } from './index.js'
+import type { AgentToBrowser, BrowserInbound, BrowserToRelay, RelayOutbound } from './index.js'
 
 // ── must NOT compile ─────────────────────────────────────────────────────────
 
@@ -39,6 +39,36 @@ export const validInbound: BrowserToRelay = {
 export const validClipboard: BrowserToRelay = {
   type: 'clipboard:write', sessionId: 's', requestId: 'r', payload: { text: 'x', pasteAfter: true },
 }
+
+// ── browser-inbound directions ───────────────────────────────────────────────
+// `RelayOutbound` is what `sendTo` takes, so it must NOT accept a message only an agent produces —
+// the relay forwards those with `JSON.stringify(msg)` and never builds one. Nothing else can state
+// this: `browserInboundRouting.test.mjs` compares *membership*, so it would still pass if the relay
+// gained a `sendTo` call constructing a forward-only message.
+
+// @ts-expect-error - agents produce input:done; the relay only forwards it
+export const relayCannotOriginateForward: RelayOutbound = { type: 'input:done', sessionId: 's' }
+
+// @ts-expect-error - same, and this one carries a payload the relay has no source for
+export const relayCannotOriginateKeyboard: RelayOutbound = { type: 'keyboard:toggled', sessionId: 's', payload: { visible: true } }
+
+// A consumer reads the whole surface, whoever sent it — both of the above are valid here.
+export const inboundFromAgent: BrowserInbound = { type: 'input:done', sessionId: 's' }
+export const inboundFromRelay: BrowserInbound = { type: 'error', message: 'x' }
+
+// @ts-expect-error - sessionId is required on every one of the twelve forward-only messages
+export const forwardWithoutSession: AgentToBrowser = { type: 'app:install-done' }
+
+// The shape an agent actually sends for the three shared messages the relay also replays. `sessionId`
+// is optional on the shared declaration because the replay omits it, so this direction cannot reject
+// the absence — pinning what the agent sends is what the union can state here. L4 tightens it.
+export const agentStampsSession: AgentToBrowser = { type: 'device:ready', sessionId: 's', payload: { deviceId: 'd' } }
+
+// The stream socket's one message is its own direction now, so it is still reachable through
+// `sendTo` but is no longer part of what a browser can receive.
+export const streamRegistered: RelayOutbound = { type: 'stream:registered' }
+// @ts-expect-error - stream:registered does not go to a browser
+export const streamIsNotBrowserInbound: BrowserInbound = { type: 'stream:registered' }
 
 // ── input:error reason ───────────────────────────────────────────────────────
 // The field is optional on purpose: an agent that predates it omits it, and a consumer must read

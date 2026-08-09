@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRelay } from '@/hooks/useRelay'
-import type { RelayMessage, SessionInfo } from '@/lib/types'
+import type { BrowserInbound, SessionInfo } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -19,7 +19,7 @@ export function SessionList({ onSelect }: Props) {
   const [booting, setBooting] = useState<BootingState>({})
   const [shutting, setShutting] = useState<ShuttingState>({})
 
-  const { send, connected } = useRelay((msg: RelayMessage) => {
+  const { send, connected } = useRelay((msg: BrowserInbound) => {
     if (msg.type === 'agents:listed') {
       setSessions(msg.sessions)
     } else if (msg.type === 'device:ready') {

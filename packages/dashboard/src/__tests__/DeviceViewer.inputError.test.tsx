@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, act } from '@testing-library/react'
 import type { InputErrorReason } from '@tapflowio/protocol'
-import type { RelayMessage } from '@/lib/types'
+import type { BrowserInbound } from '@/lib/types'
 import { INPUT_ERROR_NOTICE } from '@/lib/inputErrorNotice'
 
 // #485. The relay forwards `input:done` / `input:error` to the browser and the dashboard used to drop
@@ -11,10 +11,10 @@ import { INPUT_ERROR_NOTICE } from '@/lib/inputErrorNotice'
 // There is no session-level state behind this on purpose — a latch was designed, reviewed and
 // discarded (see the plan). Two of the tests below are regression guards for that decision rather
 // than for the feature.
-let deliver: ((msg: RelayMessage) => void) | null = null
+let deliver: ((msg: BrowserInbound) => void) | null = null
 
 vi.mock('@/hooks/useRelay', () => ({
-  useRelay: (onMessage: (msg: RelayMessage) => void) => {
+  useRelay: (onMessage: (msg: BrowserInbound) => void) => {
     deliver = onMessage
     return { send: vi.fn(), connected: true }
   },
@@ -47,7 +47,7 @@ function mounted() {
  *  build does not know about — the case the unknown-reason rule exists for. */
 function inputError(reason?: string, message = 'input channel not ready') {
   act(() => {
-    deliver!({ type: 'input:error', sessionId: 's1', message, reason } as unknown as RelayMessage)
+    deliver!({ type: 'input:error', sessionId: 's1', message, reason } as unknown as BrowserInbound)
   })
 }
 

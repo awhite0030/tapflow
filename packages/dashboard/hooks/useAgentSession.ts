@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRelay } from '@/hooks/useRelay'
-import type { DeviceSummary, RelayMessage, SessionInfo } from '@/lib/types'
+import type { DeviceSummary, BrowserInbound, SessionInfo } from '@/lib/types'
 
 export function useAgentSession(os: string) {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
@@ -10,7 +10,7 @@ export function useAgentSession(os: string) {
   const [booting, setBooting] = useState(false)
   const [status, setStatus] = useState('')
 
-  const handleMessage = useCallback((msg: RelayMessage) => {
+  const handleMessage = useCallback((msg: BrowserInbound) => {
     if (msg.type === 'agents:listed') setSessions(msg.sessions)
     if (msg.type === 'session:joined') { setBooting(false); setStatus('Connected') }
     if (msg.type === 'error') { setBooting(false); setStatus(`Error: ${msg.message}`) }

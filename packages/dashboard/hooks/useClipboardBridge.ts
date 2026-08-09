@@ -1,13 +1,17 @@
-import type { BrowserToRelay, ClipboardRequest } from '@tapflowio/protocol'
+import type { BrowserInbound, BrowserToRelay, ClipboardRequest } from '@tapflowio/protocol'
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { MutableRefObject } from 'react'
 
-export interface ClipboardBridgeMessage {
-  type: string
-  requestId?: string
-  payload?: unknown
-  message?: string
-}
+/** The three replies a clipboard request can get, derived from the wire union rather than described
+ *  again here. The hand-written shape this replaces was `{ type: string; payload?: unknown }`, wide
+ *  enough to accept any message at all — so every read of a field went through a cast that asserted
+ *  what the wire already said, and `DeviceViewer` needed an `as unknown as` to route into it. */
+export type ClipboardBridgeMessage = Extract<
+  BrowserInbound,
+  { type: 'clipboard:data' | 'clipboard:write-done' | 'clipboard:error' }
+>
+
+type ClipboardErrorReply = Extract<ClipboardBridgeMessage, { type: 'clipboard:error' }>
 
 export type ClipboardMessageHandler = (msg: ClipboardBridgeMessage) => void
 
@@ -104,21 +108,18 @@ const byteLength = (s: string): number => new TextEncoder().encode(s).length
 /** True when the agent said this backend has no clipboard channel at all. It can therefore
  *  never have a sentinel parked on the device, which makes pressing the plain chord safe —
  *  the one error where falling back is provably harmless rather than a gamble. */
-const isUnsupportedBackend = (msg: ClipboardBridgeMessage): boolean =>
-  !!(msg.payload as { unsupported?: boolean } | undefined)?.unsupported
+const isUnsupportedBackend = (msg: ClipboardErrorReply): boolean => !!msg.payload?.unsupported
 
 /** May the viewer press the plain chord after a failed bridged copy? Only when the agent says
  *  no sentinel is on the device. If one is, the agent's restore lands right after and overwrites
  *  whatever the chord copies, so the user pastes a stale value. Absent means assume parked —
  *  an agent that predates the field cannot tell us, and a silent stale paste is the worse half
  *  of the trade. See ClipboardErrorPayload in agent-core. */
-const noSentinelParked = (msg: ClipboardBridgeMessage): boolean => {
-  const p = msg.payload as { unsupported?: boolean; sentinelParked?: boolean } | undefined
+const noSentinelParked = (msg: ClipboardErrorReply): boolean =>
   // `unsupported` implies it: a backend with no clipboard channel cannot park anything. Accepting
   // it keeps `{ unsupported: true }` alone — the natural encoding, and what a third-party agent
   // would most likely send — from silently costing the user their fallback copy.
-  return p?.sentinelParked === false || p?.unsupported === true
-}
+  msg.payload?.sentinelParked === false || msg.payload?.unsupported === true
 
 /** Is the user selecting text in the dashboard itself rather than driving the device? */
 function hasDocumentSelection(): boolean {
@@ -244,8 +245,13 @@ export function useClipboardBridge({ sessionId, send, active, supported, handler
         return
       }
       if (reply.type === 'clipboard:error') {
-        fail(new ClaimCancelled(reply.message ?? 'read failed'))
-        report(reply.message ?? 'Clipboard read failed')
+        // `||`, not the `??` this replaced: `message` is required on the wire, so these fallbacks are
+        // dead against any in-repo agent — but this package sits at a trust boundary where nothing
+        // validates inbound JSON, and a third-party agent that omits it would put the literal string
+        // "undefined" in front of the tester. An empty message is no more useful than a missing one,
+        // which is why `||` and not `??`.
+        fail(new ClaimCancelled(reply.message || 'read failed'))
+        report(reply.message || 'Clipboard read failed')
         // The agent replies before it restores, so a chord pressed while its sentinel is still
         // parked gets overwritten by that restore. Ask the agent directly rather than inferring
         // it from the error: a backend with no clipboard channel is not the only path that never
@@ -253,7 +259,17 @@ export function useClipboardBridge({ sessionId, send, active, supported, handler
         if (noSentinelParked(reply)) sendChord(isCut ? 'KeyX' : 'KeyC', META)
         return
       }
-      const { text } = (reply.payload ?? {}) as { text?: string }
+      if (reply.type !== 'clipboard:data') {
+        // A `write-done` answering a read means an agent replied under the wrong requestId. Nothing
+        // was read, so there is no text to settle — and unlike the empty clipboard below this is not
+        // a fact about the device, so it is said out loud instead of cancelled silently. Only the
+        // wire union makes this case visible: the shape this file used to declare accepted any
+        // message, so a reply with no `payload.text` took the `empty` path and vanished.
+        fail(new ClaimCancelled('unexpected reply'))
+        report('Clipboard read failed')
+        return
+      }
+      const { text } = reply.payload
       lastError.current = null
       // An empty device clipboard is a fact, not a failure — but do not overwrite the user's
       // clipboard with nothing.
@@ -271,12 +287,16 @@ export function useClipboardBridge({ sessionId, send, active, supported, handler
       if (!text) { sendChord('KeyV', META); return }
       if (byteLength(text) > MAX_CLIPBOARD_BYTES) { report('That text is too large to send to the device'); return }
       request('clipboard:write', { text, pasteAfter: true }).then((reply) => {
-        if (reply?.type === 'clipboard:write-done') { lastError.current = null; return }
         // Only an explicit error means nothing was written and nothing was pressed; then the
         // plain chord at least pastes the device's own clipboard. A timeout means the agent is
         // still mid-write and will press paste itself — doing it here too pastes twice.
         if (!reply) { report('The device is taking too long — try again'); return }
-        report(reply.message ?? 'Clipboard write failed')
+        if (reply.type === 'clipboard:write-done') { lastError.current = null; return }
+        // `clipboard:data` answering a write is the mirror of the read path's stray reply: an agent
+        // used the wrong requestId. Do not press the chord — nothing here says whether a sentinel is
+        // parked, and pressing on that uncertainty is what the guard below exists to avoid.
+        if (reply.type !== 'clipboard:error') { report('Clipboard write failed'); return }
+        report(reply.message || 'Clipboard write failed')
         // Normally we do NOT press here: the chord goes through input:key, bypassing the agent's
         // per-device queue, and a concurrent read may have its sentinel parked on the device —
         // which the chord would paste into the app. That risk cannot exist on a backend with no

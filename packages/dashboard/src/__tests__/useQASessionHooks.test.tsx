@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import type { DeviceSummary, Build, RelayMessage, SessionInfo } from '@/lib/types'
+import type { DeviceSummary, Build, BrowserInbound, SessionInfo } from '@/lib/types'
 
 vi.mock('@/lib/queries', () => ({
   getBuild: vi.fn(),
@@ -17,7 +17,7 @@ import { useAgentSession } from '@/hooks/useAgentSession'
 import { useDeviceSelector } from '@/hooks/useDeviceSelector'
 
 const mockSend = vi.fn()
-let capturedOnMessage: (msg: RelayMessage) => void = () => {}
+let capturedOnMessage: (msg: BrowserInbound) => void = () => {}
 
 const makeSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
   agentName: 'test-mac',
@@ -110,7 +110,7 @@ describe('useAgentSession', () => {
     const { result } = renderHook(() => useAgentSession('android'))
     const sessions = [makeSession({ agentName: 'mac-1' })]
 
-    act(() => capturedOnMessage({ type: 'agents:listed', sessions } as RelayMessage))
+    act(() => capturedOnMessage({ type: 'agents:listed', sessions }))
 
     expect(result.current.sessions).toEqual(sessions)
   })
@@ -123,7 +123,7 @@ describe('useAgentSession', () => {
     })
     expect(result.current.booting).toBe(true)
 
-    act(() => capturedOnMessage({ type: 'session:joined' } as RelayMessage))
+    act(() => capturedOnMessage({ type: 'session:joined', sessionId: 'avd:Pixel_7', capabilities: [] }))
     expect(result.current.booting).toBe(false)
     expect(result.current.status).toBe('Connected')
   })
@@ -132,7 +132,7 @@ describe('useAgentSession', () => {
     const { result } = renderHook(() => useAgentSession('android'))
 
     act(() => result.current.startDevice(makeDevice()))
-    act(() => capturedOnMessage({ type: 'error', message: 'boom' } as RelayMessage))
+    act(() => capturedOnMessage({ type: 'error', message: 'boom' }))
 
     expect(result.current.booting).toBe(false)
     expect(result.current.status).toBe('Error: boom')

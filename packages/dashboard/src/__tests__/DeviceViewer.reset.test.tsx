@@ -2,15 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render } from '@testing-library/react'
 import { act } from 'react'
 import type { BrowserToRelay } from '@tapflowio/protocol'
-import type { RelayMessage } from '@/lib/types'
+import type { BrowserInbound } from '@/lib/types'
 
 // The viewer is only exercised through its message handler here — the decoders, the audio path and
 // the platform viewers all want a canvas and a real socket, and none of them touch resetMode.
 const send = vi.fn<(msg: BrowserToRelay) => void>()
-let deliver: ((msg: RelayMessage) => void) | null = null
+let deliver: ((msg: BrowserInbound) => void) | null = null
 
 vi.mock('@/hooks/useRelay', () => ({
-  useRelay: (onMessage: (msg: RelayMessage) => void) => {
+  useRelay: (onMessage: (msg: BrowserInbound) => void) => {
     deliver = onMessage
     return { send, connected: true }
   },
@@ -46,9 +46,9 @@ describe('DeviceViewer — resetMode is consumed once per mount (#439)', () => {
 
     // The relay replays session:joined on every session:start, and useRelay re-sends that whenever
     // the socket reconnects. A Wi-Fi blip must not re-erase the device the tester is looking at.
-    act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
-    act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
-    act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-1', capabilities: [] }) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-1', capabilities: [] }) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-1', capabilities: [] }) })
 
     expect(bootModes()).toEqual(['full-erase', 'app-only', 'app-only'])
   })
@@ -56,8 +56,8 @@ describe('DeviceViewer — resetMode is consumed once per mount (#439)', () => {
   // Guards the inverted condition, not #439 itself: the pre-fix code passed this too.
   it('never asks for an erase when the toggle was off', () => {
     render(<DeviceViewer sessionId="s-1" deviceId="dev-1" resetMode="app-only" />)
-    act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
-    act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-1', capabilities: [] }) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-1', capabilities: [] }) })
 
     expect(bootModes()).toEqual(['app-only', 'app-only'])
   })
@@ -66,12 +66,12 @@ describe('DeviceViewer — resetMode is consumed once per mount (#439)', () => {
   // actually produces a new mount is QASession's business — see QASession.reset.test.tsx.
   it('a second viewer arms again', () => {
     const first = render(<DeviceViewer sessionId="s-1" deviceId="dev-1" resetMode="full-erase" />)
-    act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-1', capabilities: [] }) })
     first.unmount()  // keeps the two viewers from overlapping; `deliver` already points at the next one
     send.mockClear()
 
     render(<DeviceViewer sessionId="s-2" deviceId="dev-2" resetMode="full-erase" />)
-    act(() => { deliver!({ type: 'session:joined' } as RelayMessage) })
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's-2', capabilities: [] }) })
 
     expect(bootModes()).toEqual(['full-erase'])
   })

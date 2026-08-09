@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { RelayMessage } from '@/lib/types'
+import type { BrowserInbound } from '@/lib/types'
 import type { BrowserToRelay } from '@tapflowio/protocol'
 
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -7,7 +7,7 @@ const RELAY_URL = import.meta.env.VITE_RELAY_URL ?? `${wsProtocol}//${location.h
 const RECONNECT_DELAY = 2000
 
 export function useRelay(
-  onMessage: (msg: RelayMessage) => void,
+  onMessage: (msg: BrowserInbound) => void,
   onBinaryFrame?: (data: ArrayBuffer) => void,
 ) {
   const ws = useRef<WebSocket | null>(null)

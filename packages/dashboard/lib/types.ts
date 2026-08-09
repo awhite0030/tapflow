@@ -5,12 +5,12 @@
 // the *other* shape. Re-exported so this module stays the one import site for view code.
 import type {
   AgentResources, AndroidButton, ChromeButton, ChromeData, ChromeRect,
-  AndroidChrome, ChromePayload, ClipboardErrorPayload, DeviceDetails, DeviceSummary, InputErrorReason, SessionInfo, SessionTerminatedReason,
+  AndroidChrome, BrowserInbound, ChromePayload, DeviceDetails, DeviceSummary, SessionInfo,
 } from '@tapflowio/protocol'
 
 export type {
   AgentResources, AndroidButton, ChromeButton, ChromeData, ChromeRect,
-  AndroidChrome, ChromePayload, DeviceDetails, DeviceSummary, SessionInfo,
+  AndroidChrome, BrowserInbound, ChromePayload, DeviceDetails, DeviceSummary, SessionInfo,
 }
 
 export interface Comment {
@@ -71,39 +71,3 @@ export interface ReleaseGroup {
   builds: Build[]
 }
 
-/**
- * What the viewer *receives*. Outbound messages are no longer listed here — they live in
- * `@tapflowio/protocol` as `BrowserToRelay`, which `send()` is typed with, so they are checked
- * rather than merely described.
- *
- * They used to be listed "as the readable record of the protocol", and that record went wrong
- * without anyone noticing: `input:key` was documented as `payload: { key: string }` while every
- * sender and both agents used `{ code, modifiers }` — with `modifiers` a bitmap, not a string.
- * A description that nothing checks is a description that drifts.
- */
-export type RelayMessage =
-  | { type: 'agents:listed'; sessions: SessionInfo[] }
-  | { type: 'session:joined'; sessionId: string; capabilities?: string[] }
-  | { type: 'session:terminated'; sessionId: string; reason: SessionTerminatedReason }
-  | { type: 'session:agent-away'; sessionId: string }
-  | { type: 'session:rebound'; sessionId: string; capabilities: string[] }
-  | { type: 'session:chrome'; payload: ChromePayload }
-  | { type: 'session:deviceInfo'; payload: DeviceDetails }
-  | { type: 'device:booting' }
-  | { type: 'device:ready'; payload: { deviceId: string } }
-  | { type: 'device:boot-error'; sessionId?: string; message: string }
-  | { type: 'device:shutdown-done'; payload: { deviceId: string } }
-  | { type: 'keyboard:toggled'; sessionId: string; payload: { visible: boolean } }
-  | { type: 'app:install-done' }
-  | { type: 'app:install-error'; sessionId?: string; message: string }
-  | { type: 'app:launch-done' }
-  | { type: 'app:launch-error'; sessionId?: string; message: string }
-  | { type: 'open-url:done'; sessionId: string }
-  | { type: 'open-url:error'; sessionId: string; message: string }
-  | { type: 'input:done'; sessionId: string }
-  | { type: 'input:error'; sessionId: string; message: string; reason?: InputErrorReason }
-  // agent → browser
-  | { type: 'clipboard:data'; sessionId: string; requestId: string; payload: { text: string } }
-  | { type: 'clipboard:write-done'; sessionId: string; requestId: string }
-  | { type: 'clipboard:error'; sessionId: string; requestId: string; message: string; payload?: ClipboardErrorPayload }
-  | { type: 'error'; message: string }
