@@ -58,7 +58,7 @@ export const INBOUND_DISPOSITION = {
   'open-url:error': { at: 'DeviceViewer' },
   'session:agent-away': { at: 'DeviceViewer' },
   'session:chrome': { at: 'DeviceViewer' },
-  'session:joined': { at: 'DeviceViewer, useAgentSession' },
+  'session:joined': { at: 'DeviceViewer, SessionList, useAgentSession' },
   'session:rebound': { at: 'DeviceViewer' },
   'session:terminated': { at: 'DeviceViewer' },
 

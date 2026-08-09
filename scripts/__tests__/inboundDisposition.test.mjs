@@ -101,6 +101,25 @@ describe('inbound disposition', () => {
     expect(missing).toEqual([])
   })
 
+  it('a module that handles a message is named in its `at`', () => {
+    // The reverse direction, and the table has no way to notice it on its own. `at` is not obliged to be
+    // complete: a component that starts comparing `.type` against a message does not break anything, so
+    // the entry silently becomes a partial answer to "where is this handled". That happened inside this
+    // PR — `SessionList` gained a `session:joined` branch and the entry still named two files.
+    const stale = []
+    for (const [name, path] of Object.entries(FILES)) {
+      const src = readFileSync(join(root, path), 'utf8').replace(/^\s*\/\/.*$/gm, '')
+      for (const m of src.matchAll(/[\w.]+\.type [=!]== '([^']+)'/g)) {
+        const value = table_entries.get(m[1])
+        if (!value) continue                        // not a browser-inbound type (outbound, local unions)
+        const at = value.match(/at:\s*'([^']+)'/)
+        const named = at ? at[1].split(',').map((n) => n.trim()) : []
+        if (!named.includes(name)) stale.push(`${m[1]} is handled in ${name}, which its \`at\` does not name`)
+      }
+    }
+    expect([...new Set(stale)]).toEqual([])
+  })
+
   it('an ignored message states a reason, and the reason is a sentence', () => {
     const thin = []
     for (const [type, value] of table_entries) {

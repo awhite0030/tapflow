@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { useRelay } from '@/hooks/useRelay'
 import type { BrowserInbound, SessionInfo } from '@/lib/types'
+import type { BrowserToRelay } from '@tapflowio/protocol'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -19,6 +20,12 @@ export function SessionList({ onSelect }: Props) {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [booting, setBooting] = useState<BootingState>({})
   const [shutting, setShutting] = useState<ShuttingState>({})
+  // The shutdown whose `session:start` has not been answered yet. A ref, not state: the relay's reply
+  // lands in a handler that must read the current value, and a re-render is neither needed nor wanted.
+  const pendingRef = useRef<{ deviceId: string; sessionId: string } | null>(null)
+  // `send` is what `useRelay` returns, so the handler passed *into* it cannot name it directly. Same
+  // indirection `DeviceViewer` uses (`sendRef`), for the same reason.
+  const sendRef = useRef<(msg: BrowserToRelay) => void>(() => {})
 
   const { send, connected } = useRelay((msg: BrowserInbound) => {
     if (msg.type === 'agents:listed') {
@@ -55,16 +62,34 @@ export function SessionList({ onSelect }: Props) {
           devices: s.devices.map((d) => (d.id === deviceId ? { ...d, status: 'shutdown' } : d)),
         }))
       )
+    } else if (msg.type === 'session:joined') {
+      // Only `handleShutdown` sends `session:start` from this list, so a join here means the shutdown it
+      // was waiting on may proceed. Sending `device:shutdown` before this arrived was the bug: the relay
+      // forwards a session-scoped command on the strength of the session existing, without checking that
+      // the sender owns it, so a **refused** join was followed by a shutdown that went through anyway —
+      // shutting down a device another tester had open, while this list said it had not.
+      const pending = pendingRef.current
+      if (pending) {
+        pendingRef.current = null
+        sendRef.current({ type: 'device:shutdown', sessionId: pending.sessionId, payload: { deviceId: pending.deviceId } })
+      }
     } else if (msg.type === 'error') {
-      // `handleShutdown` sends `session:start` on this socket, so a refused join is answered here — and
-      // the only message that clears `shutting` is `device:shutdown-done`, which then never comes. The
-      // badge stayed on "Shutting down..." for good, and `isShutting` hides both buttons, so the row
-      // became inert. Same defect as the one `DeviceViewer` had for `Session busy`, in a second place.
+      // A refused join. `device:shutdown-done` is the only message that clears `shutting`, so without this
+      // the badge stayed on "Shutting down..." for good and `isShutting` hid both buttons — the row went
+      // inert. Same defect `DeviceViewer` had for `Session busy`, in a second place.
       //
-      // Which device it was is not on the message — `error` carries no sessionId, by design, because the
-      // relay sends it when it cannot correlate. One shutdown is in flight at a time from this list, so
-      // clearing all of them is exact enough and never leaves a row stuck.
-      setShutting({})
+      // `error` carries no sessionId — by design, since the relay sends it when it cannot correlate — so
+      // the device comes from the request this list is waiting on. One is in flight at a time (see
+      // `handleShutdown`), which is what makes that unambiguous rather than merely likely.
+      const pending = pendingRef.current
+      pendingRef.current = null
+      if (pending) {
+        setShutting((prev) => {
+          const next = { ...prev }
+          delete next[pending.deviceId]
+          return next
+        })
+      }
       toast.error(
         msg.reason === 'session-busy'
           ? 'That device is open in another browser session — it was not shut down.'
@@ -74,6 +99,8 @@ export function SessionList({ onSelect }: Props) {
     }
   })
 
+  useLayoutEffect(() => { sendRef.current = send })
+
   useEffect(() => {
     if (connected) send({ type: 'agents:list' })
   }, [connected, send])
@@ -82,10 +109,16 @@ export function SessionList({ onSelect }: Props) {
     onSelect(sessionId, deviceId)
   }
 
+  // One shutdown at a time. `error` carries no sessionId, so a second request in flight would leave the
+  // handler unable to say which row a refusal belongs to — and the previous version cleared *every* row
+  // on any error, which was a guess dressed as a comment.
   const handleShutdown = (deviceId: string, sessionId: string) => {
+    if (pendingRef.current) return
+    pendingRef.current = { deviceId, sessionId }
     setShutting((prev) => ({ ...prev, [deviceId]: true }))
+    // `session:start` first, and `device:shutdown` only once the relay accepts the join — see the
+    // `session:joined` branch above.
     send({ type: 'session:start', sessionId })
-    send({ type: 'device:shutdown', sessionId, payload: { deviceId } })
   }
 
   if (!connected) {
