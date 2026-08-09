@@ -1,7 +1,16 @@
 import type { WebSocket } from 'ws'
 
-/** The shape every tapflow socket message shares. Deliberately loose: this package is imported by
- *  relay, ios-agent and android-agent, and each has its own richer view of the wire. */
+/** The shape every tapflow socket message shares.
+ *
+ *  It stays loose, but **not for the reason this comment used to give.** The old one said each importer has its
+ *  own richer view of the wire and `waitForType<T extends SocketMessage>` is where that view goes — and #505
+ *  broke that: messages became named interfaces, which have no implicit index signature, so no protocol type
+ *  satisfies the constraint (`TS2344`). All 25 call sites pass `RelayMessage`, which is also a named interface,
+ *  so all 25 already violate it — invisibly, because `src/__tests__` is outside this package's tsconfig.
+ *
+ *  So the looseness is now *blocking* the richer views rather than accommodating them. It is left alone because
+ *  a narrowing nothing type-checks is decoration; fixing it means bringing the test tree into a tsconfig first,
+ *  which is a separate job. */
 export type SocketMessage = Record<string, unknown> & { type: string }
 
 /**

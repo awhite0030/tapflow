@@ -818,10 +818,17 @@ export interface AppLaunchToRelay {
   buildId: number
 }
 
+/** Wipe an installed app's data.
+ *
+ *  `bundleId` is **required, twice over** — the field and the payload. It was `payload?: { bundleId?: string }`,
+ *  which was looser than every producer *and* every consumer: `mcp-server` and `flow-runner` are the only
+ *  senders and both supply a string, the relay forwards without filling anything in, and both agents answer
+ *  `app:clear-state-error` with `'bundleId missing'` when it is absent. So the declaration permitted a message
+ *  whose only possible outcome was that error. */
 export interface AppClearState {
   type: 'app:clear-state'
   sessionId: string
-  payload?: { bundleId?: string }
+  payload: { bundleId: string }
 }
 
 export interface OpenUrl {

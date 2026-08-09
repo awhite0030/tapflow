@@ -223,7 +223,7 @@ describe('browser-inbound routing matches the protocol union', () => {
       'device:shutdown': 'payload sessionId',
       'app:install': 'buildId sessionId',
       'app:launch': 'buildId sessionId',
-      'app:clear-state': 'payload? sessionId',
+      'app:clear-state': 'payload sessionId',
       'open-url': 'payload sessionId',
       'input:touch:start': 'payload sessionId',
       'input:touch:move': 'payload sessionId',
