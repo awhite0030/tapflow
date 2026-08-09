@@ -99,6 +99,40 @@ another finding changes that test.** So:
 The same applies to your own mutation results: a mutation you ran before the fixes was run against
 code that no longer exists.
 
+## The justification is part of the change, not documentation of it
+
+A fix changes code. The sentence written next to that code said why the old shape was right, and now it is
+false. **After applying review fixes, re-read the prose each fix touched** — the comment, the doc block, the
+changeset, the AGENTS.md paragraph. Not as a tidy-up pass at the end: as part of the fix.
+
+This is the twin of the section above and it points the other way. That one is about a *reviewer's* clearance
+expiring when you fix the findings. This is about *your own recorded reasoning* going false when you do.
+
+Three instances on one program, in three consecutive layers, none of them caught by the author:
+
+- A union's doc claimed every member carried a required `sessionId`. A review finding in the same PR made
+  three of them optional; the claim stayed.
+- A field was declared optional, with a comment giving the reason: "the producers pass through an optional
+  one, so requiring it could only be satisfied with the `!` we are trying to remove." True when written. **A
+  later hunk of the same commit** made the producers required, so the reason was false before the commit was
+  finished — and the field was then weaker than every producer it described, declaring a message nobody sends.
+- A union was split during a review round, precisely to stop one socket type-checking another's message. The
+  changeset and the package's AGENTS.md kept naming the merged union, so both documents described the design
+  that round had just rejected, next to the reasoning for rejecting it.
+
+The failure is not sloppiness about comments. In all three the prose was the **argument for the design**, so a
+stale one does not merely misinform — it argues for the thing that was removed, and the next reader has to
+choose between the code and a reason that sounds deliberate. The second instance is the sharpest: the
+justification was refuted by the same change it was justifying, which no amount of care *at the end* would
+have caught, because the end is where it looked consistent.
+
+Two habits that would have caught all three:
+
+- When a fix changes a declaration, grep the declaration's own name and the field you touched. Both a comment
+  above it and a changeset paragraph will usually come back.
+- When a fix reverses a decision, find the sentence that recorded the decision. If a review talked you out of
+  something, the write-up saying why you did it is somewhere, and it is now wrong.
+
 ### A prompt skeleton that stays cheap
 
 What made the 4m30s pair cheap was structural, not stylistic. Each prompt carried:
