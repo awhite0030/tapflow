@@ -39,6 +39,48 @@ The cost of a broad name is ambiguity about what belongs — answered by the two
 - **The binary frame envelope (TFFE).** That is a separate wire format with its own header layout — see [`contributing/frame-envelope.md`](../../contributing/frame-envelope.md). It is currently implemented separately in the relay and the dashboard, which is the same kind of drift risk, but unifying it is not this package's job today.
 - **Domain types that are not on the wire.** `Build`, `ReleaseGroup`, UI view models — those stay in their own packages.
 
+## Every message is a named `interface`, and naming cost two things
+
+A message is `export interface AppInstallDone { type: 'app:install-done'; … }`, and the unions are
+unions of those names. That is what lets a consumer refer to one message, and what gives shared
+structure (`SessionError`) and per-message documentation somewhere to live.
+
+**`interface`, not `type X = { … }`** — the alias form cannot be `extends`ed, and the intersection
+workaround (`type X = SessionError & { … }`) stops `Extract<Union, { type: 'x' }>` resolving to a single
+member, which `useClipboardBridge` depends on to read a reply without a cast.
+
+Two properties were given up for that, neither visible to the type-equivalence check that proved the
+conversion, so they are written down here instead:
+
+- **An `interface` has no implicit index signature.** An anonymous `type X = { … }` is assignable to
+  `Record<string, unknown>`; a named interface is not. Nothing broke, because the three
+  `Record<string, unknown>` sinks in this repo (`flow-runner/src/RelayClient.ts`,
+  `mcp-server/src/client.ts`, `test-utils/src/socket.ts`) are only ever handed fresh object literals.
+  **The fix when one of them needs a typed value is to type the sink**, not to widen the message —
+  replacing `type RelayMsg = Record<string, unknown>` with `BrowserToRelay` is the point of that work,
+  not a casualty of it.
+- **An `interface` can be reopened by a consumer.** `declare module '@tapflowio/protocol'` can add a
+  field to any message, which an anonymous union member could not. Measured: a consumer can give
+  `GenericError` a `sessionId` and defeat the assertion in `typeAssertions.ts` that says it has none.
+  It takes deliberate augmentation, so the risk is low — but the HOW NOT rule below ("do not widen a
+  message") is now bypassable without editing this package.
+
+### The name must be derivable from the literal
+
+`InputDone` ↔ `input:done`: PascalCase over the literal's `:` and `-` segments. Five names deliberately
+break the rule and are listed in `scripts/__tests__/protocolMessageNames.test.mjs` — `GenericError`
+(`Error` would shadow the global), and `AppInstall`/`AppLaunch` × `ToAgent`/`ToRelay`, because those two
+literals travel in both directions carrying **different shapes**: the browser sends `buildId`, the relay
+resolves it into `payload: { filePath, bundleId }`. Naming forced that split into the open.
+
+`device:shutdown` is the opposite case — identical in both directions, so it is **one** interface that
+`RelayToAgent` and `BrowserToRelay` both reference, which states that the relay forwards it untouched.
+
+The derivation is checked in source, and it is the only guard here that a regeneration cannot satisfy.
+The per-message bindings in `typeAssertions.ts` (`_InputDone: InputDone['type'] = 'input:done'`) compare
+two copies of one fact, so they catch an author who edits one of them; measured, editing both left every
+assertion green.
+
 ## Browser-inbound messages are split by producer, and one union is shared
 
 A browser receives 28 message types. They come from two producers, and the difference matters to the

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, fireEvent } from '@testing-library/react'
-import type { BrowserToRelay } from '@tapflowio/protocol'
+import type { DeviceBoot, BrowserToRelay } from '@tapflowio/protocol'
 import type { BrowserInbound } from '@/lib/types'
 
 // #426 stage 2. When an agent restarts, the relay re-points the session at the new socket and sends
@@ -39,7 +39,7 @@ const CHROME = {
 const boots = () =>
   send.mock.calls
     .map(([m]) => m)
-    .filter((m): m is Extract<BrowserToRelay, { type: 'device:boot' }> => m.type === 'device:boot')
+    .filter((m): m is DeviceBoot => m.type === 'device:boot')
 
 const installs = () => send.mock.calls.filter(([m]) => m.type === 'app:install')
 

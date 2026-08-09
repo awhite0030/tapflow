@@ -6,7 +6,18 @@
 // `@ts-expect-error` is itself a compile error. So the guard cannot rot silently, which is exactly
 // the failure mode this whole package was built to remove.
 
-import type { AgentToBrowser, BrowserInbound, BrowserToRelay, RelayOutbound } from './index.js'
+import type {
+  AgentRegistered, AgentToBrowser, AgentsList, AgentsListed, AppClearState, AppClearStateDone,
+  AppClearStateError, AppInstallDone, AppInstallError, AppInstallToAgent, AppInstallToRelay, AppLaunchDone,
+  AppLaunchError, AppLaunchToAgent, AppLaunchToRelay, BrowserInbound, BrowserToRelay, ClipboardData,
+  ClipboardError, ClipboardRead, ClipboardWrite, ClipboardWriteDone, DeviceBoot, DeviceBootError,
+  DeviceBooting, DeviceReady, DeviceShutdown, DeviceShutdownDone, GenericError, InputButton, InputDone,
+  InputError, InputKey, InputKeyboardToggle, InputPinchEnd, InputPinchMove, InputPinchStart, InputRotate,
+  InputTouchEnd, InputTouchMove, InputTouchStart, InputType, InputTypeDone, InputTypeError, KeyboardToggled,
+  OpenUrl, OpenUrlDone, OpenUrlError, RelayOutbound, ScreenshotRequest, SessionAgentAway, SessionChrome,
+  SessionDeviceInfo, SessionEnd, SessionJoined, SessionLeave, SessionRebound, SessionStart,
+  SessionTerminated, StreamRegistered, StreamRequestIdr, UiTreeRequest,
+} from './index.js'
 
 // ── must NOT compile ─────────────────────────────────────────────────────────
 
@@ -79,3 +90,73 @@ export const errorWithReason: RelayOutbound = { type: 'input:error', sessionId: 
 
 // @ts-expect-error - the reason set is closed; a free string would let each agent invent its own
 export const errorWithFreeReason: RelayOutbound = { type: 'input:error', sessionId: 's', message: 'x', reason: 'something-else' }
+
+// ── name ↔ literal bindings ────────────────────────────────────────────────────────────────────────
+//
+// One line per message, and the only thing here that survived L1's conversion window. The `Equals<>`
+// net that proved the conversion compared union *contents*, and a union is a set — so which interface
+// got which `type` literal was not part of the comparison at all. `AgentToBrowser` has seven members
+// whose shape is identical apart from the literal, so a copy-paste that swaps two of them passed
+// `Equals`, passed the routing check (which compares membership) and passed the payload check.
+// Measured: the swap produced two errors here and zero from the nine `Equals` assertions.
+//
+// `scripts/__tests__/protocolMessageNames.test.mjs` asserts every message interface has a line here —
+// a guard you can forget one entry of is a guard with 57-of-58 coverage, and the gap is invisible.
+export const _AgentRegistered: AgentRegistered['type'] = 'agent:registered'
+export const _AgentsList: AgentsList['type'] = 'agents:list'
+export const _AgentsListed: AgentsListed['type'] = 'agents:listed'
+export const _AppClearState: AppClearState['type'] = 'app:clear-state'
+export const _AppClearStateDone: AppClearStateDone['type'] = 'app:clear-state-done'
+export const _AppClearStateError: AppClearStateError['type'] = 'app:clear-state-error'
+export const _AppInstallDone: AppInstallDone['type'] = 'app:install-done'
+export const _AppInstallError: AppInstallError['type'] = 'app:install-error'
+export const _AppInstallToAgent: AppInstallToAgent['type'] = 'app:install'
+export const _AppInstallToRelay: AppInstallToRelay['type'] = 'app:install'
+export const _AppLaunchDone: AppLaunchDone['type'] = 'app:launch-done'
+export const _AppLaunchError: AppLaunchError['type'] = 'app:launch-error'
+export const _AppLaunchToAgent: AppLaunchToAgent['type'] = 'app:launch'
+export const _AppLaunchToRelay: AppLaunchToRelay['type'] = 'app:launch'
+export const _ClipboardData: ClipboardData['type'] = 'clipboard:data'
+export const _ClipboardError: ClipboardError['type'] = 'clipboard:error'
+export const _ClipboardRead: ClipboardRead['type'] = 'clipboard:read'
+export const _ClipboardWrite: ClipboardWrite['type'] = 'clipboard:write'
+export const _ClipboardWriteDone: ClipboardWriteDone['type'] = 'clipboard:write-done'
+export const _DeviceBoot: DeviceBoot['type'] = 'device:boot'
+export const _DeviceBootError: DeviceBootError['type'] = 'device:boot-error'
+export const _DeviceBooting: DeviceBooting['type'] = 'device:booting'
+export const _DeviceReady: DeviceReady['type'] = 'device:ready'
+export const _DeviceShutdown: DeviceShutdown['type'] = 'device:shutdown'
+export const _DeviceShutdownDone: DeviceShutdownDone['type'] = 'device:shutdown-done'
+export const _GenericError: GenericError['type'] = 'error'
+export const _InputButton: InputButton['type'] = 'input:button'
+export const _InputDone: InputDone['type'] = 'input:done'
+export const _InputError: InputError['type'] = 'input:error'
+export const _InputKey: InputKey['type'] = 'input:key'
+export const _InputKeyboardToggle: InputKeyboardToggle['type'] = 'input:keyboard:toggle'
+export const _InputPinchEnd: InputPinchEnd['type'] = 'input:pinch:end'
+export const _InputPinchMove: InputPinchMove['type'] = 'input:pinch:move'
+export const _InputPinchStart: InputPinchStart['type'] = 'input:pinch:start'
+export const _InputRotate: InputRotate['type'] = 'input:rotate'
+export const _InputTouchEnd: InputTouchEnd['type'] = 'input:touch:end'
+export const _InputTouchMove: InputTouchMove['type'] = 'input:touch:move'
+export const _InputTouchStart: InputTouchStart['type'] = 'input:touch:start'
+export const _InputType: InputType['type'] = 'input:type'
+export const _InputTypeDone: InputTypeDone['type'] = 'input:type-done'
+export const _InputTypeError: InputTypeError['type'] = 'input:type-error'
+export const _KeyboardToggled: KeyboardToggled['type'] = 'keyboard:toggled'
+export const _OpenUrl: OpenUrl['type'] = 'open-url'
+export const _OpenUrlDone: OpenUrlDone['type'] = 'open-url:done'
+export const _OpenUrlError: OpenUrlError['type'] = 'open-url:error'
+export const _ScreenshotRequest: ScreenshotRequest['type'] = 'screenshot:request'
+export const _SessionAgentAway: SessionAgentAway['type'] = 'session:agent-away'
+export const _SessionChrome: SessionChrome['type'] = 'session:chrome'
+export const _SessionDeviceInfo: SessionDeviceInfo['type'] = 'session:deviceInfo'
+export const _SessionEnd: SessionEnd['type'] = 'session:end'
+export const _SessionJoined: SessionJoined['type'] = 'session:joined'
+export const _SessionLeave: SessionLeave['type'] = 'session:leave'
+export const _SessionRebound: SessionRebound['type'] = 'session:rebound'
+export const _SessionStart: SessionStart['type'] = 'session:start'
+export const _SessionTerminated: SessionTerminated['type'] = 'session:terminated'
+export const _StreamRegistered: StreamRegistered['type'] = 'stream:registered'
+export const _StreamRequestIdr: StreamRequestIdr['type'] = 'stream:request-idr'
+export const _UiTreeRequest: UiTreeRequest['type'] = 'ui:tree:request'

@@ -62,57 +62,81 @@ function forwardedToBrowser(src) {
   return found
 }
 
-/** One member's field names, each suffixed `?` when optional. The names are the cheap half of this
- *  file and they are not the substance: the twelve new declarations exist for their *fields*, and a
- *  name-only check stays green if every one of them loses `sessionId` or turns it optional. */
-function memberSignature(src, name, type) {
-  const body = unionBody(src, name)
-  const at = body.indexOf(`{ type: '${type}'`)
-  if (at === -1) return null
-  let depth = 0
-  let end = at
-  for (; end < body.length; end++) {
-    if (body[end] === '{') depth++
-    else if (body[end] === '}' && --depth === 0) break
+/** `export interface Name { … }` bodies, by name. L1 moved every message out of its union and into one
+ *  of these, so a parser that reads only union bodies now finds nothing — it did, and this file's
+ *  `stream:registered` assertion is what said so. */
+function interfaceBodies(src) {
+  const out = new Map()
+  for (const m of src.matchAll(/export interface (\w+)(?: extends (\w+))? \{\n((?:  [^\n]*\n)+)\}/g)) {
+    out.set(m[1], { body: m[3].replace(/^\s*\/\/.*$/gm, ''), extends: m[2] ?? null })
   }
-  const inner = body.slice(at + 1, end)
-  // Top-level fields only — a nested `payload: { deviceId: string }` must not contribute `deviceId`.
-  const fields = []
+  return out
+}
+
+const IFACES = interfaceBodies(protocolSrc)
+
+/** The `type` literal an interface declares. A base like `SessionError` carries none. */
+function literalOf(name) {
+  const m = IFACES.get(name)?.body.match(/^ {2}type: '([^']+)';?$/m)
+  return m ? m[1] : null
+}
+
+/** Fields of an interface with `extends` resolved, each suffixed `?` when optional, **sorted**.
+ *  Declaration order carries no meaning, and `extends SessionError` puts the inherited pair first —
+ *  which reordered three signatures that had not otherwise changed. Sorting keeps the check aimed at
+ *  what a consumer can observe: which fields exist and which are optional. */
+function fieldsOf(name) {
+  const decl = IFACES.get(name)
+  if (!decl) return null
+  const own = []
   let nest = 0
-  for (const part of inner.split(';')) {
+  for (const line of decl.body.split('\n')) {
     const before = nest
-    nest += (part.match(/\{/g) ?? []).length - (part.match(/\}/g) ?? []).length
+    nest += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
     if (before !== 0) continue
-    const m = part.match(/^\s*(\w+)(\??):/)
-    if (m && m[1] !== 'type') fields.push(m[1] + m[2])
+    // Top-level fields only — a nested `payload: { deviceId: string }` must not contribute `deviceId`.
+    const m = line.match(/^ {2}(\w+)(\??):/)
+    if (m && m[1] !== 'type') own.push(m[1] + m[2])
   }
-  return fields.join(' ')
+  const inherited = decl.extends ? (fieldsOf(decl.extends) ?? '').split(' ').filter(Boolean) : []
+  return [...inherited, ...own].sort().join(' ')
 }
 
 function unionBody(src, name) {
   const start = src.indexOf(`export type ${name} =`)
+  expect(start, `${name} not found in protocol`).toBeGreaterThan(-1)
   const rest = src.slice(start)
   const end = rest.search(/\n\s*\n/)
   return rest.slice(0, end === -1 ? undefined : end).replace(/^\s*\/\/.*$/gm, '')
 }
 
-/** Members of a union type, following one level of referenced unions (`| OtherUnion`). */
-function unionMembers(src, name) {
-  const start = src.indexOf(`export type ${name} =`)
-  expect(start, `${name} not found in protocol`).toBeGreaterThan(-1)
-  const rest = src.slice(start)
-  const end = rest.search(/\n\s*\n/)
-  // Comments out, or a member is whatever the prose mentions: the note on `RelayOrAgentToBrowser`
-  // points at `{ type: 'error' }` to explain why that one is NOT shared, and the parser read it as
-  // an eleventh member — a false positive that reads exactly like a real declaration.
-  const body = rest.slice(0, end === -1 ? undefined : end).replace(/^\s*\/\/.*$/gm, '')
+/** Interface names a union denotes, following one level of referenced unions (`| OtherUnion`). */
+function unionRefs(src, name) {
+  const out = []
+  for (const m of unionBody(src, name).matchAll(/^\s*\|\s*(\w+)\s*$/gm)) {
+    if (IFACES.has(m[1])) out.push(m[1])
+    else out.push(...unionRefs(src, m[1]))
+  }
+  return out
+}
 
+/** Message `type` literals a union denotes. */
+function unionMembers(src, name) {
   const types = new Set()
-  for (const m of body.matchAll(/\{\s*type: '([^']+)'/g)) types.add(m[1])
-  for (const m of body.matchAll(/^\s*\|\s*([A-Z]\w+)\s*$/gm)) {
-    for (const t of unionMembers(src, m[1])) types.add(t)
+  for (const ref of unionRefs(src, name)) {
+    const lit = literalOf(ref)
+    expect(lit, `${ref} declares no type literal`).not.toBeNull()
+    types.add(lit)
   }
   return types
+}
+
+/** The pinned signature lookup: find the interface in this union that owns `type`, return its fields. */
+function memberSignature(src, name, type) {
+  for (const ref of unionRefs(src, name)) {
+    if (literalOf(ref) === type) return fieldsOf(ref)
+  }
+  return null
 }
 
 describe('browser-inbound routing matches the protocol union', () => {
@@ -153,39 +177,83 @@ describe('browser-inbound routing matches the protocol union', () => {
   //
   // `sessionId` is required on all twelve forwarded messages and on the seven shared errors; it is
   // optional on exactly the three the relay also replays without one (see the note in the union).
+  //
+  // All five message unions are here, not just the browser-inbound three. The bindings in
+  // `typeAssertions.ts` pin 58 literals and read like per-message coverage, but a literal is all they
+  // pin — measured, `ScreenshotRequest.requestId`, `DeviceBoot.sessionId` and `DeviceBoot.payload.deviceId`
+  // could all be made optional with every assertion green, and `sessionId?` is the widening
+  // `packages/protocol/AGENTS.md` calls near-irreversible.
+  //
+  // `payload` is one token here, so a change *inside* a nested literal is still invisible. The named
+  // payload types have their field counts pinned in `protocolPayloadTypes`; inline ones like
+  // `device:boot`'s do not, and closing that is a separate job.
   const SIGNATURES = {
     AgentToBrowser: {
       'device:booting': 'sessionId',
-      'device:shutdown-done': 'sessionId payload',
+      'device:shutdown-done': 'payload sessionId',
       'app:install-done': 'sessionId',
       'app:launch-done': 'sessionId',
       'app:clear-state-done': 'sessionId',
       'open-url:done': 'sessionId',
       'input:done': 'sessionId',
       'input:type-done': 'sessionId',
-      'input:type-error': 'sessionId message',
-      'keyboard:toggled': 'sessionId payload',
-      'clipboard:data': 'sessionId requestId payload',
-      'clipboard:write-done': 'sessionId requestId',
+      'input:type-error': 'message sessionId',
+      'keyboard:toggled': 'payload sessionId',
+      'clipboard:data': 'payload requestId sessionId',
+      'clipboard:write-done': 'requestId sessionId',
     },
     RelayOrAgentToBrowser: {
-      'session:chrome': 'sessionId? payload',
-      'session:deviceInfo': 'sessionId? payload',
-      'device:ready': 'sessionId? payload',
-      'app:install-error': 'sessionId message',
-      'app:launch-error': 'sessionId message',
-      'device:boot-error': 'sessionId message',
-      'open-url:error': 'sessionId message',
-      'app:clear-state-error': 'sessionId message',
-      'input:error': 'sessionId message reason?',
-      'clipboard:error': 'sessionId requestId message payload?',
+      'session:chrome': 'payload sessionId?',
+      'session:deviceInfo': 'payload sessionId?',
+      'device:ready': 'payload sessionId?',
+      'app:install-error': 'message sessionId',
+      'app:launch-error': 'message sessionId',
+      'device:boot-error': 'message sessionId',
+      'open-url:error': 'message sessionId',
+      'app:clear-state-error': 'message sessionId',
+      'input:error': 'message reason? sessionId',
+      'clipboard:error': 'message payload? requestId sessionId',
+    },
+    BrowserToRelay: {
+      'agents:list': '',
+      'session:start': 'sessionId',
+      'session:end': 'sessionId',
+      'session:leave': 'sessionId',
+      'device:boot': 'payload sessionId',
+      'device:shutdown': 'payload sessionId',
+      'app:install': 'buildId sessionId',
+      'app:launch': 'buildId sessionId',
+      'app:clear-state': 'payload? sessionId',
+      'open-url': 'payload sessionId',
+      'input:touch:start': 'payload sessionId',
+      'input:touch:move': 'payload sessionId',
+      'input:touch:end': 'payload? sessionId',
+      'input:pinch:start': 'payload sessionId',
+      'input:pinch:move': 'payload sessionId',
+      'input:pinch:end': 'sessionId',
+      'input:key': 'payload sessionId',
+      'input:type': 'payload sessionId',
+      'input:button': 'payload sessionId',
+      'input:rotate': 'sessionId',
+      'input:keyboard:toggle': 'sessionId',
+      'clipboard:read': 'payload? requestId sessionId',
+      'clipboard:write': 'payload requestId sessionId',
+    },
+    RelayToAgent: {
+      'agent:registered': 'registeredSessions',
+      'stream:request-idr': 'sessionId',
+      'device:shutdown': 'payload sessionId',
+      'app:install': 'payload sessionId',
+      'app:launch': 'payload sessionId',
+      'screenshot:request': 'format requestId sessionId',
+      'ui:tree:request': 'requestId sessionId',
     },
     RelayToBrowser: {
       'agents:listed': 'sessions',
-      'session:joined': 'sessionId capabilities',
-      'session:terminated': 'sessionId reason',
+      'session:joined': 'capabilities sessionId',
+      'session:terminated': 'reason sessionId',
       'session:agent-away': 'sessionId',
-      'session:rebound': 'sessionId capabilities',
+      'session:rebound': 'capabilities sessionId',
       error: 'message',
     },
   }
@@ -241,9 +309,15 @@ describe('browser-inbound routing matches the protocol union', () => {
     const bridge = readFileSync(join(root, 'packages/dashboard/hooks/useClipboardBridge.ts'), 'utf8')
     const viewer = readFileSync(join(root, 'packages/dashboard/components/DeviceViewer.tsx'), 'utf8')
 
-    const declared = bridge.match(/export type ClipboardBridgeMessage = Extract<[\s\S]*?>\n/)
-    expect(declared, 'ClipboardBridgeMessage is no longer an Extract<> of the wire union').not.toBeNull()
-    const wanted = [...declared[0].matchAll(/'([^']+)'/g)].map((m) => m[1]).sort()
+    // L1 replaced the `Extract<>` with named members, so the expected set comes from resolving those
+    // names to their literals — still derived from the bridge's own declaration, not restated here.
+    const declared = bridge.match(/export type ClipboardBridgeMessage = ([\w |]+)\n/)
+    expect(declared, 'ClipboardBridgeMessage is no longer a union of named wire messages').not.toBeNull()
+    const wanted = declared[1].split('|').map((n) => n.trim()).filter(Boolean).map((n) => {
+      const lit = literalOf(n)
+      expect(lit, `${n} is not a protocol message interface`).not.toBeNull()
+      return lit
+    }).sort()
 
     const at = viewer.indexOf('clipboardHandlerRef.current?.(msg)')
     expect(at, 'DeviceViewer no longer routes into the clipboard bridge').toBeGreaterThan(-1)

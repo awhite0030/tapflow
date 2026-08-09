@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render } from '@testing-library/react'
 import { act } from 'react'
-import type { BrowserToRelay } from '@tapflowio/protocol'
+import type { DeviceBoot, BrowserToRelay } from '@tapflowio/protocol'
 import type { BrowserInbound } from '@/lib/types'
 
 // The viewer is only exercised through its message handler here — the decoders, the audio path and
@@ -30,7 +30,7 @@ const { DeviceViewer } = await import('@/components/DeviceViewer')
 function bootModes(): Array<string | undefined> {
   return send.mock.calls
     .map(([msg]) => msg)
-    .filter((msg): msg is Extract<BrowserToRelay, { type: 'device:boot' }> => msg.type === 'device:boot')
+    .filter((msg): msg is DeviceBoot => msg.type === 'device:boot')
     .map((msg) => msg.payload.resetMode)
 }
 
