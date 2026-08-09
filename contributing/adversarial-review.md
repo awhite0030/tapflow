@@ -72,6 +72,33 @@ and waiting out sleeps.
   processes, with real waits. Budget for it and say so up front, rather than discovering it at 100
   minutes.
 
+## The cleared list ages with the diff
+
+A reviewer's "checked and cleared" list describes the code **as the reviewer read it**. Fixing the
+findings changes that code — so **after applying the fixes, re-check whether any fix invalidated a
+cleared item.** The list is evidence, not a warranty, and it expires the moment you edit.
+
+This is not a hypothetical. On #503 a reviewer cleared `setAgentCapabilities(msg.capabilities ?? [])`:
+type-dead now that `capabilities` is required, but live at runtime, and *"removing it would be caught
+by `sessionScope.test.tsx:35,74`"*. That was true when it was written. Both of those lines were
+`{ type: 'session:joined' } as BrowserInbound` — a fixture omitting the field — and a later finding in
+the same review was that those casts must go. Typing the fixtures correctly is right, and it silently
+removed the fallback's only coverage: the mutation went from caught to surviving all 297 tests, with
+nothing failing to say so.
+
+The failure mode is specific and worth naming: **a cleared item whose grounds are a test, where
+another finding changes that test.** So:
+
+- When a review yields several findings, treat the cleared list as **one of the things the fixes can
+  break**. Read it again at the end, not once at the start.
+- If a cleared item's grounds were "a test catches this", re-run that mutation after the fixes. Being
+  told a mutation is caught is not the same as it being caught now.
+- Record the reversal in the review file rather than quietly deleting it — strike the original and say
+  what overturned it. Someone later needs to know the clearance was real and then stopped being real.
+
+The same applies to your own mutation results: a mutation you ran before the fixes was run against
+code that no longer exists.
+
 ### A prompt skeleton that stays cheap
 
 What made the 4m30s pair cheap was structural, not stylistic. Each prompt carried:
