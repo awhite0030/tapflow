@@ -199,8 +199,13 @@ async function waitNotVisible(driver: FlowDriver, sel: Selector, timeoutMs: numb
 async function executeStep(step: Step, flow: Flow, driver: FlowDriver, timeoutMs: number, pollIntervalMs: number): Promise<void> {
   switch (step.type) {
     case 'clearState': {
-      // schema guarantees appId presence at parse time for the bare form
-      await driver.clearState(step.appId ?? flow.appId!)
+      // `parseFlow` rejects the bare form without a flow-level appId, but `runFlow` is exported and does not
+      // parse — an embedder can hand it a `Flow` built by hand, and `flow.appId!` used to launder that into
+      // `app:clear-state` with `payload: {}` on the wire for the device to answer 'bundleId missing'. Refuse
+      // here instead, where the cause is still nameable. Empty string too: `''` type-checks all the way down.
+      const appId = step.appId ?? flow.appId
+      if (!appId) throw new StepFailure('clearState has no app id — set it on the step or as the flow-level "appId"')
+      await driver.clearState(appId)
       return
     }
     case 'launchApp': return driver.launchApp()

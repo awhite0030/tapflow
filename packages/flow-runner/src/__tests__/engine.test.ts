@@ -236,6 +236,17 @@ steps:
     expect(driver.calls).toEqual([['clearState', 'com.example.app'], ['clearState', 'com.other.app']])
   })
 
+  it('clearState with no app id anywhere fails the step instead of sending an empty payload', async () => {
+    // Not reachable through `parseFlow`, which rejects the bare form without a flow-level appId — but `runFlow`
+    // is exported and does not parse, so an embedder can hand it this. `flow.appId!` used to launder it into
+    // `app:clear-state` with `payload: {}` and let the device answer 'bundleId missing' a network hop later.
+    const driver = fakeDriver([[]])
+    const result = await runFlow({ name: 'hand-built', steps: [{ type: 'clearState' }] }, driver, OPTS)
+    expect(result.status).toBe('failed')
+    expect(result.failureMessage).toContain('clearState has no app id')
+    expect(driver.calls).toEqual([])
+  })
+
   it('per-selector timeout overrides the default', async () => {
     const driver = fakeDriver([[]])
     const start = Date.now()
