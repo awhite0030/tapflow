@@ -15,7 +15,8 @@ and `scripts/__tests__/inputErrorReason.test.mjs` exists because a script had to
 
 Seven message types were declared nowhere: `agent:register`, `agent:resources`, `screenshot:done`,
 `screenshot:error`, `stream:register`, `ui:tree:response`, `ui:tree:error` — the last undeclared direction.
-They are now `AgentToRelay` and `StreamToRelay`, and `AgentOutbound` is what a typed send takes.
+They are now `AgentToRelay` and `StreamToRelay`, and `AgentControlOutbound` is what the agents' typed send
+helpers take.
 
 `stream:register` is its own direction rather than part of `AgentToRelay`, mirroring `RelayToStream`: the
 relay assigns the role `'stream'` from it, not `'agent'`, so folding it in would make the union's name
@@ -25,8 +26,8 @@ inbound is narrowed by role.
 ## Two helpers, and why not one
 
 ```ts
-private sendMsg(msg: AgentOutbound): void { this.ws?.send(JSON.stringify(msg)) }
-private sendOn(ws: WebSocket, msg: AgentOutbound): void { ws.send(JSON.stringify(msg)) }
+private sendMsg(msg: AgentControlOutbound): void { this.ws?.send(JSON.stringify(msg)) }
+private sendOn(ws: WebSocket, msg: AgentControlOutbound): void { ws.send(JSON.stringify(msg)) }
 ```
 
 `sendOn` takes the socket **as an argument**. Seven call sites sit behind an entry guard (`if (!this.ws)
