@@ -132,7 +132,7 @@ describe('useAgentSession', () => {
     const { result } = renderHook(() => useAgentSession('android'))
 
     act(() => result.current.startDevice(makeDevice()))
-    act(() => capturedOnMessage({ type: 'error', message: 'boom' }))
+    act(() => capturedOnMessage({ type: 'error', message: 'boom', reason: 'agent-resources-exhausted' }))
 
     expect(result.current.booting).toBe(false)
     expect(result.current.status).toBe('Error: boom')

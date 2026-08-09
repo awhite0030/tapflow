@@ -24,10 +24,13 @@ interface Props {
   buildId?: number;
   resetMode?: 'app-only' | 'full-erase';
   onRecordingUploaded?: () => void;
-  /** The relay dropped this session (the agent went away). The viewer cannot recover on its own —
-   *  it holds a socket addressed to a sessionId that no longer exists — so it reports upward and
-   *  the parent decides where to go. */
-  onSessionEnded?: (reason: SessionTerminatedReason) => void;
+  /** Why this viewer stopped. The viewer cannot recover from any of these on its own — it holds a
+   *  socket it can make no further progress on — so it reports upward and the parent decides where to go.
+   *
+   *  A **superset** of why the *relay* terminated the session. `busy-elsewhere` is the dashboard's own:
+   *  the session is alive and another socket holds it, so no protocol reason describes it, and widening
+   *  `SessionTerminatedReason` would let `session:terminated` carry a reason it can never mean. */
+  onSessionEnded?: (reason: SessionTerminatedReason | 'busy-elsewhere' | 'mac-overloaded') => void;
 }
 
 export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecordingUploaded, onSessionEnded }: Props) {
@@ -279,18 +282,33 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     }
     if (msg.type === 'open-url:done') { toast.success('Deeplink opened'); }
     if (msg.type === 'open-url:error') { toast.error(msg.message); }
-    if (msg.type === 'error' && msg.message === 'Session not found') {
-      // The relay has no such session, so nothing else is ever coming for it. Reached when a
-      // browser blip outlasts the hold the relay keeps after an agent goes away (#426): the
-      // re-join lands after the window closed, and `session:terminated` went to a socket that no
-      // longer existed. Without this the tab waits on a message that cannot arrive.
-      onSessionEnded?.('agent-disconnected');
-      return;
-    }
-    if (msg.type === 'error' && msg.message === 'Agent resources exhausted') {
-      toast.error('Could not start session — this Mac is currently overloaded.', {
-        description: 'Go back and select a different Mac.',
-      })
+    // Branch on `reason`, never on `message`. The prose version handled two of the three wordings the
+    // relay sends, so `Session busy` arrived and did nothing — and nothing reported it, because from
+    // the outside `error` *was* a handled type. The switch is exhaustive, so a fourth reason is a
+    // compile error rather than another silent case.
+    if (msg.type === 'error') {
+      switch (msg.reason) {
+        case 'session-not-found':
+          // Nothing else is ever coming for it. Reached when a browser blip outlasts the hold the relay
+          // keeps after an agent goes away (#426): the re-join lands after the window closed, and
+          // `session:terminated` went to a socket that no longer existed. Without this the tab waits on
+          // a message that cannot arrive.
+          onSessionEnded?.('agent-disconnected');
+          return;
+        case 'session-busy':
+          // The session is alive and someone else holds it — so this is not `agent-disconnected`, and
+          // saying so would send the tester to re-pick a Mac that is working fine.
+          onSessionEnded?.('busy-elsewhere');
+          return;
+        case 'agent-resources-exhausted':
+          // Exit, not just a toast. The relay `return`s after sending this, so no `session:joined` and no
+          // `session:terminated` follows — a toast alone left the tab sitting on "Starting device…"
+          // forever, which is the state this whole layer is about. Making `reason` required stopped a
+          // case from being unhandled; it did not make the three handled cases *end* the same way, and
+          // this was the one that did not.
+          onSessionEnded?.('mac-overloaded');
+          return;
+      }
     }
   }, [sessionId, deviceId, buildId, onSessionEnded, resetMode, installed, agentAway]);
 

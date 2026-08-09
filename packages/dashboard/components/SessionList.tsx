@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { toast } from 'sonner'
 import { useRelay } from '@/hooks/useRelay'
 import type { BrowserInbound, SessionInfo } from '@/lib/types'
 import { Button } from '@/components/ui/button'
@@ -53,6 +54,22 @@ export function SessionList({ onSelect }: Props) {
           ...s,
           devices: s.devices.map((d) => (d.id === deviceId ? { ...d, status: 'shutdown' } : d)),
         }))
+      )
+    } else if (msg.type === 'error') {
+      // `handleShutdown` sends `session:start` on this socket, so a refused join is answered here — and
+      // the only message that clears `shutting` is `device:shutdown-done`, which then never comes. The
+      // badge stayed on "Shutting down..." for good, and `isShutting` hides both buttons, so the row
+      // became inert. Same defect as the one `DeviceViewer` had for `Session busy`, in a second place.
+      //
+      // Which device it was is not on the message — `error` carries no sessionId, by design, because the
+      // relay sends it when it cannot correlate. One shutdown is in flight at a time from this list, so
+      // clearing all of them is exact enough and never leaves a row stuck.
+      setShutting({})
+      toast.error(
+        msg.reason === 'session-busy'
+          ? 'That device is open in another browser session — it was not shut down.'
+          : 'Could not shut that device down.',
+        { description: msg.message },
       )
     }
   })

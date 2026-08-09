@@ -1036,7 +1036,18 @@ export class RelayServer {
   private handleSessionStart(ws: WebSocket, msg: RelayMessage): void {
     const session = this.sessions.get(msg.sessionId!)
     if (!session) {
-      this.sendTo(ws, { type: 'error', message: 'Session not found' })
+      this.sendTo(ws, { type: 'error', message: 'Session not found', reason: 'session-not-found' })
+      return
+    }
+    // Occupancy first, because it is the more specific answer and both can be true at once. A tester
+    // joining a device someone else has open on a loaded Mac was being told "this Mac is overloaded,
+    // pick another" — advice for a problem they cannot act on, while the actual reason went unreported.
+    // It is a map read the relay has already done, so ordering it first costs nothing.
+    //
+    // `!== ws` because a socket re-joining the session it already holds is not contending with anyone:
+    // `SessionList` sends `session:start` before a shutdown, so pressing shutdown twice hit this.
+    if (session.browserSocket && session.browserSocket !== ws && session.browserSocket.readyState === WebSocket.OPEN) {
+      this.sendTo(ws, { type: 'error', message: 'Session busy', reason: 'session-busy' })
       return
     }
     // Read before the resource gate, and answered before it too. The gate would otherwise read the
@@ -1047,14 +1058,20 @@ export class RelayServer {
     if (resources) {
       const memPercent = (resources.memUsedMB / resources.memTotalMB) * 100
       if (resources.cpuPercent > RESOURCE_THRESHOLD || memPercent > RESOURCE_THRESHOLD) {
-        this.sendTo(ws, { type: 'error', message: 'Agent resources exhausted' })
+        this.sendTo(ws, { type: 'error', message: 'Agent resources exhausted', reason: 'agent-resources-exhausted' })
         return
       }
     }
     try {
       this.sessions.join(msg.sessionId!, ws)
-    } catch {
-      this.sendTo(ws, { type: 'error', message: 'Session busy' })
+    } catch (e) {
+      // `join()` throws for not-found as well as busy, and the check above already answered busy — so
+      // reaching here means something this handler did not anticipate. Reporting it as `session-busy`
+      // would put a specific claim on an unknown cause, which is what `reason` exists to stop. Bare
+      // `catch {}` also discarded the error entirely: nothing reached the route-level handler, because
+      // this swallowed it first.
+      logger.error(`session:start could not join ${msg.sessionId}:`, e)
+      this.sendTo(ws, { type: 'error', message: 'Session not found', reason: 'session-not-found' })
       return
     }
     // Include the agent's capabilities so the viewer knows up front what is implemented on

@@ -49,6 +49,20 @@ The audience is the whole team (PO, PM, designers, backend, QA) — not just QA.
 - Components that combine multiple `useEffect` + `react-hook-form` `Controller` + `useWatch` (e.g. `DefaultSettings`) can hang in jsdom under full render. `vitest.config.ts` has `testTimeout: 10000` as a safety net — a timeout failure means the test setup needs fixing, not more retries.
 - When mocking `fetch` in a component that fires multiple concurrent `useEffect` fetches (e.g. `GET /api/v1/settings` + `GET /api/v1/apps`), use URL-based dispatch (`mockImplementation((url) => {...})`) instead of `mockResolvedValueOnce` chains — call order is non-deterministic.
 
+### Every browser-inbound message has a declared disposition
+
+`lib/inboundDisposition.ts` says, for each of the 28 messages a browser socket can receive, either which
+files handle it or why it is deliberately ignored. It is written with
+`satisfies Record<BrowserInbound['type'], Disposition>`, so **a message added to the wire breaks that file**
+until someone picks a category.
+
+It exists because "handled elsewhere", "deliberately ignored" and "nobody wrote it" all look like an absent
+branch. Six messages were being dropped and the three reasons were indistinguishable — one of them turned
+out to be a real bug hiding inside a *handled* type (`error`, whose meaning was carried in free prose).
+
+**Do not branch on a message's `message` field.** It is prose the producer owns. `error` carries a closed
+`reason`; branch on that, exhaustively.
+
 ### `input:error` is shown per input, and there is no session-level input state
 
 A failed input surfaces as a toast keyed on the wire `reason` (`lib/inputErrorNotice.ts`), or is shown

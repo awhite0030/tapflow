@@ -65,7 +65,7 @@ export const relayCannotOriginateKeyboard: RelayOutbound = { type: 'keyboard:tog
 
 // A consumer reads the whole surface, whoever sent it — both of the above are valid here.
 export const inboundFromAgent: BrowserInbound = { type: 'input:done', sessionId: 's' }
-export const inboundFromRelay: BrowserInbound = { type: 'error', message: 'x' }
+export const inboundFromRelay: BrowserInbound = { type: 'error', message: 'x', reason: 'session-busy' }
 
 // @ts-expect-error - sessionId is required on every one of the twelve forward-only messages
 export const forwardWithoutSession: AgentToBrowser = { type: 'app:install-done' }
