@@ -105,11 +105,40 @@ function walk(dir, out = []) {
   return out
 }
 
-const protoDecls = interfaces(readFileSync(PROTOCOL, 'utf8'))
+const protoSrc = readFileSync(PROTOCOL, 'utf8')
+const protoDecls = interfaces(protoSrc)
 /** Payload types worth guarding. Two fields is enough to be a real shape; one is a coincidence. */
+// Payload shapes only. A **message** is identified by its `type` literal, not by its field set (D14 in
+// the wire-contract program), and L1 turned 58 messages into interfaces — many sharing a low-arity set
+// like `{type, sessionId}`. Keying those by field set would make this check report the next package
+// that happens to declare `interface Foo { type: string; sessionId: string }` as re-declaring a
+// protocol payload, which it is not. Measured at the time: zero such collisions existed, so this is
+// removing a tripwire L1 planted rather than fixing a live failure.
+// Payload shapes only, which means excluding two kinds of declaration.
+//
+// **Messages.** A message is identified by its `type` literal, not by its field set (D14 in the
+// wire-contract program), and L1 turned 58 of them into interfaces — many sharing a low-arity set like
+// `{type, sessionId}`.
+//
+// **Bases that messages inherit.** `SessionError` carries no `type`, so the first rule keeps it, and
+// its shape `{sessionId, message}` is the most common local error DTO in this repo. Measured: a plain
+// `interface RelayFailure { sessionId: string; message: string }` in `mcp-server` was reported as
+// re-declaring a protocol payload — and the advice this check gives ("import it from protocol instead")
+// is wrong for that case. A message base is a structural fragment of the message family, not a shape a
+// consumer should import.
+//
+// Scoped to bases of *messages*, not every base. `DeviceReport` is also extended — by `DeviceSummary`,
+// which is a payload — and excluding it would drop a real shape from the guarded set. The heir having a
+// `type` field is what makes its base part of the message family.
+const bases = new Set(
+  [...protoSrc.matchAll(/export interface (\w+) extends (\w+) \{([^}]*)\}/g)]
+    .filter((m) => /^ {2}type: '/m.test(m[3]))
+    .map((m) => m[2]),
+)
 const guarded = new Map()
 for (const name of protoDecls.keys()) {
   const fields = resolved(protoDecls, name)
+  if (fields.includes('type') || bases.has(name)) continue
   if (fields.length >= 2) guarded.set(key(fields), name)
 }
 

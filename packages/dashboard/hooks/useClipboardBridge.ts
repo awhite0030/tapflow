@@ -1,17 +1,16 @@
-import type { BrowserInbound, BrowserToRelay, ClipboardRequest } from '@tapflowio/protocol'
+import type {
+  BrowserToRelay, ClipboardData, ClipboardError, ClipboardRequest, ClipboardWriteDone,
+} from '@tapflowio/protocol'
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { MutableRefObject } from 'react'
 
-/** The three replies a clipboard request can get, derived from the wire union rather than described
- *  again here. The hand-written shape this replaces was `{ type: string; payload?: unknown }`, wide
- *  enough to accept any message at all — so every read of a field went through a cast that asserted
- *  what the wire already said, and `DeviceViewer` needed an `as unknown as` to route into it. */
-export type ClipboardBridgeMessage = Extract<
-  BrowserInbound,
-  { type: 'clipboard:data' | 'clipboard:write-done' | 'clipboard:error' }
->
-
-type ClipboardErrorReply = Extract<ClipboardBridgeMessage, { type: 'clipboard:error' }>
+/** The three replies a clipboard request can get. Named members of the wire union rather than an
+ *  `Extract<>` over it — L1 gave every message a name, so this says what it means.
+ *
+ *  The hand-written shape this replaces was `{ type: string; payload?: unknown }`, wide enough to
+ *  accept any message at all — so every read of a field went through a cast that asserted what the
+ *  wire already said, and `DeviceViewer` needed an `as unknown as` to route into it. */
+export type ClipboardBridgeMessage = ClipboardData | ClipboardWriteDone | ClipboardError
 
 export type ClipboardMessageHandler = (msg: ClipboardBridgeMessage) => void
 
@@ -108,14 +107,14 @@ const byteLength = (s: string): number => new TextEncoder().encode(s).length
 /** True when the agent said this backend has no clipboard channel at all. It can therefore
  *  never have a sentinel parked on the device, which makes pressing the plain chord safe —
  *  the one error where falling back is provably harmless rather than a gamble. */
-const isUnsupportedBackend = (msg: ClipboardErrorReply): boolean => !!msg.payload?.unsupported
+const isUnsupportedBackend = (msg: ClipboardError): boolean => !!msg.payload?.unsupported
 
 /** May the viewer press the plain chord after a failed bridged copy? Only when the agent says
  *  no sentinel is on the device. If one is, the agent's restore lands right after and overwrites
  *  whatever the chord copies, so the user pastes a stale value. Absent means assume parked —
  *  an agent that predates the field cannot tell us, and a silent stale paste is the worse half
  *  of the trade. See ClipboardErrorPayload in agent-core. */
-const noSentinelParked = (msg: ClipboardErrorReply): boolean =>
+const noSentinelParked = (msg: ClipboardError): boolean =>
   // `unsupported` implies it: a backend with no clipboard channel cannot park anything. Accepting
   // it keeps `{ unsupported: true }` alone — the natural encoding, and what a third-party agent
   // would most likely send — from silently costing the user their fallback copy.

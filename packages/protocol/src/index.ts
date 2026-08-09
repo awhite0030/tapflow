@@ -161,23 +161,56 @@ export type ChromePayload = ChromeData | AndroidChrome
 
 // ── relay → agent ────────────────────────────────────────────────────────────
 
-export type RelayToAgent =
-  | { type: 'agent:registered'; registeredSessions: Array<{ deviceId: string; sessionId: string }> }
-  | { type: 'stream:request-idr'; sessionId: string }
-  | { type: 'device:shutdown'; sessionId: string; payload: { deviceId: string } }
-  | { type: 'app:install'; sessionId: string; payload: { filePath: string; bundleId: string | null } }
-  | { type: 'app:launch'; sessionId: string; payload: { bundleId: string } }
-  | { type: 'screenshot:request'; sessionId: string; requestId: string; format: 'png' | 'jpeg' }
-  | { type: 'ui:tree:request'; sessionId: string; requestId: string }
+export interface AgentRegistered {
+  type: 'agent:registered'
+  registeredSessions: Array<{ deviceId: string; sessionId: string }>
+}
 
-/**
- * Why a session stopped existing, server-side. A literal union rather than a string so that adding
- * a case is a compile-time event for every consumer that switches on it.
- *
- * Named `session:terminated`, not `session:ended`: `session:end` is already a message the *browser*
- * sends to ask for shutdown, and the two would sit one letter apart in the same switch. This one
- * travels the other way and is not an acknowledgement of that request.
- */
+export interface StreamRequestIdr {
+  type: 'stream:request-idr'
+  sessionId: string
+}
+
+export interface DeviceShutdown {
+  type: 'device:shutdown'
+  sessionId: string
+  payload: { deviceId: string }
+}
+
+export interface AppInstallToAgent {
+  type: 'app:install'
+  sessionId: string
+  payload: { filePath: string; bundleId: string | null }
+}
+
+export interface AppLaunchToAgent {
+  type: 'app:launch'
+  sessionId: string
+  payload: { bundleId: string }
+}
+
+export interface ScreenshotRequest {
+  type: 'screenshot:request'
+  sessionId: string
+  requestId: string
+  format: 'png' | 'jpeg'
+}
+
+export interface UiTreeRequest {
+  type: 'ui:tree:request'
+  sessionId: string
+  requestId: string
+}
+
+export type RelayToAgent =
+  | AgentRegistered
+  | StreamRequestIdr
+  | DeviceShutdown
+  | AppInstallToAgent
+  | AppLaunchToAgent
+  | ScreenshotRequest
+  | UiTreeRequest
+
 export type SessionTerminatedReason = 'agent-disconnected'
 
 /**
@@ -240,74 +273,229 @@ export type InputErrorReason =
  *  Declared once here and referenced by both directions rather than written into each, because two
  *  copies of one message drift. That is not hypothetical: the dashboard kept a hand-copy of this
  *  whole surface and four members had diverged from it, with nothing reporting the difference. */
+// `sessionId` is optional on these three and required on the errors below, because here the two
+// producers genuinely disagree. Both agents stamp it on every one of these
+// (`IOSAgent.ts:401,411,606`, `AndroidAgent.ts:461,867,878`) and the forward gate resolves the
+// session before forwarding, so a *forwarded* copy always carries it — but the relay's own replay
+// to a re-joining viewer does not (`RelayServer.ts:1079,1082,1089`), and it is the same declaration.
+// Optional is what one declaration can honestly say about two producers that differ. Bringing the
+// replay up to the agents' shape, and tightening this to required, belongs with L4 — the layer that
+// types the relay's own sends.
+export interface SessionChrome {
+  type: 'session:chrome'
+  sessionId?: string
+  payload: ChromePayload
+}
+
+export interface SessionDeviceInfo {
+  type: 'session:deviceInfo'
+  sessionId?: string
+  payload: DeviceDetails
+}
+
+export interface DeviceReady {
+  type: 'device:ready'
+  sessionId?: string
+  payload: { deviceId: string }
+}
+
+/**
+ * `sessionId` is what makes a failure findable. A dashboard viewer holds one session per socket,
+ * so an uncorrelated error still lands somewhere sensible — but an MCP caller waits for the reply
+ * that carries its own sessionId, and without one it waits out the deadline instead (#445).
+ *
+ * Required here is a **specification the relay does not yet meet**, not a description of the wire.
+ * Nothing validates inbound messages, so a client that sends `{"type":"input:touch:end"}` with no
+ * sessionId reaches `sessions.get(undefined)`, misses, and the relay answers `'Session not found'`
+ * through `msg.sessionId!` — `JSON.stringify` then drops the key. Seven sites do this
+ * (`RelayServer.ts:719,743,752,786,803,1109,1138`). No in-repo client omits a sessionId, so the
+ * gap is reachable only from a third-party one.
+ *
+ * Optional would describe that wire accurately and still be the wrong contract: an MCP caller that
+ * receives an uncorrelatable `input:error` has nothing it can do with it — it waits out the
+ * deadline either way. The producer is what has to change, and the only correct thing for it to
+ * send with no sessionId is `{ type: 'error' }` below, which exists for exactly that. So this
+ * required field is what makes #444 "send `error` instead" rather than "delete the `!`".
+ */
+export interface SessionError {
+  sessionId: string
+  message: string
+}
+
+export interface AppInstallError extends SessionError {
+  type: 'app:install-error'
+}
+
+export interface AppLaunchError extends SessionError {
+  type: 'app:launch-error'
+}
+
+export interface DeviceBootError extends SessionError {
+  type: 'device:boot-error'
+}
+
+export interface OpenUrlError extends SessionError {
+  type: 'open-url:error'
+}
+
+export interface AppClearStateError extends SessionError {
+  type: 'app:clear-state-error'
+}
+
+export interface InputError extends SessionError {
+  type: 'input:error'
+  reason?: InputErrorReason
+}
+
+// `requestId` is required on the same terms, and with a narrower guarantee behind it: the forward
+// gate resolves `sessionId` only, and both agents read the id as optional
+// (`IOSAgent.ts:1078`, `AndroidAgent.ts:1262`) and pass it straight through. What holds today is
+// that `ClipboardRequest.requestId` is required and the only requester — the dashboard's bridge —
+// is typed with it; `mcp-server` and `flow-runner` send no clipboard message at all. When one of
+// them gains a clipboard tool, this required field is what turns a missing id into a compile error
+// instead of a reply the bridge drops on `if (!msg.requestId) return`. Holding the untyped senders
+// to it is L4.
+export interface ClipboardError extends SessionError {
+  type: 'clipboard:error'
+  requestId: string
+  payload?: ClipboardErrorPayload
+}
+
 export type RelayOrAgentToBrowser =
-  // `sessionId` is optional on these three and required on the errors below, because here the two
-  // producers genuinely disagree. Both agents stamp it on every one of these
-  // (`IOSAgent.ts:401,411,606`, `AndroidAgent.ts:461,867,878`) and the forward gate resolves the
-  // session before forwarding, so a *forwarded* copy always carries it — but the relay's own replay
-  // to a re-joining viewer does not (`RelayServer.ts:1079,1082,1089`), and it is the same declaration.
-  // Optional is what one declaration can honestly say about two producers that differ. Bringing the
-  // replay up to the agents' shape, and tightening this to required, belongs with L4 — the layer that
-  // types the relay's own sends.
-  | { type: 'session:chrome'; sessionId?: string; payload: ChromePayload }
-  | { type: 'session:deviceInfo'; sessionId?: string; payload: DeviceDetails }
-  | { type: 'device:ready'; sessionId?: string; payload: { deviceId: string } }
-  // `sessionId` is what makes a failure findable. A dashboard viewer holds one session per socket,
-  // so an uncorrelated error still lands somewhere sensible — but an MCP caller waits for the reply
-  // that carries its own sessionId, and without one it waits out the deadline instead (#445).
-  //
-  // Required here is a **specification the relay does not yet meet**, not a description of the wire.
-  // Nothing validates inbound messages, so a client that sends `{"type":"input:touch:end"}` with no
-  // sessionId reaches `sessions.get(undefined)`, misses, and the relay answers `'Session not found'`
-  // through `msg.sessionId!` — `JSON.stringify` then drops the key. Seven sites do this
-  // (`RelayServer.ts:719,743,752,786,803,1109,1138`). No in-repo client omits a sessionId, so the
-  // gap is reachable only from a third-party one.
-  //
-  // Optional would describe that wire accurately and still be the wrong contract: an MCP caller that
-  // receives an uncorrelatable `input:error` has nothing it can do with it — it waits out the
-  // deadline either way. The producer is what has to change, and the only correct thing for it to
-  // send with no sessionId is `{ type: 'error' }` below, which exists for exactly that. So this
-  // required field is what makes #444 "send `error` instead" rather than "delete the `!`".
-  | { type: 'app:install-error'; sessionId: string; message: string }
-  | { type: 'app:launch-error'; sessionId: string; message: string }
-  | { type: 'device:boot-error'; sessionId: string; message: string }
-  | { type: 'open-url:error'; sessionId: string; message: string }
-  | { type: 'app:clear-state-error'; sessionId: string; message: string }
-  | { type: 'input:error'; sessionId: string; message: string; reason?: InputErrorReason }
-  // `requestId` is required on the same terms, and with a narrower guarantee behind it: the forward
-  // gate resolves `sessionId` only, and both agents read the id as optional
-  // (`IOSAgent.ts:1078`, `AndroidAgent.ts:1262`) and pass it straight through. What holds today is
-  // that `ClipboardRequest.requestId` is required and the only requester — the dashboard's bridge —
-  // is typed with it; `mcp-server` and `flow-runner` send no clipboard message at all. When one of
-  // them gains a clipboard tool, this required field is what turns a missing id into a compile error
-  // instead of a reply the bridge drops on `if (!msg.requestId) return`. Holding the untyped senders
-  // to it is L4.
-  | { type: 'clipboard:error'; sessionId: string; requestId: string; message: string; payload?: ClipboardErrorPayload }
+  | SessionChrome
+  | SessionDeviceInfo
+  | DeviceReady
+  | AppInstallError
+  | AppLaunchError
+  | DeviceBootError
+  | OpenUrlError
+  | AppClearStateError
+  | InputError
+  | ClipboardError
+
+export interface AgentsListed {
+  type: 'agents:listed'
+  sessions: SessionInfo[]
+}
+
+export interface SessionJoined {
+  type: 'session:joined'
+  sessionId: string
+  capabilities: string[]
+}
+
+export interface SessionTerminated {
+  type: 'session:terminated'
+  sessionId: string
+  reason: SessionTerminatedReason
+}
+
+// The socket carrying this session's agent went away and the relay is holding the session open
+// in case the agent comes back. Nothing is streaming. Sent so the viewer can say what is going on
+// instead of showing a frame that stopped updating — the symptom #426 opened with.
+//
+// While the same browser socket stays attached, at most one of `session:rebound` (it came back)
+// or `session:terminated` (it did not) follows. Both are addressed to `browserSocket`, so a
+// viewer that disconnects in between gets neither, and re-joining re-sends this one.
+export interface SessionAgentAway {
+  type: 'session:agent-away'
+  sessionId: string
+}
+
+// The agent behind this session restarted and the relay re-pointed the session at its new socket
+// — same sessionId, nothing streaming. The viewer has to ask for the device again, because the
+// codec negotiation and tier live in its own `device:boot` payload and nowhere the relay can see.
+// `capabilities` rides along because `session:joined` is sent once and a restarted agent may
+// advertise a different set (an upgrade is the usual reason to restart one).
+export interface SessionRebound {
+  type: 'session:rebound'
+  sessionId: string
+  capabilities: string[]
+}
+
+// The escape hatch for a failure the relay cannot correlate to a session. Every typed member above
+// carries a sessionId; when there is genuinely none to carry, this is the message to send — not a
+// typed error with the key dropped by `JSON.stringify`.
+export interface GenericError {
+  type: 'error'
+  message: string
+}
 
 /** Messages the relay originates and no agent sends. */
 export type RelayToBrowser =
   | RelayOrAgentToBrowser
-  | { type: 'agents:listed'; sessions: SessionInfo[] }
-  | { type: 'session:joined'; sessionId: string; capabilities: string[] }
-  | { type: 'session:terminated'; sessionId: string; reason: SessionTerminatedReason }
-  // The socket carrying this session's agent went away and the relay is holding the session open
-  // in case the agent comes back. Nothing is streaming. Sent so the viewer can say what is going on
-  // instead of showing a frame that stopped updating — the symptom #426 opened with.
-  //
-  // While the same browser socket stays attached, at most one of `session:rebound` (it came back)
-  // or `session:terminated` (it did not) follows. Both are addressed to `browserSocket`, so a
-  // viewer that disconnects in between gets neither, and re-joining re-sends this one.
-  | { type: 'session:agent-away'; sessionId: string }
-  // The agent behind this session restarted and the relay re-pointed the session at its new socket
-  // — same sessionId, nothing streaming. The viewer has to ask for the device again, because the
-  // codec negotiation and tier live in its own `device:boot` payload and nowhere the relay can see.
-  // `capabilities` rides along because `session:joined` is sent once and a restarted agent may
-  // advertise a different set (an upgrade is the usual reason to restart one).
-  | { type: 'session:rebound'; sessionId: string; capabilities: string[] }
-  // The escape hatch for a failure the relay cannot correlate to a session. Every typed member above
-  // carries a sessionId; when there is genuinely none to carry, this is the message to send — not a
-  // typed error with the key dropped by `JSON.stringify`.
-  | { type: 'error'; message: string }
+  | AgentsListed
+  | SessionJoined
+  | SessionTerminated
+  | SessionAgentAway
+  | SessionRebound
+  | GenericError
+
+export interface DeviceBooting {
+  type: 'device:booting'
+  sessionId: string
+}
+
+export interface DeviceShutdownDone {
+  type: 'device:shutdown-done'
+  sessionId: string
+  payload: { deviceId: string }
+}
+
+export interface AppInstallDone {
+  type: 'app:install-done'
+  sessionId: string
+}
+
+export interface AppLaunchDone {
+  type: 'app:launch-done'
+  sessionId: string
+}
+
+export interface AppClearStateDone {
+  type: 'app:clear-state-done'
+  sessionId: string
+}
+
+export interface OpenUrlDone {
+  type: 'open-url:done'
+  sessionId: string
+}
+
+export interface InputDone {
+  type: 'input:done'
+  sessionId: string
+}
+
+export interface InputTypeDone {
+  type: 'input:type-done'
+  sessionId: string
+}
+
+export interface InputTypeError extends SessionError {
+  type: 'input:type-error'
+}
+
+// iOS only — Android's `input:keyboard:toggle` is a client-side forwarding flag with no device
+// side effect, so it has nothing to report back.
+export interface KeyboardToggled {
+  type: 'keyboard:toggled'
+  sessionId: string
+  payload: { visible: boolean }
+}
+
+export interface ClipboardData {
+  type: 'clipboard:data'
+  sessionId: string
+  requestId: string
+  payload: { text: string }
+}
+
+export interface ClipboardWriteDone {
+  type: 'clipboard:write-done'
+  sessionId: string
+  requestId: string
+}
 
 /** Messages an agent produces. The relay forwards them byte-for-byte (`JSON.stringify(msg)`) rather
  *  than re-creating them, so it never constructs one — which is exactly why they were missing from
@@ -335,20 +523,18 @@ export type RelayToBrowser =
  *  brought up to the agents' shape in the same change. Tracked there rather than left implicit. */
 export type AgentToBrowser =
   | RelayOrAgentToBrowser
-  | { type: 'device:booting'; sessionId: string }
-  | { type: 'device:shutdown-done'; sessionId: string; payload: { deviceId: string } }
-  | { type: 'app:install-done'; sessionId: string }
-  | { type: 'app:launch-done'; sessionId: string }
-  | { type: 'app:clear-state-done'; sessionId: string }
-  | { type: 'open-url:done'; sessionId: string }
-  | { type: 'input:done'; sessionId: string }
-  | { type: 'input:type-done'; sessionId: string }
-  | { type: 'input:type-error'; sessionId: string; message: string }
-  // iOS only — Android's `input:keyboard:toggle` is a client-side forwarding flag with no device
-  // side effect, so it has nothing to report back.
-  | { type: 'keyboard:toggled'; sessionId: string; payload: { visible: boolean } }
-  | { type: 'clipboard:data'; sessionId: string; requestId: string; payload: { text: string } }
-  | { type: 'clipboard:write-done'; sessionId: string; requestId: string }
+  | DeviceBooting
+  | DeviceShutdownDone
+  | AppInstallDone
+  | AppLaunchDone
+  | AppClearStateDone
+  | OpenUrlDone
+  | InputDone
+  | InputTypeDone
+  | InputTypeError
+  | KeyboardToggled
+  | ClipboardData
+  | ClipboardWriteDone
 
 /** Everything a browser socket can receive, whoever produced it. This is what a viewer's message
  *  handler should be typed with — the two unions above answer "who sends this", which matters to
@@ -357,7 +543,12 @@ export type BrowserInbound = RelayToBrowser | AgentToBrowser
 
 /** The agent's *stream* socket, not a browser. Its own direction because it has its own audience:
  *  the consumer is `agent-core`'s stream registration, and nothing in a browser reads it. */
-export type RelayToStream = { type: 'stream:registered' }
+export interface StreamRegistered {
+  type: 'stream:registered'
+}
+
+export type RelayToStream =
+  | StreamRegistered
 
 /** Everything the relay originates. Messages it merely forwards keep their inbound type — they are
  *  not re-created, so they are not checked against this union. */
@@ -386,37 +577,159 @@ export interface Point {
 
 /** The two clipboard requests a viewer can make. Kept as its own union because the bridge sends
  *  them through one call that takes the type as an argument. */
+export interface ClipboardRead {
+  type: 'clipboard:read'
+  sessionId: string
+  requestId: string
+  payload?: { press?: 'copy' | 'cut' }
+}
+
+export interface ClipboardWrite {
+  type: 'clipboard:write'
+  sessionId: string
+  requestId: string
+  payload: { text: string; pasteAfter?: boolean }
+}
+
 export type ClipboardRequest =
-  | { type: 'clipboard:read'; sessionId: string; requestId: string; payload?: { press?: 'copy' | 'cut' } }
-  | { type: 'clipboard:write'; sessionId: string; requestId: string; payload: { text: string; pasteAfter?: boolean } }
+  | ClipboardRead
+  | ClipboardWrite
+
+
+export interface AgentsList {
+  type: 'agents:list'
+}
+
+export interface SessionStart {
+  type: 'session:start'
+  sessionId: string
+}
+
+// The relay handles `session:end`, but nothing in this repo sends it — the dashboard and
+// mcp-server both use `session:leave`. Kept because the relay's handler is the contract for any
+// client that does send it; remove it here only together with that handler.
+export interface SessionEnd {
+  type: 'session:end'
+  sessionId: string
+}
+
+export interface SessionLeave {
+  type: 'session:leave'
+  sessionId: string
+}
+
+// `external` is added by the relay on the way through — the browser never sets it.
+export interface DeviceBoot {
+  type: 'device:boot'
+  sessionId: string
+  payload: { deviceId: string; resetMode?: 'app-only' | 'full-erase'; acceptH264?: boolean; secureContext?: boolean }
+}
+
+export interface AppInstallToRelay {
+  type: 'app:install'
+  sessionId: string
+  buildId: number
+}
+
+export interface AppLaunchToRelay {
+  type: 'app:launch'
+  sessionId: string
+  buildId: number
+}
+
+export interface AppClearState {
+  type: 'app:clear-state'
+  sessionId: string
+  payload?: { bundleId?: string }
+}
+
+export interface OpenUrl {
+  type: 'open-url'
+  sessionId: string
+  payload: { url: string }
+}
+
+export interface InputTouchStart {
+  type: 'input:touch:start'
+  sessionId: string
+  payload: Point
+}
+
+export interface InputTouchMove {
+  type: 'input:touch:move'
+  sessionId: string
+  payload: Point
+}
+
+// `payload` is accepted but ignored: the agents call `touchEnd()` without reading it. The
+// dashboard omits it, mcp-server sends the last point. Optional here because that is what the
+// wire actually carries — not because the coordinate means anything on this message.
+export interface InputTouchEnd {
+  type: 'input:touch:end'
+  sessionId: string
+  payload?: Point
+}
+
+export interface InputPinchStart {
+  type: 'input:pinch:start'
+  sessionId: string
+  payload: { f0: Point; f1: Point }
+}
+
+export interface InputPinchMove {
+  type: 'input:pinch:move'
+  sessionId: string
+  payload: { f0: Point; f1: Point }
+}
+
+export interface InputPinchEnd {
+  type: 'input:pinch:end'
+  sessionId: string
+}
+
+export interface InputType {
+  type: 'input:type'
+  sessionId: string
+  payload: { text: string }
+}
+
+export interface InputButton {
+  type: 'input:button'
+  sessionId: string
+  payload: { name: string; phase?: 'down' | 'up' }
+}
+
+export interface InputRotate {
+  type: 'input:rotate'
+  sessionId: string
+}
+
+export interface InputKeyboardToggle {
+  type: 'input:keyboard:toggle'
+  sessionId: string
+}
 
 export type BrowserToRelay =
-  | { type: 'agents:list' }
-  | { type: 'session:start'; sessionId: string }
-  // The relay handles `session:end`, but nothing in this repo sends it — the dashboard and
-  // mcp-server both use `session:leave`. Kept because the relay's handler is the contract for any
-  // client that does send it; remove it here only together with that handler.
-  | { type: 'session:end'; sessionId: string }
-  | { type: 'session:leave'; sessionId: string }
-  // `external` is added by the relay on the way through — the browser never sets it.
-  | { type: 'device:boot'; sessionId: string; payload: { deviceId: string; resetMode?: 'app-only' | 'full-erase'; acceptH264?: boolean; secureContext?: boolean } }
-  | { type: 'device:shutdown'; sessionId: string; payload: { deviceId: string } }
-  | { type: 'app:install'; sessionId: string; buildId: number }
-  | { type: 'app:launch'; sessionId: string; buildId: number }
-  | { type: 'app:clear-state'; sessionId: string; payload?: { bundleId?: string } }
-  | { type: 'open-url'; sessionId: string; payload: { url: string } }
-  | { type: 'input:touch:start'; sessionId: string; payload: Point }
-  | { type: 'input:touch:move'; sessionId: string; payload: Point }
-  // `payload` is accepted but ignored: the agents call `touchEnd()` without reading it. The
-  // dashboard omits it, mcp-server sends the last point. Optional here because that is what the
-  // wire actually carries — not because the coordinate means anything on this message.
-  | { type: 'input:touch:end'; sessionId: string; payload?: Point }
-  | { type: 'input:pinch:start'; sessionId: string; payload: { f0: Point; f1: Point } }
-  | { type: 'input:pinch:move'; sessionId: string; payload: { f0: Point; f1: Point } }
-  | { type: 'input:pinch:end'; sessionId: string }
+  | AgentsList
+  | SessionStart
+  | SessionEnd
+  | SessionLeave
+  | DeviceBoot
+  | DeviceShutdown
+  | AppInstallToRelay
+  | AppLaunchToRelay
+  | AppClearState
+  | OpenUrl
+  | InputTouchStart
+  | InputTouchMove
+  | InputTouchEnd
+  | InputPinchStart
+  | InputPinchMove
+  | InputPinchEnd
   | InputKey
-  | { type: 'input:type'; sessionId: string; payload: { text: string } }
-  | { type: 'input:button'; sessionId: string; payload: { name: string; phase?: 'down' | 'up' } }
-  | { type: 'input:rotate'; sessionId: string }
-  | { type: 'input:keyboard:toggle'; sessionId: string }
+  | InputType
+  | InputButton
+  | InputRotate
+  | InputKeyboardToggle
   | ClipboardRequest
+
