@@ -33,13 +33,19 @@ export interface DeviceReport {
 
 /** A device as the relay lists it, after adding what only the relay knows. Named `DeviceSummary`
  *  rather than `DeviceInfo` because both packages already used that name for different shapes:
- *  the relay for this, the dashboard for the `session:deviceInfo` payload (`DeviceDetails`). */
+ *  the relay for this, and `DeviceDetails` is the `session:deviceInfo` payload. */
 export interface DeviceSummary extends DeviceReport {
   sessionId: string
   busy: boolean
 }
 
-/** The `session:deviceInfo` payload — what the viewer shows in its info card. */
+/** The `session:deviceInfo` payload.
+ *
+ *  **Nothing reads it.** Both agents send it and the relay caches and replays it on join, but no consumer
+ *  in this repo takes the value — the dashboard shows device name and OS from `agents:listed`
+ *  (`DeviceSummary`) instead. This comment used to claim "what the viewer shows in its info card", which
+ *  was the kind of false statement about a consumer that this package exists to remove; L6 found it while
+ *  classifying every browser-inbound message. Kept on the wire because third-party agents send it. */
 export interface DeviceDetails {
   deviceName: string
   osVersion: string
@@ -413,12 +419,35 @@ export interface SessionRebound {
   capabilities: string[]
 }
 
+/**
+ * Why a `session:start` could not be honoured. The same split as `InputErrorReason`: `message` stays
+ * free prose the producer owns, and the machine field is closed.
+ *
+ * It exists because the dashboard was branching on the prose. Three wordings were sent and two were
+ * handled, so `Session busy` — the reply a second tester gets when someone else already holds the
+ * device — reached the viewer and did nothing at all, leaving the tab waiting on a `session:joined`
+ * that cannot arrive. Nothing reported it, because from the outside the type *was* handled.
+ *
+ * **Required, unlike `InputErrorReason`.** That one is permanently optional because its producer set is
+ * open by design — a third-party platform registers through `AgentRegistry.register()` and may predate
+ * the field. This one has a single producer: the relay, at three sites in `handleSessionStart`. So the
+ * compiler can insist, and it does — `sendTo` takes `RelayOutbound`.
+ */
+export type SessionStartFailure =
+  /** No such session. Nothing else is ever coming for it. */
+  | 'session-not-found'
+  /** The session exists and another browser socket holds it. It is alive; this viewer cannot have it. */
+  | 'session-busy'
+  /** The Mac is over its resource ceiling and refused to take another session. */
+  | 'agent-resources-exhausted'
+
 // The escape hatch for a failure the relay cannot correlate to a session. Every typed member above
 // carries a sessionId; when there is genuinely none to carry, this is the message to send — not a
 // typed error with the key dropped by `JSON.stringify`.
 export interface GenericError {
   type: 'error'
   message: string
+  reason: SessionStartFailure
 }
 
 /** Messages the relay originates and no agent sends. */

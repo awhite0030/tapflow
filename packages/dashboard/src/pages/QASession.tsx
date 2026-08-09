@@ -30,13 +30,32 @@ import { SearchInput } from '@/components/ui/search-input';
 import type { DeviceSummary, SessionInfo } from '@/lib/types';
 import { getResourceHealth, type ResourceHealth } from '@/lib/resource-health';
 
+/** Why this viewer stopped — a superset of the relay's termination reasons; see `DeviceViewer`'s prop. */
+type ViewerStoppedReason = SessionTerminatedReason | 'busy-elsewhere' | 'mac-overloaded';
+
 // Keyed by the reason so a new one cannot be added without deciding what the user is told. A
 // callback that ignored `reason` would keep showing "the agent disconnected" for every future
 // cause — which is exactly what the literal union exists to prevent.
-const SESSION_ENDED_NOTICE: Record<SessionTerminatedReason, { title: string; description: string }> = {
+const SESSION_ENDED_NOTICE: Record<ViewerStoppedReason, { title: string; description: string }> = {
   'agent-disconnected': {
     title: 'The agent disconnected — this session ended.',
     description: 'Pick the Mac again to start a new session.',
+  },
+  // Deliberately does not say *who*. The relay answers `session-busy` whenever the session's browser
+  // socket still reads OPEN, and the commonest cause is the tester's own previous socket: a sleeping
+  // laptop or a Wi-Fi blip reconnects in 2s while the relay takes up to a heartbeat (30s) to notice the
+  // old one died. Claiming "someone else is testing this" would be false in exactly the case
+  // `DeviceViewer`'s own comment calls routine, and it would send them to look for a colleague who does
+  // not exist. So it names the situation and gives the wait that actually resolves it.
+  'busy-elsewhere': {
+    title: 'This device is already open in another browser session.',
+    description: 'That may be your own tab from before a reconnect — wait about a minute and try again.',
+  },
+  // The Mac is over its ceiling, so a different Mac is the actionable move — and unlike the other two
+  // this one is about the machine, not the session.
+  'mac-overloaded': {
+    title: 'That Mac is too busy to start a session.',
+    description: 'Pick a different Mac, or wait for it to settle.',
   },
 };
 
@@ -83,10 +102,10 @@ export function QASession() {
     startDevice(d);
   }, [consumeResetMode, startDevice]);
 
-  // The relay dropped the session because its agent went away. Say so and go back to the Mac list —
-  // before #426 the tab just sat on "Waiting for first frame..." with no way to know a refresh was
-  // needed.
-  const onSessionEnded = useCallback((reason: SessionTerminatedReason) => {
+  // The viewer cannot make progress — the agent went away, or another socket holds the session. Say
+  // which, and go back to the Mac list. Before #426 the tab just sat on "Waiting for first frame..."
+  // with no way to know a refresh was needed; `busy-elsewhere` sat on it just as silently until L6.
+  const onSessionEnded = useCallback((reason: ViewerStoppedReason) => {
     const notice = SESSION_ENDED_NOTICE[reason];
     toast.error(notice.title, { description: notice.description });
     handleSessionEnded();

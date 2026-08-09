@@ -359,9 +359,27 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
     act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
 
-    act(() => { deliver!({ type: 'error', message: 'Session not found' }) })
+    act(() => { deliver!({ type: 'error', message: 'Session not found', reason: 'session-not-found' }) })
 
     expect(onSessionEnded).toHaveBeenCalledWith('agent-disconnected')
+  })
+
+  // Regression: `Session busy` reached the viewer and did nothing. Two testers opening the same device
+  // is the likeliest collision in a product whose premise is that the whole team opens a browser — and
+  // the second tab sat on "Starting device…" waiting for a `session:joined` that cannot arrive.
+  //
+  // It was invisible from the outside because `error` *was* a handled type: the viewer branched on the
+  // free-prose `message` and covered two of the three wordings the relay sends. Branching on `reason`
+  // is what makes the third one impossible to forget.
+  it('says the device is in use when another socket already holds the session', async () => {
+    const onSessionEnded = vi.fn()
+    render(<DeviceViewer sessionId="s1" deviceId="dev-1" onSessionEnded={onSessionEnded} />)
+
+    act(() => { deliver!({ type: 'error', message: 'Session busy', reason: 'session-busy' }) })
+
+    // Not `agent-disconnected`: the agent is fine and so is the device. That reason tells the tester to
+    // re-pick the Mac, which is advice for a problem they do not have.
+    expect(onSessionEnded).toHaveBeenCalledWith('busy-elsewhere')
   })
 
   it('ignores an away meant for another session', async () => {
