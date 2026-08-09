@@ -81,7 +81,7 @@ The authoring session inherits its own assumptions, so before creating a PR the 
 - **Enforcement**: the PreToolUse hook `.claude/hooks/adversarial-review-gate.sh` blocks PR creation unless that record exists and references the current HEAD — any commit after the review invalidates the record until it is refreshed against the new diff.
 - **A change spanning two or more packages, or both platforms, needs a second, earlier review — of the design, before the code.** One adversarial pass over the plan, in addition to the pre-PR one.
 
-**Read [contributing/adversarial-review.md](./contributing/adversarial-review.md) before launching a reviewer.** It covers how to design the channels, how to run the cross-cutting design pass, and how to keep the cost in minutes rather than hours — the same review can take 4 minutes or 106 depending only on what its prompt makes it execute.
+**Read [contributing/adversarial-review.md](./contributing/adversarial-review.md) before launching a reviewer.** It covers how to design the channels, how to run the cross-cutting design pass, why a reviewer's "checked and cleared" list expires as soon as you fix the findings, and how to keep the cost in minutes rather than hours — the same review can take 4 minutes or 106 depending only on what its prompt makes it execute.
 
 ### Design Principles (SOLID — priority subset)
 
