@@ -20,6 +20,13 @@ import { join } from 'node:path'
 // count assertion passed *because* of the skip).
 
 const root = join(import.meta.dirname, '../..')
+
+/** A receiver comparing its `.type` against a message name. Tolerates either quote style and any spacing
+ *  around the operator: a guard that only matches this repo's current formatting stops guarding the moment
+ *  someone writes `msg.type==="x"`, and it does so silently — the same fragility as every other parser this
+ *  program has had to harden. What it must still reject is a bare literal, so the `.type` and the operator
+ *  are both required. */
+const comparison = (type) => new RegExp(String.raw`[\w.]+\.type\s*[=!]==\s*['"]${type}['"]`)
 const table = readFileSync(join(root, 'packages/dashboard/lib/inboundDisposition.ts'), 'utf8')
 
 /** Where a name in an `at:` value lives. The table names modules, not paths. */
@@ -92,7 +99,7 @@ describe('inbound disposition', () => {
         // reads `reply.type === 'clipboard:error'` and narrows to `clipboard:data` with `!==`, and both are
         // handling. What must not pass is a bare literal: a comment, a `send()` argument, or an unrelated
         // string that happens to equal a message name.
-        if (!new RegExp(String.raw`[\w.]+\.type [=!]== '${type}'`).test(src)) {
+        if (!comparison(type).test(src)) {
           missing.push(`${type} has no \`<msg>.type\` comparison against '${type}' in ${name}`)
         }
       }
@@ -109,7 +116,7 @@ describe('inbound disposition', () => {
     const stale = []
     for (const [name, path] of Object.entries(FILES)) {
       const src = readFileSync(join(root, path), 'utf8').replace(/^\s*\/\/.*$/gm, '')
-      for (const m of src.matchAll(/[\w.]+\.type [=!]== '([^']+)'/g)) {
+      for (const m of src.matchAll(/[\w.]+\.type\s*[=!]==\s*['"]([^'"]+)['"]/g)) {
         const value = table_entries.get(m[1])
         if (!value) continue                        // not a browser-inbound type (outbound, local unions)
         const at = value.match(/at:\s*'([^']+)'/)

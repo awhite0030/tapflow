@@ -68,8 +68,13 @@ export function SessionList({ onSelect }: Props) {
       // forwards a session-scoped command on the strength of the session existing, without checking that
       // the sender owns it, so a **refused** join was followed by a shutdown that went through anyway —
       // shutting down a device another tester had open, while this list said it had not.
+      // Matched against the request, not merely counted. Only `handleShutdown` sends `session:start` from
+      // this list and a second one is refused while the first is unanswered, so a mismatch is unreachable
+      // today — but "unreachable today" is what the two previous versions of this handler asserted and got
+      // wrong, and the comparison costs one line. A join for some other session leaves the request pending
+      // rather than firing a shutdown the relay never accepted.
       const pending = pendingRef.current
-      if (pending) {
+      if (pending && msg.sessionId === pending.sessionId) {
         pendingRef.current = null
         sendRef.current({ type: 'device:shutdown', sessionId: pending.sessionId, payload: { deviceId: pending.deviceId } })
       }

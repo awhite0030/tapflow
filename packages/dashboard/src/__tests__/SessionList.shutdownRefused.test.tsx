@@ -93,6 +93,24 @@ describe('SessionList when a shutdown is refused', () => {
     expect(send.mock.calls.some(([m]) => m.type === 'device:shutdown' && m.sessionId === 's1')).toBe(true)
   })
 
+  it('does not fire on a join for a different session', () => {
+    // The handler used to accept *any* `session:joined` as the answer to its pending request. Only this
+    // list sends `session:start` from here, so a mismatch is unreachable today — but the two previous
+    // versions of this handler each rested on an "unreachable today" that turned out to be wrong, so the
+    // request is matched rather than counted.
+    render(<SessionList onSelect={vi.fn()} />)
+    act(() => { deliver!({ type: 'agents:listed', sessions: TWO_DEVICES }) })
+    act(() => { screen.getAllByRole('button', { name: /shutdown/i })[0].click() })   // pending s1
+
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's2', capabilities: [] }) })
+
+    expect(send.mock.calls.some(([m]) => m.type === 'device:shutdown')).toBe(false)
+
+    // And the request survives, so the real answer still works.
+    act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
+    expect(send.mock.calls.some(([m]) => m.type === 'device:shutdown' && m.sessionId === 's1')).toBe(true)
+  })
+
   it('refuses a second shutdown while one is still unanswered', () => {
     // `error` carries no sessionId, so two in flight would leave the handler unable to say which row a
     // refusal belongs to. The previous version cleared every row instead, which was a guess.
