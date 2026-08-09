@@ -81,6 +81,34 @@ The per-message bindings in `typeAssertions.ts` (`_InputDone: InputDone['type'] 
 two copies of one fact, so they catch an author who edits one of them; measured, editing both left every
 assertion green.
 
+## Every direction is declared, and an agent's send is typed
+
+The six unions cover the whole wire: `BrowserToRelay`, `AgentToRelay`, `RelayToAgent`, `RelayToBrowser`,
+`AgentToBrowser`, `RelayToStream` / `StreamToRelay`. Both agents route every send through two typed helpers
+rather than touching `ws.send`, and `scripts/__tests__/agentSendTyped.test.mjs` holds them to it — by matching
+**serialization**, because three drafts keyed on the spelling `this.ws` were bypassed simply by giving the socket
+another name.
+
+**The helpers take `AgentControlOutbound = AgentToRelay | AgentToBrowser`, which excludes `StreamToRelay`.** A
+union covering both sockets is the obvious thing to write and it undoes the direction split: the relay's
+`case 'stream:register'` calls `setStreamSocket(session.id, ws)` with no role gate, so a control socket able to
+type-check that message could take over the session's video path. The stream socket's one message is typed at its
+own send site in `agent-core/src/utils/stream.ts`.
+
+That mattered because an agent's literal was the one thing no compiler saw — the relay forwards replies with
+`JSON.stringify(msg)`, so nothing typed re-creates them. #489 and #490 are what the gap cost, and
+`inputErrorReason.test.mjs` exists because a script had to stand in for a compiler.
+
+**`screenshot:error` and `ui:tree:error` do not extend `SessionError`, and that is the boundary of the
+family.** `SessionError` is for a failure a *session* is waiting on. Those two are request-scoped: the relay
+resolves the pending promise by `requestId` alone and never reads their `sessionId`.
+
+Their `sessionId` is nevertheless **required**, like every other producer field. A draft made it optional because
+the agents passed through an optional id — true when written, and false by the end of the same change, which
+required it on both dispatchers. A field weaker than every producer describes a message nobody sends, and here it
+would also have removed the one field a symmetric ownership check could read: the clipboard replies beside these
+verify `session.agentSocket === ws` before resolving, and these two do not.
+
 ## Browser-inbound messages are split by producer, and one union is shared
 
 A browser receives 28 message types. They come from two producers, and the difference matters to the

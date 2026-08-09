@@ -7,16 +7,17 @@
 // the failure mode this whole package was built to remove.
 
 import type {
-  AgentRegistered, AgentToBrowser, AgentsList, AgentsListed, AppClearState, AppClearStateDone,
-  AppClearStateError, AppInstallDone, AppInstallError, AppInstallToAgent, AppInstallToRelay, AppLaunchDone,
-  AppLaunchError, AppLaunchToAgent, AppLaunchToRelay, BrowserInbound, BrowserToRelay, ClipboardData,
-  ClipboardError, ClipboardRead, ClipboardWrite, ClipboardWriteDone, DeviceBoot, DeviceBootError,
-  DeviceBooting, DeviceReady, DeviceShutdown, DeviceShutdownDone, GenericError, InputButton, InputDone,
-  InputError, InputKey, InputKeyboardToggle, InputPinchEnd, InputPinchMove, InputPinchStart, InputRotate,
-  InputTouchEnd, InputTouchMove, InputTouchStart, InputType, InputTypeDone, InputTypeError, KeyboardToggled,
-  OpenUrl, OpenUrlDone, OpenUrlError, RelayOutbound, ScreenshotRequest, SessionAgentAway, SessionChrome,
-  SessionDeviceInfo, SessionEnd, SessionJoined, SessionLeave, SessionRebound, SessionStart,
-  SessionTerminated, StreamRegistered, StreamRequestIdr, UiTreeRequest,
+  AgentRegister, AgentRegistered, AgentResourceReport, AgentToBrowser, AgentsList, AgentsListed,
+  AppClearState, AppClearStateDone, AppClearStateError, AppInstallDone, AppInstallError, AppInstallToAgent,
+  AppInstallToRelay, AppLaunchDone, AppLaunchError, AppLaunchToAgent, AppLaunchToRelay, BrowserInbound,
+  BrowserToRelay, ClipboardData, ClipboardError, ClipboardRead, ClipboardWrite, ClipboardWriteDone,
+  DeviceBoot, DeviceBootError, DeviceBooting, DeviceReady, DeviceShutdown, DeviceShutdownDone, GenericError,
+  InputButton, InputDone, InputError, InputKey, InputKeyboardToggle, InputPinchEnd, InputPinchMove,
+  InputPinchStart, InputRotate, InputTouchEnd, InputTouchMove, InputTouchStart, InputType, InputTypeDone,
+  InputTypeError, KeyboardToggled, OpenUrl, OpenUrlDone, OpenUrlError, RelayOutbound, ScreenshotDone,
+  ScreenshotError, ScreenshotRequest, SessionAgentAway, SessionChrome, SessionDeviceInfo, SessionEnd,
+  SessionJoined, SessionLeave, SessionRebound, SessionStart, SessionTerminated, StreamRegister,
+  StreamRegistered, StreamRequestIdr, UiTreeError, UiTreeRequest, UiTreeResponse,
 } from './index.js'
 
 // ── must NOT compile ─────────────────────────────────────────────────────────
@@ -160,3 +161,10 @@ export const _SessionTerminated: SessionTerminated['type'] = 'session:terminated
 export const _StreamRegistered: StreamRegistered['type'] = 'stream:registered'
 export const _StreamRequestIdr: StreamRequestIdr['type'] = 'stream:request-idr'
 export const _UiTreeRequest: UiTreeRequest['type'] = 'ui:tree:request'
+export const _AgentRegister: AgentRegister['type'] = 'agent:register'
+export const _AgentResourceReport: AgentResourceReport['type'] = 'agent:resources'
+export const _ScreenshotDone: ScreenshotDone['type'] = 'screenshot:done'
+export const _ScreenshotError: ScreenshotError['type'] = 'screenshot:error'
+export const _StreamRegister: StreamRegister['type'] = 'stream:register'
+export const _UiTreeResponse: UiTreeResponse['type'] = 'ui:tree:response'
+export const _UiTreeError: UiTreeError['type'] = 'ui:tree:error'

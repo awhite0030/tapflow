@@ -51,6 +51,43 @@ export interface DeviceDetails {
   osVersion: string
 }
 
+/** Closed role vocabulary shared by all platforms. An unmappable native role becomes `'other'` and the
+ *  platform-native string is preserved in `rawRole`, so a consumer can still branch on it without the
+ *  vocabulary having to grow for every platform. */
+export type UIElementRole =
+  | 'button'
+  | 'text'
+  | 'input'
+  | 'image'
+  | 'checkbox'
+  | 'switch'
+  | 'slider'
+  | 'list'
+  | 'cell'
+  | 'tab'
+  | 'other'
+
+/** Normalized to 0–1 in the same coordinate space the touch input path consumes, so a frame centre can
+ *  be fed straight into a tap without conversion. */
+export interface UIElementFrame {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** One node of `ui:tree:response`. Lived in `agent-core` until L4a needed it to type that message —
+ *  protocol is a leaf and cannot import agent-core, and the alternative was a copy. There was already
+ *  one: `mcp-server` carried a hand-written mirror, which is the drift this package exists to remove. */
+export interface UIElement {
+  role: UIElementRole
+  label: string
+  identifier?: string
+  frame: UIElementFrame
+  enabled: boolean
+  rawRole?: string
+}
+
 /** `agents:listed` groups devices by agent machine. */
 export interface SessionInfo {
   agentName?: string
@@ -582,6 +619,121 @@ export type RelayToStream =
 /** Everything the relay originates. Messages it merely forwards keep their inbound type — they are
  *  not re-created, so they are not checked against this union. */
 export type RelayOutbound = RelayToAgent | RelayToBrowser | RelayToStream
+
+// ── agent → relay ────────────────────────────────────────────────────────────
+//
+// The last direction to be declared. Until L4a an agent built these literals and handed them to
+// `ws.send` with nothing checking the result, which is where #489 (an agent answering nobody) and #490
+// (a missing `reason`) came from — and why `scripts/__tests__/inputErrorReason.test.mjs` exists at all:
+// the compiler could not see an agent's literal, so a script had to.
+
+/** The agent's opening message on its control socket, sent from inside `onopen`. */
+export interface AgentRegister {
+  type: 'agent:register'
+  /** Open on purpose — **not** `'ios' | 'android'`. A third-party platform registers through
+   *  `AgentRegistry.register()` (root AGENTS.md, OCP), and narrowing this would stop it producing a
+   *  valid registration. `agent-core`'s own `Platform` is `string` for the same reason. */
+  platform: string
+  /** What this agent implements, as plain strings on the wire. `agent-core`'s `AgentCapability` is
+   *  assignable to it; the wire does not close the set. */
+  capabilities: string[]
+  /** Stable per-machine id (macOS IOPlatformUUID). **Optional because `getMachineId()` returns
+   *  `undefined` off darwin**, and the relay falls back to `agentName` for dedup. */
+  agentId?: string
+  agentName: string
+  devices: DeviceReport[]
+}
+
+/** Periodic load report. The relay gates new sessions on it. */
+export interface AgentResourceReport {
+  type: 'agent:resources'
+  resources: AgentResources
+}
+
+export interface ScreenshotDone {
+  type: 'screenshot:done'
+  sessionId: string
+  requestId: string
+  /** What the agent says it produced — the relay turns this into the HTTP `Content-Type`. Android
+   *  currently echoes the *requested* format while always producing PNG (#508). */
+  format: 'png' | 'jpeg'
+  /** base64. */
+  data: string
+}
+
+/** A screenshot that failed.
+ *
+ *  **Does not extend `SessionError`**, unlike every other `*-error`, because it is not addressed to a
+ *  session: the relay resolves the pending promise by `requestId` alone. `SessionError` is for a failure
+ *  a *session* is waiting on, and drawing that line is what keeps the base meaningful.
+ *
+ *  `sessionId` is still **required**, because every producer has one. An earlier draft made it optional
+ *  on the grounds that the agents pass through an optional id — true when written, and false by the end
+ *  of the same change, which required it on both dispatchers. A field weaker than every producer
+ *  describes a message nobody sends, and here it would also remove the one field a symmetric ownership
+ *  check could read: the clipboard replies beside these verify `session.agentSocket === ws` before
+ *  resolving, and these two do not. */
+export interface ScreenshotError {
+  type: 'screenshot:error'
+  sessionId: string
+  requestId: string
+  message: string
+}
+
+export interface UiTreeResponse {
+  type: 'ui:tree:response'
+  sessionId: string
+  requestId: string
+  elements: UIElement[]
+}
+
+/** Request-scoped, for the same reasons as `ScreenshotError`. */
+export interface UiTreeError {
+  type: 'ui:tree:error'
+  sessionId: string
+  requestId: string
+  message: string
+}
+
+export type AgentToRelay =
+  | AgentRegister
+  | AgentResourceReport
+  | ScreenshotDone
+  | ScreenshotError
+  | UiTreeResponse
+  | UiTreeError
+
+// ── stream socket → relay ────────────────────────────────────────────────────
+
+/** Its own direction, mirroring `RelayToStream`. The relay assigns the role `'stream'` from this
+ *  message rather than `'agent'` (`RelayServer.ts:554-557`), so putting it in `AgentToRelay` would make
+ *  that union's name disagree with the runtime role — and would let a control socket claim to be a
+ *  session's stream socket once L4b narrows inbound by role. */
+export interface StreamRegister {
+  type: 'stream:register'
+  sessionId: string
+}
+
+export type StreamToRelay = StreamRegister
+
+/** The three replies a clipboard request can get. Both agents build these through a local `respond`
+ *  helper that merges the correlation ids, and that helper took `object` — so the replies were the last
+ *  send path in the clipboard code that nothing checked. The consumer side names the same set
+ *  (`useClipboardBridge`), so it lives here rather than in either. */
+export type ClipboardReply = ClipboardData | ClipboardWriteDone | ClipboardError
+
+/** A `ClipboardReply` minus the ids the sender merges in. Distributive, so each member keeps its own
+ *  payload — a plain `Omit` would collapse them into one shape and stop checking which goes with which. */
+export type ClipboardReplyBody<T = ClipboardReply> = T extends unknown ? Omit<T, 'sessionId' | 'requestId'> : never
+
+/** What an agent's **control** socket carries. This is what the agents' send helpers take.
+ *
+ *  `StreamToRelay` is deliberately *not* in it. Splitting `stream:register` into its own direction was
+ *  justified above by the hazard of a control socket claiming to be a session's stream socket — and a
+ *  union that re-merged them would have handed that hazard straight back, since `case 'stream:register'`
+ *  calls `setStreamSocket(session.id, ws)` with no role gate. The stream socket's one message is typed
+ *  at its own send site in `agent-core/src/utils/stream.ts`. */
+export type AgentControlOutbound = AgentToRelay | AgentToBrowser
 
 // ── browser → relay ──────────────────────────────────────────────────────────
 

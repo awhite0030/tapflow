@@ -2,6 +2,7 @@ import os from 'os'
 import { randomUUID } from 'crypto'
 import { WebSocket } from 'ws'
 import type { AndroidButton, ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
+import type { AgentControlOutbound, ClipboardReplyBody } from '@tapflowio/protocol'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
 import { outcomeMessage, wireReason, type InputOutcome } from './inputOutcome.js'
 import {
@@ -220,6 +221,25 @@ export class AndroidAgent implements DeviceAgent {
   private readonly adb: AdbWrapper
   private readonly launcher: EmulatorLauncher
   private ws: WebSocket | null = null
+
+  /** Send on the control socket, if there is one. The `?.` is the point: 66 call sites relied on a send
+   *  being a no-op between reconnects, and this preserves that exactly.
+   *
+   *  Typed with `AgentControlOutbound`, which is why this exists — an agent's literal used to reach `ws.send`
+   *  with nothing checking it, and #489/#490 are what that cost. */
+  private sendMsg(msg: AgentControlOutbound): void {
+    this.ws?.send(JSON.stringify(msg))
+  }
+
+  /** Send on a socket the caller has already established. Takes the socket **as an argument** rather than
+   *  reading `this.ws`, and that is deliberate: the call sites that use it sit behind an entry guard
+   *  (`if (!this.ws) return`), and today deleting one of those guards is a compile error. Reading
+   *  `this.ws` here — or asserting it with `!` — would make the guard optional to the compiler and turn
+   *  its removal into a runtime `TypeError` instead. It also serves the `agent:register` send, which runs
+   *  inside `onopen` on a local socket. */
+  private sendOn(ws: WebSocket, msg: AgentControlOutbound): void {
+    ws.send(JSON.stringify(msg))
+  }
   private deviceStates = new Map<string, DeviceState>()
   // Holds a macOS power assertion while connected so the host doesn't idle-throttle the
   // emulator (its software H.264 encoder starves badly when the Mac idles). No-op off macOS.
@@ -273,7 +293,7 @@ export class AndroidAgent implements DeviceAgent {
 
       ws.once('open', () => {
         disableNagle(ws)
-        ws.send(JSON.stringify({
+        this.sendOn(ws, {
           type: 'agent:register',
           platform: 'android',
           // Lets a viewer tell a clipboard-capable agent from one that predates the
@@ -288,7 +308,7 @@ export class AndroidAgent implements DeviceAgent {
             status: d.status,
             osVersion: d.osVersion,
           })),
-        }))
+        })
       })
 
       ws.once('message', (data) => {
@@ -311,7 +331,15 @@ export class AndroidAgent implements DeviceAgent {
             msg.registeredSessions as Array<{ deviceId: string; sessionId: string }>,
           )
           ws.on('message', (d) => {
-            try { this.handleRelayMessage(JSON.parse(d.toString())) } catch { /* ignore malformed */ }
+            try {
+              const m = JSON.parse(d.toString()) as { type?: unknown; sessionId?: unknown }
+              // Every type `handleRelayMessage` dispatches is session-scoped, and the relay resolves the
+              // session before forwarding — so a message without one did not come from that path. Rejecting
+              // it here is what lets the dispatcher declare `sessionId: string` instead of threading an
+              // optional through 30 sends and asserting it with `!` at each one.
+              if (typeof m.type !== 'string' || typeof m.sessionId !== 'string') return
+              this.handleRelayMessage(m as { type: string; sessionId: string; payload?: unknown })
+            } catch { /* ignore malformed */ }
           })
           this.reportResources()
           this.resourcesTimer = setInterval(() => this.reportResources(), 5000)
@@ -423,7 +451,7 @@ export class AndroidAgent implements DeviceAgent {
     const bootedCount = Array.from(this.deviceStates.values()).filter((s) => s.scrcpySession !== null || s.emulatorVideo !== null).length
     const slotsTotal = this.deviceStates.size
     const { memUsedMB, memTotalMB } = this.resources.getMemoryUsage()
-    this.ws.send(JSON.stringify({
+    this.sendOn(this.ws, {
       type: 'agent:resources',
       resources: {
         cpuPercent: this.resources.getCpuPercent(),
@@ -433,7 +461,7 @@ export class AndroidAgent implements DeviceAgent {
         slotsTotal,
         reportedAt: Date.now(),
       },
-    }))
+    })
   }
 
   private cleanupDeviceState(state: DeviceState): void {
@@ -457,14 +485,14 @@ export class AndroidAgent implements DeviceAgent {
 
   private sendDeviceInfo(state: DeviceState, device: Device): void {
     if (!this.ws) return
-    this.ws.send(JSON.stringify({
+    this.sendOn(this.ws, {
       type: 'session:deviceInfo',
       sessionId: state.sessionId,
       payload: {
         deviceName: device.name,
         osVersion: device.osVersion ?? '',
       },
-    }))
+    })
   }
 
   private forceScrcpy(): boolean {
@@ -787,11 +815,11 @@ export class AndroidAgent implements DeviceAgent {
       await this.startVideoStream(state, streamWs)
     } catch (err) {
       logger.error(`scrcpy restart failed: ${err}`)
-      this.ws?.send(JSON.stringify({
+      this.sendMsg({
         type: 'device:boot-error',
         sessionId: state.sessionId,
         message: 'scrcpy failed to restart',
-      }))
+      })
     } finally {
       state.restarting = false
     }
@@ -822,7 +850,7 @@ export class AndroidAgent implements DeviceAgent {
 
     this.cleanupDeviceState(state)
     if (tier) { state.secureContext = tier.secureContext; state.external = tier.external }
-    this.ws.send(JSON.stringify({ type: 'device:booting', sessionId }))
+    this.sendOn(this.ws, { type: 'device:booting', sessionId })
 
     try {
       const avdName = avdId.replace(/^avd:/, '')
@@ -863,7 +891,7 @@ export class AndroidAgent implements DeviceAgent {
 
       await this.startVideoStream(state, streamWs)
       if (seq !== state.bootSeq) return
-      this.ws?.send(JSON.stringify({
+      this.sendMsg({
         type: 'session:chrome',
         sessionId: state.sessionId,
         payload: {
@@ -873,14 +901,14 @@ export class AndroidAgent implements DeviceAgent {
           screenHeight: state.displayHeight,
           cornerRadius: state.cornerRadius,
         },
-      }))
+      })
       state.booted = true
-      this.ws?.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: avdId } }))
+      this.sendMsg({ type: 'device:ready', sessionId, payload: { deviceId: avdId } })
     } catch (e) {
       if (seq !== state.bootSeq) return
       const message = e instanceof Error ? e.message : String(e)
       logger.error('boot failed:', message)
-      this.ws?.send(JSON.stringify({ type: 'device:boot-error', sessionId, message }))
+      this.sendMsg({ type: 'device:boot-error', sessionId, message })
     }
   }
 
@@ -899,11 +927,11 @@ export class AndroidAgent implements DeviceAgent {
       })
       this.adb.clearSerial(avdId)
     }
-    this.ws?.send(JSON.stringify({
+    this.sendMsg({
       type: 'device:shutdown-done',
       sessionId,
       payload: { deviceId: avdId },
-    }))
+    })
   }
 
   // Ack a terminal input. `input:done` = the input reached a live channel on a booted device (not a
@@ -921,22 +949,23 @@ export class AndroidAgent implements DeviceAgent {
       ? outcome
       : (state.booted || (await this.isBooted(state.deviceId))) ? 'delivered' : 'not-booted'
     if (resolved === 'delivered' && seq === state.bootSeq) state.booted = true // cache the verify
-    this.ws?.send(JSON.stringify(
+    this.sendMsg(
       resolved === 'delivered'
         ? { type: 'input:done', sessionId: state.sessionId }
-        : { type: 'input:error', sessionId: state.sessionId, message: outcomeMessage(resolved), reason: wireReason(resolved) },
-    ))
+        : { type: 'input:error', sessionId: state.sessionId, message: outcomeMessage(resolved), reason: wireReason(resolved) })
   }
 
   // A terminal input naming a session this agent holds no state for. `deviceStates` is never
   // deleted, so this is an unregistered sessionId rather than an evicted one — and the relay only
   // answers on an agent's behalf when the agent is *offline*, so nothing else would answer at all
   // and the caller would wait out its own timeout.
-  private ackNoSession(sessionId: string | undefined): void {
-    if (!sessionId) return
-    this.ws?.send(JSON.stringify({
+  private ackNoSession(sessionId: string): void {
+    // The `if (!sessionId) return` this used to open with is gone: the dispatcher now declares
+    // `sessionId: string`, so there is no undefined to guard against and the guard would have been a
+    // silent drop with nothing left that could reach it.
+    this.sendMsg({
       type: 'input:error', sessionId, message: outcomeMessage('no-session'), reason: wireReason('no-session'),
-    }))
+    })
   }
 
   // Await a pointer-channel write and turn it into an outcome. scrcpy's methods are synchronous and
@@ -966,17 +995,17 @@ export class AndroidAgent implements DeviceAgent {
     } catch { return false }
   }
 
-  private handleRelayMessage(msg: { type: string; sessionId?: string; payload?: unknown }): void {
+  private handleRelayMessage(msg: { type: string; sessionId: string; payload?: unknown }): void {
     switch (msg.type) {
       case 'device:boot': {
         const { deviceId, secureContext, external } = msg.payload as { deviceId: string; secureContext?: boolean; external?: boolean }
-        this.handleDeviceBoot(msg.sessionId!, deviceId, { secureContext: !!secureContext, external: !!external })
+        this.handleDeviceBoot(msg.sessionId, deviceId, { secureContext: !!secureContext, external: !!external })
           .catch((e) => logger.error('handleDeviceBoot failed:', e))
         break
       }
       case 'device:shutdown': {
         const { deviceId } = msg.payload as { deviceId: string }
-        this.handleDeviceShutdown(msg.sessionId!, deviceId)
+        this.handleDeviceShutdown(msg.sessionId, deviceId)
           .catch((e) => logger.error('handleDeviceShutdown failed:', e))
         break
       }
@@ -986,15 +1015,15 @@ export class AndroidAgent implements DeviceAgent {
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         if (!serial) {
-          this.ws?.send(JSON.stringify({ type: 'app:install-error', sessionId, message: 'No booted device' }))
+          this.sendMsg({ type: 'app:install-error', sessionId, message: 'No booted device' })
           break
         }
         if (filePath.endsWith('.app.zip') || filePath.endsWith('.app')) {
-          this.ws?.send(JSON.stringify({
+          this.sendMsg({
             type: 'app:install-error',
             sessionId,
             message: '.app.zip is an iOS simulator build — upload a .apk file for Android.',
-          }))
+          })
           break
         }
         const doInstall = async () => {
@@ -1002,10 +1031,10 @@ export class AndroidAgent implements DeviceAgent {
           await this.adb.installApp(serial, filePath)
         }
         doInstall()
-          .then(() => this.ws?.send(JSON.stringify({ type: 'app:install-done', sessionId })))
+          .then(() => this.sendMsg({ type: 'app:install-done', sessionId }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'app:install-error', sessionId, message }))
+            this.sendMsg({ type: 'app:install-error', sessionId, message })
           })
         break
       }
@@ -1015,19 +1044,19 @@ export class AndroidAgent implements DeviceAgent {
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         if (!serial) {
-          this.ws?.send(JSON.stringify({ type: 'app:launch-error', sessionId, message: 'No booted device' }))
+          this.sendMsg({ type: 'app:launch-error', sessionId, message: 'No booted device' })
           break
         }
         this.adb.launchApp(serial, bundleId)
-          .then(() => this.ws?.send(JSON.stringify({ type: 'app:launch-done', sessionId })))
+          .then(() => this.sendMsg({ type: 'app:launch-done', sessionId }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'app:launch-error', sessionId, message }))
+            this.sendMsg({ type: 'app:launch-error', sessionId, message })
           })
         break
       }
       case 'input:touch:start': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) break
         const { x, y } = msg.payload as { x: number; y: number }
         const pc = this.pointerControl(state)
@@ -1042,7 +1071,7 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       case 'input:touch:move': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) break
         const { x, y } = msg.payload as { x: number; y: number }
         const pc = this.pointerControl(state)
@@ -1057,7 +1086,7 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       case 'input:touch:end': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) { this.ackNoSession(msg.sessionId); break }
         const pc = this.pointerControl(state)
         const helper = state.touchHelper
@@ -1072,7 +1101,7 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       case 'input:pinch:start': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) break
         const { f0, f1 } = msg.payload as { f0: { x: number; y: number }; f1: { x: number; y: number } }
         const pc = this.pointerControl(state)
@@ -1086,7 +1115,7 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       case 'input:pinch:move': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) break
         const { f0, f1 } = msg.payload as { f0: { x: number; y: number }; f1: { x: number; y: number } }
         const pc = this.pointerControl(state)
@@ -1100,7 +1129,7 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       case 'input:pinch:end': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) { this.ackNoSession(msg.sessionId); break }
         const pc = this.pointerControl(state)
         const helper = state.touchHelper
@@ -1114,7 +1143,7 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       case 'input:rotate': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) break
         const serial = this.adb.getSerial(state.deviceId)
         if (!serial) break
@@ -1128,7 +1157,7 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       case 'input:button': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) { this.ackNoSession(msg.sessionId); break }
         // Buttons go through the adb helper on BOTH backends — this is the path that actually runs
         // a command in production, so its outcome is the one that matters most here.
@@ -1147,7 +1176,7 @@ export class AndroidAgent implements DeviceAgent {
       case 'stream:request-idr': {
         // Relay drop-to-keyframe / join recovery: reset the encoder so it re-emits SPS/PPS + IDR,
         // resyncing fast instead of waiting for the periodic IDR. Throttled by the relay.
-        const st = this.deviceStates.get(msg.sessionId!)
+        const st = this.deviceStates.get(msg.sessionId)
         st?.scrcpySession?.control.resetVideo()
         st?.emulatorVideo?.requestIdr()
         break
@@ -1158,14 +1187,14 @@ export class AndroidAgent implements DeviceAgent {
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         if (!serial) {
-          this.ws?.send(JSON.stringify({ type: 'open-url:error', sessionId, message: 'No booted device' }))
+          this.sendMsg({ type: 'open-url:error', sessionId, message: 'No booted device' })
           break
         }
         this.adb.openUrl(serial, url)
-          .then(() => this.ws?.send(JSON.stringify({ type: 'open-url:done', sessionId })))
+          .then(() => this.sendMsg({ type: 'open-url:done', sessionId }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'open-url:error', sessionId, message }))
+            this.sendMsg({ type: 'open-url:error', sessionId, message })
           })
         break
       }
@@ -1179,7 +1208,7 @@ export class AndroidAgent implements DeviceAgent {
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         const { text } = (msg.payload ?? {}) as { text?: string }
         if (!serial) {
-          this.ws?.send(JSON.stringify({ type: 'input:type-error', sessionId, message: 'No booted device' }))
+          this.sendMsg({ type: 'input:type-error', sessionId, message: 'No booted device' })
           break
         }
         // Empty text is a successful no-op, not a failure: the caller asked for nothing and nothing
@@ -1189,16 +1218,16 @@ export class AndroidAgent implements DeviceAgent {
         // Ack on completion so a following input step (e.g. pressKey Enter) is
         // only sent after the text has actually landed.
         Promise.resolve(text ? this.adb.inputText(serial, text) : undefined)
-          .then(() => this.ws?.send(JSON.stringify({ type: 'input:type-done', sessionId })))
+          .then(() => this.sendMsg({ type: 'input:type-done', sessionId }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
             logger.error('input:type failed:', e)
-            this.ws?.send(JSON.stringify({ type: 'input:type-error', sessionId, message }))
+            this.sendMsg({ type: 'input:type-error', sessionId, message })
           })
         break
       }
       case 'input:key': {
-        const state = this.deviceStates.get(msg.sessionId!)
+        const state = this.deviceStates.get(msg.sessionId)
         if (!state) { this.ackNoSession(msg.sessionId); break }
         const seq = state.bootSeq
         void (async () => {
@@ -1219,20 +1248,20 @@ export class AndroidAgent implements DeviceAgent {
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         if (!serial) {
-          this.ws?.send(JSON.stringify({ type: 'screenshot:error', sessionId, requestId, message: 'No booted device' }))
+          this.sendMsg({ type: 'screenshot:error', sessionId, requestId, message: 'No booted device' })
           break
         }
         this.adb.screenshot(serial)
-          .then((buf) => this.ws?.send(JSON.stringify({
+          .then((buf) => this.sendMsg({
             type: 'screenshot:done',
             sessionId,
             requestId,
             format: format ?? 'png',
             data: buf.toString('base64'),
-          })))
+          }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'screenshot:error', sessionId, requestId, message }))
+            this.sendMsg({ type: 'screenshot:error', sessionId, requestId, message })
           })
         break
       }
@@ -1242,14 +1271,14 @@ export class AndroidAgent implements DeviceAgent {
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         if (!serial || !bundleId) {
-          this.ws?.send(JSON.stringify({ type: 'app:clear-state-error', sessionId, message: !serial ? 'No booted device' : 'bundleId missing' }))
+          this.sendMsg({ type: 'app:clear-state-error', sessionId, message: !serial ? 'No booted device' : 'bundleId missing' })
           break
         }
         this.adb.clearAppData(serial, bundleId)
-          .then(() => this.ws?.send(JSON.stringify({ type: 'app:clear-state-done', sessionId })))
+          .then(() => this.sendMsg({ type: 'app:clear-state-done', sessionId }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'app:clear-state-error', sessionId, message }))
+            this.sendMsg({ type: 'app:clear-state-error', sessionId, message })
           })
         break
       }
@@ -1259,7 +1288,15 @@ export class AndroidAgent implements DeviceAgent {
       // the PREVIOUS clipboard, a stale value the user would never notice.
       case 'clipboard:read':
       case 'clipboard:write': {
-        const { requestId } = msg as unknown as { requestId?: string }
+        // `requestId: string`, matching the screenshot and ui:tree casts a few cases below — clipboard was
+        // the only one reading it as optional, for the same wire guarantee. `ClipboardRequest.requestId` is
+        // required and the only requester goes through a typed `send()`, so nothing in-repo omits it.
+        //
+        // It is still an assertion about unvalidated JSON, as those other two are: a third-party client
+        // could omit it, and then the reply would carry `undefined` and be uncorrelatable. That is inbound
+        // validation (#444), not producer typing, and making it optional here instead would just move the
+        // same hole into every reply this case sends.
+        const { requestId } = msg as unknown as { requestId: string }
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
@@ -1267,13 +1304,13 @@ export class AndroidAgent implements DeviceAgent {
         // on the same device may still hold a marker — and the chord the viewer would press in
         // response does not go through the queue. So report the device, not the caller.
         const fail = (message: string, unsupported = false) =>
-          this.ws?.send(JSON.stringify({
+          this.sendMsg({
             type: 'clipboard:error', sessionId, requestId, message,
             payload: {
               unsupported,
               sentinelParked: state ? this.sentinelParked(state.deviceId) : false,
             } satisfies ClipboardErrorPayload,
-          }))
+          })
         // Distinguish the three ways this can be unavailable — they need different fixes.
         if (!state || !serial) { fail('No booted device'); break }
         if (!state.grpcClient) {
@@ -1293,8 +1330,8 @@ export class AndroidAgent implements DeviceAgent {
           // the `catch` that replies, so the viewer hears back as soon as the outcome is known.
           // The queue is still held until the restore lands — that is what stops the next
           // operation seeing a sentinel. Mirrors the iOS read path.
-          const respond = (body: object) =>
-            this.ws?.send(JSON.stringify({ sessionId, requestId, ...body }))
+          const respond = (body: ClipboardReplyBody) =>
+            this.sendMsg({ sessionId, requestId, ...body })
           // The ceiling applies to whatever leaves the device, not just the sentinel path —
           // iOS gets this from getPasteboard's maxBuffer, so Android is the only side that
           // could put a multi-MB guest clipboard on the socket the video shares.
@@ -1401,7 +1438,7 @@ export class AndroidAgent implements DeviceAgent {
           }
           // Ack only once the write (and the paste, when asked for) actually landed.
           this.clipboardQueue(state.deviceId, write)
-            .then(() => this.ws?.send(JSON.stringify({ type: 'clipboard:write-done', sessionId, requestId })))
+            .then(() => this.sendMsg({ type: 'clipboard:write-done', sessionId, requestId }))
             .catch(onError)
         }
         break
@@ -1413,19 +1450,19 @@ export class AndroidAgent implements DeviceAgent {
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         if (!serial) {
-          this.ws?.send(JSON.stringify({ type: 'ui:tree:error', sessionId, requestId, message: 'No booted device' }))
+          this.sendMsg({ type: 'ui:tree:error', sessionId, requestId, message: 'No booted device' })
           break
         }
         this.adb.dumpUiHierarchy(serial)
-          .then((xml) => this.ws?.send(JSON.stringify({
+          .then((xml) => this.sendMsg({
             type: 'ui:tree:response',
             sessionId,
             requestId,
             elements: parseUiAutomatorDump(xml),
-          })))
+          }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.ws?.send(JSON.stringify({ type: 'ui:tree:error', sessionId, requestId, message }))
+            this.sendMsg({ type: 'ui:tree:error', sessionId, requestId, message })
           })
         break
       }
