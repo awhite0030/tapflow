@@ -3,6 +3,7 @@ import type {
 } from '@tapflowio/protocol'
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { MutableRefObject } from 'react'
+import { newRequestId } from '@/lib/requestId'
 
 /** The three replies a clipboard request can get. Named members of the wire union rather than an
  *  `Extract<>` over it — L1 gave every message a name, so this says what it means.
@@ -74,15 +75,6 @@ class ClaimCancelled extends Error {}
 function claimClipboard(pending: Promise<string>): Promise<void> {
   const blob = pending.then((text) => new Blob([text], { type: 'text/plain' }))
   return navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })])
-}
-
-// crypto.randomUUID is secure-context only and LAN deployments are plain HTTP, so build the
-// id from getRandomValues, which is not. It has to be unguessable: a reply is addressed by
-// requestId, and its payload lands on the user's own OS clipboard.
-function requestId(): string {
-  const b = new Uint8Array(16)
-  crypto.getRandomValues(b)
-  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
 }
 
 /**
@@ -178,7 +170,7 @@ export function useClipboardBridge({ sessionId, send, active, supported, handler
       ? [type: T, payload: P]
       : [type: T, payload?: Extract<ClipboardRequest, { type: T }>['payload']]
   ): Promise<ClipboardBridgeMessage | null> => {
-    const id = requestId()
+    const id = newRequestId()
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         pending.current.delete(id)

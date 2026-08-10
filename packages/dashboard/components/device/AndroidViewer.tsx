@@ -30,6 +30,8 @@ interface AndroidViewerProps {
   sessionId: string;
   buildId?: number;
   send: (msg: BrowserToRelay) => void;
+  /** Mints the correlation id and records it, so the viewer only toasts its own reply. */
+  openUrl: (url: string) => void;
   connected: boolean;
   joined: boolean;
   deviceReady: boolean;
@@ -53,7 +55,7 @@ interface AndroidViewerProps {
 }
 
 export function AndroidViewer({
-  sessionId, buildId, send, connected, joined,
+  sessionId, buildId, send, openUrl, connected, joined,
   deviceReady, installing, installed, installError, bootError,
   launching, setLaunching, androidButtons,
   binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, onRecordingUploaded,
@@ -466,6 +468,7 @@ export function AndroidViewer({
         <Tooltip key={btn.name}>
           <TooltipTrigger asChild>
             <Button variant="ghost" size="icon" className="h-8 w-8"
+              aria-label={btn.accessibilityTitle}
               onClick={() => send({ type: 'input:button', sessionId, payload: { name: btn.name } })}
             >
               {btn.name === 'back' ? <ArrowLeft className="h-4 w-4" />
@@ -501,7 +504,7 @@ export function AndroidViewer({
   return (
     <div className="flex items-start justify-center gap-16">
       <canvas ref={recordCanvasRef} style={{ display: 'none' }} />
-      <DeepLinkDialog open={deepLinkOpen} onOpenChange={setDeepLinkOpen} sessionId={sessionId} send={send} />
+      <DeepLinkDialog open={deepLinkOpen} onOpenChange={setDeepLinkOpen} openUrl={openUrl} />
 
       <SimulatorToolbar
         joined={joined}

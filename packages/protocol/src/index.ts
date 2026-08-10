@@ -253,6 +253,12 @@ export type RelayToAgent =
   | AppLaunchToAgent
   | ScreenshotRequest
   | UiTreeRequest
+  // `open-url` is here because L5 needs the agent to *read* `requestId` in order to echo it, and the
+  // agents' inbound parameter is `{ type: string; sessionId: string; payload?: unknown }` — a shape with
+  // no correlator on it, so an echo would have to cast. The rest of what the relay forwards is still
+  // absent from this union (`app:clear-state`, `input:*`), which is the gap #444 owns; each correlation
+  // pair brings its own request in as it lands rather than waiting for that whole surface.
+  | OpenUrl
 
 export type SessionTerminatedReason = 'agent-disconnected'
 
@@ -395,6 +401,7 @@ export interface DeviceBootError extends SessionError {
 
 export interface OpenUrlError extends SessionError {
   type: 'open-url:error'
+  requestId: string
 }
 
 export interface AppClearStateError extends SessionError {
@@ -542,6 +549,7 @@ export interface AppClearStateDone {
 export interface OpenUrlDone {
   type: 'open-url:done'
   sessionId: string
+  requestId: string
 }
 
 export interface InputDone {
@@ -741,6 +749,37 @@ export type ClipboardReply = ClipboardData | ClipboardWriteDone | ClipboardError
  *  payload — a plain `Omit` would collapse them into one shape and stop checking which goes with which. */
 export type ClipboardReplyBody<T = ClipboardReply> = T extends unknown ? Omit<T, 'sessionId' | 'requestId'> : never
 
+/** The replies an `open-url` request can get. */
+export type OpenUrlReply = OpenUrlDone | OpenUrlError
+
+/** An `OpenUrlReply` minus the ids the sender merges in — the `ClipboardReplyBody` shape, and the reason
+ *  this layer needs no static check.
+ *
+ *  **A body cannot declare `requestId`, so the send helper is the only place it can come from.** That
+ *  turns "every reply echoes the request's id" from a claim a checker would have to verify into
+ *  something the type makes unstateable otherwise: omit it and the helper call does not compile; mint a
+ *  fresh one at the site and the excess property is rejected. A check can see that a field is present;
+ *  it cannot see that the value came from the request, which is the actual property. Measured — see the
+ *  note above `OpenUrl`. */
+export type OpenUrlReplyBody<T = OpenUrlReply> = T extends unknown ? Omit<T, 'sessionId' | 'requestId'> : never
+
+/** Which replies answer which request.
+ *
+ *  Nothing declared this before: a request type and its replies were related only by the waiter
+ *  predicates in two clients and by prose. That is why any check over the echo obligation would have had
+ *  to hard-code the mapping — and a hard-coded table goes stale silently as the remaining pairs land.
+ *
+ *  It is an `interface` rather than a const object because this entry point must erase under
+ *  `import type` (see HOW NOT). So it carries no runtime value and cannot be iterated; what it gives is
+ *  a single declared place for `ReplyOf<'open-url'>` to resolve, and a place for the awkward pairs to be
+ *  *declared* rather than argued about — `device:boot` has four replies, `session:start` up to five, and
+ *  three reply types are also sent unsolicited. Those get entries as their pairs land. */
+export interface RequestReplies {
+  'open-url': OpenUrlReply
+}
+
+export type ReplyOf<T extends keyof RequestReplies> = RequestReplies[T]
+
 /** What an agent's **control** socket carries. This is what the agents' send helpers take.
  *
  *  `StreamToRelay` is deliberately *not* in it. Splitting `stream:register` into its own direction was
@@ -856,9 +895,35 @@ export interface AppClearState {
   payload: { bundleId: string }
 }
 
+/** First message of the correlation work (L5). `requestId` is **required on the request and on both
+ *  replies**, which is the same shape the three pairs that already work use — `screenshot`, `ui:tree`
+ *  and `clipboard` all declare it required on the reply too, including the four an *agent* produces.
+ *
+ *  The alternative considered was optional-on-the-reply, so that an agent predating the field would not
+ *  make the declaration false. It was rejected on measurement rather than taste:
+ *
+ *  - Required yields **complete, precise** in-repo compile errors — seven, at exactly the seven
+ *    production sites for this pair, nothing else. The write side is fully covered because L4a routed
+ *    every agent send through a typed helper.
+ *  - Optional needs a static check to replace the compiler, and that check **cannot exist.** Presence is
+ *    checkable; the property is *provenance* — that the id is the request's. A check built and run
+ *    against the clipboard family (100% correlated today) produced seven false positives, because
+ *    `respond({ sessionId, requestId, ...body })` puts the `type` literal and the id in different object
+ *    literals; and it passed when an echo was replaced with a freshly minted id.
+ *  - Absence would carry **two** meanings that want opposite handling: "an old agent" and "not a reply at
+ *    all". The relay's `device:ready` replay is a permanent in-repo producer of the second, and treating
+ *    it as the first is the `{booted: true}` for a boot that never happened that #516 measured and
+ *    refused to ship. Required makes absence mean "not a reply", unambiguously — which is what makes
+ *    that message tightenable at all.
+ *
+ *  There is deliberately **no fallback** to the old `sessionId` + type matching. The `fixed` version
+ *  group in `.changeset/config.json` locks protocol, agent-core, both agents and the relay together, so
+ *  the in-repo skew window is zero; a third-party agent predating this is a release-note matter. A
+ *  permanent fallback would be a fifth correlation strategy in the layer whose goal is to have one. */
 export interface OpenUrl {
   type: 'open-url'
   sessionId: string
+  requestId: string
   payload: { url: string }
 }
 

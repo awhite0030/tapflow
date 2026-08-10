@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { BrowserToRelay, DeviceSummary } from '@tapflowio/protocol'
 import { WebSocket } from 'ws'
 import type { UIElement } from '@tapflowio/agent-core'
@@ -219,9 +220,13 @@ export class RelayClient {
   }
 
   async openUrl(sessionId: string, url: string): Promise<void> {
-    this.send({ type: 'open-url', sessionId, payload: { url } })
+    // Correlated by `requestId`, not by `sessionId` + type. Two `open-url` calls on one session are
+    // sequential today (the engine awaits each step), so this changes nothing observable here — it is
+    // the pattern the remaining pairs follow, and the input acks are where it stops being cosmetic.
+    const requestId = randomUUID()
+    this.send({ type: 'open-url', sessionId, requestId, payload: { url } })
     const msg = await this.waitFor(
-      (m) => (m['type'] === 'open-url:done' || m['type'] === 'open-url:error') && m['sessionId'] === sessionId,
+      (m) => (m['type'] === 'open-url:done' || m['type'] === 'open-url:error') && m['requestId'] === requestId,
       15_000,
       'open url',
     )

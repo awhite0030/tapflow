@@ -161,6 +161,8 @@ function mockSimctl(booted: boolean | 'unknown' = false): SimctlWrapper {
     erase: vi.fn().mockResolvedValue(undefined),
     uninstallApp: vi.fn().mockResolvedValue(undefined),
     clearAppData: vi.fn().mockResolvedValue(undefined),
+    // Absent until L5 added the first `open-url` tests — which is why the handler had none.
+    openUrl: vi.fn().mockResolvedValue(undefined),
     installApp: vi.fn().mockResolvedValue(undefined),
     launchApp: vi.fn().mockResolvedValue(undefined),
     screenshot: vi.fn().mockResolvedValue(Buffer.from('png')),
@@ -1225,6 +1227,54 @@ describe('IOSAgent', () => {
         await vi.waitFor(() => expect(simctl.launchApp).toHaveBeenCalled())
 
         expect(simctl.launchApp).toHaveBeenCalledWith('dev-1', 'com.example.app')
+
+        agent.disconnect(); browser.close()
+      })
+
+      // `open-url` had no test at all until the correlation work (L5) touched its handler — the iOS
+      // suite passed the whole change because nothing exercised it. These two cover the echo and the
+      // guard; Android's equivalents sit in its own suite.
+      it('open-url echoes the requestId on both outcomes', async () => {
+        const { simctl, agent, browser } = await bootedAgent()
+
+        const done = waitForType(browser, 'open-url:done')
+        deliver(agent, {
+          type: 'open-url',
+          sessionId: agent.sessionId,
+          requestId: 'req-1',
+          payload: { url: 'https://example.com' },
+        })
+        expect((await done)['requestId']).toBe('req-1')
+        expect(simctl.openUrl).toHaveBeenCalledWith('dev-1', 'https://example.com')
+
+        simctl.openUrl.mockRejectedValueOnce(new Error('no handler'))
+        const err = waitForType(browser, 'open-url:error')
+        deliver(agent, {
+          type: 'open-url',
+          sessionId: agent.sessionId,
+          requestId: 'req-2',
+          payload: { url: 'https://example.com' },
+        })
+        const msg = await err
+        expect(msg['requestId']).toBe('req-2')
+        expect(msg['message']).toBe('no handler')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('open-url with no requestId is dropped rather than answered uncorrelatably', async () => {
+        // Required on the wire with no fallback, so a reply here could not be matched by anyone, and
+        // minting an id would make it look like an answer to a request nobody made. Third-party frames
+        // are validated at the relay's door by #444; until then nothing is the honest outcome.
+        const { simctl, agent, browser } = await bootedAgent()
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+        const reply = waitForTypeOrNull(browser, 'open-url:done', 50)
+        deliver(agent, { type: 'open-url', sessionId: agent.sessionId, payload: { url: 'https://example.com' } })
+
+        expect(await reply).toBeNull()
+        expect(simctl.openUrl).not.toHaveBeenCalled()
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('open-url without a requestId'))
 
         agent.disconnect(); browser.close()
       })

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { BrowserToRelay, DeviceSummary, InputErrorReason, UIElement } from '@tapflowio/protocol'
 
 // Protocol owns the wire shape; this file used to declare an identical copy under a name the
@@ -357,11 +358,15 @@ export class TapflowClient {
   }
 
   async openUrl(sessionId: string, url: string): Promise<void> {
-    this.send({ type: 'open-url', sessionId, payload: { url } })
+    // Correlated by `requestId`. The MCP SDK dispatches tool calls detached, so two `open_url`s can be
+    // in flight on one session — and matching on `sessionId` + type hands the first waiter whichever
+    // reply lands first, which is the class #499 is about.
+    const requestId = randomUUID()
+    this.send({ type: 'open-url', sessionId, requestId, payload: { url } })
     const msg = await this.waitFor(
       (m) =>
         (m['type'] === 'open-url:done' || m['type'] === 'open-url:error') &&
-        m['sessionId'] === sessionId,
+        m['requestId'] === requestId,
       15_000,
     )
     if (msg['type'] === 'open-url:error') {

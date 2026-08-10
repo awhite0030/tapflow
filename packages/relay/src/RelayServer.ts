@@ -740,7 +740,16 @@ export class RelayServer {
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
         } else {
-          this.sendTo(ws, { type: 'open-url:error', sessionId: msg.sessionId!, message: 'agent offline' })
+          // The relay answers this one itself, so it echoes the request's `requestId` like an agent
+          // would. `requestId!` is the same unvalidated-inbound assertion as `sessionId!` beside it —
+          // #444's class, not this pair's. A caller that omits it gets a reply it cannot correlate,
+          // which is what #444 exists to stop at the door.
+          this.sendTo(ws, {
+            type: 'open-url:error',
+            sessionId: msg.sessionId!,
+            requestId: msg.requestId!,
+            message: 'agent offline',
+          })
         }
         break
       }
