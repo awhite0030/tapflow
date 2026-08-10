@@ -741,13 +741,19 @@ export class RelayServer {
           session.agentSocket.send(JSON.stringify(msg))
         } else {
           // The relay answers this one itself, so it echoes the request's `requestId` like an agent
-          // would. `requestId!` is the same unvalidated-inbound assertion as `sessionId!` beside it —
-          // #444's class, not this pair's. A caller that omits it gets a reply it cannot correlate,
-          // which is what #444 exists to stop at the door.
+          // would — and refuses to answer at all without one, which is the same policy both agents
+          // apply to the same input. A first draft wrote `requestId: msg.requestId!` instead, and
+          // that was not the `sessionId!` beside it in kind: `sessionId!` feeds a *read*, so
+          // `undefined` misses the map and the caller still gets a visible error, while `requestId!`
+          // feeds a **write into an outbound frame** — `JSON.stringify` drops the key and ships an
+          // `open-url:error` whose required correlator is absent. Every correlating consumer then
+          // discards it, so the caller waits out its full deadline instead of learning the agent is
+          // offline. Measured, and the reply's own pinned signature says the field is required.
+          if (typeof msg.requestId !== 'string' || msg.requestId === '') break
           this.sendTo(ws, {
             type: 'open-url:error',
             sessionId: msg.sessionId!,
-            requestId: msg.requestId!,
+            requestId: msg.requestId,
             message: 'agent offline',
           })
         }

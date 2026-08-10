@@ -1262,6 +1262,34 @@ describe('IOSAgent', () => {
         agent.disconnect(); browser.close()
       })
 
+      it('answers two concurrent open-urls with their own ids', async () => {
+        // The only reason this pair needs a correlator, and the case the echo tests above cannot see:
+        // hoisting `requestId` out of per-request scope — a plausible "share `respond` across handlers"
+        // refactor — compiles clean and passes every other test in this file, while both replies come
+        // back carrying the *second* request's id. That is exactly the #499 class the layer removes.
+        const { simctl, agent, browser } = await bootedAgent()
+
+        let release: (() => void) | undefined
+        simctl.openUrl
+          .mockImplementationOnce(() => new Promise<void>((r) => { release = () => r() }))
+          .mockImplementationOnce(() => Promise.resolve())
+
+        deliver(agent, { type: 'open-url', sessionId: agent.sessionId, requestId: 'req-A', payload: { url: 'a://x' } })
+        await vi.waitFor(() => expect(release).toBeDefined())
+
+        // B is issued while A is still in flight, and completes first. The waits are sequential rather
+        // than two concurrent `waitForType`s because that helper does not correlate either — the first
+        // registered waiter takes the first arriving message, which would pass under the very mutation
+        // this test exists to catch.
+        deliver(agent, { type: 'open-url', sessionId: agent.sessionId, requestId: 'req-B', payload: { url: 'b://y' } })
+        expect((await waitForType(browser, 'open-url:done'))['requestId']).toBe('req-B')
+
+        release!()
+        expect((await waitForType(browser, 'open-url:done'))['requestId']).toBe('req-A')
+
+        agent.disconnect(); browser.close()
+      })
+
       it('open-url with no requestId is dropped rather than answered uncorrelatably', async () => {
         // Required on the wire with no fallback, so a reply here could not be matched by anyone, and
         // minting an id would make it look like an answer to a request nobody made. Third-party frames

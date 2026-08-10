@@ -1190,13 +1190,14 @@ export class AndroidAgent implements DeviceAgent {
         // response to a request nobody made. Every in-repo sender supplies one, and the `fixed` version
         // group means there is no in-repo skew window; validating third-party frames at the relay's door
         // is #444, which will take this over. Until then a drop with a log beats a reply that lies.
-        if (!requestId) {
+        if (typeof requestId !== 'string' || requestId === '') {
           console.warn('[tapflow] open-url without a requestId — dropped, cannot correlate a reply')
           break
         }
-        // See the iOS handler: `OpenUrlReplyBody` forbids a body from declaring the correlation ids, so
-        // the helper is the only place they can come from and an unechoed reply does not compile.
-        const respond = (body: OpenUrlReplyBody) => this.sendMsg({ sessionId, requestId, ...body })
+        // See the iOS handler for what this does and does not enforce. `...body` first is load-bearing:
+        // with the ids last a body variable carrying a `requestId` overrides the real one, and excess
+        // property checking does not fire on variables.
+        const respond = (body: OpenUrlReplyBody) => this.sendMsg({ ...body, sessionId, requestId })
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         if (!serial) {

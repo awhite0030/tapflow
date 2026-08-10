@@ -10,7 +10,7 @@ import { initDb, closeDb, getDb } from '../db'
 import { hashPat } from '../middleware/auth'
 import type { RelayMessage } from '../types'
 import { writeEnvelopeHeader, HEADER_SIZE, CODEC_AUDIO } from '@tapflowio/agent-core/utils'
-import { waitForMessage, waitForOpen, waitForType } from '@tapflowio/test-utils'
+import { barrier, waitForMessage, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 
 // Sends a raw HTTP request, bypassing client-side URL normalization.
 const rawHttpGet = (targetPort: number, rawPath: string): Promise<number> =>
@@ -1043,10 +1043,13 @@ describe('RelayServer', () => {
     // session:start on a booted device now also sends the agent a join-IDR (stream:request-idr),
     // so wait specifically for open-url rather than the next message.
     const msgPromise = waitForType(agent, 'open-url')
-    browser.send(JSON.stringify({ type: 'open-url', sessionId, payload: { url: 'myapp://home' } }))
+    browser.send(JSON.stringify({ type: 'open-url', sessionId, requestId: 'req-fwd', payload: { url: 'myapp://home' } }))
     const received = await msgPromise
     expect(received.type).toBe('open-url')
     expect((received.payload as { url: string }).url).toBe('myapp://home')
+    // The forward re-serialises the whole message, so the correlator survives it untouched — which is
+    // what lets the agent echo it. An id-less request reaches the agent too and is dropped there.
+    expect(received.requestId).toBe('req-fwd')
 
     agent.close()
     browser.close()
@@ -1131,10 +1134,27 @@ describe('RelayServer', () => {
     await waitForOpen(browser)
 
     const msgPromise = waitForMessage(browser)
-    browser.send(JSON.stringify({ type: 'open-url', sessionId: 'nonexistent-session', payload: { url: 'myapp://home' } }))
+    browser.send(JSON.stringify({ type: 'open-url', sessionId: 'nonexistent-session', requestId: 'req-nos', payload: { url: 'myapp://home' } }))
     const received = await msgPromise
     expect(received.type).toBe('open-url:error')
     expect(received.message).toBe('agent offline')
+    expect(received.requestId).toBe('req-nos')
+
+    browser.close()
+  })
+
+  it('answers nothing rather than an open-url:error with no correlator', async () => {
+    // `requestId` is required on `open-url:error`, so answering an id-less request would mean shipping a
+    // frame that violates its own declaration — `JSON.stringify` drops the key and every correlating
+    // consumer discards it, turning "agent offline" into a caller waiting out its full deadline. Both
+    // agents drop the same input; this keeps the relay's policy identical rather than opposite.
+    const browser = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(browser)
+
+    const reply = waitForTypeOrNull(browser, 'open-url:error', 0)
+    browser.send(JSON.stringify({ type: 'open-url', sessionId: 'nonexistent-session', payload: { url: 'myapp://home' } }))
+    await barrier(browser)
+    expect(await reply).toBeNull()
 
     browser.close()
   })
@@ -1157,9 +1177,10 @@ describe('RelayServer', () => {
 
     // By type, not "the next message": losing the agent also produces a `session:terminated`, and
     // whichever lands first is not this test's subject.
-    browser.send(JSON.stringify({ type: 'open-url', sessionId, payload: { url: 'myapp://home' } }))
+    browser.send(JSON.stringify({ type: 'open-url', sessionId, requestId: 'req-closed', payload: { url: 'myapp://home' } }))
     const received = await waitForType(browser, 'open-url:error')
     expect(received.message).toBe('agent offline')
+    expect(received.requestId).toBe('req-closed')
 
     browser.close()
   })

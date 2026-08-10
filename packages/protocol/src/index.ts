@@ -253,12 +253,6 @@ export type RelayToAgent =
   | AppLaunchToAgent
   | ScreenshotRequest
   | UiTreeRequest
-  // `open-url` is here because L5 needs the agent to *read* `requestId` in order to echo it, and the
-  // agents' inbound parameter is `{ type: string; sessionId: string; payload?: unknown }` — a shape with
-  // no correlator on it, so an echo would have to cast. The rest of what the relay forwards is still
-  // absent from this union (`app:clear-state`, `input:*`), which is the gap #444 owns; each correlation
-  // pair brings its own request in as it lands rather than waiting for that whole surface.
-  | OpenUrl
 
 export type SessionTerminatedReason = 'agent-disconnected'
 
@@ -752,33 +746,26 @@ export type ClipboardReplyBody<T = ClipboardReply> = T extends unknown ? Omit<T,
 /** The replies an `open-url` request can get. */
 export type OpenUrlReply = OpenUrlDone | OpenUrlError
 
-/** An `OpenUrlReply` minus the ids the sender merges in — the `ClipboardReplyBody` shape, and the reason
- *  this layer needs no static check.
+/** An `OpenUrlReply` minus the ids the sender merges in — the `ClipboardReplyBody` shape.
  *
- *  **A body cannot declare `requestId`, so the send helper is the only place it can come from.** That
- *  turns "every reply echoes the request's id" from a claim a checker would have to verify into
- *  something the type makes unstateable otherwise: omit it and the helper call does not compile; mint a
- *  fresh one at the site and the excess property is rejected. A check can see that a field is present;
- *  it cannot see that the value came from the request, which is the actual property. Measured — see the
- *  note above `OpenUrl`. */
+ *  **What it buys, exactly.** A first draft of this comment claimed it made the echo obligation
+ *  unstateable-otherwise and therefore removed the need for any check. Review measured that against 13
+ *  attacks and it is false: `sendMsg` takes `AgentControlOutbound`, whose `OpenUrlDone`/`OpenUrlError`
+ *  members declare `requestId: string`, so any site with any string in scope emits a fully-typed, fully
+ *  wrong reply without going through the helper at all. The helper is convention, not a type boundary.
+ *
+ *  What it does buy is one thing worth having: at a `respond({ … })` call, a **freshly minted id written
+ *  as a literal** is an excess property. It does not survive a body *variable* — excess-property checking
+ *  does not fire on those — which is why the agents spread `...body` **first** and put the ids last, so a
+ *  variable that carries one cannot override the real one.
+ *
+ *  Omission is caught, but by `requestId: string` being required on the reply interfaces rather than by
+ *  this type. The rest is carried by each agent's echo tests, and each remaining correlation pair needs
+ *  its own pair of them. A check can see that a field is present; it cannot see that the value came from
+ *  the request, which is the actual property — that part of the original reasoning stands, and it is why
+ *  the answer is tests at the sites rather than a cleverer checker. */
 export type OpenUrlReplyBody<T = OpenUrlReply> = T extends unknown ? Omit<T, 'sessionId' | 'requestId'> : never
 
-/** Which replies answer which request.
- *
- *  Nothing declared this before: a request type and its replies were related only by the waiter
- *  predicates in two clients and by prose. That is why any check over the echo obligation would have had
- *  to hard-code the mapping — and a hard-coded table goes stale silently as the remaining pairs land.
- *
- *  It is an `interface` rather than a const object because this entry point must erase under
- *  `import type` (see HOW NOT). So it carries no runtime value and cannot be iterated; what it gives is
- *  a single declared place for `ReplyOf<'open-url'>` to resolve, and a place for the awkward pairs to be
- *  *declared* rather than argued about — `device:boot` has four replies, `session:start` up to five, and
- *  three reply types are also sent unsolicited. Those get entries as their pairs land. */
-export interface RequestReplies {
-  'open-url': OpenUrlReply
-}
-
-export type ReplyOf<T extends keyof RequestReplies> = RequestReplies[T]
 
 /** What an agent's **control** socket carries. This is what the agents' send helpers take.
  *

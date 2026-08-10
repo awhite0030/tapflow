@@ -1048,14 +1048,25 @@ export class IOSAgent implements DeviceAgent {
         // response to a request nobody made. Every in-repo sender supplies one, and the `fixed` version
         // group means there is no in-repo skew window; validating third-party frames at the relay's door
         // is #444, which will take this over. Until then a drop with a log beats a reply that lies.
-        if (!requestId) {
+        if (typeof requestId !== 'string' || requestId === '') {
           console.warn('[tapflow] open-url without a requestId — dropped, cannot correlate a reply')
           break
         }
-        // Every exit merges the correlation ids here, and `OpenUrlReplyBody` forbids a body from
-        // declaring them — so an unechoed reply does not compile and a freshly minted id is an excess
-        // property. That is the whole enforcement for this pair; there is no static check.
-        const respond = (body: OpenUrlReplyBody) => this.sendMsg({ sessionId, requestId, ...body })
+        // Every exit merges the correlation ids here. What that buys, precisely — review measured 13
+        // attacks and the type caught 3:
+        //
+        //  - **Omitting the correlator is a compile error.** That comes from `requestId: string` being
+        //    required on `OpenUrlDone`/`OpenUrlError`, reached through `sendMsg`'s `AgentControlOutbound`
+        //    — not from `OpenUrlReplyBody`, whose one contribution is rejecting a fresh id written as a
+        //    literal at the `respond(...)` call.
+        //  - **`...body` goes first on purpose.** With the ids last, a body *variable* carrying a
+        //    `requestId` cannot override them — excess-property checking does not fire on variables, so
+        //    the earlier `{ sessionId, requestId, ...body }` let a wrong id win.
+        //
+        // What it does **not** buy: `sendMsg` accepts any `string` here, so a site that bypasses
+        // `respond` type-checks. The echo tests in both agents' suites are what catch that, and each
+        // remaining correlation pair needs its own — this helper does not remove that work.
+        const respond = (body: OpenUrlReplyBody) => this.sendMsg({ ...body, sessionId, requestId })
         const state = this.deviceStates.get(sessionId!)
         if (!state) {
           respond({ type: 'open-url:error', message: 'no booted device' })
