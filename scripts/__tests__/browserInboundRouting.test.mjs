@@ -203,9 +203,9 @@ describe('browser-inbound routing matches the protocol union', () => {
       'clipboard:write-done': 'requestId sessionId',
     },
     RelayOrAgentToBrowser: {
-      'session:chrome': 'payload sessionId?',
-      'session:deviceInfo': 'payload sessionId?',
-      'device:ready': 'payload sessionId?',
+      'session:chrome': 'payload sessionId',
+      'session:deviceInfo': 'payload sessionId',
+      'device:ready': 'payload sessionId',
       'app:install-error': 'message sessionId',
       'app:launch-error': 'message sessionId',
       'device:boot-error': 'message sessionId',

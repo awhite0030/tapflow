@@ -35,7 +35,7 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
     act(() => { deliver!({ type: 'session:joined', sessionId: 'mine', capabilities: [] }) })
     // The card shows "Starting device…" until this arrives, and that would mask the install error
     // regardless of the filter — the two tests have to sit past it to mean anything.
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 'mine', payload: { deviceId: 'dev-1' } }) })
 
     act(() => {
       deliver!({ type: 'app:install-error', sessionId: 'someone-else', message: 'Build not found' })
@@ -47,13 +47,31 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
   it('does show one that is its own', () => {
     render(<DeviceViewer sessionId="mine" deviceId="dev-1" />)
     act(() => { deliver!({ type: 'session:joined', sessionId: 'mine', capabilities: [] }) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 'mine', payload: { deviceId: 'dev-1' } }) })
 
     act(() => {
       deliver!({ type: 'app:install-error', sessionId: 'mine', message: 'Build not found' })
     })
 
     expect(screen.getByText(/Install failed: Build not found/)).toBeInTheDocument()
+  })
+
+  it('ignores a device:ready whose session id is empty', () => {
+    // The discriminating case for dropping `&& msg.sessionId` from the gate. An empty sessionId is
+    // falsy, so the truthiness check let it *pass* and the message was applied to whichever viewer was
+    // mounted — the unattributed-message defect #426 exists to prevent, reachable through the hole that
+    // existed to let the relay's unstamped replay in. `''` type-checks against the now-required field
+    // and nothing validates inbound messages (#444), so this is a shape that can arrive.
+    //
+    // A foreign-but-non-empty id is *not* the test for this: `'someone-else'` is truthy, so the old
+    // gate rejected it too and such a test would pass either way.
+    render(<DeviceViewer sessionId="mine" deviceId="dev-1" />)
+    act(() => { deliver!({ type: 'session:joined', sessionId: 'mine', capabilities: [] }) })
+
+    act(() => { deliver!({ type: 'device:ready', sessionId: '', payload: { deviceId: 'dev-1' } }) })
+
+    // Still waiting on its own device — the unattributed ready did not stand in for it.
+    expect(screen.getByText(/Starting device/)).toBeInTheDocument()
   })
 
   it('still accepts messages that carry no session at all', () => {

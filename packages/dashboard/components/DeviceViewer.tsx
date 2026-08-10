@@ -109,15 +109,19 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     // narrowing rather than the widening it used to be — it was `in msg` because the local copy of
     // this union omitted the field on messages the wire always stamped it on.
     //
-    // Three messages still reach here without one: `device:ready`, `session:chrome` and
-    // `session:deviceInfo` are `sessionId?` because the relay *replays* them to a re-joining viewer
-    // from its own cache and does not stamp them, while both agents do. The `&& msg.sessionId`
-    // truthiness check is what lets those through, and they are safe to accept unscoped for the same
-    // reason the gate is safe at all: the relay only ever sends a session-scoped message to that
-    // session's own `browserSocket`, so a mismatch means a stale socket, not normal traffic.
-    // If that ever stops holding, a dropped `session:terminated` strands the tab — which is the
-    // defect #426 existed to fix, so there is a test for exactly that below.
-    if ('sessionId' in msg && msg.sessionId && msg.sessionId !== sessionId) return;
+    // `'sessionId' in msg` stays, because some members genuinely carry none — `agents:listed` and
+    // `error`, whose whole point is a failure the relay could not attribute.
+    //
+    // There used to be a `&& msg.sessionId` truthiness check too, for three messages that arrived
+    // without one: the relay *replayed* `device:ready`, `session:chrome` and `session:deviceInfo` to a
+    // re-joining viewer from its own cache and did not stamp them, while both agents did. The relay
+    // stamps them now, so the three are scoped by this gate like everything else.
+    //
+    // Dropping that check also closes what it opened: nothing validates inbound messages (#444), so
+    // `sessionId: ''` reaches here — and a falsy sessionId used to *pass* the gate and be applied to
+    // whichever viewer was mounted. That is the unattributed-message defect #445 exists to prevent,
+    // reachable through the hole that let the replay in. Now it is simply a mismatch and ignored.
+    if ('sessionId' in msg && msg.sessionId !== sessionId) return;
 
     if (msg.type === 'session:joined') {
       // A join starts a boot cycle of its own (socket blip, re-entry). Any rebind still waiting for

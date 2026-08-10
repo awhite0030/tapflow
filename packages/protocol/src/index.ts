@@ -316,29 +316,32 @@ export type InputErrorReason =
  *  Declared once here and referenced by both directions rather than written into each, because two
  *  copies of one message drift. That is not hypothetical: the dashboard kept a hand-copy of this
  *  whole surface and four members had diverged from it, with nothing reporting the difference. */
-// `sessionId` is optional on these three and required on the errors below, because here the two
-// producers genuinely disagree. Both agents stamp it on every one of these
-// (`IOSAgent.ts:401,411,606`, `AndroidAgent.ts:461,867,878`) and the forward gate resolves the
-// session before forwarding, so a *forwarded* copy always carries it — but the relay's own replay
-// to a re-joining viewer does not (`RelayServer.ts:1079,1082,1089`), and it is the same declaration.
-// Optional is what one declaration can honestly say about two producers that differ. Bringing the
-// replay up to the agents' shape, and tightening this to required, belongs with L4 — the layer that
-// types the relay's own sends.
+// These three were `sessionId?` because the two producers disagreed, and the honest thing one
+// declaration could say about a disagreement is "optional". Both agents stamped it on every copy
+// (`IOSAgent.ts:401,411,606`, `AndroidAgent.ts:461,867,878`); the relay's own replay to a re-joining
+// viewer did not, and it is the same declaration.
+//
+// **The disagreement was the defect, not the declaration.** Two alternatives were weighed when this
+// surface was consolidated — declaring the three twice, or mapping the shared union through
+// `Omit<T,'sessionId'> & { sessionId: string }` — and both were rejected for good reasons (drift, and
+// `Extract<BrowserInbound, …>` stops resolving to one member, which `useClipboardBridge` depends on).
+// The third option was not considered: **fix the producer.** The relay now stamps it
+// (`RelayServer.ts` `handleSessionStart`), so one declaration can say `required` about both.
 export interface SessionChrome {
   type: 'session:chrome'
-  sessionId?: string
+  sessionId: string
   payload: ChromePayload
 }
 
 export interface SessionDeviceInfo {
   type: 'session:deviceInfo'
-  sessionId?: string
+  sessionId: string
   payload: DeviceDetails
 }
 
 export interface DeviceReady {
   type: 'device:ready'
-  sessionId?: string
+  sessionId: string
   payload: { deviceId: string }
 }
 
@@ -351,8 +354,9 @@ export interface DeviceReady {
  * Nothing validates inbound messages, so a client that sends `{"type":"input:touch:end"}` with no
  * sessionId reaches `sessions.get(undefined)`, misses, and the relay answers `'Session not found'`
  * through `msg.sessionId!` — `JSON.stringify` then drops the key. Seven sites do this
- * (`RelayServer.ts:719,743,752,786,803,1109,1138`). No in-repo client omits a sessionId, so the
- * gap is reachable only from a third-party one.
+ * (`RelayServer.ts:721,743,752,786,803,1125,1154`). No in-repo client omits a sessionId, so the
+ * gap is reachable only from a third-party one — with one exception measured since: `sessionId: ''`
+ * type-checks and `mcp-server`'s tools take `z.string()`, so an LLM can produce it.
  *
  * Optional would describe that wire accurately and still be the wrong contract: an MCP caller that
  * receives an uncorrelatable `input:error` has nothing it can do with it — it waits out the
@@ -571,22 +575,16 @@ export interface ClipboardWriteDone {
  *  include it in every send literal, and the relay's forward gate resolves `sessions.get(msg.sessionId!)`
  *  before forwarding, so a message with no sessionId never reaches a browser by this path.
  *
- *  The ten inherited from `RelayOrAgentToBrowser` are **not** all required — three are `sessionId?`,
- *  which is looser than what an agent actually sends. Tightening them here needs the three declared
- *  twice, or the shared union mapped through `Omit<T,'sessionId'> & { sessionId: string }`. Both were
- *  weighed and rejected for this layer:
+ *  The ten inherited from `RelayOrAgentToBrowser` now carry it too. Three of them
+ *  (`session:chrome`, `session:deviceInfo`, `device:ready`) were `sessionId?` for as long as the relay's
+ *  replay omitted what both agents stamped. Two ways to tighten the declaration were weighed and
+ *  rejected — declaring the three twice (drift, which is the finding this surface exists to remove), and
+ *  mapping the union through `Omit<T,'sessionId'> & { sessionId: string }` (turns them into
+ *  intersections, so `Extract<BrowserInbound, …>` stops yielding one member, which `useClipboardBridge`
+ *  reads its three replies through without a cast).
  *
- *  - Declaring them twice reintroduces the thing this layer exists to remove. Two copies of one
- *    message drift; that is the whole finding — four of them, between this file and the dashboard's.
- *  - The mapped version turns those members into intersections, so `Extract<BrowserInbound, …>` stops
- *    yielding a single member. `useClipboardBridge` depends on that (its three replies are read
- *    without a cast because each `Extract` resolves to one declaration).
- *
- *  And no consumer could read the stricter claim today: `BrowserInbound` merges both directions, and a
- *  union merge collapses to the looser field. Nothing consumes `AgentToBrowser` on its own — the relay
- *  forwards untyped. **L4 is where it pays**: once the relay's forward path is narrowed to this union,
- *  required `sessionId` is checkable, and the relay's replay (`RelayServer.ts:1079,1082,1089`) is
- *  brought up to the agents' shape in the same change. Tracked there rather than left implicit. */
+ *  Both are ways to make one declaration describe two producers that disagree. The disagreement was the
+ *  defect: the relay stamps it now, so neither is needed. See the note above the three declarations. */
 export type AgentToBrowser =
   | RelayOrAgentToBrowser
   | DeviceBooting
