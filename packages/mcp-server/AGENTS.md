@@ -21,7 +21,7 @@ Connects to the relay over WebSocket + REST (`TapflowClient`), registers MCP too
 ## HOW
 
 - Entry: `src/index.ts` — reads `TAPFLOW_RELAY_URL` and `TAPFLOW_TOKEN` env vars, connects `TapflowClient`, calls `registerTools`, starts `StdioServerTransport`.
-- Client: `src/client.ts` — WebSocket connection to relay + REST calls for build/app data. Its `send()` takes `BrowserToRelay` from [`@tapflowio/protocol`](../protocol/AGENTS.md), so a new outbound message goes in that union first. Receiving stays loose (`Record<string, unknown>` + a predicate) because the relay's replies are validated by nothing on the way in.
+- Client: `src/client.ts` — WebSocket connection to relay + REST calls for build/app data. Its `send()` takes `BrowserToRelay` from [`@tapflowio/protocol`](../protocol/AGENTS.md), so a new outbound message goes in that union first. Receiving stays loose (`Record<string, unknown>` + a predicate) — a **deferral, not a settled decision**, tracked in #512. Narrowing it would catch a live defect (`error` is matched on a `sessionId` that message does not have, so one session's failure can be reported against another's join) but it also makes `message: string`, turning this file's `?? 'failed'` fallbacks into unreachable code. Deleting those while nothing validates inbound JSON removes a real defence, so the validators (#444) come first.
 - Tools: `src/tools.ts` — all MCP tool definitions. One `registerTools(server, client)` call registers everything.
 - Screenshots are saved to a temp file and returned as MCP `image` content with base64 encoding.
 

@@ -54,11 +54,14 @@ conversion, so they are written down here instead:
 
 - **An `interface` has no implicit index signature.** An anonymous `type X = { … }` is assignable to
   `Record<string, unknown>`; a named interface is not. Nothing broke, because the three
-  `Record<string, unknown>` sinks in this repo (`flow-runner/src/RelayClient.ts`,
-  `mcp-server/src/client.ts`, `test-utils/src/socket.ts`) are only ever handed fresh object literals.
-  **The fix when one of them needs a typed value is to type the sink**, not to widen the message —
-  replacing `type RelayMsg = Record<string, unknown>` with `BrowserToRelay` is the point of that work,
-  not a casualty of it.
+  `Record<string, unknown>` sinks then in this repo were only ever handed fresh object literals — and
+  **the fix when one of them needs a typed value is to type the sink**, not to widen the message. Two
+  have been: both clients' `send` takes `BrowserToRelay` (`7637be3`, L4c), and their `RelayMsg` is now
+  inbound-only. The third, `test-utils/src/socket.ts`, is the case where this constraint bites in the
+  other direction: its comment claimed the looseness accommodated each importer's richer view via
+  `waitForType<T extends SocketMessage>`, and that extension point is what an interface having no index
+  signature **broke** — no protocol type satisfies the constraint. All 25 call sites violate it
+  invisibly, because `src/__tests__` is outside that package's tsconfig.
 - **An `interface` can be reopened by a consumer.** `declare module '@tapflowio/protocol'` can add a
   field to any message, which an anonymous union member could not. Measured: a consumer can give
   `GenericError` a `sessionId` and defeat the assertion in `typeAssertions.ts` that says it has none.
@@ -98,6 +101,18 @@ own send site in `agent-core/src/utils/stream.ts`.
 That mattered because an agent's literal was the one thing no compiler saw — the relay forwards replies with
 `JSON.stringify(msg)`, so nothing typed re-creates them. #489 and #490 are what the gap cost, and
 `inputErrorReason.test.mjs` exists because a script had to stand in for a compiler.
+
+**The browser side is the same rule and the same check shape.** All three browser-role producers — the dashboard's
+`useRelay`, `mcp-server`'s client, `flow-runner`'s `RelayClient` — serialize through one `BrowserToRelay` sink, and
+`scripts/__tests__/clientOutboundTyped.test.mjs` holds them to it. Its first draft asserted the *signature*
+`private send(msg: BrowserToRelay)` and was defeated by a second helper named `sendRaw`: the assertion kept
+passing on the typed one while the untyped one put a misspelled type on the wire. So it anchors on serialization
+too, and derives its file list by inspection — the hardcoded pair it started with silently excluded the dashboard,
+which has the most send sites of the three (47, against 32 for both clients).
+
+Both checks read a union's *name* at the sink. Neither read its contents, and appending
+`| Record<string, unknown>` to `BrowserToRelay` passed every static check while making all three clients accept
+anything. Guards that name a type also have to assert the type is still a union of named messages.
 
 **`screenshot:error` and `ui:tree:error` do not extend `SessionError`, and that is the boundary of the
 family.** `SessionError` is for a failure a *session* is waiting on. Those two are request-scoped: the relay
@@ -139,7 +154,9 @@ cannot verify — and `JSON.stringify` drops a key whose value is `undefined`. T
 widen the declaration:
 
 - Every in-repo sender does supply one. `BrowserToRelay` declares `sessionId: string` on every member
-  but `agents:list`, and the untyped senders (`mcp-server`, `flow-runner`) set it too.
+  but `agents:list`, and since L4c all three senders are typed against that union, so the compiler
+  enforces it rather than convention. (This bullet used to read "the untyped senders (`mcp-server`,
+  `flow-runner`) set it too" — true when written, and falsified by the work that typed them.)
 - `'Session not found'` answers a sessionId that did not **match** — a stale tab, a terminated
   session — not one that was absent.
 - `{ type: 'error'; message: string }` is the escape hatch for a genuinely uncorrelatable failure. So

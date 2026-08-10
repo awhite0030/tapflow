@@ -818,10 +818,27 @@ export interface AppLaunchToRelay {
   buildId: number
 }
 
+/** Wipe an installed app's data.
+ *
+ *  `bundleId` is **required, twice over** — the field and the payload. It was `payload?: { bundleId?: string }`,
+ *  which was looser than every producer *and* every consumer: `mcp-server` and `flow-runner` are its only
+ *  senders (the dashboard resets through `device:boot` instead) and both supply a string, and both agents answer
+ *  `app:clear-state-error` with `'bundleId missing'` when it is absent. A field weaker than every producer
+ *  describes a message nobody sends.
+ *
+ *  What required buys is a **compile error for a future sender**, no more. The agents keep that branch and
+ *  should: `bundleId: ''` type-checks, and nothing here validates inbound JSON (#444). So this is the same
+ *  argument as `sessionId` below, not a stronger one.
+ *
+ *  Unlike `app:install` / `app:launch`, which carry a `buildId` the relay resolves into a bundle id from the
+ *  builds table, this message is passed through untouched. That is an **absence of relay-side resolution, not a
+ *  design** — the machinery exists next door. It stays client-supplied because clearing a *different* app is a
+ *  documented flow step (`clearState: com.other.app`), so the field has to be expressible either way; adding a
+ *  relay-filled form would be a new feature, not a contract alignment. */
 export interface AppClearState {
   type: 'app:clear-state'
   sessionId: string
-  payload?: { bundleId?: string }
+  payload: { bundleId: string }
 }
 
 export interface OpenUrl {

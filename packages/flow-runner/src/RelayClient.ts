@@ -1,4 +1,4 @@
-import type { DeviceSummary } from '@tapflowio/protocol'
+import type { BrowserToRelay, DeviceSummary } from '@tapflowio/protocol'
 import { WebSocket } from 'ws'
 import type { UIElement } from '@tapflowio/agent-core'
 import { PlatformError } from '@tapflowio/agent-core'
@@ -27,6 +27,13 @@ export interface AgentSession {
   devices: DeviceSummary[]
 }
 
+/** What arrives **from** the relay. Deliberately still loose, and that is a deferral rather than a decision —
+ *  see #512. Narrowing it to `BrowserInbound` would check the reply predicates below (and would reject a live
+ *  one: `error` is matched on a `sessionId` that member does not have), but it also makes `message: string`,
+ *  which turns this file's `?? 'failed'` fallbacks into unreachable code. Deleting those while nothing
+ *  validates inbound JSON removes a real defence, so the validators (#444) come first.
+ *
+ *  Outbound is `BrowserToRelay` — see `send` below. */
 type RelayMsg = Record<string, unknown>
 
 interface Waiter {
@@ -91,7 +98,10 @@ export class RelayClient {
     }
   }
 
-  private send(msg: RelayMsg): void {
+  /** Typed against the wire contract, so every literal below is checked. It used to take `RelayMsg`, which is
+   *  `Record<string, unknown>` — the shape that let #489 and #490 happen on the agent side, and the reason
+   *  `mcp-server`'s equivalent was typed in `7637be3`. */
+  private send(msg: BrowserToRelay): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new PlatformError('not connected to relay')
     }
