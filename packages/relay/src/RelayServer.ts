@@ -736,20 +736,28 @@ export class RelayServer {
       case 'app:install': this.handleBrowserAppInstall(ws, msg); break
       case 'app:launch':  this.handleBrowserAppLaunch(ws, msg); break
       case 'open-url': {
+        // **At the door, before either branch.** A correlator is required on this request, and the
+        // relay has two things it could do with one that lacks it — forward it, or answer it — so
+        // putting the check inside one branch means having two policies. A first draft did exactly
+        // that: it refused to *answer* without an id while still *forwarding* without one, which
+        // leaves the whole guarantee resting on the receiving agent. Both in-repo agents drop it, but
+        // an agent that predates this field would execute the request and reply uncorrelated, and
+        // then nothing downstream can attribute the reply.
+        //
+        // The check is here rather than in a validator because this is one required field on one
+        // message, and the relay can act on its absence locally. General inbound validation is #444.
+        //
+        // Dropping is the only honest answer: `open-url:error` requires the correlator too, so
+        // answering would mean shipping a frame that violates its own declaration — `JSON.stringify`
+        // erases the absent key, every correlating consumer discards the result, and "agent offline"
+        // becomes a caller waiting out its full deadline. That was the first draft's other half:
+        // `requestId: msg.requestId!`, which is not the `sessionId!` below it in kind, because that
+        // one feeds a *read* whose miss still produces a visible error.
+        if (typeof msg.requestId !== 'string' || msg.requestId === '') break
         const session = this.sessions.get(msg.sessionId!)
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
         } else {
-          // The relay answers this one itself, so it echoes the request's `requestId` like an agent
-          // would — and refuses to answer at all without one, which is the same policy both agents
-          // apply to the same input. A first draft wrote `requestId: msg.requestId!` instead, and
-          // that was not the `sessionId!` beside it in kind: `sessionId!` feeds a *read*, so
-          // `undefined` misses the map and the caller still gets a visible error, while `requestId!`
-          // feeds a **write into an outbound frame** — `JSON.stringify` drops the key and ships an
-          // `open-url:error` whose required correlator is absent. Every correlating consumer then
-          // discards it, so the caller waits out its full deadline instead of learning the agent is
-          // offline. Measured, and the reply's own pinned signature says the field is required.
-          if (typeof msg.requestId !== 'string' || msg.requestId === '') break
           this.sendTo(ws, {
             type: 'open-url:error',
             sessionId: msg.sessionId!,

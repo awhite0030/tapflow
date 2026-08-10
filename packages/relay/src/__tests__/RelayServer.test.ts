@@ -1143,6 +1143,33 @@ describe('RelayServer', () => {
     browser.close()
   })
 
+  it('does not forward an open-url with no correlator to a connected agent', async () => {
+    // The door check, which the offline-branch one is not a substitute for: both in-repo agents drop an
+    // id-less request, but an agent predating the field would execute it and reply uncorrelated, and
+    // nothing downstream could attribute that reply. So the request does not travel.
+    const devices = [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'booted' }]
+    const agent = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(agent)
+    agent.send(JSON.stringify({ type: 'agent:register', devices }))
+    const { registeredSessions } = await waitForMessage(agent)
+    const sessionId = registeredSessions![0].sessionId
+
+    const browser = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(browser)
+    browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForMessage(browser)
+
+    browser.send(JSON.stringify({ type: 'open-url', sessionId, payload: { url: 'myapp://home' } }))
+    // Barrier **then** read: a round-trip proves the relay is done with everything sent before it, so
+    // whatever it was going to forward is already in the recording. Reading with a 0ms deadline before
+    // the barrier resolves `null` on the next tick regardless — which is how the first version of this
+    // test passed against the very arrangement it exists to reject.
+    await barrier(agent)
+    expect(await waitForTypeOrNull(agent, 'open-url', 0)).toBeNull()
+
+    agent.close(); browser.close()
+  })
+
   it('answers nothing rather than an open-url:error with no correlator', async () => {
     // `requestId` is required on `open-url:error`, so answering an id-less request would mean shipping a
     // frame that violates its own declaration — `JSON.stringify` drops the key and every correlating
@@ -1151,10 +1178,9 @@ describe('RelayServer', () => {
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
 
-    const reply = waitForTypeOrNull(browser, 'open-url:error', 0)
     browser.send(JSON.stringify({ type: 'open-url', sessionId: 'nonexistent-session', payload: { url: 'myapp://home' } }))
     await barrier(browser)
-    expect(await reply).toBeNull()
+    expect(await waitForTypeOrNull(browser, 'open-url:error', 0)).toBeNull()
 
     browser.close()
   })

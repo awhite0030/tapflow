@@ -1156,10 +1156,9 @@ describe('AndroidAgent', () => {
         // door is #444. Until then the honest outcome is nothing, which is what this pins.
         const urlSpy = vi.spyOn(adb, 'openUrl')
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-        const reply = waitForTypeOrNull(browser, 'open-url:done', 0)
         inject({ type: 'open-url', payload: { url: 'https://example.com' } })
         await barrier(browser)
-        expect(await reply).toBeNull()
+        expect(await waitForTypeOrNull(browser, 'open-url:done', 0)).toBeNull()
         expect(urlSpy).not.toHaveBeenCalled()
         expect(warn).toHaveBeenCalledWith(expect.stringContaining('open-url without a requestId'))
       })

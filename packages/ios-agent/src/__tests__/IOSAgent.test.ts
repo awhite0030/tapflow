@@ -99,7 +99,7 @@ import { AudioCaptureStreamer } from '../AudioCaptureStreamer'
 import { launchAudioHelper } from '@tapflowio/audiotap-helper'
 import { SimctlWrapper } from '../SimctlWrapper'
 import { TouchHelper } from '../TouchHelper'
-import { waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
+import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 const MockTouchHelper = vi.mocked(TouchHelper)
 const MockAudioStreamer = vi.mocked(AudioCaptureStreamer)
 const mockLaunchAudioHelper = vi.mocked(launchAudioHelper)
@@ -1297,10 +1297,13 @@ describe('IOSAgent', () => {
         const { simctl, agent, browser } = await bootedAgent()
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-        const reply = waitForTypeOrNull(browser, 'open-url:done', 50)
         deliver(agent, { type: 'open-url', sessionId: agent.sessionId, payload: { url: 'https://example.com' } })
+        // Barrier then read, not a timeout: a round-trip proves the agent is done with the frame, so a
+        // reply it was going to send is already recorded. A bare deadline passes whether the drop
+        // happened or the reply merely arrived slowly.
+        await barrier(browser)
 
-        expect(await reply).toBeNull()
+        expect(await waitForTypeOrNull(browser, 'open-url:done', 0)).toBeNull()
         expect(simctl.openUrl).not.toHaveBeenCalled()
         expect(warn).toHaveBeenCalledWith(expect.stringContaining('open-url without a requestId'))
 

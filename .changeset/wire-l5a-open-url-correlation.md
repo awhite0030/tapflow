@@ -56,8 +56,10 @@ instead of the two an earlier draft had: it answered with `requestId: msg.reques
 `sessionId!` beside it in kind. `sessionId!` feeds a read, so a miss still produces a visible error;
 `requestId!` feeds a write into an outbound frame, where `JSON.stringify` drops the key and ships an
 `open-url:error` whose required correlator is absent — which every correlating consumer then discards,
-turning "agent offline" into a caller waiting out its full deadline. Validating such frames at the door is
-#444's job; until then the relay declines to construct a frame it knows is invalid.
+turning "agent offline" into a caller waiting out its full deadline. The relay drops such a request at the
+door now — before either branch, so forwarding and answering share one policy rather than two. General
+inbound validation is still issue #444's; this is one required field on one message, whose absence the
+relay can act on locally.
 
 **A reply from a third-party agent predating this field is dropped the same way** — the dashboard shows no
 toast and `mcp-server` / `flow-runner` wait out 15s. In-repo that cannot happen (the `fixed` group), but an
