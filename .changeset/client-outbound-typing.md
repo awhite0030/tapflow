@@ -1,5 +1,5 @@
 ---
-'@tapflowio/protocol': patch
+'@tapflowio/protocol': minor
 '@tapflowio/flow-runner': patch
 ---
 
@@ -10,11 +10,14 @@ fix(protocol): app:clear-state must carry a bundleId, and flow-runner's sends ar
 `app:clear-state-error` with `'bundleId missing'` when it is absent. So the declaration permitted a message whose
 only possible outcome was that error, and it compiled. Now `payload: { bundleId: string }`.
 
-**No in-repo producer changes** — both senders already comply and the dashboard does not send this message at
-all. It is a `patch` on that basis, not on a claim about every consumer: `AppClearState` is a published export and
-this package advertises `declare module` re-opening, so adding a required field is source-breaking for an
-out-of-repo producer that omits it. None is known to exist; the wording is scoped so the next tightening does not
-cite this as precedent for "required fields are patches".
+**No in-repo producer changes** — both senders already comply and the dashboard does not send this message at all.
+
+**`minor`, because it is source-breaking anyway.** `AppClearState` is a published export and this package
+advertises `declare module` re-opening, so adding a required field breaks an out-of-repo producer that omits it.
+None is known to exist, but CONTRIBUTING's table is not conditional on one being known: any breaking change is a
+`major`, relaxed to `minor` before `v1.0.0`. This was written as a `patch` on the strength of the in-repo census,
+which is the wrong question — the census cannot see the consumers the bump exists to warn. Every package in the
+fixed group moves to `0.19.0` with it, which is the signal, not a side effect.
 
 `flow-runner`'s `engine.ts` no longer reaches `driver.clearState` through `flow.appId!`. `parseFlow` rejects a
 bare `clearState` with no flow-level `appId`, but `runFlow` is exported and does not parse — an embedder can hand

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import ts from 'typescript'
 
 // The browser-role producers construct their outbound literals directly, so typing the send function is a real
 // compile-time check — unlike narrowing a relay *forward*, which checks nothing because no literal is constructed
@@ -16,10 +17,22 @@ import { join } from 'node:path'
 // tsc and the package suite green, and put `session:leaev` on the wire. `agentSendTyped.test.mjs` had already
 // learned this — three of its drafts died to a renamed socket — and this file was written worse than its sibling.
 //
-// So the rule is the sibling's: **`JSON.stringify` appears once per file, and the function enclosing it takes
-// `BrowserToRelay`.** That constrains the sink rather than its name, so a rename passes and a second untyped
-// path cannot. It also stops keying on syntactic form — `useRelay`'s send is a `useCallback` arrow, and a check
-// pinned to `private send(` both missed it and would have failed on a harmless refactor of the other two.
+// So the rule is the sibling's: **`JSON.stringify` appears once per file, and it serializes a parameter declared
+// `BrowserToRelay` by the function enclosing it.** That constrains the sink rather than its name, so a rename
+// passes and a second untyped path cannot. It also stops keying on syntactic form — `useRelay`'s send is a
+// `useCallback` arrow, and a check pinned to `private send(` both missed it and would have failed on a harmless
+// refactor of the other two.
+//
+// **"Enclosing" is resolved on the AST, not by scanning backwards for the nearest signature.** The second draft
+// did scan, and review broke that too:
+//
+//     function send(msg: BrowserToRelay) {}
+//     function sendRaw(payload: RelayMsg, audit: boolean) { socket.send(JSON.stringify(payload)) }
+//
+// The scan walks straight past `sendRaw`'s boundary and reports `BrowserToRelay`, because the parameter name is
+// outside the pattern's allowlist. Which means the difference between caught and not caught was *what the
+// parameter happened to be called* — in a file whose header disclaims exactly that brittleness. This program has
+// now shipped five region parsers that did not know where their region ended, so this one uses the real one.
 
 const root = join(import.meta.dirname, '../..')
 
@@ -52,21 +65,29 @@ function sources(dir, out = []) {
   return out
 }
 
-/** A function signature taking a single named message parameter, capturing the declared type. Covers both the
- *  method form (`private send(msg: BrowserToRelay)`) and the hook form (`const send = useCallback((msg: …)`),
- *  and deliberately captures whatever the type *is* rather than asserting a spelling. */
-const SIGNATURE = /(?:\b\w+\s*\(|\(\s*)(?:msg|m|message)\s*:\s*([\w.]+(?:<[^)]*>)?)\s*\)/g
+const isFn = (n) =>
+  ts.isFunctionDeclaration(n) || ts.isMethodDeclaration(n) || ts.isArrowFunction(n) || ts.isFunctionExpression(n)
 
-/** The type of the function that encloses `JSON.stringify` — the nearest signature declared before it. */
-function sinkParamType(src) {
-  const at = src.indexOf('JSON.stringify')
-  if (at === -1) return null
-  let found = null
-  for (const m of src.matchAll(SIGNATURE)) {
-    if (m.index > at) break
-    found = m[1]
+/** Every `JSON.stringify(x)` in a file, described by what it serializes and how the innermost enclosing function
+ *  declares that name. `{ arg, declaredType }`, the latter `null` when `arg` is not one of its parameters — which
+ *  is the case a scan cannot see: serializing something the enclosing signature never promised anything about. */
+function serializationSites(src, path) {
+  const sf = ts.createSourceFile(
+    path, src, ts.ScriptTarget.Latest, true,
+    path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  )
+  const sites = []
+  const visit = (node, fn) => {
+    const enclosing = isFn(node) ? node : fn
+    if (ts.isCallExpression(node) && node.expression.getText(sf) === 'JSON.stringify') {
+      const arg = node.arguments[0]?.getText(sf) ?? null
+      const param = enclosing?.parameters.find((p) => p.name.getText(sf) === arg)
+      sites.push({ arg, declaredType: param?.type?.getText(sf) ?? null })
+    }
+    ts.forEachChild(node, (c) => visit(c, enclosing))
   }
-  return found
+  visit(sf, undefined)
+  return sites
 }
 
 describe('browser-role outbound is typed against the wire contract', () => {
@@ -76,11 +97,17 @@ describe('browser-role outbound is typed against the wire contract', () => {
     it(`${name} serializes exactly once`, () => {
       // A second serializer is the bypass this file exists for: it needs no rename to defeat a signature
       // assertion, because the assertion keeps passing on the helper that is still typed.
-      expect([...src.matchAll(/JSON\.stringify/g)]).toHaveLength(1)
+      expect(serializationSites(src, path)).toHaveLength(1)
     })
 
-    it(`${name} serializes inside a BrowserToRelay sink`, () => {
-      expect(sinkParamType(src)).toBe('BrowserToRelay')
+    it(`${name} serializes a BrowserToRelay parameter of the function it sits in`, () => {
+      // `declaredType` is non-null only when the serialized name is one of the enclosing function's parameters,
+      // so this says "it serializes its own promise" without pinning what that parameter is called.
+      const [site] = serializationSites(src, path)
+      expect(
+        site.declaredType,
+        `serializes \`${site.arg}\`, which the enclosing function does not declare as BrowserToRelay`,
+      ).toBe('BrowserToRelay')
     })
 
     it(`${name} takes BrowserToRelay from protocol, not a local alias`, () => {
@@ -114,15 +141,42 @@ describe('browser-role outbound is typed against the wire contract', () => {
   })
 
   it('BrowserToRelay is a union of named messages only', () => {
-    // The check above binds the sinks to this union's *name*. Nothing bound its contents, and appending
+    // The assertions above bind the sinks to this union's *name*. Nothing bound its contents, and appending
     // `| Record<string, unknown>` to it passed all 250 static assertions while making every literal in all
     // three files accept anything — the guard pointing at this declaration raised nothing.
+    //
+    // Checking the members look like type names is not enough either: `| UnsafeOutbound` is capitalised, and
+    // `type UnsafeOutbound = Record<string, unknown>` beside it reopens the hole through one indirection. So each
+    // member is resolved to its declaration, which must be an exported `interface` carrying a literal `type`.
     const proto = readFileSync(join(root, 'packages/protocol/src/index.ts'), 'utf8')
     const rhs = proto.match(/export type BrowserToRelay =([\s\S]*?)\n\n/)
     expect(rhs, 'BrowserToRelay is gone').not.toBeNull()
     const members = rhs[1].split('|').map((s) => s.trim()).filter(Boolean)
     expect(members.length).toBeGreaterThan(10)
-    for (const m of members) expect(m, `not a named message: ${m}`).toMatch(/^[A-Z]\w*$/)
+
+    // Members may be nested unions of interfaces — `ClipboardRequest` is `ClipboardRead | ClipboardWrite`, and
+    // `RelayOrAgentToBrowser` is referenced by two directions on purpose. So resolve to leaves and judge those.
+    const leaves = []
+    const seen = new Set()
+    const resolve = (name, from) => {
+      expect(name, `${from}: not a named message: ${name}`).toMatch(/^[A-Z]\w*$/)
+      if (seen.has(name)) return
+      seen.add(name)
+      const iface = proto.match(new RegExp(String.raw`^export interface ${name}(?: extends \w+)? \{([\s\S]*?)\n\}`, 'm'))
+      if (iface) {
+        expect(iface[1], `${name} has no literal type field`).toMatch(/^ {2}type: '[^']+'/m)
+        leaves.push(name)
+        return
+      }
+      const alias = proto.match(new RegExp(String.raw`^export type ${name} =([\s\S]*?)(?=\n\n|\nexport )`, 'm'))
+      expect(alias, `${name} resolves to neither an interface nor a union of them — an alias can widen the union`)
+        .not.toBeNull()
+      const nested = alias[1].split('|').map((s) => s.trim()).filter(Boolean)
+      expect(nested.length, `${name} is an alias, not a union`).toBeGreaterThan(1)
+      for (const n of nested) resolve(n, name)
+    }
+    for (const m of members) resolve(m, 'BrowserToRelay')
+    expect(leaves.length).toBeGreaterThan(10)
   })
 
   it('app:clear-state requires its bundleId, at both levels', () => {
