@@ -175,8 +175,9 @@ describe('browser-inbound routing matches the protocol union', () => {
   // does not object either, because the dashboard's consumers compare `msg.sessionId === sessionId`
   // and that still compiles against `string | undefined`.
   //
-  // `sessionId` is required on all twelve forwarded messages and on the seven shared errors; it is
-  // optional on exactly the three the relay also replays without one (see the note in the union).
+  // `sessionId` is required on all twelve forwarded messages and on the seven shared errors, and on two
+  // of the three the relay also replays. `device:ready` is the one exception, and it is deliberate —
+  // see the note above the declarations for the measurement.
   //
   // All five message unions are here, not just the browser-inbound three. The bindings in
   // `typeAssertions.ts` pin 58 literals and read like per-message coverage, but a literal is all they
@@ -205,7 +206,7 @@ describe('browser-inbound routing matches the protocol union', () => {
     RelayOrAgentToBrowser: {
       'session:chrome': 'payload sessionId',
       'session:deviceInfo': 'payload sessionId',
-      'device:ready': 'payload sessionId',
+      'device:ready': 'payload sessionId?',
       'app:install-error': 'message sessionId',
       'app:launch-error': 'message sessionId',
       'device:boot-error': 'message sessionId',

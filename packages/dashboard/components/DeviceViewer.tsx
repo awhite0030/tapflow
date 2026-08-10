@@ -109,18 +109,27 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     // narrowing rather than the widening it used to be — it was `in msg` because the local copy of
     // this union omitted the field on messages the wire always stamped it on.
     //
-    // `'sessionId' in msg` stays, because some members genuinely carry none — `agents:listed` and
-    // `error`, whose whole point is a failure the relay could not attribute.
+    // `'sessionId' in msg` stays, because two members genuinely carry none — `agents:listed` and
+    // `error`, whose whole point is a failure the relay could not attribute. Both are the *only* two,
+    // checked against the union.
     //
-    // There used to be a `&& msg.sessionId` truthiness check too, for three messages that arrived
-    // without one: the relay *replayed* `device:ready`, `session:chrome` and `session:deviceInfo` to a
-    // re-joining viewer from its own cache and did not stamp them, while both agents did. The relay
-    // stamps them now, so the three are scoped by this gate like everything else.
+    // **Why this gate is safe at all**: the relay only ever sends a session-scoped message to that
+    // session's own `browserSocket`, so a mismatch means a stale socket rather than normal traffic. If
+    // that stops holding, a dropped `session:terminated` strands the tab — the defect #426 exists to
+    // fix, and there is a test for exactly that in `DeviceViewer.sessionScope.test.tsx`.
     //
-    // Dropping that check also closes what it opened: nothing validates inbound messages (#444), so
-    // `sessionId: ''` reaches here — and a falsy sessionId used to *pass* the gate and be applied to
-    // whichever viewer was mounted. That is the unattributed-message defect #445 exists to prevent,
-    // reachable through the hole that let the replay in. Now it is simply a mismatch and ignored.
+    // There used to be a `&& msg.sessionId` truthiness check as well, for messages the relay *replayed*
+    // to a re-joining viewer from its own cache without stamping. It sent those with the key absent, so
+    // `'sessionId' in msg` already lets them through and the check was never what carried them — it only
+    // ever admitted a key that was *present and falsy*. Two of the three are stamped now
+    // (`device:ready` is not; see the protocol note), so it is gone.
+    //
+    // Dropping it means `sessionId: ''` is a mismatch rather than a pass. That is defence in depth, not
+    // a live hole: `''` cannot reach a viewer today, because every agent→browser forward resolves
+    // `sessions.get(msg.sessionId!)` against a `randomUUID` key and breaks on the miss. It matters for
+    // the unvalidated-inbound gap (#444) — `mcp-server`'s tool schemas are bare `z.string()`, so an LLM
+    // can put `''` on the wire, and a future producer echoing it back should not be applied to whichever
+    // viewer happens to be mounted.
     if ('sessionId' in msg && msg.sessionId !== sessionId) return;
 
     if (msg.type === 'session:joined') {

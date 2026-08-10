@@ -73,6 +73,36 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     agent.close(); browser.close()
   })
 
+  it('stamps the replayed session state with the session it belongs to', async () => {
+    // `tsc` enforces that `sessionId` is *present* on these two — deleting a stamp is three TS2345s.
+    // Nothing enforces that the value is right, and the plausible wrong value is on the same line:
+    // `session.deviceId` is a `string` and appears in `payload: { deviceId: session.deviceId }`.
+    //
+    // A wrong-but-present id is worse than the absent one it replaced. Absent passed the dashboard's
+    // gate; wrong is dropped by it, and the symptom is a re-joining tab stuck on "Starting device…" —
+    // which is the defect (#440) the replay exists to prevent, so nothing else would report it.
+    const { agent, sessionId } = await registerAgent('shutdown')
+    agent.send(JSON.stringify({ type: 'session:chrome', sessionId, payload: { framePng: 'x' } }))
+    agent.send(JSON.stringify({ type: 'session:deviceInfo', sessionId, payload: { deviceName: 'A', osVersion: '18.0' } }))
+    await barrier(agent)
+
+    const browser = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(browser)
+
+    // Both waits are created **before** the send, and that is load-bearing rather than style: the
+    // recording `waitForType` reads from is attached by its first call, so a reply that arrives before
+    // that call is not queued anywhere and the wait hangs. `handleSessionStart` sends the join and both
+    // replays in one turn, so awaiting them one after the other flakes — measured, once.
+    const chrome = waitForType(browser, 'session:chrome')
+    const info = waitForType(browser, 'session:deviceInfo')
+    browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+
+    expect((await chrome).sessionId).toBe(sessionId)
+    expect((await info).sessionId).toBe(sessionId)
+
+    agent.close(); browser.close()
+  })
+
   it('replays for a session that is actually streaming', async () => {
     // The reason replay exists: a Wi-Fi blip drops the browser socket mid-session, and the viewer
     // must not sit blank until the next boot. Without this case, deleting the replay outright

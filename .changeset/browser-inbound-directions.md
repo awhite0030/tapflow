@@ -17,9 +17,10 @@ more were missing outright.
 
 - `AgentToBrowser` — the twelve forward-only messages, shapes derived from both agents' send literals.
 - `RelayOrAgentToBrowser` — the ten with both producers, declared **once** and referenced by both
-  directions rather than written into each. `session:chrome`, `session:deviceInfo` and `device:ready`
-  carry `sessionId?` here because the two producers genuinely differ: both agents stamp it, and the
-  relay's replay to a re-joining viewer does not.
+  directions rather than written into each. `device:ready` carries `sessionId?` here because the two
+  producers genuinely differ: both agents stamp it, and the relay's replay to a re-joining viewer does
+  not. (`session:chrome` and `session:deviceInfo` were in the same position and are required now — the
+  relay stamps them; see the entry for that change.)
 - `BrowserInbound` — what a consumer should use. The dashboard's `RelayMessage` is gone; view code
   imports this.
 - `RelayToStream` — `stream:registered` goes to an agent's stream socket, not a browser.

@@ -59,12 +59,14 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
   it('ignores a device:ready whose session id is empty', () => {
     // The discriminating case for dropping `&& msg.sessionId` from the gate. An empty sessionId is
     // falsy, so the truthiness check let it *pass* and the message was applied to whichever viewer was
-    // mounted — the unattributed-message defect #426 exists to prevent, reachable through the hole that
-    // existed to let the relay's unstamped replay in. `''` type-checks against the now-required field
-    // and nothing validates inbound messages (#444), so this is a shape that can arrive.
+    // mounted — the unattributed-message defect #445 exists to prevent.
     //
     // A foreign-but-non-empty id is *not* the test for this: `'someone-else'` is truthy, so the old
     // gate rejected it too and such a test would pass either way.
+    //
+    // This is defence in depth rather than a reachable bug today: measured, an agent-sent `''` never
+    // reaches a viewer, because every agent→browser forward resolves `sessions.get(msg.sessionId!)`
+    // against a `randomUUID` key and breaks on the miss. It guards the unvalidated-inbound gap (#444).
     render(<DeviceViewer sessionId="mine" deviceId="dev-1" />)
     act(() => { deliver!({ type: 'session:joined', sessionId: 'mine', capabilities: [] }) })
 

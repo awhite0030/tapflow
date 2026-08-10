@@ -1107,7 +1107,7 @@ export class RelayServer {
     // simulator that was already running would fire this before the agent had done anything —
     // telling the viewer a stream exists when none does (#440).
     if (session.readySent) {
-      this.sendTo(ws, { type: 'device:ready', sessionId: session.id, payload: { deviceId: session.deviceId } })
+      this.sendTo(ws, { type: 'device:ready', payload: { deviceId: session.deviceId } })
       // (Re)joining a live stream: ask the agent for an IDR so this viewer gets a decodable
       // keyframe immediately, instead of waiting for the next periodic one — and so it isn't
       // left blank when the encoder is static-skipping an unchanged screen. Agents that don't

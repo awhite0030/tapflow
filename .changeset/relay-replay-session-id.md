@@ -3,7 +3,7 @@
 '@tapflowio/relay': patch
 ---
 
-fix(relay): the session-state replay carries a sessionId, so the three messages that shared a declaration can require it
+fix(relay): the session-state replay carries a sessionId, so two of the three can require it
 
 `session:chrome`, `session:deviceInfo` and `device:ready` were declared `sessionId?: string` while both
 agents stamped the field on every copy they sent. The relay was the only producer that did not: its
@@ -12,22 +12,37 @@ share one declaration with the forwarded copies, so `optional` was the honest th
 could say about two producers that disagreed.
 
 **The disagreement was the defect.** When this surface was consolidated, two ways to tighten the
-*declaration* were weighed and rejected — declaring the three twice (drift, the finding that work
-existed to remove), and mapping the union through `Omit<T,'sessionId'> & { sessionId: string }` (turns
-them into intersections, so `Extract<BrowserInbound, …>` stops yielding one member, which
-`useClipboardBridge` reads its replies through without a cast). The third option was not considered:
-fix the producer. The relay stamps it now and the field is required.
+*declaration* were weighed and rejected. The third option was not considered: fix the producer. The relay
+stamps `session:chrome` and `session:deviceInfo` now and both are required. Closes the Major deferred
+on #503 for those two.
 
-This closes the Major deferred on #503.
+**`device:ready` is deliberately left optional, and that is the interesting half.** Its `sessionId?` is
+doing correlation work by accident: `mcp-server` and `flow-runner` gate a pending `device:boot` on
+`msg.sessionId === sessionId` with no truthiness escape, so the unstamped replay is invisible to them.
+Stamping it makes a *replayed* `device:ready` satisfy an in-flight boot — measured on a real relay with a
+silent agent, `boot_device` answers `{booted: true}` having received nothing, where the same harness
+reports still-waiting without the stamp. The replay is cached state addressed to a **join**, not an answer
+to a **boot**, and `readySent` is cleared by nothing while an agent is wedged-but-connected, which is
+exactly when a boot hangs — so the value is stalest precisely when it would be consumed.
 
-`minor`, not `patch`: the three are published exports and adding a required field is source-breaking for
-an out-of-repo producer that omits it. `CONTRIBUTING.md` makes any breaking change a `major`, relaxed to
-`minor` before `v1.0.0`, and that is not conditional on a consumer being known.
+The defect underneath is that leaving a session does not clear its waiters: a *real* `device:ready` after
+a re-join already satisfies the stale one, so this is pre-existing and stamping only widens the trigger.
+Filed separately. What makes this message tightenable is a request correlator, not another field.
+
+`minor`, because the two that changed are published exports and adding a required field is source-breaking
+for an out-of-repo producer that omits it. `CONTRIBUTING.md` makes any breaking change a `major`, relaxed
+to `minor` before `v1.0.0`, and that is not conditional on a consumer being known.
 
 **The dashboard's session gate got stricter as a consequence.** It read
-`'sessionId' in msg && msg.sessionId && msg.sessionId !== sessionId`, and the middle truthiness check
-existed to let the unstamped replay through. Nothing validates inbound messages (#444), so
-`sessionId: ''` type-checks and arrives — and a falsy sessionId *passed* that gate and was applied to
-whichever viewer was mounted, which is the unattributed-message defect #445 exists to prevent, reachable
-through the hole that existed for the replay. With the replay stamped the check is gone, and an empty
-sessionId is now simply a mismatch.
+`'sessionId' in msg && msg.sessionId && msg.sessionId !== sessionId`. The middle check was never what
+carried the replay — the relay omits the key, so `'sessionId' in msg` already lets those through — it only
+ever admitted a key that was *present and falsy*. With it gone, `sessionId: ''` is a mismatch rather than
+a pass. That is defence in depth against the unvalidated-inbound gap (#444), not a live hole: measured, an
+agent-sent `''` never reaches a viewer, because every agent→browser forward resolves
+`sessions.get(msg.sessionId!)` against a `randomUUID` key and breaks on the miss.
+
+One correction to a reason recorded three times in this package: rejecting the `Omit`-mapping alternative
+was justified by "it breaks `useClipboardBridge`, which reads its replies through `Extract<>`". It does
+not — that hook takes the three replies as named members and says so in its own comment, and its only
+`Extract` is over `ClipboardRequest`, an outbound union the mapping would never touch. The outcome is
+unchanged, since fixing the producer made both alternatives unnecessary.
