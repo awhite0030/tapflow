@@ -1092,11 +1092,15 @@ export class RelayServer {
       this.sendTo(ws, { type: 'session:agent-away', sessionId: msg.sessionId! })
       return
     }
+    // These three replay a session's cached state to a re-joining viewer. They carry `sessionId`
+    // because both agents stamp it on every copy they send, and the relay was the only producer that
+    // did not — so the shared declaration had to be `sessionId?` to stay honest about the two of us.
+    // Stamping it here is what let that be tightened to required.
     if (session.chromeData) {
-      this.sendTo(ws, { type: 'session:chrome', payload: session.chromeData })
+      this.sendTo(ws, { type: 'session:chrome', sessionId: session.id, payload: session.chromeData })
     }
     if (session.deviceInfo) {
-      this.sendTo(ws, { type: 'session:deviceInfo', payload: session.deviceInfo })
+      this.sendTo(ws, { type: 'session:deviceInfo', sessionId: session.id, payload: session.deviceInfo })
     }
     // Replay device:ready only if this session actually announced one (browser WS blip reconnect).
     // Not `deviceStatus`: that starts from the agent's `simctl list` snapshot, so a session for a

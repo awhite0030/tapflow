@@ -47,7 +47,7 @@ const installs = () => send.mock.calls.filter(([m]) => m.type === 'app:install')
 function live(buildId?: number) {
   render(<DeviceViewer sessionId="s1" deviceId="dev-1" buildId={buildId} />)
   act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
-  act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+  act(() => { deliver!({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } }) })
   act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
   if (buildId) act(() => { deliver!({ type: 'app:install-done', sessionId: 's1' }) })
 }
@@ -137,7 +137,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
 
     rebound()
     act(() => { deliver!({ type: 'device:booting', sessionId: 's1' }) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } }) })
     act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
 
     expect(installs()).toHaveLength(0)
@@ -152,10 +152,10 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     live(7)
     rebound()
     act(() => { deliver!({ type: 'device:booting', sessionId: 's1' }) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } }) })
     send.mockClear()
 
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } }) })
 
     expect(installs()).toHaveLength(1)
   })
@@ -167,7 +167,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     act(() => { deliver!({ type: 'device:boot-error', sessionId: 's1', message: 'nope' }) })
     send.mockClear()
 
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } }) })
 
     expect(installs()).toHaveLength(1)
   })
@@ -192,13 +192,13 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // hands the tester a Launch button for an app that is not on the device.
     render(<DeviceViewer sessionId="s1" deviceId="dev-1" buildId={7} />)
     act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } }) })
     expect(installs()).toHaveLength(1) // in flight — no `app:install-done`
     send.mockClear()
 
     rebound()
     act(() => { deliver!({ type: 'device:booting', sessionId: 's1' }) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } }) })
     act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
 
     expect(installs()).toHaveLength(1)
@@ -219,7 +219,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     send.mockClear()
 
     act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } }) })
 
     expect(installs()).toHaveLength(1)
   })
@@ -233,8 +233,8 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
 
     rebound()
     rebound()
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } }) })
 
     expect(boots()).toHaveLength(2)
     expect(installs()).toHaveLength(0)
@@ -256,7 +256,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     render(<DeviceViewer sessionId="s1" deviceId="dev-1" />)
     // `live()` minus a conforming join.
     act(() => { deliver!({ type: 'session:joined', sessionId: 's1' } as unknown as BrowserInbound) })
-    act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } }) })
     act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
 
     // Streaming at all: an unguarded `.includes` on `undefined` throws while the platform viewer

@@ -215,4 +215,6 @@ sends through `sendTo(socket, msg: RelayOutbound)`, so its literal is checked by
 
 ## Consuming it
 
-The relay is composite (TS project references), so it needs both the dependency **and** a `references` entry pointing here — see [`contributing/monorepo-project-references.md`](../../contributing/monorepo-project-references.md). `dashboard` and `mcp-server` are not composite; they resolve `src` directly through the `source` export condition and need only the dependency.
+The relay is composite (TS project references), so it needs both the dependency **and** a `references` entry pointing here — see [`contributing/monorepo-project-references.md`](../../contributing/monorepo-project-references.md). `dashboard` and `mcp-server` are not composite and need only the dependency — but they do **not** read `src` under `tsc`. Neither sets `customConditions` (`dashboard` is `moduleResolution: bundler`, `mcp-server` is `Node16`), so both take the first key in this package's `exports`, which is `./dist/index.d.ts`. The `source` condition is wired into **vitest** only, via `vitest.shared.ts`'s `ssr.resolve.conditions`.
+
+That has a consequence worth knowing before measuring anything: **`pnpm typecheck` lies about these two until this package is rebuilt.** Tightening a field here and running the dashboard's typecheck against a stale `dist` reports 0 errors. And `tsc -b` never sees them at all — neither is in the root `references`, so a change whose fallout is entirely in `dashboard` builds clean.
