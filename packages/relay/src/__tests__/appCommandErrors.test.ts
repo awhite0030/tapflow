@@ -182,7 +182,7 @@ describe('app command failures reach the caller (#445)', () => {
     await closed
     await untilAgentLeavesTheList(browser)
 
-    browser.send(JSON.stringify({ type: 'device:boot', sessionId, payload: { deviceId: 'dev-1' } }))
+    browser.send(JSON.stringify({ type: 'device:boot', sessionId, requestId: 'rq-boot-offline', payload: { deviceId: 'dev-1' } }))
     // Without this the viewer sits on "Waiting for first frame…" with nothing said.
     const msg = await waitForTypeOrNull(browser, 'device:boot-error')
 
@@ -280,7 +280,7 @@ describe('app command failures reach the caller (#445)', () => {
     const { agent, browser } = await connectAgentAndBrowser()
 
     browser.send(JSON.stringify({
-      type: 'device:boot', sessionId: 'no-such-session', payload: { deviceId: 'dev-1' },
+      type: 'device:boot', sessionId: 'no-such-session', requestId: 'rq-boot-unknown', payload: { deviceId: 'dev-1' },
     }))
     const msg = await waitForTypeOrNull(browser, 'device:boot-error')
 

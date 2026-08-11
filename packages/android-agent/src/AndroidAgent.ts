@@ -818,6 +818,10 @@ export class AndroidAgent implements DeviceAgent {
       await this.startVideoStream(state, streamWs)
     } catch (err) {
       logger.error(`scrcpy restart failed: ${err}`)
+      // **No `requestId`, and that is the contract rather than an omission.** This is the unsolicited
+      // producer of `device:boot-error`: a stream that died mid-session and failed to come back, with
+      // no `device:boot` behind it. It is why the correlator on this message is optional, and why a
+      // consumer that gates on the correlator drops the only report a dead stream gets.
       this.sendMsg({
         type: 'device:boot-error',
         sessionId: state.sessionId,
@@ -845,7 +849,10 @@ export class AndroidAgent implements DeviceAgent {
     return streamWs
   }
 
-  private async handleDeviceBoot(sessionId: string, avdId: string, tier?: { secureContext: boolean; external: boolean }): Promise<void> {
+  // `requestId` is a parameter, never a field on `state`: `bootSeq` exists because two boots overlap,
+  // and a correlator hoisted onto shared state would answer the first request with the second's id.
+  // Optional because the relay's idle timer boots nothing — but every *browser* boot carries one.
+  private async handleDeviceBoot(sessionId: string, avdId: string, tier?: { secureContext: boolean; external: boolean }, requestId?: string): Promise<void> {
     const state = this.deviceStates.get(sessionId)
     if (!state || !this.ws) return
 
@@ -906,16 +913,16 @@ export class AndroidAgent implements DeviceAgent {
         },
       })
       state.booted = true
-      this.sendMsg({ type: 'device:ready', sessionId, payload: { deviceId: avdId } })
+      this.sendMsg({ type: 'device:ready', sessionId, requestId, payload: { deviceId: avdId } })
     } catch (e) {
       if (seq !== state.bootSeq) return
       const message = e instanceof Error ? e.message : String(e)
       logger.error('boot failed:', message)
-      this.sendMsg({ type: 'device:boot-error', sessionId, message })
+      this.sendMsg({ type: 'device:boot-error', sessionId, requestId, message })
     }
   }
 
-  private async handleDeviceShutdown(sessionId: string, avdId: string): Promise<void> {
+  private async handleDeviceShutdown(sessionId: string, avdId: string, requestId?: string): Promise<void> {
     const state = this.deviceStates.get(sessionId)
     if (!state) return
 
@@ -933,6 +940,7 @@ export class AndroidAgent implements DeviceAgent {
     this.sendMsg({
       type: 'device:shutdown-done',
       sessionId,
+      requestId,
       payload: { deviceId: avdId },
     })
   }
@@ -1002,13 +1010,13 @@ export class AndroidAgent implements DeviceAgent {
     switch (msg.type) {
       case 'device:boot': {
         const { deviceId, secureContext, external } = msg.payload as { deviceId: string; secureContext?: boolean; external?: boolean }
-        this.handleDeviceBoot(msg.sessionId, deviceId, { secureContext: !!secureContext, external: !!external })
+        this.handleDeviceBoot(msg.sessionId, deviceId, { secureContext: !!secureContext, external: !!external }, msg.requestId)
           .catch((e) => logger.error('handleDeviceBoot failed:', e))
         break
       }
       case 'device:shutdown': {
         const { deviceId } = msg.payload as { deviceId: string }
-        this.handleDeviceShutdown(msg.sessionId, deviceId)
+        this.handleDeviceShutdown(msg.sessionId, deviceId, msg.requestId)
           .catch((e) => logger.error('handleDeviceShutdown failed:', e))
         break
       }

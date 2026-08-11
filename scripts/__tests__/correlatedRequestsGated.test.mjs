@@ -13,7 +13,7 @@ import ts from 'typescript'
 // property is **presence of a gate** — unlike the echo obligation, where the property is provenance and no
 // check can see it (see the note above `OpenUrlReplyBody`).
 //
-// The member set is **derived** from the protocol, so a seventh correlated request added later fails here
+// The member set is **derived** from the protocol, so an eighth correlated request added later fails here
 // rather than being noticed by whoever reads the comment. Two gate forms count, and both are real:
 //
 //  - `isCorrelated(msg)` inside the `case` — the inline form.
@@ -107,8 +107,10 @@ describe('every correlated browser request is gated at the relay door', () => {
 
   it('finds the correlated request set, derived rather than listed', () => {
     // If this drops to zero the derivation broke and every assertion below would vacuously pass — the
-    // failure mode a count assertion exists for.
-    expect(types.length).toBeGreaterThanOrEqual(6)
+    // failure mode a count assertion exists for. The floor is raised as pairs land, so removing a
+    // required `requestId` from a request already in the set fails here too, not only where it is used:
+    // 6 after the app commands, 7 once `device:boot` joined.
+    expect(types.length).toBeGreaterThanOrEqual(7)
   })
 
   for (const type of types) {

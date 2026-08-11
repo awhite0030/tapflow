@@ -537,7 +537,10 @@ export class IOSAgent implements DeviceAgent {
     return streamWs
   }
 
-  private async handleDeviceBoot(sessionId: string, deviceId: string, fullErase = false, acceptH264 = false, tier?: { secureContext: boolean; external: boolean }): Promise<void> {
+  // `requestId` is a parameter, never a field on `state`: `bootSeq` exists because two boots overlap,
+  // and a correlator hoisted onto shared state would answer the first request with the second's id.
+  // Optional because the relay's idle timer boots nothing — but every *browser* boot carries one.
+  private async handleDeviceBoot(sessionId: string, deviceId: string, fullErase = false, acceptH264 = false, tier?: { secureContext: boolean; external: boolean }, requestId?: string): Promise<void> {
     const state = this.deviceStates.get(sessionId)
     if (!state || !this.ws) return
 
@@ -633,7 +636,7 @@ export class IOSAgent implements DeviceAgent {
       // — never blocks/affects the video path.
       if (this.audioEnabled()) this.startAudioCapture(state, streamWs, deviceId)
       state.booted = true
-      this.sendMsg({ type: 'device:ready', sessionId, payload: { deviceId } })
+      this.sendMsg({ type: 'device:ready', sessionId, requestId, payload: { deviceId } })
 
       // Sync AppleKeyboards after ready — fire-and-forget so streaming isn't delayed.
       // hw=Automatic lets the hardware layout follow the active input source on LANG1/CapsLock.
@@ -645,7 +648,7 @@ export class IOSAgent implements DeviceAgent {
     } catch (e) {
       if (seq !== state.bootSeq) return
       const message = e instanceof Error ? e.message : String(e)
-      this.sendMsg({ type: 'device:boot-error', sessionId, message })
+      this.sendMsg({ type: 'device:boot-error', sessionId, requestId, message })
     }
   }
 
@@ -663,7 +666,7 @@ export class IOSAgent implements DeviceAgent {
     }
   }
 
-  private async handleDeviceShutdown(sessionId: string, deviceId: string): Promise<void> {
+  private async handleDeviceShutdown(sessionId: string, deviceId: string, requestId?: string): Promise<void> {
     const state = this.deviceStates.get(sessionId)
     if (!state) return
 
@@ -686,6 +689,7 @@ export class IOSAgent implements DeviceAgent {
       this.sendMsg({
         type: 'device:shutdown-done',
         sessionId,
+        requestId,
         payload: { deviceId },
       })
     } catch (e) {
@@ -798,14 +802,14 @@ export class IOSAgent implements DeviceAgent {
       case 'device:boot': {
         const { deviceId, resetMode, acceptH264, secureContext, external } = msg.payload as { deviceId: string; resetMode?: string; acceptH264?: boolean; secureContext?: boolean; external?: boolean }
         const sessionId = msg.sessionId
-        this.handleDeviceBoot(sessionId, deviceId, resetMode === 'full-erase', acceptH264 === true, { secureContext: !!secureContext, external: !!external })
+        this.handleDeviceBoot(sessionId, deviceId, resetMode === 'full-erase', acceptH264 === true, { secureContext: !!secureContext, external: !!external }, msg.requestId)
           .catch((e) => logger.error('handleDeviceBoot failed:', e))
         break
       }
       case 'device:shutdown': {
         const { deviceId } = msg.payload as { deviceId: string }
         const sessionId = msg.sessionId
-        this.handleDeviceShutdown(sessionId, deviceId)
+        this.handleDeviceShutdown(sessionId, deviceId, msg.requestId)
           .catch((e) => logger.error('handleDeviceShutdown failed:', e))
         break
       }

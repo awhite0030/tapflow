@@ -134,15 +134,60 @@ slice later), so it is checked rather than asserted in prose:
 `scripts/__tests__/correlatedRequestsGated.test.mjs` derives the request set from this file and fails if one
 is ungated.
 
-**Two properties put a pair *outside* this shape**, and both were found by trying:
+**Two properties make a correlator `optional` rather than absent**, and both were found by trying. They were
+first written here as putting a pair *outside* correlation, which was wrong by one step: what they rule out is
+`required`, and the pair still correlates — see 「Lifecycle correlation」 below.
 
 - **The relay originates the request.** `device:shutdown` is sent by the relay itself when a browser socket
   closes, and it is one interface shared by both directions — so a required correlator would force the relay
   to invent an id for a request nobody made.
 - **The reply is also sent unsolicited.** `device:shutdown-done` is read by `SessionList` as a device-status
-  broadcast, and the relay replays `device:ready` from cache on a re-join. A consumer that discards on a
-  correlator mismatch stops learning about state it did not ask about — the cross-requester delivery that is
-  a bug for `open-url` is the feature here.
+  broadcast, the relay replays `device:ready` from cache on a re-join, and `AndroidAgent.restartVideoStream`
+  sends `device:boot-error` for a stream that died mid-session. A consumer that discards on a correlator
+  mismatch stops learning about state it did not ask about — the cross-requester delivery that is a bug for
+  `open-url` is the feature here.
+
+## Lifecycle correlation — where the correlator is optional, and what that costs
+
+`device:boot` / `device:shutdown` correlate, but not in the shape above: the **request** side of `device:boot`
+is required and every reply is `requestId?`. Absence has exactly one meaning, and it is the one worth stating
+at each declaration: **this frame is not the answer to a request.** Not "an old agent" — that reading is what
+made the first draft of this pair wrong.
+
+**Optional means the reply's echo is enforced by tests alone.** `<Pair>ReplyBody` cannot be built for an
+optional field — `Omit<T,'sessionId'|'requestId'>` is satisfied by an object that simply has no correlator, so
+the excess-property trick that catches a freshly minted id has nothing to bite on. Everything the compiler does
+for the app commands, tests do here. D24 applies at full strength, and the surface it applies to is wider than
+the reply declarations, because **almost none of the fixtures constructing these five messages are typed.**
+Deliberately no count here: three different greps for them disagree, and a number in this paragraph was wrong
+within one commit of being written. The structural fact is what holds. The dashboard's are typed and checked —
+its test channel is `useRef<(msg: BrowserToRelay) => void>` and its injected replies are annotated
+`BrowserInbound`, which is why that package has a rule against `as never` and local shapes. Everyone else's
+are `JSON.stringify({ … })` literals at an untyped `ws.send`, so they are `any` at the call site; the agent and
+`mcp-server` tsconfigs also exclude `src/__tests__`, but typechecking those folders would not have helped,
+because there is no annotation for a compiler to check against. The consequence is concrete: promoting
+`DeviceBoot.requestId` to required produced no error in those files and instead **hung two agent suites**, and
+several of those fixtures send `device:ready` with no `payload` at all — a shape the wire cannot produce.
+
+**Because the correlator is optional, `correlatedRequestsGated` cannot see it.** That check derives its set
+from *required* declarations (`/^ {2}requestId: string$/`), so every door gate and echo obligation on this pair
+is outside its reach. The one that matters most is the relay's own: the relay answers a `device:boot` itself
+when the agent is offline or the session is unknown, and that `device:boot-error` must echo the id or an MCP
+caller reads a diagnosis as unsolicited and waits out its deadline instead. That is the defect this file already
+records as having shipped twice, in a position no check reaches. A test is the only thing holding it.
+
+**A consumer correlating one of these replies is a bug, and one of them is load-bearing.** The dashboard must
+**not** gate `device:boot-error` on the correlator — it is the sole surface reporting a mid-session stream
+death, which carries no id by construction. `device:booting` is not correlated for a stronger reason than
+"nobody waits on it": `DeviceViewer` **must** act on a boot another client requested, tearing down chrome and
+in-flight install records whoever asked, so correlating it would suppress the case the message exists for.
+What the correlator does buy on the consumer side is narrower and real — `DeviceViewer` decrements a pending
+rebind on `device:ready`, and a replayed ready currently consumes one and fires a duplicate `app:install`.
+
+**The request side is asymmetric for a mechanical reason, not a stylistic one.** A request passes *through* the
+relay, so one door gates and logs every sender at once. A reply does not — the relay forwards it with
+`JSON.stringify` without inspecting it — so "log the uncorrelatable frame" has to be written once per consuming
+client, and one of those clients must not drop at all.
 
 ## Every direction is declared, and an agent's send is typed
 

@@ -86,6 +86,10 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // What the agent on the other end implements. Absent ⇒ an agent predating the capability,
   // so the viewer degrades on purpose rather than inferring anything from a timeout.
   const [agentCapabilities, setAgentCapabilities] = useState<string[]>([]);
+  // In-flight `device:boot` ids for this mount. A Set, for the same reason `rebindRef.pending` is a
+  // counter: a crash-looping agent issues several boots and each gets its own reply. Cleared on
+  // `session:joined` and nowhere else — see the `device:booting` branch for why not there.
+  const bootIdsRef = useRef<Set<string>>(new Set());
   // Deeplinks this viewer asked for. A reply does not go to whoever asked — the relay forwards it to
   // whichever socket holds the session now — so before `open-url` carried a `requestId` this viewer
   // toasted "Deeplink opened" for an `mcp-server` deeplink it knew nothing about.
@@ -160,7 +164,12 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // re-erase the device the user is currently looking at — with no click involved (#439).
       const reset = resetSentRef.current ? 'app-only' : resetMode;
       resetSentRef.current = true;
-      sendRef.current({ type: 'device:boot', sessionId, payload: { deviceId, resetMode: reset, acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
+      // Cleared with `rebindRef` just above and for the same reason: an earlier cycle's boot will
+      // never be answered now, and keeping its id would let a straggler release this cycle's rebind.
+      bootIdsRef.current.clear();
+      const bootId = newRequestId();
+      bootIdsRef.current.add(bootId);
+      sendRef.current({ type: 'device:boot', sessionId, requestId: bootId, payload: { deviceId, resetMode: reset, acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
     }
     if (msg.type === 'session:agent-away') {
       // Everything on screen describes an agent that is no longer there. Drop the frame so the
@@ -207,13 +216,21 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // only because a rebind cannot precede a join on the same mount — and would silently become
       // a wipe the day that stops holding.
       resetSentRef.current = true;
-      sendRef.current({ type: 'device:boot', sessionId, payload: { deviceId, resetMode: 'app-only', acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
+      const rebootId = newRequestId();
+      bootIdsRef.current.add(rebootId);
+      sendRef.current({ type: 'device:boot', sessionId, requestId: rebootId, payload: { deviceId, resetMode: 'app-only', acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
       // Only when the status card has not been saying it already — otherwise the toast lands at the
       // exact moment that message is replaced by the reconnect, saying the same thing twice.
       if (!wasAnnounced) toast.info('The agent restarted — reconnecting to the device.');
       return;
     }
     if (msg.type === 'device:boot-error') {
+      // **Deliberately uncorrelated, and this is the one prohibition in the pair.** Android's
+      // `restartVideoStream` sends this message for a stream that died mid-session, with no
+      // `device:boot` behind it and so no id it could ever carry. This branch is the only surface that
+      // reports it. Gating it on `bootIdsRef` would turn a dead stream back into a picture that has
+      // simply stopped updating — the symptom #426 was opened about.
+      //
       // Joining a session whose agent is away answers `session:joined`, and the branch above sends
       // `device:boot` on the strength of it — which the relay refuses with `agent offline`. The
       // waiting state already says what is happening, and recording a boot failure on top of it
@@ -286,10 +303,32 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // install the same build, so the first reply clearing `installing` is imprecise rather than wrong.
       appInstallIdsRef.current.clear();
       appLaunchIdsRef.current.clear();
+      // **`bootIdsRef` is deliberately not cleared here, and it is the one id set that must not be.**
+      // The reasoning above is about records outliving their cycle, which invites adding it — but a boot
+      // id has to *span* this message: both agents send `device:booting` before the `device:ready` that
+      // answers the same boot (`IOSAgent.ts:560` → `:639`, `AndroidAgent.ts:863` → `:916`). Clearing it
+      // here rejects every real ready, and the failure is quiet in the worst way: `setDeviceReady(true)`
+      // still runs, so the spinner clears and the device looks healthy while the app is never installed.
+      // Pinned by the "agent's real boot sequence" case in DeviceViewer.lifecycleCorrelation.test.tsx.
       setChrome(null); // causes active viewer to unmount → cleanup
     }
     if (msg.type === 'device:ready') {
+      // **Before the correlator, deliberately.** The relay replays this message from cache to a
+      // re-joining viewer and sends it with the key absent, so it answers no boot of this mount — and
+      // clearing the spinner is exactly what it is for (#440). Gating this line on the correlator would
+      // reinstate the defect the replay exists to prevent.
       setDeviceReady(true);
+      // Everything below is a reaction to *our* boot, so it is gated. Absent is accepted, so what this
+      // rejects is exactly one thing: a ready **carrying** an id that is not one this mount is waiting
+      // for. That is a straggler from an earlier boot cycle, which would otherwise release the current
+      // rebind and install on top of an install already in flight.
+      //
+      // It does **not** cover the case the comment two branches up describes. The relay's replayed ready
+      // has no id, so it lands here as before — and it has to, because that is also how an agent
+      // predating the echo answers, and the two are indistinguishable while the correlator is optional.
+      // Telling them apart needs the replay to be identifiable in its own right, which is the deferred
+      // `sessionId` tightening; until then that case is unchanged rather than fixed.
+      if (msg.requestId !== undefined && !bootIdsRef.current.delete(msg.requestId)) return;
       if (rebindRef.current.pending > 0) {
         const { appInstalled } = rebindRef.current;
         rebindRef.current = { pending: rebindRef.current.pending - 1, appInstalled };

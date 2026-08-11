@@ -385,7 +385,7 @@ describe('RelayServer', () => {
     await waitForMessage(browser)
 
     const bootPromise = waitForMessage(agent)
-    browser.send(JSON.stringify({ type: 'device:boot', sessionId, payload: { deviceId: 'devA' } }))
+    browser.send(JSON.stringify({ type: 'device:boot', sessionId, requestId: 'rq-route', payload: { deviceId: 'devA' } }))
     const boot = await bootPromise
     expect(boot.type).toBe('device:boot')
     expect((boot.payload as { deviceId: string }).deviceId).toBe('devA')

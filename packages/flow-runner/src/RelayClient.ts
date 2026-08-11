@@ -37,6 +37,30 @@ export interface AgentSession {
  *  Outbound is `BrowserToRelay` — see `send` below. */
 type RelayMsg = Record<string, unknown>
 
+/**
+ * Matches a reply whose correlator is **optional** — the lifecycle pair only. An absent `requestId` means
+ * "this frame answers no request". Two ways that reaches this client, and only one is permanent: Android's
+ * mid-session `device:boot-error` has no request behind it and never will, while an id-less `device:ready`
+ * here can only be an agent predating the echo. Both are accepted and logged rather than dropped. The
+ * relay's replayed `device:ready` does not arrive here at all — no `sessionId`, so the comparison ahead of
+ * this call excludes it, which the "not satisfied by the replay" test pins. A present
+ * one must match. Not that it tells two concurrent boots apart — the agents answer a superseded boot not
+ * at all (`bootSeq`), so one waiter times out either way. `dispatch` resolves the first matching waiter and
+ * stops, so on `sessionId` + type alone the single reply went to whichever boot registered first, and the
+ * boot that actually happened was the one that timed out. The correlator fixes the attribution.
+ *
+ * Deliberately not used for the app commands, whose correlator is required: lending them this fallback
+ * would restore the ambiguity that work removed. See protocol/AGENTS.md.
+ */
+function correlatesWith(msg: RelayMsg, requestId: string): boolean {
+  const id = msg['requestId']
+  if (id === undefined) {
+    console.error(`[tapflow] ${String(msg['type'])} carried no requestId — matched on sessionId instead`)
+    return true
+  }
+  return id === requestId
+}
+
 interface Waiter {
   predicate: (msg: RelayMsg) => boolean
   resolve: (msg: RelayMsg) => void
@@ -143,9 +167,10 @@ export class RelayClient {
   }
 
   async bootDevice(sessionId: string, deviceId: string): Promise<void> {
-    this.send({ type: 'device:boot', sessionId, payload: { deviceId } })
+    const requestId = randomUUID()
+    this.send({ type: 'device:boot', sessionId, requestId, payload: { deviceId } })
     const msg = await this.waitFor(
-      (m) => (m['type'] === 'device:ready' || m['type'] === 'device:boot-error') && m['sessionId'] === sessionId,
+      (m) => (m['type'] === 'device:ready' || m['type'] === 'device:boot-error') && m['sessionId'] === sessionId && correlatesWith(m, requestId),
       120_000,
       'device boot',
     )

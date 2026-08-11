@@ -25,7 +25,7 @@ These record from the moment the socket opens and answer from the recording, so 
 ```ts
 const ws = new WebSocket(url)
 await waitForOpen(ws)          // recording starts here
-ws.send(JSON.stringify({ type: 'device:boot', … }))
+ws.send(JSON.stringify({ type: 'device:boot', requestId, … }))   // required, or the relay drops it
 await waitForType(ws, 'device:ready')   // fine whether it has landed yet or not
 ```
 

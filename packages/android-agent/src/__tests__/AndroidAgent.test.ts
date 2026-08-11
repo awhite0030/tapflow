@@ -273,6 +273,7 @@ describe('AndroidAgent', () => {
 
       browser.send(JSON.stringify({
         type: 'device:boot',
+        requestId: 'rq-fix-1',
         sessionId: agent.sessionId,
         payload: { deviceId: 'avd:Pixel_8_API_34' },
       }))
@@ -283,6 +284,87 @@ describe('AndroidAgent', () => {
 
       agent.disconnect()
       browser.close()
+    })
+
+    // ── L5b′: the lifecycle pair correlates, and the correlator is optional ────────────────────
+    //
+    // Optional means the compiler enforces nothing — `<Pair>ReplyBody` cannot be built for a field an
+    // object is allowed to omit — and `correlatedRequestsGated` derives only required declarations, so
+    // it does not see this pair either. These tests are the entire enforcement of the echo here.
+    describe('lifecycle replies echo the boot/shutdown correlator', () => {
+      async function joined(adb: AdbWrapper) {
+        const agent = new AndroidAgent({}, adb)
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = new WebSocket(`ws://localhost:${port}`)
+        await waitForOpen(browser)
+        browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+        await waitForType(browser, 'session:joined')
+        return { agent, browser }
+      }
+
+      it('device:ready carries the requestId of the boot it answers', async () => {
+        const { agent, browser } = await joined(mockAdb(false))
+
+        const ready = waitForType(browser, 'device:ready')
+        browser.send(JSON.stringify({
+          type: 'device:boot', sessionId: agent.sessionId, requestId: 'boot-1',
+          payload: { deviceId: 'avd:Pixel_8_API_34' },
+        }))
+        expect((await ready)['requestId']).toBe('boot-1')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('device:boot-error carries the requestId of the boot it answers', async () => {
+        // The failure exit is what a caller actually waits on: an uncorrelatable diagnosis is
+        // discarded by a correlating consumer, so the boot fails by deadline instead of by error.
+        const adb = mockAdb(false)
+        const { agent, browser } = await joined(adb)
+        // Mocked **after** the join: `connect()` enumerates devices through this same call, so failing
+        // it earlier takes the registration down and never reaches a boot at all.
+        ;(adb.listDevices as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('adb exploded'))
+
+        const err = waitForType(browser, 'device:boot-error')
+        browser.send(JSON.stringify({
+          type: 'device:boot', sessionId: agent.sessionId, requestId: 'boot-2',
+          payload: { deviceId: 'avd:Pixel_8_API_34' },
+        }))
+        const msg = await err
+        expect(msg['requestId']).toBe('boot-2')
+        expect(msg['message']).toContain('adb exploded')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('device:shutdown-done carries the requestId of the shutdown it answers', async () => {
+        const { agent, browser } = await joined(mockAdb(true))
+
+        const done = waitForType(browser, 'device:shutdown-done')
+        browser.send(JSON.stringify({
+          type: 'device:shutdown', sessionId: agent.sessionId, requestId: 'down-1',
+          payload: { deviceId: 'avd:Pixel_8_API_34' },
+        }))
+        expect((await done)['requestId']).toBe('down-1')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('answers a correlator-less request without inventing one', async () => {
+        // The relay originates `device:shutdown` from its idle timer with no id, so this is a live
+        // wire shape. A minted id would be worse than none: the consumer's fallback accepts an absent
+        // correlator and rejects a mismatched one, so inventing one turns a reply that lands today
+        // into one that is silently dropped.
+        const { agent, browser } = await joined(mockAdb(true))
+
+        const done = waitForType(browser, 'device:shutdown-done')
+        browser.send(JSON.stringify({
+          type: 'device:shutdown', sessionId: agent.sessionId,
+          payload: { deviceId: 'avd:Pixel_8_API_34' },
+        }))
+        expect((await done)['requestId']).toBeUndefined()
+
+        agent.disconnect(); browser.close()
+      })
     })
 
     it('sends session:chrome with buttons (no framePng)', async () => {
@@ -299,6 +381,7 @@ describe('AndroidAgent', () => {
       const chromePromise = waitForType(browser, 'session:chrome')
       browser.send(JSON.stringify({
         type: 'device:boot',
+        requestId: 'rq-fix-2',
         sessionId: agent.sessionId,
         payload: { deviceId: 'avd:Pixel_8_API_34' },
       }))
@@ -325,8 +408,8 @@ describe('AndroidAgent', () => {
       await waitForType(browser, 'session:joined')
 
       // Send two boot requests rapidly
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'avd:Pixel_8_API_34' } }))
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'avd:Pixel_8_API_34' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-3', sessionId: agent.sessionId, payload: { deviceId: 'avd:Pixel_8_API_34' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-4', sessionId: agent.sessionId, payload: { deviceId: 'avd:Pixel_8_API_34' } }))
 
       // Should still get exactly one device:ready eventually
       const ready = await waitForType(browser, 'device:ready')
@@ -350,6 +433,7 @@ describe('AndroidAgent', () => {
 
       browser.send(JSON.stringify({
         type: 'device:boot',
+        requestId: 'rq-fix-5',
         sessionId: agent.sessionId,
         payload: { deviceId: 'avd:Pixel_8_API_34' },
       }))
@@ -454,6 +538,7 @@ describe('AndroidAgent', () => {
 
         browser.send(JSON.stringify({
           type: 'device:boot',
+          requestId: 'rq-fix-6',
           sessionId: agent.sessionId,
           payload: { deviceId: 'avd:Pixel_8_API_34' },
         }))
@@ -467,6 +552,7 @@ describe('AndroidAgent', () => {
 
         browser.send(JSON.stringify({
           type: 'device:boot',
+          requestId: 'rq-fix-7',
           sessionId: agent.sessionId,
           payload: { deviceId: 'avd:Pixel_8_API_34' },
         }))
@@ -485,6 +571,7 @@ describe('AndroidAgent', () => {
 
         browser.send(JSON.stringify({
           type: 'device:boot',
+          requestId: 'rq-fix-8',
           sessionId: agent.sessionId,
           payload: { deviceId: 'avd:Pixel_8_API_34' },
         }))
@@ -502,6 +589,7 @@ describe('AndroidAgent', () => {
       it('marks codec=H.264 + per-AU keyframe so the relay stays keyframe-aware', async () => {
         browser.send(JSON.stringify({
           type: 'device:boot',
+          requestId: 'rq-fix-9',
           sessionId: agent.sessionId,
           payload: { deviceId: 'avd:Pixel_8_API_34' },
         }))
@@ -533,6 +621,7 @@ describe('AndroidAgent', () => {
       it('resets the scrcpy video encoder to force an on-demand IDR', async () => {
         browser.send(JSON.stringify({
           type: 'device:boot',
+          requestId: 'rq-fix-10',
           sessionId: agent.sessionId,
           payload: { deviceId: 'avd:Pixel_8_API_34' },
         }))
@@ -562,6 +651,7 @@ describe('AndroidAgent', () => {
       beforeEach(async () => {
         browser.send(JSON.stringify({
           type: 'device:boot',
+          requestId: 'rq-fix-11',
           sessionId: agent.sessionId,
           payload: { deviceId: 'avd:Pixel_8_API_34' },
         }))
@@ -591,6 +681,40 @@ describe('AndroidAgent', () => {
         await internals(agent).restartVideoStream(state)
 
         expect(state.restarting).toBe(false)
+      })
+
+      // **This is why the correlator on `device:boot-error` is optional at all.** The message below
+      // answers no request: a stream died mid-session and failed to come back, and there is no
+      // `device:boot` anywhere behind it to take an id from. Everything downstream follows from that —
+      // the declaration cannot be required, `correlatedRequestsGated` cannot cover the pair, and
+      // `DeviceViewer` must not gate this branch on a correlator, since it is the only surface that
+      // reports a dead stream. A boot carrying an id happens first here on purpose: that is the state
+      // in which an implementation reaching for "the session's current requestId" would look correct.
+      it('sends the unsolicited boot-error with no correlator, even after a correlated boot', async () => {
+        vi.useFakeTimers()
+
+        const reReady = waitForType(browser, 'device:ready')
+        browser.send(JSON.stringify({
+          type: 'device:boot',
+          sessionId: agent.sessionId,
+          requestId: 'boot-with-id',
+          payload: { deviceId: 'avd:Pixel_8_API_34' },
+        }))
+        await vi.runAllTimersAsync()
+        expect((await reReady)['requestId']).toBe('boot-with-id')
+
+        scrcpyStartError = new Error('encoder stall')
+        const state = getState()
+        state.restarting = true
+
+        const bootErrPromise = waitForType(browser, 'device:boot-error')
+        const restartPromise = internals(agent).restartVideoStream(state)
+        await vi.runAllTimersAsync()
+        await restartPromise
+
+        const err = await bootErrPromise
+        expect(err['message']).toBe('scrcpy failed to restart')
+        expect(err['requestId']).toBeUndefined()
       })
 
       it('sends device:boot-error and resets flag when startVideoStream throws', async () => {
@@ -703,6 +827,7 @@ describe('AndroidAgent', () => {
 
       browser.send(JSON.stringify({
         type: 'device:boot',
+        requestId: 'rq-fix-12',
         sessionId: agent.sessionId,
         payload: { deviceId: 'avd:Pixel_8_API_34' },
       }))
@@ -1257,6 +1382,7 @@ describe('AndroidAgent', () => {
       await waitForType(browser, 'session:joined')
       browser.send(JSON.stringify({
         type: 'device:boot',
+        requestId: 'rq-fix-13',
         sessionId: agent.sessionId,
         payload: { deviceId: 'avd:Pixel_8_API_34' },
       }))
