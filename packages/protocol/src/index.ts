@@ -223,12 +223,14 @@ export interface DeviceShutdown {
 export interface AppInstallToAgent {
   type: 'app:install'
   sessionId: string
+  requestId: string
   payload: { filePath: string; bundleId: string | null }
 }
 
 export interface AppLaunchToAgent {
   type: 'app:launch'
   sessionId: string
+  requestId: string
   payload: { bundleId: string }
 }
 
@@ -383,10 +385,12 @@ export interface SessionError {
 
 export interface AppInstallError extends SessionError {
   type: 'app:install-error'
+  requestId: string
 }
 
 export interface AppLaunchError extends SessionError {
   type: 'app:launch-error'
+  requestId: string
 }
 
 export interface DeviceBootError extends SessionError {
@@ -400,6 +404,7 @@ export interface OpenUrlError extends SessionError {
 
 export interface AppClearStateError extends SessionError {
   type: 'app:clear-state-error'
+  requestId: string
 }
 
 export interface InputError extends SessionError {
@@ -528,16 +533,19 @@ export interface DeviceShutdownDone {
 export interface AppInstallDone {
   type: 'app:install-done'
   sessionId: string
+  requestId: string
 }
 
 export interface AppLaunchDone {
   type: 'app:launch-done'
   sessionId: string
+  requestId: string
 }
 
 export interface AppClearStateDone {
   type: 'app:clear-state-done'
   sessionId: string
+  requestId: string
 }
 
 export interface OpenUrlDone {
@@ -766,6 +774,25 @@ export type OpenUrlReply = OpenUrlDone | OpenUrlError
  *  the answer is tests at the sites rather than a cleverer checker. */
 export type OpenUrlReplyBody<T = OpenUrlReply> = T extends unknown ? Omit<T, 'sessionId' | 'requestId'> : never
 
+/** The app-command pairs, same shape as `OpenUrlReplyBody` and for the same reason — see the note there
+ *  for exactly what it buys and what it does not.
+ *
+ *  There is deliberately **no request-direction counterpart.** One was designed and measured: a branded
+ *  correlator is laundered by any cast to the brand, because a brand names a *kind* while provenance is a
+ *  property of the *instance* and TypeScript has no value-dependent types; and a generic `Omit`-body
+ *  helper does not compile without a cast of its own, which is worse than the literal it replaces since a
+ *  literal at least gets its whole shape checked. The reply side is worth the type because there are
+ *  ~20 literal sites; the request side has one per pair, on the line below the helper that builds it. So
+ *  the relay's "carries the request's id" is held by tests, not by a type. */
+export type AppInstallReply = AppInstallDone | AppInstallError
+export type AppInstallReplyBody<T = AppInstallReply> = T extends unknown ? Omit<T, 'sessionId' | 'requestId'> : never
+
+export type AppLaunchReply = AppLaunchDone | AppLaunchError
+export type AppLaunchReplyBody<T = AppLaunchReply> = T extends unknown ? Omit<T, 'sessionId' | 'requestId'> : never
+
+export type AppClearStateReply = AppClearStateDone | AppClearStateError
+export type AppClearStateReplyBody<T = AppClearStateReply> = T extends unknown ? Omit<T, 'sessionId' | 'requestId'> : never
+
 
 /** What an agent's **control** socket carries. This is what the agents' send helpers take.
  *
@@ -850,12 +877,14 @@ export interface DeviceBoot {
 export interface AppInstallToRelay {
   type: 'app:install'
   sessionId: string
+  requestId: string
   buildId: number
 }
 
 export interface AppLaunchToRelay {
   type: 'app:launch'
   sessionId: string
+  requestId: string
   buildId: number
 }
 
@@ -879,6 +908,7 @@ export interface AppLaunchToRelay {
 export interface AppClearState {
   type: 'app:clear-state'
   sessionId: string
+  requestId: string
   payload: { bundleId: string }
 }
 

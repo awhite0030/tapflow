@@ -62,7 +62,7 @@ describe('app:clear-state relay routing', () => {
       }
     })
 
-    browser.send(JSON.stringify({ type: 'app:clear-state', sessionId, payload: { bundleId: 'com.example.app' } }))
+    browser.send(JSON.stringify({ type: 'app:clear-state', requestId: 'rq-1', sessionId, payload: { bundleId: 'com.example.app' } }))
     const done = await waitForType(browser, 'app:clear-state-done')
     expect(done.sessionId).toBe(sessionId)
 
@@ -94,7 +94,7 @@ describe('app:clear-state relay routing', () => {
       }
     })
 
-    browser.send(JSON.stringify({ type: 'app:clear-state', sessionId, payload: { bundleId: 'x' } }))
+    browser.send(JSON.stringify({ type: 'app:clear-state', requestId: 'rq-2', sessionId, payload: { bundleId: 'x' } }))
     const err = await waitForType(browser, 'app:clear-state-error')
     expect(err.message).toBe('pm clear failed')
 
@@ -109,7 +109,7 @@ describe('app:clear-state relay routing', () => {
 
     // the agent socket close may have already removed the session — either way
     // the browser must get an explicit error, never a hang
-    browser.send(JSON.stringify({ type: 'app:clear-state', sessionId, payload: { bundleId: 'x' } }))
+    browser.send(JSON.stringify({ type: 'app:clear-state', requestId: 'rq-3', sessionId, payload: { bundleId: 'x' } }))
     const raced = await Promise.race([
       waitForType(browser, 'app:clear-state-error'),
       new Promise<null>((r) => setTimeout(() => r(null), 1_000)),

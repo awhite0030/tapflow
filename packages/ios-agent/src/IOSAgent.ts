@@ -7,7 +7,10 @@ import { spawnSync } from 'child_process'
 import { WebSocket } from 'ws'
 import type { ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
-import type { AgentControlOutbound, InputErrorReason, ClipboardReplyBody, OpenUrlReplyBody } from '@tapflowio/protocol'
+import type {
+  AgentControlOutbound, InputErrorReason, ClipboardReplyBody, OpenUrlReplyBody,
+  AppInstallReplyBody, AppLaunchReplyBody, AppClearStateReplyBody,
+} from '@tapflowio/protocol'
 
 const logger = createLogger('ios-agent')
 
@@ -809,25 +812,41 @@ export class IOSAgent implements DeviceAgent {
       case 'app:install': {
         const { filePath, bundleId } = msg.payload as { filePath: string; bundleId?: string }
         const sessionId = msg.sessionId
+        const { requestId } = msg
+        if (typeof requestId !== 'string' || requestId === '') {
+          console.warn('[tapflow] app:install without a requestId — dropped, cannot correlate a reply')
+          break
+        }
+        // `...body` first: with the ids last, a body *variable* carrying one would override the real
+        // correlator, because excess-property checking does not fire on variables. See `open-url`.
+        const respond = (body: AppInstallReplyBody) => this.sendMsg({ ...body, sessionId, requestId })
         const installState = this.deviceStates.get(sessionId!)
         if (!installState) {
-          this.sendMsg({ type: 'app:install-error', sessionId, message: 'No booted device' })
+          respond({ type: 'app:install-error', message: 'No booted device' })
           break
         }
         this.installBuild(installState.deviceId, filePath, bundleId)
-          .then(() => this.sendMsg({ type: 'app:install-done', sessionId }))
+          .then(() => respond({ type: 'app:install-done' }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.sendMsg({ type: 'app:install-error', sessionId, message })
+            respond({ type: 'app:install-error', message })
           })
         break
       }
       case 'app:launch': {
         const { bundleId } = msg.payload as { bundleId: string }
         const sessionId = msg.sessionId
+        const { requestId } = msg
+        if (typeof requestId !== 'string' || requestId === '') {
+          console.warn('[tapflow] app:launch without a requestId — dropped, cannot correlate a reply')
+          break
+        }
+        // `...body` first: with the ids last, a body *variable* carrying one would override the real
+        // correlator, because excess-property checking does not fire on variables. See `open-url`.
+        const respond = (body: AppLaunchReplyBody) => this.sendMsg({ ...body, sessionId, requestId })
         const launchState = this.deviceStates.get(sessionId!)
         if (!launchState) {
-          this.sendMsg({ type: 'app:launch-error', sessionId, message: 'No booted device' })
+          respond({ type: 'app:launch-error', message: 'No booted device' })
           break
         }
         this.simctl.launchApp(launchState.deviceId, bundleId)
@@ -836,11 +855,11 @@ export class IOSAgent implements DeviceAgent {
             this.lastBundleIds.set(launchState.deviceId, bundleId)
             // Audio: the whole-sim tap's poll picks up the launched app process within one interval;
             // no per-launch helper needed.
-            this.sendMsg({ type: 'app:launch-done', sessionId })
+            respond({ type: 'app:launch-done' })
           })
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.sendMsg({ type: 'app:launch-error', sessionId, message })
+            respond({ type: 'app:launch-error', message })
           })
         break
       }
@@ -1110,16 +1129,22 @@ export class IOSAgent implements DeviceAgent {
       case 'app:clear-state': {
         const { bundleId } = (msg.payload ?? {}) as { bundleId?: string }
         const sessionId = msg.sessionId
+        const { requestId } = msg
+        if (typeof requestId !== 'string' || requestId === '') {
+          console.warn('[tapflow] app:clear-state without a requestId — dropped, cannot correlate a reply')
+          break
+        }
+        const respond = (body: AppClearStateReplyBody) => this.sendMsg({ ...body, sessionId, requestId })
         const state = this.deviceStates.get(sessionId!)
         if (!state || !bundleId) {
-          this.sendMsg({ type: 'app:clear-state-error', sessionId, message: !state ? 'No booted device' : 'bundleId missing' })
+          respond({ type: 'app:clear-state-error', message: !state ? 'No booted device' : 'bundleId missing' })
           break
         }
         this.simctl.clearAppData(state.deviceId, bundleId)
-          .then(() => this.sendMsg({ type: 'app:clear-state-done', sessionId }))
+          .then(() => respond({ type: 'app:clear-state-done' }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.sendMsg({ type: 'app:clear-state-error', sessionId, message })
+            respond({ type: 'app:clear-state-error', message })
           })
         break
       }

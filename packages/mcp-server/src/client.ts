@@ -375,11 +375,12 @@ export class TapflowClient {
   }
 
   async clearState(sessionId: string, bundleId: string): Promise<void> {
-    this.send({ type: 'app:clear-state', sessionId, payload: { bundleId } })
+    const requestId = randomUUID()
+    this.send({ type: 'app:clear-state', sessionId, requestId, payload: { bundleId } })
     const msg = await this.waitFor(
       (m) =>
         (m['type'] === 'app:clear-state-done' || m['type'] === 'app:clear-state-error') &&
-        m['sessionId'] === sessionId,
+        m['requestId'] === requestId,
       30_000,
     )
     if (msg['type'] === 'app:clear-state-error') {
@@ -388,11 +389,12 @@ export class TapflowClient {
   }
 
   async installApp(sessionId: string, buildId: number): Promise<void> {
-    this.send({ type: 'app:install', sessionId, buildId })
+    const requestId = randomUUID()
+    this.send({ type: 'app:install', sessionId, requestId, buildId })
     const msg = await this.waitFor(
       (m) =>
         (m['type'] === 'app:install-done' || m['type'] === 'app:install-error') &&
-        m['sessionId'] === sessionId,
+        m['requestId'] === requestId,
       60_000,
     )
     if (msg['type'] === 'app:install-error') {
@@ -401,11 +403,12 @@ export class TapflowClient {
   }
 
   async launchApp(sessionId: string, buildId: number): Promise<void> {
-    this.send({ type: 'app:launch', sessionId, buildId })
+    const requestId = randomUUID()
+    this.send({ type: 'app:launch', sessionId, requestId, buildId })
     const msg = await this.waitFor(
       (m) =>
         (m['type'] === 'app:launch-done' || m['type'] === 'app:launch-error') &&
-        m['sessionId'] === sessionId,
+        m['requestId'] === requestId,
       15_000,
     )
     if (msg['type'] === 'app:launch-error') {

@@ -60,6 +60,23 @@ function waitForMessage(relay: ReturnType<typeof createMockRelay>, type: string,
   })
 }
 
+/** Answers the next request of `type` with `reply`, carrying back the correlator the client minted.
+ *
+ *  A timer that fires before the request arrives cannot do this: the id is chosen by the client, so the
+ *  fake has to observe the request and echo. That is the point of the correlator, and a fixture that made
+ *  one up would be testing that the client rejects it. */
+function echoReply(relay: { lastClient: () => WebSocket }, type: string, reply: Record<string, unknown>): void {
+  const ws = relay.lastClient()
+  const onMessage = (data: unknown) => {
+    let msg: Record<string, unknown>
+    try { msg = JSON.parse(String(data)) as Record<string, unknown> } catch { return }
+    if (msg['type'] !== type) return
+    ws.off('message', onMessage)
+    ws.send(JSON.stringify({ ...reply, requestId: msg['requestId'] }))
+  }
+  ws.on('message', onMessage)
+}
+
 describe('TapflowClient', () => {
   let relay: ReturnType<typeof createMockRelay>
   let client: TapflowClient
@@ -370,26 +387,26 @@ describe('TapflowClient', () => {
 
   describe('installApp', () => {
     it('sends app:install and resolves on app:install-done', async () => {
-      setTimeout(() => relay.send({ type: 'app:install-done', sessionId: 'sess-1' }), 10)
+      echoReply(relay, 'app:install', { type: 'app:install-done', sessionId: 'sess-1' })
       await expect(client.installApp('sess-1', 42)).resolves.toBeUndefined()
       // Await the outbound message's arrival (same ws race as bootDevice above).
       expect(await waitForMessage(relay, 'app:install')).toMatchObject({ type: 'app:install', sessionId: 'sess-1', buildId: 42 })
     })
 
     it('throws on app:install-error', async () => {
-      setTimeout(() => relay.send({ type: 'app:install-error', sessionId: 'sess-1', message: 'Build not found' }), 10)
+      echoReply(relay, 'app:install', { type: 'app:install-error', sessionId: 'sess-1', message: 'Build not found' })
       await expect(client.installApp('sess-1', 99)).rejects.toThrow('Build not found')
     })
   })
 
   describe('launchApp', () => {
     it('sends app:launch and resolves on app:launch-done', async () => {
-      setTimeout(() => relay.send({ type: 'app:launch-done', sessionId: 'sess-1' }), 10)
+      echoReply(relay, 'app:launch', { type: 'app:launch-done', sessionId: 'sess-1' })
       await expect(client.launchApp('sess-1', 42)).resolves.toBeUndefined()
     })
 
     it('throws on app:launch-error', async () => {
-      setTimeout(() => relay.send({ type: 'app:launch-error', sessionId: 'sess-1', message: 'Bundle ID not available' }), 10)
+      echoReply(relay, 'app:launch', { type: 'app:launch-error', sessionId: 'sess-1', message: 'Bundle ID not available' })
       await expect(client.launchApp('sess-1', 99)).rejects.toThrow('Bundle ID not available')
     })
   })

@@ -38,19 +38,31 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
     act(() => { deliver!({ type: 'device:ready', sessionId: 'mine', payload: { deviceId: 'dev-1' } }) })
 
     act(() => {
-      deliver!({ type: 'app:install-error', sessionId: 'someone-else', message: 'Build not found' })
+      // The session gate rejects this before the correlator is looked at, so the id is arbitrary — that
+      // ordering is the point of this test and is unchanged by L5b.
+      deliver!({ type: 'app:install-error', sessionId: 'someone-else', requestId: 'whatever', message: 'Build not found' })
     })
 
     expect(screen.queryByText(/Install failed/)).not.toBeInTheDocument()
   })
 
   it('does show one that is its own', () => {
-    render(<DeviceViewer sessionId="mine" deviceId="dev-1" />)
+    // `buildId` so the viewer actually issues an install and mints a correlator — the reply is now matched
+    // on that, so a fixture with no corresponding request has nothing to be its own.
+    render(<DeviceViewer sessionId="mine" deviceId="dev-1" buildId={7} />)
     act(() => { deliver!({ type: 'session:joined', sessionId: 'mine', capabilities: [] }) })
     act(() => { deliver!({ type: 'device:ready', sessionId: 'mine', payload: { deviceId: 'dev-1' } }) })
 
+    const install = send.mock.calls.map(([m]) => m).filter((m) => m.type === 'app:install').at(-1)
+    expect(install, 'the viewer did not issue an install').toBeDefined()
+
     act(() => {
-      deliver!({ type: 'app:install-error', sessionId: 'mine', message: 'Build not found' })
+      deliver!({
+        type: 'app:install-error',
+        sessionId: 'mine',
+        requestId: (install as { requestId: string }).requestId,
+        message: 'Build not found',
+      })
     })
 
     expect(screen.getByText(/Install failed: Build not found/)).toBeInTheDocument()

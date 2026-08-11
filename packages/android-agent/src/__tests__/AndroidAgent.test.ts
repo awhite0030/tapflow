@@ -363,6 +363,7 @@ describe('AndroidAgent', () => {
       agent['handleRelayMessage']({
         type: 'app:install',
         sessionId: agent.sessionId!,
+        requestId: 'rq-appzip',
         payload: { filePath: '/tmp/App.app.zip' },
       })
       const err = await waitForType(browser, 'app:install-error')
@@ -1125,7 +1126,7 @@ describe('AndroidAgent', () => {
       it('launches the package and acks with app:launch-done', async () => {
         const launchSpy = vi.spyOn(adb, 'launchApp')
         const done = waitForType(browser, 'app:launch-done')
-        inject({ type: 'app:launch', payload: { bundleId: 'com.example.app' } })
+        inject({ type: 'app:launch', requestId: 'rqi-1', payload: { bundleId: 'com.example.app' } })
         await done
         expect(launchSpy).toHaveBeenCalledWith('emulator-5554', 'com.example.app')
       })
@@ -1802,7 +1803,7 @@ describe('connect — error paths', () => {
         if (m.type === 'app:install-error') resolve(m)
       })
     })
-    serverWs!.send(JSON.stringify({ type: 'app:install', sessionId: 'unknown', payload: { filePath: '/tmp/app.apk' } }))
+    serverWs!.send(JSON.stringify({ type: 'app:install', requestId: 'rqi-2', sessionId: 'unknown', payload: { filePath: '/tmp/app.apk' } }))
 
     const m = await reply
     expect(m['message']).toBe('No booted device')

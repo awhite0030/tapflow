@@ -90,6 +90,11 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // whichever socket holds the session now — so before `open-url` carried a `requestId` this viewer
   // toasted "Deeplink opened" for an `mcp-server` deeplink it knew nothing about.
   const openUrlIdsRef = useRef<Set<string>>(new Set());
+  // Same for the app commands. The install id is minted here; the launch id is minted by whichever viewer
+  // holds the button, through `launchApp` below — both land in this viewer's records because this viewer
+  // is what consumes the replies.
+  const appInstallIdsRef = useRef<Set<string>>(new Set());
+  const appLaunchIdsRef = useRef<Set<string>>(new Set());
   const [swKeyboardVisible, setSwKeyboardVisible] = useState(false);
   const [swKeyboardPending, setSwKeyboardPending] = useState(false);
 
@@ -283,12 +288,26 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
         // The install had not finished when the agent went away, so the app really is missing.
         // Fall through and install it.
       }
-      if (buildId) { setInstalling(true); sendRef.current({ type: 'app:install', sessionId, buildId }); }
+      if (buildId) {
+        setInstalling(true);
+        const requestId = newRequestId();
+        appInstallIdsRef.current.add(requestId);
+        sendRef.current({ type: 'app:install', sessionId, requestId, buildId });
+      }
     }
-    if (msg.type === 'app:install-done') { setInstalling(false); setInstalled(true); }
-    if (msg.type === 'app:install-error') { setInstalling(false); setInstallError(msg.message); }
-    if (msg.type === 'app:launch-done') { setLaunching(false); }
-    if (msg.type === 'app:launch-error') { setLaunching(false); }
+    // Correlated, for the reason `open-url` is: the relay delivers a reply to whichever socket holds the
+    // session, not to whoever asked, so an `mcp-server` install on this session would otherwise flip this
+    // viewer's install state.
+    if (msg.type === 'app:install-done' || msg.type === 'app:install-error') {
+      if (!appInstallIdsRef.current.delete(msg.requestId)) return;
+      setInstalling(false);
+      if (msg.type === 'app:install-done') setInstalled(true);
+      else setInstallError(msg.message);
+    }
+    if (msg.type === 'app:launch-done' || msg.type === 'app:launch-error') {
+      if (!appLaunchIdsRef.current.delete(msg.requestId)) return;
+      setLaunching(false);
+    }
     if (msg.type === 'session:chrome') { setChrome(msg.payload); }
     if (msg.type === 'keyboard:toggled') {
       const { visible } = msg.payload;
@@ -378,8 +397,15 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     sendRef.current({ type: 'open-url', sessionId, requestId, payload: { url } });
   }, [sessionId]);
 
+  const launchApp = useCallback(() => {
+    const requestId = newRequestId();
+    appLaunchIdsRef.current.add(requestId);
+    setLaunching(true);
+    sendRef.current({ type: 'app:launch', sessionId, requestId, buildId: buildId! });
+  }, [sessionId, buildId]);
+
   const commonProps = {
-    sessionId, buildId, send, openUrl, connected, joined,
+    sessionId, buildId, send, openUrl, launchApp, connected, joined,
     deviceReady, installing, installed, installError, bootError,
     launching, setLaunching,
     binaryFrameHandlerRef,

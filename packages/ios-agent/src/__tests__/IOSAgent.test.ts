@@ -1190,6 +1190,7 @@ describe('IOSAgent', () => {
 
         deliver(agent, {
           type: 'app:install',
+          requestId: 'rq-1',
           sessionId: second[0],
           payload: { filePath: '/tmp/x.app', bundleId: 'com.example.app' },
         })
@@ -1205,6 +1206,7 @@ describe('IOSAgent', () => {
 
         deliver(agent, {
           type: 'app:install',
+          requestId: 'rq-2',
           sessionId: agent.sessionId,
           payload: { filePath: '/tmp/x.app', bundleId: 'com.example.app' },
         })
@@ -1221,6 +1223,7 @@ describe('IOSAgent', () => {
 
         deliver(agent, {
           type: 'app:launch',
+          requestId: 'rq-3',
           sessionId: agent.sessionId,
           payload: { bundleId: 'com.example.app' },
         })
@@ -1315,6 +1318,7 @@ describe('IOSAgent', () => {
 
         deliver(agent, {
           type: 'app:clear-state',
+          requestId: 'rq-4',
           sessionId: agent.sessionId,
           payload: { bundleId: 'com.example.app' },
         })
