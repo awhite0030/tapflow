@@ -1160,10 +1160,18 @@ describe('RelayServer', () => {
     await waitForMessage(browser)
 
     browser.send(JSON.stringify({ type: 'open-url', sessionId, payload: { url: 'myapp://home' } }))
-    // Barrier **then** read: a round-trip proves the relay is done with everything sent before it, so
-    // whatever it was going to forward is already in the recording. Reading with a 0ms deadline before
-    // the barrier resolves `null` on the next tick regardless — which is how the first version of this
-    // test passed against the very arrangement it exists to reject.
+    // Two barriers, on two sockets, and both are load-bearing. Order is preserved **within** a
+    // connection, not across them, so a round-trip on the agent proves nothing about a message sent on
+    // the browser — the relay can answer the agent's ping before it has looked at the browser's request.
+    // So: barrier the **browser** to prove the relay processed the request and forwarded it if it was
+    // going to, then barrier the **agent** to prove anything sent there has arrived, and only then read
+    // the recording with a 0 ms deadline.
+    //
+    // Reading before any barrier is worse and was the first version of this test: a 0 ms deadline
+    // resolves `null` on the next tick, so it passed whether the drop happened or not. Barriering the
+    // wrong socket was the second, which happened to pass its mutation on today's timing — a mutation
+    // proves a test *can* fail, not that it always will.
+    await barrier(browser)
     await barrier(agent)
     expect(await waitForTypeOrNull(agent, 'open-url', 0)).toBeNull()
 
