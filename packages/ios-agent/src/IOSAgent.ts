@@ -7,7 +7,7 @@ import { spawnSync } from 'child_process'
 import { WebSocket } from 'ws'
 import type { ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
-import type { AgentControlOutbound, InputErrorReason, ClipboardReplyBody } from '@tapflowio/protocol'
+import type { AgentControlOutbound, InputErrorReason, ClipboardReplyBody, OpenUrlReplyBody } from '@tapflowio/protocol'
 
 const logger = createLogger('ios-agent')
 
@@ -269,7 +269,7 @@ export class IOSAgent implements DeviceAgent {
               // it here is what lets the dispatcher declare `sessionId: string` instead of threading an
               // optional through 30 sends and asserting it with `!` at each one.
               if (typeof m.type !== 'string' || typeof m.sessionId !== 'string') return
-              this.handleRelayMessage(m as { type: string; sessionId: string; payload?: unknown })
+              this.handleRelayMessage(m as { type: string; sessionId: string; requestId?: string; payload?: unknown })
             } catch { /* ignore malformed */ }
           })
           this.reportResources()
@@ -790,7 +790,7 @@ export class IOSAgent implements DeviceAgent {
     } catch { return false }
   }
 
-  private handleRelayMessage(msg: { type: string; sessionId: string; payload?: unknown }): void {
+  private handleRelayMessage(msg: { type: string; sessionId: string; requestId?: string; payload?: unknown }): void {
     switch (msg.type) {
       case 'device:boot': {
         const { deviceId, resetMode, acceptH264, secureContext, external } = msg.payload as { deviceId: string; resetMode?: string; acceptH264?: boolean; secureContext?: boolean; external?: boolean }
@@ -1042,16 +1042,41 @@ export class IOSAgent implements DeviceAgent {
       case 'open-url': {
         const { url } = msg.payload as { url: string }
         const sessionId = msg.sessionId
+        const { requestId } = msg
+        // No fallback by design (see the note above `OpenUrl`), so an uncorrelatable request cannot be
+        // answered correlatably either — and inventing an id would make this agent's reply look like a
+        // response to a request nobody made. Every in-repo sender supplies one, and the `fixed` version
+        // group means there is no in-repo skew window; validating third-party frames at the relay's door
+        // is #444, which will take this over. Until then a drop with a log beats a reply that lies.
+        if (typeof requestId !== 'string' || requestId === '') {
+          console.warn('[tapflow] open-url without a requestId — dropped, cannot correlate a reply')
+          break
+        }
+        // Every exit merges the correlation ids here. What that buys, precisely — review measured 13
+        // attacks and the type caught 3:
+        //
+        //  - **Omitting the correlator is a compile error.** That comes from `requestId: string` being
+        //    required on `OpenUrlDone`/`OpenUrlError`, reached through `sendMsg`'s `AgentControlOutbound`
+        //    — not from `OpenUrlReplyBody`, whose one contribution is rejecting a fresh id written as a
+        //    literal at the `respond(...)` call.
+        //  - **`...body` goes first on purpose.** With the ids last, a body *variable* carrying a
+        //    `requestId` cannot override them — excess-property checking does not fire on variables, so
+        //    the earlier `{ sessionId, requestId, ...body }` let a wrong id win.
+        //
+        // What it does **not** buy: `sendMsg` accepts any `string` here, so a site that bypasses
+        // `respond` type-checks. The echo tests in both agents' suites are what catch that, and each
+        // remaining correlation pair needs its own — this helper does not remove that work.
+        const respond = (body: OpenUrlReplyBody) => this.sendMsg({ ...body, sessionId, requestId })
         const state = this.deviceStates.get(sessionId!)
         if (!state) {
-          this.sendMsg({ type: 'open-url:error', sessionId, message: 'no booted device' })
+          respond({ type: 'open-url:error', message: 'no booted device' })
           break
         }
         this.simctl.openUrl(state.deviceId, url)
-          .then(() => this.sendMsg({ type: 'open-url:done', sessionId }))
+          .then(() => respond({ type: 'open-url:done' }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.sendMsg({ type: 'open-url:error', sessionId, message })
+            respond({ type: 'open-url:error', message })
           })
         break
       }

@@ -130,7 +130,7 @@ import { isAudioSupported, launchMuteOnlyTap } from '@tapflowio/audiotap-helper'
 import type { ScrcpyControl } from '../scrcpy/ScrcpyControl'
 import type { ScrcpyFrame } from '../scrcpy/ScrcpyVideo'
 import type { AdbRunner } from '../adb'
-import { waitForOpen, waitForType } from '@tapflowio/test-utils'
+import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 
 // Test-only view of a per-device state entry (the real DeviceState is not exported).
 interface TestState {
@@ -1132,20 +1132,35 @@ describe('AndroidAgent', () => {
     })
 
     describe('misc — open-url', () => {
-      it('opens the URL on the device and acks with open-url:done', async () => {
+      it('opens the URL on the device and echoes the requestId on open-url:done', async () => {
         const urlSpy = vi.spyOn(adb, 'openUrl')
         const done = waitForType(browser, 'open-url:done')
-        inject({ type: 'open-url', payload: { url: 'https://example.com' } })
-        await done
+        inject({ type: 'open-url', requestId: 'req-1', payload: { url: 'https://example.com' } })
+        expect((await done)['requestId']).toBe('req-1')
         expect(urlSpy).toHaveBeenCalledWith('emulator-5554', 'https://example.com')
       })
 
-      it('reports open-url:error with the failure message when adb rejects', async () => {
+      it('reports open-url:error with the failure message, and echoes the requestId', async () => {
         vi.spyOn(adb, 'openUrl').mockRejectedValue(new Error('activity not found'))
         const err = waitForType(browser, 'open-url:error')
-        inject({ type: 'open-url', payload: { url: 'https://example.com' } })
+        inject({ type: 'open-url', requestId: 'req-2', payload: { url: 'https://example.com' } })
         const msg = await err
         expect(msg['message']).toBe('activity not found')
+        expect(msg['requestId']).toBe('req-2')
+      })
+
+      it('drops a request with no requestId rather than answering uncorrelatably', async () => {
+        // The correlator is required on the wire and there is no fallback, so a reply to this could not
+        // be matched by anyone — and inventing an id would make it look like an answer to a request
+        // nobody made. Every in-repo sender supplies one; validating third-party frames at the relay's
+        // door is #444. Until then the honest outcome is nothing, which is what this pins.
+        const urlSpy = vi.spyOn(adb, 'openUrl')
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        inject({ type: 'open-url', payload: { url: 'https://example.com' } })
+        await barrier(browser)
+        expect(await waitForTypeOrNull(browser, 'open-url:done', 0)).toBeNull()
+        expect(urlSpy).not.toHaveBeenCalled()
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('open-url without a requestId'))
       })
     })
 

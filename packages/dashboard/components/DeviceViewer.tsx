@@ -14,6 +14,7 @@ import { useAudioPlayback } from '@/hooks/useAudioPlayback';
 import type { ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
 import { canDecodeH264 } from '@/lib/decoders/pickDecoder';
 import { resolveInputError } from '@/lib/inputErrorNotice';
+import { newRequestId } from '@/lib/requestId';
 import { StatsOverlay } from './perf/StatsOverlay';
 import { MetricsPanel } from './perf/MetricsPanel';
 import { toast } from 'sonner';
@@ -85,6 +86,10 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // What the agent on the other end implements. Absent ⇒ an agent predating the capability,
   // so the viewer degrades on purpose rather than inferring anything from a timeout.
   const [agentCapabilities, setAgentCapabilities] = useState<string[]>([]);
+  // Deeplinks this viewer asked for. A reply does not go to whoever asked — the relay forwards it to
+  // whichever socket holds the session now — so before `open-url` carried a `requestId` this viewer
+  // toasted "Deeplink opened" for an `mcp-server` deeplink it knew nothing about.
+  const openUrlIdsRef = useRef<Set<string>>(new Set());
   const [swKeyboardVisible, setSwKeyboardVisible] = useState(false);
   const [swKeyboardPending, setSwKeyboardPending] = useState(false);
 
@@ -293,8 +298,12 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     if (msg.type === 'clipboard:data' || msg.type === 'clipboard:write-done' || msg.type === 'clipboard:error') {
       clipboardHandlerRef.current?.(msg);
     }
-    if (msg.type === 'open-url:done') { toast.success('Deeplink opened'); }
-    if (msg.type === 'open-url:error') { toast.error(msg.message); }
+    if (msg.type === 'open-url:done' || msg.type === 'open-url:error') {
+      // `delete` returns whether it was ours, and removes it in the same step — a reply arrives once.
+      if (!openUrlIdsRef.current.delete(msg.requestId)) return;
+      if (msg.type === 'open-url:done') toast.success('Deeplink opened');
+      else toast.error(msg.message);
+    }
     // Branch on `reason`, never on `message`. The prose version handled two of the three wordings the
     // relay sends, so `Session busy` arrived and did nothing — and nothing reported it, because from
     // the outside `error` *was* a handled type. The switch is exhaustive, so a fourth reason is a
@@ -363,8 +372,14 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     send({ type: 'input:keyboard:toggle', sessionId });
   };
 
+  const openUrl = useCallback((url: string) => {
+    const requestId = newRequestId();
+    openUrlIdsRef.current.add(requestId);
+    sendRef.current({ type: 'open-url', sessionId, requestId, payload: { url } });
+  }, [sessionId]);
+
   const commonProps = {
-    sessionId, buildId, send, connected, joined,
+    sessionId, buildId, send, openUrl, connected, joined,
     deviceReady, installing, installed, installError, bootError,
     launching, setLaunching,
     binaryFrameHandlerRef,

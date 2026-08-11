@@ -395,6 +395,7 @@ export interface DeviceBootError extends SessionError {
 
 export interface OpenUrlError extends SessionError {
   type: 'open-url:error'
+  requestId: string
 }
 
 export interface AppClearStateError extends SessionError {
@@ -542,6 +543,7 @@ export interface AppClearStateDone {
 export interface OpenUrlDone {
   type: 'open-url:done'
   sessionId: string
+  requestId: string
 }
 
 export interface InputDone {
@@ -741,6 +743,30 @@ export type ClipboardReply = ClipboardData | ClipboardWriteDone | ClipboardError
  *  payload — a plain `Omit` would collapse them into one shape and stop checking which goes with which. */
 export type ClipboardReplyBody<T = ClipboardReply> = T extends unknown ? Omit<T, 'sessionId' | 'requestId'> : never
 
+/** The replies an `open-url` request can get. */
+export type OpenUrlReply = OpenUrlDone | OpenUrlError
+
+/** An `OpenUrlReply` minus the ids the sender merges in — the `ClipboardReplyBody` shape.
+ *
+ *  **What it buys, exactly.** A first draft of this comment claimed it made the echo obligation
+ *  unstateable-otherwise and therefore removed the need for any check. Review measured that against 13
+ *  attacks and it is false: `sendMsg` takes `AgentControlOutbound`, whose `OpenUrlDone`/`OpenUrlError`
+ *  members declare `requestId: string`, so any site with any string in scope emits a fully-typed, fully
+ *  wrong reply without going through the helper at all. The helper is convention, not a type boundary.
+ *
+ *  What it does buy is one thing worth having: at a `respond({ … })` call, a **freshly minted id written
+ *  as a literal** is an excess property. It does not survive a body *variable* — excess-property checking
+ *  does not fire on those — which is why the agents spread `...body` **first** and put the ids last, so a
+ *  variable that carries one cannot override the real one.
+ *
+ *  Omission is caught, but by `requestId: string` being required on the reply interfaces rather than by
+ *  this type. The rest is carried by each agent's echo tests, and each remaining correlation pair needs
+ *  its own pair of them. A check can see that a field is present; it cannot see that the value came from
+ *  the request, which is the actual property — that part of the original reasoning stands, and it is why
+ *  the answer is tests at the sites rather than a cleverer checker. */
+export type OpenUrlReplyBody<T = OpenUrlReply> = T extends unknown ? Omit<T, 'sessionId' | 'requestId'> : never
+
+
 /** What an agent's **control** socket carries. This is what the agents' send helpers take.
  *
  *  `StreamToRelay` is deliberately *not* in it. Splitting `stream:register` into its own direction was
@@ -856,9 +882,35 @@ export interface AppClearState {
   payload: { bundleId: string }
 }
 
+/** First message of the correlation work (L5). `requestId` is **required on the request and on both
+ *  replies**, which is the same shape the three pairs that already work use — `screenshot`, `ui:tree`
+ *  and `clipboard` all declare it required on the reply too, including the four an *agent* produces.
+ *
+ *  The alternative considered was optional-on-the-reply, so that an agent predating the field would not
+ *  make the declaration false. It was rejected on measurement rather than taste:
+ *
+ *  - Required yields **complete, precise** in-repo compile errors — seven, at exactly the seven
+ *    production sites for this pair, nothing else. The write side is fully covered because L4a routed
+ *    every agent send through a typed helper.
+ *  - Optional needs a static check to replace the compiler, and that check **cannot exist.** Presence is
+ *    checkable; the property is *provenance* — that the id is the request's. A check built and run
+ *    against the clipboard family (100% correlated today) produced seven false positives, because
+ *    `respond({ sessionId, requestId, ...body })` puts the `type` literal and the id in different object
+ *    literals; and it passed when an echo was replaced with a freshly minted id.
+ *  - Absence would carry **two** meanings that want opposite handling: "an old agent" and "not a reply at
+ *    all". The relay's `device:ready` replay is a permanent in-repo producer of the second, and treating
+ *    it as the first is the `{booted: true}` for a boot that never happened that #516 measured and
+ *    refused to ship. Required makes absence mean "not a reply", unambiguously — which is what makes
+ *    that message tightenable at all.
+ *
+ *  There is deliberately **no fallback** to the old `sessionId` + type matching. The `fixed` version
+ *  group in `.changeset/config.json` locks protocol, agent-core, both agents and the relay together, so
+ *  the in-repo skew window is zero; a third-party agent predating this is a release-note matter. A
+ *  permanent fallback would be a fifth correlation strategy in the layer whose goal is to have one. */
 export interface OpenUrl {
   type: 'open-url'
   sessionId: string
+  requestId: string
   payload: { url: string }
 }
 

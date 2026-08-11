@@ -99,7 +99,7 @@ import { AudioCaptureStreamer } from '../AudioCaptureStreamer'
 import { launchAudioHelper } from '@tapflowio/audiotap-helper'
 import { SimctlWrapper } from '../SimctlWrapper'
 import { TouchHelper } from '../TouchHelper'
-import { waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
+import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 const MockTouchHelper = vi.mocked(TouchHelper)
 const MockAudioStreamer = vi.mocked(AudioCaptureStreamer)
 const mockLaunchAudioHelper = vi.mocked(launchAudioHelper)
@@ -161,6 +161,8 @@ function mockSimctl(booted: boolean | 'unknown' = false): SimctlWrapper {
     erase: vi.fn().mockResolvedValue(undefined),
     uninstallApp: vi.fn().mockResolvedValue(undefined),
     clearAppData: vi.fn().mockResolvedValue(undefined),
+    // Absent until L5 added the first `open-url` tests — which is why the handler had none.
+    openUrl: vi.fn().mockResolvedValue(undefined),
     installApp: vi.fn().mockResolvedValue(undefined),
     launchApp: vi.fn().mockResolvedValue(undefined),
     screenshot: vi.fn().mockResolvedValue(Buffer.from('png')),
@@ -1225,6 +1227,85 @@ describe('IOSAgent', () => {
         await vi.waitFor(() => expect(simctl.launchApp).toHaveBeenCalled())
 
         expect(simctl.launchApp).toHaveBeenCalledWith('dev-1', 'com.example.app')
+
+        agent.disconnect(); browser.close()
+      })
+
+      // `open-url` had no test at all until the correlation work (L5) touched its handler — the iOS
+      // suite passed the whole change because nothing exercised it. These two cover the echo and the
+      // guard; Android's equivalents sit in its own suite.
+      it('open-url echoes the requestId on both outcomes', async () => {
+        const { simctl, agent, browser } = await bootedAgent()
+
+        const done = waitForType(browser, 'open-url:done')
+        deliver(agent, {
+          type: 'open-url',
+          sessionId: agent.sessionId,
+          requestId: 'req-1',
+          payload: { url: 'https://example.com' },
+        })
+        expect((await done)['requestId']).toBe('req-1')
+        expect(simctl.openUrl).toHaveBeenCalledWith('dev-1', 'https://example.com')
+
+        simctl.openUrl.mockRejectedValueOnce(new Error('no handler'))
+        const err = waitForType(browser, 'open-url:error')
+        deliver(agent, {
+          type: 'open-url',
+          sessionId: agent.sessionId,
+          requestId: 'req-2',
+          payload: { url: 'https://example.com' },
+        })
+        const msg = await err
+        expect(msg['requestId']).toBe('req-2')
+        expect(msg['message']).toBe('no handler')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('answers two concurrent open-urls with their own ids', async () => {
+        // The only reason this pair needs a correlator, and the case the echo tests above cannot see:
+        // hoisting `requestId` out of per-request scope — a plausible "share `respond` across handlers"
+        // refactor — compiles clean and passes every other test in this file, while both replies come
+        // back carrying the *second* request's id. That is exactly the #499 class the layer removes.
+        const { simctl, agent, browser } = await bootedAgent()
+
+        let release: (() => void) | undefined
+        simctl.openUrl
+          .mockImplementationOnce(() => new Promise<void>((r) => { release = () => r() }))
+          .mockImplementationOnce(() => Promise.resolve())
+
+        deliver(agent, { type: 'open-url', sessionId: agent.sessionId, requestId: 'req-A', payload: { url: 'a://x' } })
+        await vi.waitFor(() => expect(release).toBeDefined())
+
+        // B is issued while A is still in flight, and completes first. The waits are sequential rather
+        // than two concurrent `waitForType`s because that helper does not correlate either — the first
+        // registered waiter takes the first arriving message, which would pass under the very mutation
+        // this test exists to catch.
+        deliver(agent, { type: 'open-url', sessionId: agent.sessionId, requestId: 'req-B', payload: { url: 'b://y' } })
+        expect((await waitForType(browser, 'open-url:done'))['requestId']).toBe('req-B')
+
+        release!()
+        expect((await waitForType(browser, 'open-url:done'))['requestId']).toBe('req-A')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('open-url with no requestId is dropped rather than answered uncorrelatably', async () => {
+        // Required on the wire with no fallback, so a reply here could not be matched by anyone, and
+        // minting an id would make it look like an answer to a request nobody made. Third-party frames
+        // are validated at the relay's door by #444; until then nothing is the honest outcome.
+        const { simctl, agent, browser } = await bootedAgent()
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+        deliver(agent, { type: 'open-url', sessionId: agent.sessionId, payload: { url: 'https://example.com' } })
+        // Barrier then read, not a timeout: a round-trip proves the agent is done with the frame, so a
+        // reply it was going to send is already recorded. A bare deadline passes whether the drop
+        // happened or the reply merely arrived slowly.
+        await barrier(browser)
+
+        expect(await waitForTypeOrNull(browser, 'open-url:done', 0)).toBeNull()
+        expect(simctl.openUrl).not.toHaveBeenCalled()
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('open-url without a requestId'))
 
         agent.disconnect(); browser.close()
       })

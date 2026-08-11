@@ -736,11 +736,34 @@ export class RelayServer {
       case 'app:install': this.handleBrowserAppInstall(ws, msg); break
       case 'app:launch':  this.handleBrowserAppLaunch(ws, msg); break
       case 'open-url': {
+        // **At the door, before either branch.** A correlator is required on this request, and the
+        // relay has two things it could do with one that lacks it — forward it, or answer it — so
+        // putting the check inside one branch means having two policies. A first draft did exactly
+        // that: it refused to *answer* without an id while still *forwarding* without one, which
+        // leaves the whole guarantee resting on the receiving agent. Both in-repo agents drop it, but
+        // an agent that predates this field would execute the request and reply uncorrelated, and
+        // then nothing downstream can attribute the reply.
+        //
+        // The check is here rather than in a validator because this is one required field on one
+        // message, and the relay can act on its absence locally. General inbound validation is #444.
+        //
+        // Dropping is the only honest answer: `open-url:error` requires the correlator too, so
+        // answering would mean shipping a frame that violates its own declaration — `JSON.stringify`
+        // erases the absent key, every correlating consumer discards the result, and "agent offline"
+        // becomes a caller waiting out its full deadline. That was the first draft's other half:
+        // `requestId: msg.requestId!`, which is not the `sessionId!` below it in kind, because that
+        // one feeds a *read* whose miss still produces a visible error.
+        if (typeof msg.requestId !== 'string' || msg.requestId === '') break
         const session = this.sessions.get(msg.sessionId!)
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
         } else {
-          this.sendTo(ws, { type: 'open-url:error', sessionId: msg.sessionId!, message: 'agent offline' })
+          this.sendTo(ws, {
+            type: 'open-url:error',
+            sessionId: msg.sessionId!,
+            requestId: msg.requestId,
+            message: 'agent offline',
+          })
         }
         break
       }

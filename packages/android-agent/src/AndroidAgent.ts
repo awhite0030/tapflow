@@ -2,7 +2,7 @@ import os from 'os'
 import { randomUUID } from 'crypto'
 import { WebSocket } from 'ws'
 import type { AndroidButton, ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
-import type { AgentControlOutbound, ClipboardReplyBody } from '@tapflowio/protocol'
+import type { AgentControlOutbound, ClipboardReplyBody, OpenUrlReplyBody } from '@tapflowio/protocol'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
 import { outcomeMessage, wireReason, type InputOutcome } from './inputOutcome.js'
 import {
@@ -338,7 +338,7 @@ export class AndroidAgent implements DeviceAgent {
               // it here is what lets the dispatcher declare `sessionId: string` instead of threading an
               // optional through 30 sends and asserting it with `!` at each one.
               if (typeof m.type !== 'string' || typeof m.sessionId !== 'string') return
-              this.handleRelayMessage(m as { type: string; sessionId: string; payload?: unknown })
+              this.handleRelayMessage(m as { type: string; sessionId: string; requestId?: string; payload?: unknown })
             } catch { /* ignore malformed */ }
           })
           this.reportResources()
@@ -995,7 +995,7 @@ export class AndroidAgent implements DeviceAgent {
     } catch { return false }
   }
 
-  private handleRelayMessage(msg: { type: string; sessionId: string; payload?: unknown }): void {
+  private handleRelayMessage(msg: { type: string; sessionId: string; requestId?: string; payload?: unknown }): void {
     switch (msg.type) {
       case 'device:boot': {
         const { deviceId, secureContext, external } = msg.payload as { deviceId: string; secureContext?: boolean; external?: boolean }
@@ -1184,17 +1184,31 @@ export class AndroidAgent implements DeviceAgent {
       case 'open-url': {
         const { url } = msg.payload as { url: string }
         const sessionId = msg.sessionId
+        const { requestId } = msg
+        // No fallback by design (see the note above `OpenUrl`), so an uncorrelatable request cannot be
+        // answered correlatably either — and inventing an id would make this agent's reply look like a
+        // response to a request nobody made. Every in-repo sender supplies one, and the `fixed` version
+        // group means there is no in-repo skew window; validating third-party frames at the relay's door
+        // is #444, which will take this over. Until then a drop with a log beats a reply that lies.
+        if (typeof requestId !== 'string' || requestId === '') {
+          console.warn('[tapflow] open-url without a requestId — dropped, cannot correlate a reply')
+          break
+        }
+        // See the iOS handler for what this does and does not enforce. `...body` first is load-bearing:
+        // with the ids last a body variable carrying a `requestId` overrides the real one, and excess
+        // property checking does not fire on variables.
+        const respond = (body: OpenUrlReplyBody) => this.sendMsg({ ...body, sessionId, requestId })
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         if (!serial) {
-          this.sendMsg({ type: 'open-url:error', sessionId, message: 'No booted device' })
+          respond({ type: 'open-url:error', message: 'No booted device' })
           break
         }
         this.adb.openUrl(serial, url)
-          .then(() => this.sendMsg({ type: 'open-url:done', sessionId }))
+          .then(() => respond({ type: 'open-url:done' }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.sendMsg({ type: 'open-url:error', sessionId, message })
+            respond({ type: 'open-url:error', message })
           })
         break
       }

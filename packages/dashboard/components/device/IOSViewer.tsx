@@ -30,6 +30,8 @@ interface IOSViewerProps {
   sessionId: string;
   buildId?: number;
   send: (msg: BrowserToRelay) => void;
+  /** Mints the correlation id and records it, so the viewer only toasts its own reply. */
+  openUrl: (url: string) => void;
   connected: boolean;
   joined: boolean;
   deviceReady: boolean;
@@ -51,7 +53,7 @@ interface IOSViewerProps {
 }
 
 export function IOSViewer({
-  sessionId, buildId, send, connected, joined,
+  sessionId, buildId, send, openUrl, connected, joined,
   deviceReady, installing, installed, installError, bootError,
   launching, setLaunching, chrome,
   binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, onRecordingUploaded,
@@ -577,7 +579,7 @@ export function IOSViewer({
     <div className="flex items-start justify-center gap-16">
       <canvas ref={recordCanvasRef} style={{ display: 'none' }} />
 
-      <DeepLinkDialog open={deepLinkOpen} onOpenChange={setDeepLinkOpen} sessionId={sessionId} send={send} />
+      <DeepLinkDialog open={deepLinkOpen} onOpenChange={setDeepLinkOpen} openUrl={openUrl} />
 
       <SimulatorToolbar
         joined={joined}
