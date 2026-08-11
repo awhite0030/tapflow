@@ -27,15 +27,22 @@ const repoRoot = join(import.meta.dirname, '../..')
  * Every `.ts`/`.tsx` source file under `dir`, as **repo-root-relative** paths — the same shape
  * `git ls-files` produced, so call sites keep their existing filters and comparisons.
  *
- * `dir` may be absolute or repo-root-relative. `.d.ts` files are excluded: they declare rather than
- * implement, so they cannot contain the call sites these checks look for.
+ * `dir` may be absolute or repo-root-relative.
+ *
+ * **`.d.ts` files are included**, because excluding them narrowed a check that needs them. A first version
+ * dropped them on the reasoning that a declaration file cannot contain a call site — true for
+ * `agentSendTyped`, false for `browserInboundRouting`, whose subject is `export type X = { type: '…' } | …`
+ * and which walks `packages/dashboard`, where two tracked `.d.ts` files live. Measured: a planted union in a
+ * `.d.ts` was reported before the extraction and silently not after, and renaming it to `.ts` brought the
+ * detection back — so the extension, not the content, decided it. The three call sites' original filters
+ * (`endsWith('.ts')` and `/\.(ts|tsx)$/`) both admitted `.d.ts`, and this helper reproduces that exactly.
  */
 export function sources(dir, out = []) {
   const abs = dir.startsWith(repoRoot) ? dir : join(repoRoot, dir)
   for (const e of readdirSync(abs, { withFileTypes: true })) {
     if (e.isDirectory()) {
       if (!SKIP_DIRS.has(e.name)) sources(join(abs, e.name), out)
-    } else if (/\.(ts|tsx)$/.test(e.name) && !e.name.endsWith('.d.ts')) {
+    } else if (/\.(ts|tsx)$/.test(e.name)) {
       out.push(join(abs, e.name).slice(repoRoot.length + 1))
     }
   }
