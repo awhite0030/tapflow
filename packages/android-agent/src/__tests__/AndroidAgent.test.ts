@@ -1122,6 +1122,55 @@ describe('AndroidAgent', () => {
       })
     })
 
+    // The reply direction for all three app commands. See the iOS suite for why: review made all six
+    // `respond` helpers emit a fabricated correlator and both agent suites held their baselines exactly.
+    describe('app command correlation', () => {
+      const PAIRS = [
+        { req: 'app:install', payload: { filePath: '/tmp/app.apk' }, call: 'installApp' as const },
+        { req: 'app:launch', payload: { bundleId: 'com.example.app' }, call: 'launchApp' as const },
+        { req: 'app:clear-state', payload: { bundleId: 'com.example.app' }, call: 'clearAppData' as const },
+      ]
+
+      for (const { req, payload, call } of PAIRS) {
+        it(`${req} echoes the requestId on both outcomes`, async () => {
+          // Mocked explicitly rather than left to fall through: `adb` here is a real object with spies
+          // added per test, so an unmocked call reaches the real binary and the test times out instead of
+          // failing. (`app:install` also calls `clearAppData` on its way, which is how that surfaced.)
+          vi.spyOn(adb, call).mockResolvedValue(undefined)
+          vi.spyOn(adb, 'clearAppData').mockResolvedValue(undefined)
+          const done = waitForType(browser, `${req}-done`)
+          inject({ type: req, requestId: 'echo-1', payload })
+          expect((await done)['requestId']).toBe('echo-1')
+
+          vi.spyOn(adb, call).mockRejectedValueOnce(new Error('nope'))
+          const err = waitForType(browser, `${req}-error`)
+          inject({ type: req, requestId: 'echo-2', payload })
+          const msg = await err
+          expect(msg['requestId']).toBe('echo-2')
+          expect(msg['message']).toBe('nope')
+        })
+
+        it(`${req} answers two concurrent requests with their own ids`, async () => {
+          // TC5 — the only test that sees a correlator hoisted out of per-request scope.
+          let release: (() => void) | undefined
+          vi.spyOn(adb, call)
+            .mockImplementationOnce(() => new Promise<void>((r) => { release = () => r() }))
+            .mockImplementationOnce(() => Promise.resolve())
+
+          inject({ type: req, requestId: 'con-A', payload })
+          await vi.waitFor(() => expect(release).toBeDefined())
+
+          // Sequential: `waitForType` does not correlate, so two concurrent waits would pass under the
+          // mutation this exists to catch.
+          inject({ type: req, requestId: 'con-B', payload })
+          expect((await waitForType(browser, `${req}-done`))['requestId']).toBe('con-B')
+
+          release!()
+          expect((await waitForType(browser, `${req}-done`))['requestId']).toBe('con-A')
+        })
+      }
+    })
+
     describe('misc — app:launch', () => {
       it('launches the package and acks with app:launch-done', async () => {
         const launchSpy = vi.spyOn(adb, 'launchApp')

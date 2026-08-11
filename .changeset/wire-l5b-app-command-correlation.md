@@ -19,6 +19,16 @@ rebuild or the agent's reply, which the relay forwards without inspecting, canno
 anything. `AppInstallToAgent` / `AppLaunchToAgent` declare it required, which makes *dropping* the copy a
 compile error.
 
+**The reply direction is held entirely by tests, and the first version of this change had none of them.**
+Review made both relay `fail()` closures, the clear-state error exit and all six agent `respond` helpers emit
+a fabricated correlator, and every suite held its baseline exactly. A wrong echo is worse than a
+misattribution now that consumers gate strictly: the dashboard discards the reply and nothing clears
+`installing`, so the Launch control never appears, and the MCP caller burns its full deadline. There are
+assertions on all nine relay error exits, echo tests per pair on both agents, six concurrency tests (the
+mutation that hoists the correlator out of per-request scope was invisible to everything else), dashboard
+tests for both gates, and `mcp-server` tests that fail if the predicate reverts to `sessionId` — which it
+could, silently, before.
+
 **Nothing type-checks that the copied value is the request's**, and that is not for want of trying. Four
 candidate guards were built and broken: a branded `CorrelatedId` is laundered by any cast to the brand,
 because a brand names a *kind* while provenance is a property of the *instance* and TypeScript has no
@@ -36,6 +46,13 @@ second property is why `device:ready` was carved out too, so the two go together
 decides what a relay-originated request and a dual-role reply mean. It also cannot have a meaningful
 concurrency test — the agents' shutdown handler returns early once state is gone, so a second request
 produces no second reply to correlate.
+
+**An agent older than this field strands the command, and that is the upgrade cost.** The earlier draft
+argued the skew window is zero because the packages share a `fixed` version group — but `fixed` makes them
+*release* together, not *install* together, and the agent runs on a tester's Mac installed separately from
+the relay. Such an agent's `app:install-done` has the key absent, the dashboard discards it, and "Installing…"
+persists with no Launch control. For `open-url` last slice the same skew cost a toast; here it costs the
+primary manual-testing flow. The relay's door checks log now, since otherwise all three hops are silent.
 
 **Door checks, one policy per request**: an uncorrelatable request is not forwarded, not rebuilt and not
 answered, since every reply these produce declares `requestId` as required. They go through a type

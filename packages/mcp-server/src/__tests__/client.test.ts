@@ -385,6 +385,52 @@ describe('TapflowClient', () => {
     })
   })
 
+  // Reverting all four predicates from `requestId` back to `sessionId` left this suite green, because the
+  // fixtures echo the id and both fields then agree. These distinguish the two: a reply with the right
+  // session and the wrong correlator must not resolve, which is only true if the client matches on the
+  // correlator.
+  describe('correlator matching', () => {
+    it('does not resolve installApp on a reply for another request', async () => {
+      const ws = relay.lastClient()
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] !== 'app:install') return
+        ws.send(JSON.stringify({ type: 'app:install-done', sessionId: 'sess-1', requestId: 'someone-elses' }))
+      })
+      const pending = client.installApp('sess-1', 42)
+      const settled = await Promise.race([
+        pending.then(() => 'resolved').catch(() => 'rejected'),
+        new Promise<string>((r) => setTimeout(() => r('still-waiting'), 150)),
+      ])
+      expect(settled).toBe('still-waiting')
+    })
+
+    it('does not resolve clearState on a reply for another request', async () => {
+      // `clearState` had no test at all, which is why the plan's "seven fixtures to rewrite" became four.
+      const ws = relay.lastClient()
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] !== 'app:clear-state') return
+        ws.send(JSON.stringify({ type: 'app:clear-state-done', sessionId: 'sess-1', requestId: 'someone-elses' }))
+      })
+      const settled = await Promise.race([
+        client.clearState('sess-1', 'com.example.app').then(() => 'resolved').catch(() => 'rejected'),
+        new Promise<string>((r) => setTimeout(() => r('still-waiting'), 150)),
+      ])
+      expect(settled).toBe('still-waiting')
+    })
+
+    it('resolves clearState on its own reply', async () => {
+      const ws = relay.lastClient()
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] !== 'app:clear-state') return
+        ws.send(JSON.stringify({ type: 'app:clear-state-done', sessionId: 'sess-1', requestId: msg['requestId'] }))
+      })
+      await expect(client.clearState('sess-1', 'com.example.app')).resolves.toBeUndefined()
+    })
+  })
+
   describe('installApp', () => {
     it('sends app:install and resolves on app:install-done', async () => {
       echoReply(relay, 'app:install', { type: 'app:install-done', sessionId: 'sess-1' })

@@ -95,6 +95,7 @@ describe('app command failures reach the caller (#445)', () => {
 
     expect(msg?.type).toBe('app:install-error')
     expect(msg?.sessionId).toBe('no-such-session')
+    expect(msg?.requestId).toBe('rq-1')
 
     agent.close(); browser.close()
   })
@@ -104,6 +105,10 @@ describe('app command failures reach the caller (#445)', () => {
 
     browser.send(JSON.stringify({ type: 'app:install', requestId: 'rq-2', sessionId, buildId: 999999 }))
     const msg = await waitForType(browser, 'app:install-error')
+    // The correlator on this exit is held by nothing else: the compiler sees the field is
+    // present, not that it is the request's, and a wrong value now *latches* the dashboard
+    // rather than merely misattributing — the gate discards it and nothing clears `installing`.
+    expect(msg.requestId).toBe('rq-2')
 
     expect(msg.message).toBe('Build not found')
     expect(msg.sessionId).toBe(sessionId)
@@ -117,6 +122,10 @@ describe('app command failures reach the caller (#445)', () => {
 
     browser.send(JSON.stringify({ type: 'app:launch', requestId: 'rq-3', sessionId, buildId }))
     const msg = await waitForType(browser, 'app:launch-error')
+    // The correlator on this exit is held by nothing else: the compiler sees the field is
+    // present, not that it is the request's, and a wrong value now *latches* the dashboard
+    // rather than merely misattributing — the gate discards it and nothing clears `installing`.
+    expect(msg.requestId).toBe('rq-3')
 
     expect(msg.message).toBe('Bundle ID not available for this build')
     expect(msg.sessionId).toBe(sessionId)
@@ -142,6 +151,7 @@ describe('app command failures reach the caller (#445)', () => {
 
     expect(msg?.type).toBe('app:install-error')
     expect(msg?.sessionId).toBe(sessionId)
+    expect(msg?.requestId).toBe('rq-4')
 
     browser.close()
   })
@@ -159,6 +169,7 @@ describe('app command failures reach the caller (#445)', () => {
 
     expect(msg?.type).toBe('app:launch-error')
     expect(msg?.sessionId).toBe(sessionId)
+    expect(msg?.requestId).toBe('rq-5')
 
     browser.close()
   })
@@ -204,6 +215,7 @@ describe('app command failures reach the caller (#445)', () => {
 
     expect(msg?.type).toBe('app:install-error')
     expect(msg?.sessionId).toBe(sessionId)
+    expect(msg?.requestId).toBe('rq-6')
 
     agent.close(); browser.close()
   })
@@ -224,6 +236,7 @@ describe('app command failures reach the caller (#445)', () => {
 
     expect(msg?.type).toBe('app:install-error')
     expect(msg?.sessionId).toBe(sessionId)
+    expect(msg?.requestId).toBe('rq-7')
 
     agent.close(); browser.close()
   })
@@ -236,6 +249,7 @@ describe('app command failures reach the caller (#445)', () => {
 
     expect(msg?.type).toBe('app:launch-error')
     expect(msg?.sessionId).toBe(sessionId)
+    expect(msg?.requestId).toBe('rq-8')
 
     agent.close(); browser.close()
   })
@@ -327,18 +341,21 @@ describe('app command failures reach the caller (#445)', () => {
   // Two barriers, on two sockets: order holds *within* a connection, so a round-trip on the agent proves
   // nothing about a message sent on the browser. Browser first — the relay has now processed the request
   // and forwarded it if it was going to — then the agent, then read.
-  for (const [type, body] of [
-    ['app:install', 'build'],
-    ['app:launch', 'build'],
-    ['app:clear-state', 'bundle'],
+  // Both halves of the predicate, not just one: the first version sent only `requestId: ''`, so dropping
+  // the `typeof` half — which lets an **absent** correlator through — left all of these green and only the
+  // previous slice's `open-url` tests failed. The predicate is shared, so each half needs a case.
+  for (const [type, body, correlator] of [
+    ['app:install', 'build', ''],
+    ['app:launch', 'build', undefined],
+    ['app:clear-state', 'bundle', ''],
   ] as const) {
-    it(`drops a ${type} whose correlator is an empty string`, async () => {
+    it(`drops a ${type} whose correlator is ${correlator === undefined ? 'absent' : 'an empty string'}`, async () => {
       const { agent, browser, sessionId } = await connectAgentAndBrowser()
       const extra = body === 'build'
         ? { buildId: insertBuild('com.example.demo') }
         : { payload: { bundleId: 'com.example.demo' } }
 
-      browser.send(JSON.stringify({ type, sessionId, requestId: '', ...extra }))
+      browser.send(JSON.stringify({ type, sessionId, ...(correlator === undefined ? {} : { requestId: correlator }), ...extra }))
       await barrier(browser)
       await barrier(agent)
       expect(await waitForTypeOrNull(agent, type, 0)).toBeNull()

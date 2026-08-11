@@ -106,7 +106,12 @@ const TERMINAL_INPUT_TYPES = new Set<string>(['input:touch:end', 'input:pinch:en
  *  Empty string counts as absent: it type-checks against a required `string`, nothing validates inbound
  *  JSON (#444), and `mcp-server`'s tool schemas are bare `z.string()`. */
 function isCorrelated(msg: RelayMessage): msg is RelayMessage & { requestId: string } {
-  return typeof msg.requestId === 'string' && msg.requestId !== ''
+  if (typeof msg.requestId === 'string' && msg.requestId !== '') return true
+  // Logged, because the three places this can be dropped are all silent otherwise: the relay `break`s, the
+  // agents' own guards never see the frame, and the browser gate `return`s. An operator who upgrades the
+  // relay but not an independently installed `mcp-server` would watch commands do nothing with no trace.
+  console.warn(`[tapflow] ${msg.type} without a usable requestId — dropped, cannot correlate a reply`)
+  return false
 }
 
 const AGENT_MSG_TYPES = new Set([

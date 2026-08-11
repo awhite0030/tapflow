@@ -398,10 +398,14 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   }, [sessionId]);
 
   const launchApp = useCallback(() => {
+    // Guarded rather than asserted. The old send sat inside `installed && buildId ? …`, where the render
+    // condition narrowed `buildId` to `number`; hoisting it here lost that, and `buildId!` would have been
+    // the same species as the `msg.requestId!` this layer removed from the relay.
+    if (buildId === undefined) return;
     const requestId = newRequestId();
     appLaunchIdsRef.current.add(requestId);
     setLaunching(true);
-    sendRef.current({ type: 'app:launch', sessionId, requestId, buildId: buildId! });
+    sendRef.current({ type: 'app:launch', sessionId, requestId, buildId });
   }, [sessionId, buildId]);
 
   const commonProps = {
