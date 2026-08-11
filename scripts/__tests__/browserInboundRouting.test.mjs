@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { sources } from './sourceFiles.mjs'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -284,9 +284,7 @@ describe('browser-inbound routing matches the protocol union', () => {
     const wire = new Set([...protocolSrc.matchAll(/\{\s*type: '([^']+)'/g)].map((m) => m[1]))
     const found = []
     for (const pkg of ['packages/dashboard', 'packages/mcp-server/src', 'packages/flow-runner/src']) {
-      const files = execFileSync('git', ['ls-files', pkg], { cwd: root, encoding: 'utf8' })
-        .split('\n')
-        .filter((f) => /\.(ts|tsx)$/.test(f) && !f.includes('__tests__'))
+      const files = sources(pkg)
       for (const f of files) {
         const src = readFileSync(join(root, f), 'utf8').replace(/^\s*\/\/.*$/gm, '')
         for (const m of src.matchAll(/export type (\w+)\s*=\s*((?:\s*\|?\s*\{[^{}]*\}\s*)+)/g)) {
