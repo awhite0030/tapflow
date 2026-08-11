@@ -38,9 +38,12 @@ export interface AgentSession {
 type RelayMsg = Record<string, unknown>
 
 /**
- * Matches a reply whose correlator is **optional** — the lifecycle pair only. An absent `requestId`
- * means "this frame answers no request", which for `device:ready` / `device:boot-error` is a real and
- * permanent case rather than an old agent, so it is accepted and logged rather than dropped. A present
+ * Matches a reply whose correlator is **optional** — the lifecycle pair only. An absent `requestId` means
+ * "this frame answers no request". Two ways that reaches this client, and only one is permanent: Android's
+ * mid-session `device:boot-error` has no request behind it and never will, while an id-less `device:ready`
+ * here can only be an agent predating the echo. Both are accepted and logged rather than dropped. The
+ * relay's replayed `device:ready` does not arrive here at all — no `sessionId`, so the comparison ahead of
+ * this call excludes it, which the "not satisfied by the replay" test pins. A present
  * one must match. Not that it tells two concurrent boots apart — the agents answer a superseded boot not
  * at all (`bootSeq`), so one waiter times out either way. `dispatch` resolves the first matching waiter and
  * stops, so on `sessionId` + type alone the single reply went to whichever boot registered first, and the

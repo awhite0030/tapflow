@@ -15,8 +15,16 @@ whole design — `device:ready`, `device:boot-error` and `device:shutdown-done` 
 request at all, so absence has a real and permanent meaning: *this frame is not the answer to anything*.
 
 Consumers correlate when the id is present and fall back to `sessionId` + type when it is not
-(`mcp-server`, `flow-runner`). That fallback is not compatibility slack that expires — it is what lets the
-relay's own replay and Android's mid-session stream failure keep reaching the surfaces that report them.
+(`mcp-server`, `flow-runner`). Precisely what that fallback carries is worth separating, because the two
+id-less cases arrive by different routes and only one of them is permanent:
+
+- **Android's mid-session `device:boot-error`** carries a `sessionId`, so it reaches a client waiter through
+  the fallback. There is no request behind it and never will be, so this half does not expire.
+- **An agent predating the echo** likewise, on either reply. This half is compatibility slack.
+- **The relay's `device:ready` replay** does *not* reach a client at all — it carries no `sessionId`, so the
+  comparison ahead of the fallback excludes it, which is the point of the "not satisfied by the replay" test
+  in both clients. It reaches the **dashboard**, and it gets there because `'sessionId' in msg` is false, not
+  because of anything the correlator or the fallback does.
 
 What correlation buys on this pair is narrower than the obvious claim, and review caught the first draft
 making the obvious one. It does **not** let two concurrent boots both resolve: the agents answer a

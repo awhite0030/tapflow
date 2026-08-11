@@ -38,9 +38,13 @@ export type { UIElement } from '@tapflowio/protocol'
 type RelayMsg = Record<string, unknown>
 
 /**
- * Matches a reply whose correlator is **optional** — the lifecycle pair only. An absent `requestId`
- * means "this frame answers no request", which for `device:ready` / `device:boot-error` is a real and
- * permanent case rather than an old agent, so it is accepted and logged rather than dropped. A present
+ * Matches a reply whose correlator is **optional** — the lifecycle pair only. An absent `requestId` means
+ * "this frame answers no request", and the two ways that reaches *this* client are worth telling apart:
+ * `device:boot-error` has a producer that never has a request behind it (Android reporting a stream that
+ * died mid-session), so that half is permanent; an id-less `device:ready` here can only be an agent
+ * predating the echo, so that half is compatibility slack. Both are accepted and logged rather than
+ * dropped. What does **not** arrive here is the relay's replayed `device:ready`: it carries no `sessionId`,
+ * so the comparison ahead of this call excludes it — see the "not satisfied by the replay" test. A present
  * one must match, and what that buys is narrower than it looks — worth stating exactly, because the
  * obvious claim ("it tells two concurrent boots apart") is false. The agents answer a **superseded** boot
  * not at all: `bootSeq` makes every checkpoint after a newer boot return silently. So of two overlapping
