@@ -29,7 +29,7 @@ export type SocketMessage = Record<string, unknown> & { type: string }
  * ```ts
  * const ws = new WebSocket(url)
  * await waitForOpen(ws)
- * ws.send(JSON.stringify({ type: 'device:boot', ... }))
+ * ws.send(JSON.stringify({ type: 'device:boot', requestId, ... }))   // required, or the relay drops it
  * await waitForType(ws, 'device:ready')   // fine whether it has landed yet or not
  * ```
  *

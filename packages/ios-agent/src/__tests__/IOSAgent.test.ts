@@ -450,7 +450,7 @@ describe('IOSAgent', () => {
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-1', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
 
       const done = waitForType(browser, 'input:done')
@@ -471,7 +471,7 @@ describe('IOSAgent', () => {
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
       // Boot first (per the device:boot guideline → booted flag true, TouchHelper set up).
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-2', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
 
       // Power the device off: shutdown clears the booted flag, and simctl now reports it shut down.
@@ -580,7 +580,7 @@ describe('IOSAgent', () => {
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-3', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
       // device:ready is not a sync point for the helper — wait on the mock itself.
       await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0), { timeout: 500 })
@@ -840,7 +840,7 @@ describe('IOSAgent', () => {
       await waitForType(browser, 'session:joined')
 
       const booting = waitForType(browser, 'device:booting')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-4', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await booting
       await vi.waitFor(() => expect(simctl.boot).toHaveBeenCalled(), { timeout: 500 })
 
@@ -882,7 +882,7 @@ describe('IOSAgent', () => {
       await waitForType(browser, 'session:joined')
 
       const booting = waitForType(browser, 'device:booting')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-5', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await booting
       await vi.waitFor(() => expect(simctl.boot).toHaveBeenCalled(), { timeout: 500 })
       expect(MockTouchHelper.mock.results).toHaveLength(0)
@@ -946,7 +946,7 @@ describe('IOSAgent', () => {
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
 
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-6', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
 
       // device:ready is sent as the stream is handed off, which is not the same instant the helper
@@ -966,7 +966,7 @@ describe('IOSAgent', () => {
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-7', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
       await vi.waitFor(() => expect(MockTouchHelper.mock.results).toHaveLength(1), { timeout: 500 })
       const thInstance = MockTouchHelper.mock.results[0].value
@@ -995,7 +995,7 @@ describe('IOSAgent', () => {
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-8', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
       await vi.waitFor(() => expect(MockTouchHelper.mock.results).toHaveLength(1), { timeout: 500 })
 
@@ -1079,7 +1079,7 @@ describe('IOSAgent', () => {
 
       const bootingPromise = waitForType(browser, 'device:booting')
       const readyPromise = waitForType(browser, 'device:ready')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-9', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
 
       await bootingPromise
       const ready = await readyPromise
@@ -1105,6 +1105,7 @@ describe('IOSAgent', () => {
 
       browser.send(JSON.stringify({
         type: 'device:boot',
+        requestId: 'rq-fix-10',
         sessionId: agent.sessionId,
         payload: { deviceId: 'dev-1', resetMode: 'full-erase' },
       }))
@@ -1120,6 +1121,111 @@ describe('IOSAgent', () => {
 
       agent.disconnect()
       browser.close()
+    })
+
+    // ── L5b′: the lifecycle pair correlates, and the correlator is optional ────────────────────
+    //
+    // Optional means `<Pair>ReplyBody` cannot exist for it — `Omit<T,'sessionId'|'requestId'>` is
+    // satisfied by an object with no correlator at all, so the excess-property trick that catches a
+    // freshly minted id has nothing to bite on. Nor does `correlatedRequestsGated` derive this pair.
+    // These tests are the entire enforcement of the echo on this agent.
+    describe('lifecycle replies echo the boot/shutdown correlator', () => {
+      async function joined(simctl: SimctlWrapper) {
+        const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = new WebSocket(`ws://localhost:${port}`)
+        await waitForOpen(browser)
+        browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+        await waitForType(browser, 'session:joined')
+        return { agent, browser }
+      }
+
+      it('device:ready carries the requestId of the boot it answers', async () => {
+        const { agent, browser } = await joined(mockSimctl(false))
+
+        const ready = waitForType(browser, 'device:ready')
+        browser.send(JSON.stringify({
+          type: 'device:boot', sessionId: agent.sessionId, requestId: 'boot-1',
+          payload: { deviceId: 'dev-1' },
+        }))
+        expect((await ready)['requestId']).toBe('boot-1')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('device:boot-error carries the requestId of the boot it answers', async () => {
+        // The failure exit is the one that matters most and the one a happy-path test cannot reach:
+        // a caller that gets an uncorrelatable diagnosis waits out its deadline instead of failing,
+        // so the error arrives and is discarded. That is the defect this file's `open-url` block
+        // already records as having shipped twice.
+        const simctl = mockSimctl(false)
+        ;(simctl.boot as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boot exploded'))
+        const { agent, browser } = await joined(simctl)
+
+        const err = waitForType(browser, 'device:boot-error')
+        browser.send(JSON.stringify({
+          type: 'device:boot', sessionId: agent.sessionId, requestId: 'boot-2',
+          payload: { deviceId: 'dev-1' },
+        }))
+        const msg = await err
+        expect(msg['requestId']).toBe('boot-2')
+        expect(msg['message']).toContain('boot exploded')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('device:shutdown-done carries the requestId of the shutdown it answers', async () => {
+        const { agent, browser } = await joined(mockSimctl(true))
+
+        const done = waitForType(browser, 'device:shutdown-done')
+        browser.send(JSON.stringify({
+          type: 'device:shutdown', sessionId: agent.sessionId, requestId: 'down-1',
+          payload: { deviceId: 'dev-1' },
+        }))
+        expect((await done)['requestId']).toBe('down-1')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('answers a correlator-less request without inventing one', async () => {
+        // The relay originates `device:shutdown` from its idle timer with no id, so this is a live
+        // wire shape rather than a legacy one. A minted id here would be worse than none: the
+        // consumer's fallback accepts an absent correlator and rejects one that does not match, so an
+        // invented id turns a reply that lands today into one that is silently dropped.
+        const { agent, browser } = await joined(mockSimctl(true))
+
+        const done = waitForType(browser, 'device:shutdown-done')
+        browser.send(JSON.stringify({
+          type: 'device:shutdown', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' },
+        }))
+        expect((await done)['requestId']).toBeUndefined()
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('does not answer a boot that a newer boot superseded', async () => {
+        // `bootSeq` makes a superseded boot return silently, and the correlator is what lets a caller
+        // see that: exactly one `device:ready` arrives and it carries the newer id. A correlator read
+        // from shared device state would pass every test above and fail this one — which is why the
+        // agents take it as a parameter.
+        const { agent, browser } = await joined(mockSimctl(false))
+
+        browser.send(JSON.stringify({
+          type: 'device:boot', sessionId: agent.sessionId, requestId: 'boot-old',
+          payload: { deviceId: 'dev-1' },
+        }))
+        browser.send(JSON.stringify({
+          type: 'device:boot', sessionId: agent.sessionId, requestId: 'boot-new',
+          payload: { deviceId: 'dev-1' },
+        }))
+
+        const ready = await waitForType(browser, 'device:ready')
+        expect(ready['requestId']).toBe('boot-new')
+        // And nothing answers the superseded one afterwards.
+        expect(await waitForTypeOrNull(browser, 'device:ready', 300)).toBeNull()
+
+        agent.disconnect(); browser.close()
+      })
     })
 
     // #440: simctl's `booted` alias means "whichever device is up", so with two simulators running
@@ -1146,7 +1252,7 @@ describe('IOSAgent', () => {
         browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
         await waitForType(browser, 'session:joined')
         browser.send(JSON.stringify({
-          type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' },
+          type: 'device:boot', requestId: 'rq-fix-11', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' },
         }))
         await ready
         return { simctl, agent, browser }
@@ -1169,7 +1275,7 @@ describe('IOSAgent', () => {
         browser.send(JSON.stringify({ type: 'session:start', sessionId: second[0] }))
         await waitForType(browser, 'session:joined')
         browser.send(JSON.stringify({
-          type: 'device:boot', sessionId: second[0], payload: { deviceId: 'dev-2' },
+          type: 'device:boot', requestId: 'rq-fix-12', sessionId: second[0], payload: { deviceId: 'dev-2' },
         }))
         await ready
 
@@ -1421,6 +1527,7 @@ describe('IOSAgent', () => {
 
       browser.send(JSON.stringify({
         type: 'device:boot',
+        requestId: 'rq-fix-13',
         sessionId: agent.sessionId,
         payload: { deviceId: 'dev-1', resetMode: 'full-erase' },
       }))
@@ -1447,6 +1554,7 @@ describe('IOSAgent', () => {
 
       browser.send(JSON.stringify({
         type: 'device:boot',
+        requestId: 'rq-fix-14',
         sessionId: agent.sessionId,
         payload: { deviceId: 'dev-1', resetMode: 'full-erase' },
       }))
@@ -1474,6 +1582,7 @@ describe('IOSAgent', () => {
 
       browser.send(JSON.stringify({
         type: 'device:boot',
+        requestId: 'rq-fix-15',
         sessionId: agent.sessionId,
         payload: { deviceId: 'dev-1', resetMode: 'full-erase' },
       }))
@@ -1507,6 +1616,7 @@ describe('IOSAgent', () => {
 
       browser.send(JSON.stringify({
         type: 'device:boot',
+        requestId: 'rq-fix-16',
         sessionId: agent.sessionId,
         payload: { deviceId: 'dev-1', resetMode: 'full-erase' },
       }))
@@ -1531,6 +1641,7 @@ describe('IOSAgent', () => {
 
       browser.send(JSON.stringify({
         type: 'device:boot',
+        requestId: 'rq-fix-17',
         sessionId: agent.sessionId,
         payload: { deviceId: 'dev-1', resetMode: 'full-erase' },
       }))
@@ -1557,7 +1668,7 @@ describe('IOSAgent', () => {
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
 
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-18', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
 
       expect(simctl.erase).not.toHaveBeenCalled()
@@ -1578,7 +1689,7 @@ describe('IOSAgent', () => {
       await waitForType(browser, 'session:joined')
 
       const readyPromise = waitForType(browser, 'device:ready')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-19', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await readyPromise
       expect(simctl.boot).not.toHaveBeenCalled()
 
@@ -1604,7 +1715,7 @@ describe('IOSAgent', () => {
       await waitForType(browser, 'session:joined')
 
       const readyPromise = waitForType(browser, 'device:ready')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-20', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await readyPromise
 
       expect(simctl.erase).toHaveBeenCalledWith('dev-1')
@@ -1630,7 +1741,7 @@ describe('IOSAgent', () => {
       await waitForType(browser, 'session:joined')
 
       const errPromise = waitForType(browser, 'device:boot-error')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-21', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       const err = await errPromise
 
       expect(simctl.erase).not.toHaveBeenCalled()
@@ -1652,7 +1763,7 @@ describe('IOSAgent', () => {
       await waitForType(browser, 'session:joined')
 
       const errPromise = waitForType(browser, 'device:boot-error')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-22', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await errPromise
 
       // exactly one erase + one retry — bounded, no infinite loop
@@ -1758,7 +1869,7 @@ describe('IOSAgent', () => {
         })
       )
 
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-23', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
 
       const frame = await framePromise
@@ -1779,7 +1890,7 @@ describe('IOSAgent', () => {
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-24', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
       await vi.waitFor(() => expect(MockTouchHelper.mock.results).toHaveLength(1), { timeout: 500 })
       const thInstance = MockTouchHelper.mock.results[0].value
@@ -1833,7 +1944,7 @@ describe('IOSAgent', () => {
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-25', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
       return { browser, agent, sim }
     }
@@ -1990,6 +2101,7 @@ describe('IOSAgent', () => {
       await waitForType(browser, 'session:joined')
       browser.send(JSON.stringify({
         type: 'device:boot',
+        requestId: 'rq-fix-26',
         sessionId: agent.sessionId,
         payload: { deviceId: 'dev-1', ...bootPayload },
       }))
@@ -2088,7 +2200,7 @@ describe('IOSAgent', () => {
       await waitForOpen(browser)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-27', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
 
       agent.disconnect()
@@ -2162,7 +2274,7 @@ describe('IOSAgent', () => {
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-28', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
       return { agent, browser }
     }
@@ -2208,7 +2320,7 @@ describe('IOSAgent', () => {
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
-      browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-29', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:ready')
       return { agent, browser }
     }

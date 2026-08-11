@@ -37,6 +37,31 @@ export type { UIElement } from '@tapflowio/protocol'
 
 type RelayMsg = Record<string, unknown>
 
+/**
+ * Matches a reply whose correlator is **optional** — the lifecycle pair only. An absent `requestId`
+ * means "this frame answers no request", which for `device:ready` / `device:boot-error` is a real and
+ * permanent case rather than an old agent, so it is accepted and logged rather than dropped. A present
+ * one must match, and what that buys is narrower than it looks — worth stating exactly, because the
+ * obvious claim ("it tells two concurrent boots apart") is false. The agents answer a **superseded** boot
+ * not at all: `bootSeq` makes every checkpoint after a newer boot return silently. So of two overlapping
+ * boots only the winner ever replies, and one waiter times out either way. What changes is *which*.
+ * `dispatch` resolves the first waiter whose predicate matches and stops, so on `sessionId` + type alone
+ * that single reply went to the boot registered **first** — the superseded one — and the boot that
+ * actually happened timed out. The correlator sends it to the request it answers.
+ *
+ * Deliberately **not** used for the app commands or clipboard. Their correlator is required, and
+ * lending them this fallback would restore the ambiguity that work removed — see
+ * 「No fallback, and one policy at the door」 in protocol/AGENTS.md.
+ */
+function correlatesWith(msg: RelayMsg, requestId: string): boolean {
+  const id = msg['requestId']
+  if (id === undefined) {
+    console.error(`[tapflow] ${String(msg['type'])} carried no requestId — matched on sessionId instead`)
+    return true
+  }
+  return id === requestId
+}
+
 interface Waiter {
   predicate: (msg: RelayMsg) => boolean
   resolve: (msg: RelayMsg) => void
@@ -193,12 +218,20 @@ export class TapflowClient {
     this.send({ type: 'session:leave', sessionId })
   }
 
+  // Correlated by `requestId` when the reply carries one, and by `sessionId` + type when it does not.
+  // The fallback is not compatibility slack, it is the contract: `device:ready` and `device:boot-error`
+  // have producers that answer no request at all — the relay replays a cached ready to a re-joining
+  // viewer, and an Android stream that dies mid-session reports it as a boot error. A strict match
+  // would be the wrong shape for those, and dropping them is not free either: this waiter is the only
+  // thing between `boot_device` and its 30s deadline. See 「Lifecycle correlation」 in protocol/AGENTS.md.
   async bootDevice(sessionId: string, deviceId: string): Promise<void> {
-    this.send({ type: 'device:boot', sessionId, payload: { deviceId } })
+    const requestId = randomUUID()
+    this.send({ type: 'device:boot', sessionId, requestId, payload: { deviceId } })
     const msg = await this.waitFor(
       (m) =>
         (m['type'] === 'device:ready' || m['type'] === 'device:boot-error') &&
-        m['sessionId'] === sessionId,
+        m['sessionId'] === sessionId &&
+        correlatesWith(m, requestId),
       30_000,
     )
     if (msg['type'] === 'device:boot-error') {
@@ -210,9 +243,13 @@ export class TapflowClient {
   // payload carries deviceId, matching the agent handler and the relay's own shutdown path. There is no
   // shutdown-error message: Android replies done regardless, iOS surfaces a failed shutdown as a wait timeout.
   async shutdownDevice(sessionId: string, deviceId: string): Promise<void> {
-    this.send({ type: 'device:shutdown', sessionId, payload: { deviceId } })
+    const requestId = randomUUID()
+    this.send({ type: 'device:shutdown', sessionId, requestId, payload: { deviceId } })
     await this.waitFor(
-      (m) => m['type'] === 'device:shutdown-done' && m['sessionId'] === sessionId,
+      (m) =>
+        m['type'] === 'device:shutdown-done' &&
+        m['sessionId'] === sessionId &&
+        correlatesWith(m, requestId),
       30_000,
     )
   }

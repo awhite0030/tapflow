@@ -727,29 +727,54 @@ export class RelayServer {
       }
 
       // ── Browser → Agent ────────────────────────────────────────────────────
-      case 'device:boot':
-      case 'device:shutdown': {
+      //
+      // These two shared one fall-through clause. Separated because the sharing is the trap for
+      // whoever adds the door gate: an `isCorrelated(msg)` written into a shared body would gate
+      // `device:shutdown` too, and the relay originates that message with no id — so the dashboard's
+      // four senders and the relay's own idle timer would stop reaching the agent, silently, in the
+      // one direction no reply reports. `correlatedRequestsGated` resolves fall-through by sharing the
+      // next non-empty body, so it would have read the gate as covering both and passed.
+      case 'device:boot': {
+        // At the door, before the session lookup — one policy for the whole request, the same shape as
+        // `open-url` next door. Both things the relay could do with an id-less boot are downstream of
+        // here (forward it, or answer it with a `device:boot-error`), and gating only one of them leaves
+        // the guarantee resting on whichever branch was not gated.
+        if (!isCorrelated(msg)) break
         const session = this.sessions.get(msg.sessionId!)
-        if (session?.agentSocket.readyState !== WebSocket.OPEN && msg.type === 'device:boot') {
+        if (session?.agentSocket.readyState !== WebSocket.OPEN) {
           // A boot the agent never receives leaves the viewer on "Waiting for first frame…" with
           // nothing said. `device:shutdown` gets no such reply: nothing waits on it, and inventing
           // a `device:shutdown-error` would grow the contract for a message no one reads.
           //
           // The two are worth telling apart: `bootDevice` is the first call an MCP caller makes, so
           // reporting a stale session id as a dead Mac sends the reader after the wrong problem.
+          //
+          // **The relay is a producer of this reply, so it echoes the correlator itself.** An MCP
+          // caller that receives this diagnosis uncorrelated reads it as unsolicited and waits out
+          // its deadline — the diagnosis arrives and is discarded. That defect shipped twice from
+          // agent code (`open-url:error`, then `clipboard:error`); here the producer is the relay,
+          // where `correlatedRequestsGated` cannot see it because the field is optional.
           this.sendTo(ws, {
             type: 'device:boot-error',
             sessionId: msg.sessionId!,
+            requestId: msg.requestId,
             message: session ? 'agent offline' : 'Session not found',
           })
           break
         }
+        // Tag the boot with whether the viewer is external (public IP) so the agent can pick the
+        // downscale tier. The browser already reports secureContext in the payload.
+        if (msg.payload && typeof msg.payload === 'object') {
+          (msg.payload as Record<string, unknown>).external = this.wsExternal.get(ws) ?? false
+        }
+        session.agentSocket.send(JSON.stringify(msg))
+        break
+      }
+      case 'device:shutdown': {
+        // Deliberately ungated: the relay sends this itself from the idle timer, with no browser and
+        // no id behind it, so a correlator cannot be required and an absent one is not an error.
+        const session = this.sessions.get(msg.sessionId!)
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
-          // Tag the boot with whether the viewer is external (public IP) so the agent can pick the
-          // downscale tier. The browser already reports secureContext in the payload.
-          if (msg.type === 'device:boot' && msg.payload && typeof msg.payload === 'object') {
-            (msg.payload as Record<string, unknown>).external = this.wsExternal.get(ws) ?? false
-          }
           session.agentSocket.send(JSON.stringify(msg))
         }
         break

@@ -191,7 +191,7 @@ describe('browser-inbound routing matches the protocol union', () => {
   const SIGNATURES = {
     AgentToBrowser: {
       'device:booting': 'sessionId',
-      'device:shutdown-done': 'payload sessionId',
+      'device:shutdown-done': 'payload requestId? sessionId',
       'app:install-done': 'requestId sessionId',
       'app:launch-done': 'requestId sessionId',
       'app:clear-state-done': 'requestId sessionId',
@@ -206,10 +206,10 @@ describe('browser-inbound routing matches the protocol union', () => {
     RelayOrAgentToBrowser: {
       'session:chrome': 'payload sessionId',
       'session:deviceInfo': 'payload sessionId',
-      'device:ready': 'payload sessionId?',
+      'device:ready': 'payload requestId? sessionId?',
       'app:install-error': 'message requestId sessionId',
       'app:launch-error': 'message requestId sessionId',
-      'device:boot-error': 'message sessionId',
+      'device:boot-error': 'message requestId? sessionId',
       'open-url:error': 'message requestId sessionId',
       'app:clear-state-error': 'message requestId sessionId',
       'input:error': 'message reason? sessionId',
@@ -220,8 +220,8 @@ describe('browser-inbound routing matches the protocol union', () => {
       'session:start': 'sessionId',
       'session:end': 'sessionId',
       'session:leave': 'sessionId',
-      'device:boot': 'payload sessionId',
-      'device:shutdown': 'payload sessionId',
+      'device:boot': 'payload requestId sessionId',
+      'device:shutdown': 'payload requestId? sessionId',
       'app:install': 'buildId requestId sessionId',
       'app:launch': 'buildId requestId sessionId',
       'app:clear-state': 'payload requestId sessionId',
@@ -243,7 +243,7 @@ describe('browser-inbound routing matches the protocol union', () => {
     RelayToAgent: {
       'agent:registered': 'registeredSessions',
       'stream:request-idr': 'sessionId',
-      'device:shutdown': 'payload sessionId',
+      'device:shutdown': 'payload requestId? sessionId',
       'app:install': 'payload requestId sessionId',
       'app:launch': 'payload requestId sessionId',
       'screenshot:request': 'format requestId sessionId',

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
 import { TapflowClient, REASON_ADVICE, reasonAdvice } from '../client.js'
 
@@ -415,6 +415,156 @@ describe('TapflowClient', () => {
       })
       const settled = await Promise.race([
         client.clearState('sess-1', 'com.example.app').then(() => 'resolved').catch(() => 'rejected'),
+        new Promise<string>((r) => setTimeout(() => r('still-waiting'), 150)),
+      ])
+      expect(settled).toBe('still-waiting')
+    })
+
+    // ── L5b′: the lifecycle pair, whose correlator is optional ─────────────────────────────────
+    //
+    // Different from the four above: an absent `requestId` is **accepted** here, because
+    // `device:ready` and `device:boot-error` have producers that answer no request — the relay replays
+    // a cached ready to a re-joining viewer, and an Android stream that dies mid-session reports it as
+    // a boot error. What the correlator buys is the rejection of a *mismatched* id.
+
+    it('mints a correlator on device:boot', async () => {
+      setTimeout(() => relay.send({ type: 'device:ready', sessionId: 'sess-1' }), 10)
+      await client.bootDevice('sess-1', 'dev-1')
+      const bootMsg = await waitForMessage(relay, 'device:boot')
+      expect(typeof bootMsg['requestId']).toBe('string')
+      expect(bootMsg['requestId']).not.toBe('')
+    })
+
+    it('does not resolve a boot on a ready carrying another request\'s correlator', async () => {
+      const ws = relay.lastClient()
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] !== 'device:boot') return
+        ws.send(JSON.stringify({ type: 'device:ready', sessionId: 'sess-1', requestId: 'someone-elses' }))
+      })
+      const settled = await Promise.race([
+        client.bootDevice('sess-1', 'dev-1').then(() => 'resolved').catch(() => 'rejected'),
+        new Promise<string>((r) => setTimeout(() => r('still-waiting'), 150)),
+      ])
+      expect(settled).toBe('still-waiting')
+    })
+
+    it('resolves a boot on the ready that answers it', async () => {
+      const ws = relay.lastClient()
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] !== 'device:boot') return
+        ws.send(JSON.stringify({ type: 'device:ready', sessionId: 'sess-1', requestId: msg['requestId'] }))
+      })
+      await expect(client.bootDevice('sess-1', 'dev-1')).resolves.toBeUndefined()
+    })
+
+    it('rejects a boot on the boot-error that answers it, and not on one that does not', async () => {
+      const ws = relay.lastClient()
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] !== 'device:boot') return
+        // A diagnosis for someone else's boot first. Accepting it would fail a boot that is still
+        // perfectly capable of succeeding, which is the mirror image of the deadline defect.
+        ws.send(JSON.stringify({ type: 'device:boot-error', sessionId: 'sess-1', requestId: 'not-mine', message: 'other' }))
+        setTimeout(() => ws.send(JSON.stringify({
+          type: 'device:boot-error', sessionId: 'sess-1', requestId: msg['requestId'], message: 'mine',
+        })), 20)
+      })
+      await expect(client.bootDevice('sess-1', 'dev-1')).rejects.toThrow('mine')
+    })
+
+    it('accepts a ready with no correlator, and says so', async () => {
+      // An agent predating the echo, and the relay's own replay. Dropping these would trade a
+      // misattribution for a 30s hang, so the fallback stands — but silently falling back is how a
+      // half-upgraded fleet stays invisible, so it is logged.
+      const logged: string[] = []
+      const spy = vi.spyOn(console, 'error').mockImplementation((m: unknown) => { logged.push(String(m)) })
+      try {
+        setTimeout(() => relay.send({ type: 'device:ready', sessionId: 'sess-1' }), 10)
+        await expect(client.bootDevice('sess-1', 'dev-1')).resolves.toBeUndefined()
+      } finally { spy.mockRestore() }
+      expect(logged.some((l) => l.includes('device:ready') && l.includes('no requestId'))).toBe(true)
+    })
+
+    it('is not satisfied by the relay\'s replay, which carries no sessionId at all', async () => {
+      // The replay frame is `{ type, payload }`. It is cached state addressed to a **join**, not an
+      // answer to a **boot**, and `readySent` is cleared by nothing while an agent is wedged-but-
+      // connected — which is exactly when a boot hangs, so the value is stalest when it would be
+      // consumed. What keeps it out is the `sessionId` comparison, not the correlator: an optional
+      // field can make a frame match more precisely, never make it fail to match.
+      //
+      // Staged genuinely mid-boot, which matters. In the ordinary sequence this client registers its
+      // boot waiter only after `session:start` resolves, and the relay sends its replays during that
+      // join — so the replay is dropped before any waiter exists and a test that merely joins first
+      // would pass with the comparison deleted.
+      const ws = relay.lastClient()
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] !== 'device:boot') return
+        ws.send(JSON.stringify({ type: 'device:ready', payload: { deviceId: 'dev-1' } }))
+      })
+      const settled = await Promise.race([
+        client.bootDevice('sess-1', 'dev-1').then(() => 'resolved').catch(() => 'rejected'),
+        new Promise<string>((r) => setTimeout(() => r('still-waiting'), 150)),
+      ])
+      expect(settled).toBe('still-waiting')
+    })
+
+    it('sends the one reply to the boot it answers, not to whichever waited first', async () => {
+      // **The correlator\'s actual payoff on this pair, and it is not "both boots resolve".** A superseded
+      // boot is answered by nothing at all — `bootSeq` makes every checkpoint in the agent return silently
+      // — so one of two overlapping boots times out either way. What the correlator changes is which.
+      // `dispatch` resolves the first waiter whose predicate matches and then stops, so on `sessionId` +
+      // type alone that single reply went to the boot registered **first**, i.e. the superseded one, and
+      // the boot that actually happened was reported as a failure.
+      const ws = relay.lastClient()
+      const ids: string[] = []
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] !== 'device:boot') return
+        ids.push(msg['requestId'] as string)
+        // Answer only the second, the way a real agent does once `bootSeq` has moved on.
+        if (ids.length === 2) {
+          ws.send(JSON.stringify({ type: 'device:ready', sessionId: 'sess-1', requestId: ids[1] }))
+        }
+      })
+
+      const first = client.bootDevice('sess-1', 'dev-1')
+      const second = client.bootDevice('sess-1', 'dev-1')
+
+      await expect(second).resolves.toBeUndefined()
+      expect(await Promise.race([
+        first.then(() => 'resolved').catch(() => 'rejected'),
+        new Promise<string>((r) => setTimeout(() => r('still-waiting'), 150)),
+      ])).toBe('still-waiting')
+      first.catch(() => { /* it times out on its own deadline; nothing here waits for that */ })
+    })
+
+    it('mints a correlator on device:shutdown', async () => {
+      // `bootDevice` has this and `shutdownDevice` did not, and the two tests either side of it cannot
+      // stand in: `toMatchObject` ignores a key that is absent, and the mismatch case below still passes
+      // against a hardcoded foreign id even when nothing was sent. Leave the id off the wire and the agent
+      // has nothing to echo, so `correlatesWith` falls back and resolves `shutdown_device` on *any*
+      // shutdown-done for the session — the relay's idle timer or the dashboard's unmount teardown can
+      // satisfy a shutdown that has not happened. It also logs "carried no requestId" on every call,
+      // blaming the agent for the client's omission.
+      setTimeout(() => relay.send({ type: 'device:shutdown-done', sessionId: 'sess-1' }), 10)
+      await client.shutdownDevice('sess-1', 'dev-1')
+      const msg = await waitForMessage(relay, 'device:shutdown')
+      expect(typeof msg['requestId']).toBe('string')
+      expect(msg['requestId']).not.toBe('')
+    })
+
+    it('does not resolve a shutdown on a done carrying another request\'s correlator', async () => {
+      const ws = relay.lastClient()
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] !== 'device:shutdown') return
+        ws.send(JSON.stringify({ type: 'device:shutdown-done', sessionId: 'sess-1', requestId: 'someone-elses' }))
+      })
+      const settled = await Promise.race([
+        client.shutdownDevice('sess-1', 'dev-1').then(() => 'resolved').catch(() => 'rejected'),
         new Promise<string>((r) => setTimeout(() => r('still-waiting'), 150)),
       ])
       expect(settled).toBe('still-waiting')

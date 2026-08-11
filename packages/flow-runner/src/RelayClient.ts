@@ -37,6 +37,27 @@ export interface AgentSession {
  *  Outbound is `BrowserToRelay` — see `send` below. */
 type RelayMsg = Record<string, unknown>
 
+/**
+ * Matches a reply whose correlator is **optional** — the lifecycle pair only. An absent `requestId`
+ * means "this frame answers no request", which for `device:ready` / `device:boot-error` is a real and
+ * permanent case rather than an old agent, so it is accepted and logged rather than dropped. A present
+ * one must match. Not that it tells two concurrent boots apart — the agents answer a superseded boot not
+ * at all (`bootSeq`), so one waiter times out either way. `dispatch` resolves the first matching waiter and
+ * stops, so on `sessionId` + type alone the single reply went to whichever boot registered first, and the
+ * boot that actually happened was the one that timed out. The correlator fixes the attribution.
+ *
+ * Deliberately not used for the app commands, whose correlator is required: lending them this fallback
+ * would restore the ambiguity that work removed. See protocol/AGENTS.md.
+ */
+function correlatesWith(msg: RelayMsg, requestId: string): boolean {
+  const id = msg['requestId']
+  if (id === undefined) {
+    console.error(`[tapflow] ${String(msg['type'])} carried no requestId — matched on sessionId instead`)
+    return true
+  }
+  return id === requestId
+}
+
 interface Waiter {
   predicate: (msg: RelayMsg) => boolean
   resolve: (msg: RelayMsg) => void
@@ -143,9 +164,10 @@ export class RelayClient {
   }
 
   async bootDevice(sessionId: string, deviceId: string): Promise<void> {
-    this.send({ type: 'device:boot', sessionId, payload: { deviceId } })
+    const requestId = randomUUID()
+    this.send({ type: 'device:boot', sessionId, requestId, payload: { deviceId } })
     const msg = await this.waitFor(
-      (m) => (m['type'] === 'device:ready' || m['type'] === 'device:boot-error') && m['sessionId'] === sessionId,
+      (m) => (m['type'] === 'device:ready' || m['type'] === 'device:boot-error') && m['sessionId'] === sessionId && correlatesWith(m, requestId),
       120_000,
       'device boot',
     )

@@ -63,6 +63,38 @@ out to be a real bug hiding inside a *handled* type (`error`, whose meaning was 
 **Do not branch on a message's `message` field.** It is prose the producer owns. `error` carries a closed
 `reason`; branch on that, exhaustively.
 
+### The lifecycle replies are correlated **selectively**, and the exceptions are the point
+
+`DeviceViewer` mints a `requestId` for every `device:boot` it sends and gates on it — but not uniformly,
+and the disposition table above cannot show the difference. Three rules, each holding a defect shut:
+
+- **`device:boot-error` is never correlated.** `AndroidAgent.restartVideoStream` sends it for a stream
+  that died mid-session, with no `device:boot` behind it and so no id it could carry, and this branch is
+  the only surface that reports it. Gate it and a dead stream becomes a picture that has quietly stopped
+  updating — #426's symptom.
+- **`setDeviceReady(true)` runs before the gate.** The relay replays a cached `device:ready` to a
+  re-joining viewer as `{ type, payload }` — no `sessionId`, no correlator — and clearing the spinner is
+  what that replay is *for* (#440).
+- **Everything else on `device:ready` is gated, with absent accepted.** A mismatched id is rejected; an
+  absent one is not, because both the replay and an agent predating the echo arrive that way — and while
+  the correlator is optional those two are indistinguishable. So what this newly catches is a straggler
+  from an earlier boot cycle releasing the current rebind, and *not* the replayed ready firing a duplicate
+  install, which stays as it was.
+
+And a fourth rule, about the set rather than the gate — **`bootIdsRef` is cleared on `session:joined` and
+nowhere else.** Not on `device:booting`, even though that branch is where every other per-cycle record is
+dropped and its comment says so: both agents send `device:booting` *before* the `device:ready` answering the
+same boot, so a boot id has to span it. Clearing it there rejects every real ready, and the failure is quiet
+in the worst way — the spinner clears, the device looks healthy, and the app is never installed. That one
+was found by review after the first three were already pinned: the tests held what the gate did **with** an
+id and nothing held how ids entered or left the set.
+
+Getting any of the three the other way round passes typecheck and most of the suite:
+`src/__tests__/DeviceViewer.lifecycleCorrelation.test.tsx` is what fails. Nothing else can — the
+correlator on these replies is optional, so neither the compiler nor
+`scripts/__tests__/correlatedRequestsGated.test.mjs` sees this pair at all. Background:
+「Lifecycle correlation」 in [protocol/AGENTS.md](../protocol/AGENTS.md).
+
 ### `input:error` is shown per input, and there is no session-level input state
 
 A failed input surfaces as a toast keyed on the wire `reason` (`lib/inputErrorNotice.ts`), or is shown

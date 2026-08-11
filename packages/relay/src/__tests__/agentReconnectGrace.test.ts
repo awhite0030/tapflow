@@ -223,7 +223,7 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
     await closeAndSettle(first.agent)
     await waitForType(browser, 'session:terminated')
 
-    browser.send(JSON.stringify({ type: 'device:boot', sessionId, payload: { deviceId: 'devA' } }))
+    browser.send(JSON.stringify({ type: 'device:boot', sessionId, requestId: 'rq-grace', payload: { deviceId: 'devA' } }))
 
     expect((await waitForType<RelayMessage>(browser, 'device:boot-error')).message).toBe('Session not found')
 

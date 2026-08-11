@@ -31,6 +31,13 @@ export function useAgentSession(os: string) {
     activeSessionRef.current = { sessionId: activeSessionId, deviceId }
   }, [activeSessionId, deviceId])
 
+  // These three `device:shutdown` sends carry **no `requestId`, on purpose.** Nothing in this hook reads
+  // `device:shutdown-done` — the correlator would be minted for a reply no one is waiting for, and one of
+  // the three fires from unmount teardown, where there is nothing left to resolve. That is safe
+  // permanently rather than for now: the relay originates this message itself, so its correlator is
+  // optional by contract and can never be gated at the door. A consumer that later wants to correlate a
+  // shutdown adds the id at the sender it cares about. See 「Lifecycle correlation」 in protocol/AGENTS.md.
+  //
   // unmount cleanup — runs before useRelay's ws.close
   useEffect(() => {
     return () => {

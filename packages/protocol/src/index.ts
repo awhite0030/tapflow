@@ -214,9 +214,14 @@ export interface StreamRequestIdr {
   sessionId: string
 }
 
+// Optional, unlike every other correlated request, because **the relay originates this one** — the
+// idle timer at `RelayServer.ts` shuts a device down with no browser behind it. This is one interface
+// serving both `BrowserToRelay` and `RelayToAgent`, so required here would be unsatisfiable there.
+// See 「Lifecycle correlation」 in AGENTS.md.
 export interface DeviceShutdown {
   type: 'device:shutdown'
   sessionId: string
+  requestId?: string
   payload: { deviceId: string }
 }
 
@@ -341,6 +346,20 @@ export type InputErrorReason =
 // The real defect underneath is that leaving a session does not clear its waiters — a *real* ready
 // after a re-join already satisfies the stale one. That is filed separately. The mechanism that makes
 // this message tightenable is a request correlator, not another field.
+//
+// **That correlator landed and `device:ready` is still `sessionId?` — deliberately.** The correlator
+// is `requestId?` below, and it is optional, so it cannot *replace* the sessionId comparison; it can
+// only run ahead of it. Which means the unstamped replay is still what the two boot waiters discriminate
+// on, and stamping it now would delete the working discriminator rather than make a tightened one
+// redundant. Tightening this field and having the relay stamp its replay is therefore one later slice
+// of its own — and it must carry a test pinning the **value** stamped, because there is none: with the
+// stamp mutated to `session.deviceId`, a plausible slip on a line whose `payload` reads
+// `{ deviceId: session.deviceId }`, every relay test, every dashboard test and the whole static suite
+// still passed — measured on `1bf47c8`, before the tests in this pair existed. Deliberately no totals:
+// they move every slice, and a stale number here reads as a reason to doubt the measurement.
+// `deviceReadyReplay.test.ts` scopes itself out of that value in writing, and states the cost: a
+// wrong-but-present id is dropped by the dashboard's gate, and the symptom is #440 — the very defect the
+// replay exists to prevent, so nothing else would report it.
 export interface SessionChrome {
   type: 'session:chrome'
   sessionId: string
@@ -356,6 +375,8 @@ export interface SessionDeviceInfo {
 export interface DeviceReady {
   type: 'device:ready'
   sessionId?: string
+  /** Absent = this is not the answer to a `device:boot`. See 「Lifecycle correlation」 in AGENTS.md. */
+  requestId?: string
   payload: { deviceId: string }
 }
 
@@ -393,8 +414,14 @@ export interface AppLaunchError extends SessionError {
   requestId: string
 }
 
+// The only error on this surface whose correlator is optional, and it is not for compatibility.
+// `AndroidAgent.restartVideoStream` sends this message with **no `device:boot` behind it** — a stream
+// that died mid-session and failed to come back, reported through the one field the dashboard renders.
+// So an unsolicited producer is not a possibility here, it is in the repo with a test on it, and a
+// consumer that correlates this message drops the only report of a dead stream. See AGENTS.md.
 export interface DeviceBootError extends SessionError {
   type: 'device:boot-error'
+  requestId?: string
 }
 
 export interface OpenUrlError extends SessionError {
@@ -526,6 +553,8 @@ export interface DeviceBooting {
 
 export interface DeviceShutdownDone {
   type: 'device:shutdown-done'
+  /** Absent = this shutdown was not requested by a browser — the relay's idle timer ran. */
+  requestId?: string
   sessionId: string
   payload: { deviceId: string }
 }
@@ -871,6 +900,15 @@ export interface SessionLeave {
 export interface DeviceBoot {
   type: 'device:boot'
   sessionId: string
+  /**
+   * Required, unlike every reply in this pair. Absence has no legitimate meaning on the request side —
+   * nothing originates a boot but a browser, so there is no producer for an id-less one to belong to.
+   * This is what puts `device:boot` inside 「No fallback, and one policy at the door」: required is what
+   * `correlatedRequestsGated` derives its set from, and what makes the relay's door gate reachable.
+   *
+   * `device:shutdown` below stays optional for the opposite reason — the relay sends that one itself.
+   */
+  requestId: string
   payload: { deviceId: string; resetMode?: 'app-only' | 'full-erase'; acceptH264?: boolean; secureContext?: boolean }
 }
 

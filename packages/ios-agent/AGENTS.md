@@ -424,7 +424,9 @@ signature only with evidence.
 ```typescript
 browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
 await waitForType(browser, 'session:joined')
-browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+// `requestId` is **required** on device:boot and the relay drops a boot without one at the door —
+// silently, since an uncorrelatable request gets no reply. Omit it and this wait simply times out.
+browser.send(JSON.stringify({ type: 'device:boot', sessionId: agent.sessionId, requestId: 'rq-1', payload: { deviceId: 'dev-1' } }))
 await waitForType(browser, 'device:ready')
 // device:ready alone does not mean the mock exists yet — see below. Sync on the mock itself.
 await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterThan(0))
