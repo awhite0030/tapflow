@@ -6,7 +6,7 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
 import type { RelayMessage } from '../types'
-import { waitForOpen, waitForType } from '@tapflowio/test-utils'
+import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 
 
 describe('clipboard bridge relay routing', () => {
@@ -243,5 +243,26 @@ describe('clipboard bridge relay routing', () => {
     expect((data.payload as { text: string }).text).toBe('legit')
 
     rogue.close(); agent.close(); browser.close()
+  })
+
+  it('drops a clipboard:read whose correlator is an empty string', async () => {
+    // Clipboard is not part of the correlation layer's pair set — it has carried a required `requestId`
+    // since it was written — but the relay answered an id-less request with `requestId: msg.requestId!`,
+    // which is a **write into an outbound frame**: `JSON.stringify` erases the absent key and ships a
+    // `clipboard:error` whose required correlator is missing, which `useClipboardBridge` discards on
+    // `if (!msg.requestId) return`. So "agent offline" became the caller waiting out its budget. The same
+    // defect was removed for `open-url`; this pins the door check that stops it here.
+    //
+    // The agent socket is closed first so the request would otherwise take the answering branch — the one
+    // that used to produce the invalid frame.
+    const { agent, browser, sessionId } = await setup()
+    agent.close()
+    await barrier(browser)
+
+    browser.send(JSON.stringify({ type: 'clipboard:read', sessionId, requestId: '' }))
+    await barrier(browser)
+    expect(await waitForTypeOrNull(browser, 'clipboard:error', 0)).toBeNull()
+
+    browser.close()
   })
 })

@@ -42,7 +42,6 @@ interface IOSViewerProps {
   installError: string | null;
   bootError: string | null;
   launching: boolean;
-  setLaunching: (v: boolean) => void;
   chrome: ChromeData;
   binaryFrameHandlerRef: React.MutableRefObject<BinaryFrameHandler | undefined>;
   clipboardHandlerRef: React.MutableRefObject<ClipboardMessageHandler | undefined>;
@@ -57,7 +56,7 @@ interface IOSViewerProps {
 export function IOSViewer({
   sessionId, buildId, send, openUrl, launchApp, connected, joined,
   deviceReady, installing, installed, installError, bootError,
-  launching, setLaunching, chrome,
+  launching, chrome,
   binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, onRecordingUploaded,
   swKeyboardVisible, swKeyboardPending, onKbdToggle,
   perfHookRef,

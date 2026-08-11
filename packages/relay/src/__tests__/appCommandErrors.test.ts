@@ -6,7 +6,7 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb, getDb } from '../db'
 import type { RelayMessage } from '../types'
-import { waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
+import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 
 
 // #445: every failure of app:install / app:launch has to reach the caller, carrying the sessionId
@@ -276,7 +276,7 @@ describe('app command failures reach the caller (#445)', () => {
     agent.close(); browser.close()
   })
 
-  it('still forwards a valid install to the agent', async () => {
+  it('still forwards a valid install to the agent, carrying the request\'s correlator', async () => {
     const { agent, browser, sessionId } = await connectAgentAndBrowser()
     const buildId = insertBuild('com.example.demo')
 
@@ -286,7 +286,64 @@ describe('app command failures reach the caller (#445)', () => {
 
     expect(forwarded.sessionId).toBe(sessionId)
     expect((forwarded.payload as { filePath: string }).filePath).toBe('/tmp/demo.app')
+    // This is the whole guard for the rebuild. The relay does not forward this message — it builds a
+    // different one from a DB row — and the agent's reply comes back through a generic forward the relay
+    // never inspects, so an id that does not survive the rebuild makes the reply unattributable. The
+    // compiler catches the field being *absent*; nothing catches the wrong value being copied, because a
+    // brand names a kind and provenance is a property of the instance. Hence this line.
+    //
+    // `rq-10` is deliberately unlike `sessionId` (a UUID), `filePath` and `bundleId`: a fixture that
+    // reused any of those would pass the mutation this exists to fail.
+    expect(forwarded.requestId).toBe('rq-10')
 
     agent.close(); browser.close()
   })
+
+  it('forwards a valid launch to the agent, carrying the request\'s correlator', async () => {
+    // `app:launch` is a separate handler with its own rebuild, so it needs its own assertion — the two
+    // are not one code path with a parameter.
+    const { agent, browser, sessionId } = await connectAgentAndBrowser()
+    const buildId = insertBuild('com.example.demo')
+
+    browser.send(JSON.stringify({ type: 'app:launch', requestId: 'rq-11', sessionId, buildId }))
+    const forwarded = await waitForType(agent, 'app:launch')
+
+    expect(forwarded.sessionId).toBe(sessionId)
+    expect((forwarded.payload as { bundleId: string }).bundleId).toBe('com.example.demo')
+    expect(forwarded.requestId).toBe('rq-11')
+
+    agent.close(); browser.close()
+  })
+
+  // Door drops. Each asserts the request does not reach the agent, which is the half a compile error
+  // cannot cover: `requestId: ''` type-checks against a required `string`, and nothing validates inbound
+  // JSON (#444).
+  //
+  // **A real build row is load-bearing.** The first version of these passed `buildId: 1` with nothing in
+  // the table, so `app:launch` never reached the agent because the *lookup* failed — and the test stayed
+  // green under a mutation that opened the door. The request has to be one that would otherwise be
+  // forwarded, or the assertion is about the wrong thing.
+  //
+  // Two barriers, on two sockets: order holds *within* a connection, so a round-trip on the agent proves
+  // nothing about a message sent on the browser. Browser first — the relay has now processed the request
+  // and forwarded it if it was going to — then the agent, then read.
+  for (const [type, body] of [
+    ['app:install', 'build'],
+    ['app:launch', 'build'],
+    ['app:clear-state', 'bundle'],
+  ] as const) {
+    it(`drops a ${type} whose correlator is an empty string`, async () => {
+      const { agent, browser, sessionId } = await connectAgentAndBrowser()
+      const extra = body === 'build'
+        ? { buildId: insertBuild('com.example.demo') }
+        : { payload: { bundleId: 'com.example.demo' } }
+
+      browser.send(JSON.stringify({ type, sessionId, requestId: '', ...extra }))
+      await barrier(browser)
+      await barrier(agent)
+      expect(await waitForTypeOrNull(agent, type, 0)).toBeNull()
+
+      agent.close(); browser.close()
+    })
+  }
 })

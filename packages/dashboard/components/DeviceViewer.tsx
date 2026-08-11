@@ -407,7 +407,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const commonProps = {
     sessionId, buildId, send, openUrl, launchApp, connected, joined,
     deviceReady, installing, installed, installError, bootError,
-    launching, setLaunching,
+    launching,
     binaryFrameHandlerRef,
     clipboardHandlerRef,
     clipboardSupported: agentCapabilities.includes('clipboard'),

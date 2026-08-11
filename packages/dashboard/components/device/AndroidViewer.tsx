@@ -42,7 +42,6 @@ interface AndroidViewerProps {
   installError: string | null;
   bootError: string | null;
   launching: boolean;
-  setLaunching: (v: boolean) => void;
   androidButtons: AndroidButton[] | null;
   binaryFrameHandlerRef: React.RefObject<BinaryFrameHandler | undefined>;
   clipboardHandlerRef: React.MutableRefObject<ClipboardMessageHandler | undefined>;
@@ -59,7 +58,7 @@ interface AndroidViewerProps {
 export function AndroidViewer({
   sessionId, buildId, send, openUrl, launchApp, connected, joined,
   deviceReady, installing, installed, installError, bootError,
-  launching, setLaunching, androidButtons,
+  launching, androidButtons,
   binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, onRecordingUploaded,
   screenWidth, screenHeight, cornerRadius,
   perfHookRef,
