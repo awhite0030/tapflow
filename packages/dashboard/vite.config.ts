@@ -27,17 +27,11 @@ export default defineConfig({
             return 'vendor-router'
           }
 
-          if (id.includes('/react-hook-form/') || id.includes('/@hookform/') || id.includes('/zod/')) {
-            return 'vendor-forms'
-          }
-
-          if (id.includes('/@radix-ui/') || id.includes('/lucide-react/') || id.includes('/sonner/')) {
-            return 'vendor-ui'
-          }
-
           if (id.includes('/@visx/') || id.includes('/d3-array/')) {
             return 'vendor-charts'
           }
+
+          return undefined
         },
       },
     },

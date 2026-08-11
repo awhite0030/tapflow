@@ -2,4 +2,4 @@
 '@tapflowio/relay': patch
 ---
 
-Improve dashboard loading performance by splitting large application and vendor bundles.
+Split stable dashboard vendor dependencies into smaller chunks to reduce maximum bundle size and improve cache reuse across releases.
