@@ -14,6 +14,33 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('/node_modules/')) return undefined
+
+          if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) {
+            return 'vendor-react'
+          }
+
+          if (id.includes('/react-router/') || id.includes('/react-router-dom/')) {
+            return 'vendor-router'
+          }
+
+          if (id.includes('/react-hook-form/') || id.includes('/@hookform/') || id.includes('/zod/')) {
+            return 'vendor-forms'
+          }
+
+          if (id.includes('/@radix-ui/') || id.includes('/lucide-react/') || id.includes('/sonner/')) {
+            return 'vendor-ui'
+          }
+
+          if (id.includes('/@visx/') || id.includes('/d3-array/')) {
+            return 'vendor-charts'
+          }
+        },
+      },
+    },
   },
   // ESM worker (tinyh264.worker imports tinyh264) — 'es' format so the worker chunk
   // can code-split its static imports. Default 'iife' breaks on code-split workers.
