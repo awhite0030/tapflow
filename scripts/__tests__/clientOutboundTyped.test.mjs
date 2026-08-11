@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { sources } from './sourceFiles.mjs'
 import { join } from 'node:path'
 import ts from 'typescript'
 
@@ -47,22 +48,6 @@ const FILES = {
   'mcp-server': 'packages/mcp-server/src/client.ts',
   'flow-runner': 'packages/flow-runner/src/RelayClient.ts',
   dashboard: 'packages/dashboard/hooks/useRelay.ts',
-}
-
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.next', 'coverage', '__tests__', '.turbo'])
-
-/** Every source file under `packages/`, walked from disk rather than `git ls-files`. Measured: a new sender file
- *  that serializes escapes the completeness check below while it is untracked, and "I just added it" is exactly
- *  when it is untracked. `agentSendTyped.test.mjs` has the same hole for the same reason. */
-function sources(dir, out = []) {
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (e.isDirectory()) {
-      if (!SKIP_DIRS.has(e.name)) sources(join(dir, e.name), out)
-    } else if (/\.(ts|tsx)$/.test(e.name) && !e.name.endsWith('.d.ts')) {
-      out.push(join(dir, e.name).slice(root.length + 1))
-    }
-  }
-  return out
 }
 
 const isFn = (n) =>

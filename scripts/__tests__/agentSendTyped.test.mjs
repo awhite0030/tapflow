@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { sources } from './sourceFiles.mjs'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -75,8 +75,7 @@ describe('agent sends go through the typed helpers', () => {
     ])
     const offenders = []
     for (const pkg of ['packages/ios-agent/src', 'packages/android-agent/src', 'packages/agent-core/src']) {
-      const files = execFileSync('git', ['ls-files', pkg], { cwd: root, encoding: 'utf8' })
-        .split('\n').filter((f) => f.endsWith('.ts') && !f.includes('__tests__'))
+      const files = sources(pkg).filter((f) => f.endsWith('.ts'))
       for (const f of files) {
         if (Object.values(AGENTS).includes(f) || ALLOWED.has(f)) continue
         const body = stripComments(readFileSync(join(root, f), 'utf8'))
