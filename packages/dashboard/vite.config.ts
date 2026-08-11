@@ -16,6 +16,9 @@ export default defineConfig({
     outDir: 'dist',
     rollupOptions: {
       output: {
+        // Only split families the app shell already loads synchronously, plus charts.
+        // Grouping @radix-ui / react-hook-form here was measured and reverted: it turned
+        // lazy dialog and form code into modulepreloads, adding ~14 kB Brotli to first paint.
         manualChunks(id) {
           if (!id.includes('/node_modules/')) return undefined
 
