@@ -256,7 +256,13 @@ describe('clipboard bridge relay routing', () => {
     // The agent socket is closed first so the request would otherwise take the answering branch — the one
     // that used to produce the invalid frame.
     const { agent, browser, sessionId } = await setup()
+    // Awaiting the close *event*, not a browser round-trip. A barrier on the browser proves the relay
+    // processed something sent on the browser — it says nothing about the relay having seen the agent go,
+    // and until it has, an ungated request is forwarded to a still-open socket and no error is produced.
+    // The test would then pass with the gate removed. `appCommandErrors.test.ts` uses this same form.
+    const gone = new Promise<void>((r) => agent.on('close', () => r()))
     agent.close()
+    await gone
     await barrier(browser)
 
     browser.send(JSON.stringify({ type: 'clipboard:read', sessionId, requestId: '' }))

@@ -103,6 +103,25 @@ describe('DeviceViewer only acts on app-command replies it asked for', () => {
     expect(sentId('app:launch')).not.toBe(first)
   })
 
+  it('ignores an install reply from a boot cycle that has ended', () => {
+    // The record has to expire with the cycle that made it. `device:booting` already clears everything
+    // else a new cycle invalidates; without the ids going too, cycle 1's reply arrives while cycle 2's
+    // install is in flight and sets `installed` — a Launch control for an app that is not there yet.
+    live(7)
+    const stale = sentId('app:install')
+
+    act(() => { deliver!({ type: 'device:booting', sessionId: 'mine' }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 'mine', payload: { deviceId: 'dev-1' } }) })
+    const current = sentId('app:install')
+    expect(current).not.toBe(stale)
+
+    act(() => { deliver!({ type: 'app:install-done', sessionId: 'mine', requestId: stale }) })
+    expect(screen.getByText(/Installing/)).toBeInTheDocument()
+
+    act(() => { deliver!({ type: 'app:install-done', sessionId: 'mine', requestId: current }) })
+    expect(screen.queryByText(/Installing/)).not.toBeInTheDocument()
+  })
+
   it('drops a reply from an agent older than the field, and that is the upgrade cost', () => {
     // The relay forwards agent replies without inspecting them, so an agent predating `requestId` puts the
     // key on the wire absent — `Set.delete(undefined)` is false and the reply is discarded. The `fixed`

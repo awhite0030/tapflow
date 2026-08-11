@@ -272,6 +272,20 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       setInstalled(false);
       setInstallError(null);
       setBootError(null);
+      // A boot cycle invalidates the installs of the previous one, and this handler is where everything
+      // else a new cycle invalidates is already cleared. Without it the record outlives the cycle that
+      // made it: cycle 1's `app:install-done` can arrive while cycle 2's install is still in flight, and
+      // it would set `installed` — showing a Launch control for an app that is not on the device yet.
+      //
+      // The pre-correlation code had the same hole and a wider one (any install reply set the flag,
+      // including another client's), so this is not a regression — but the correlator is what makes the
+      // precise fix possible, and adding the record without a lifetime is what left it.
+      //
+      // Not a generation counter, because the boundary already exists. What this does not cover is two
+      // `device:ready` in one cycle — the relay replays that message on a re-join — and there both ids
+      // install the same build, so the first reply clearing `installing` is imprecise rather than wrong.
+      appInstallIdsRef.current.clear();
+      appLaunchIdsRef.current.clear();
       setChrome(null); // causes active viewer to unmount → cleanup
     }
     if (msg.type === 'device:ready') {
