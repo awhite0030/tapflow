@@ -6,7 +6,7 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb, getDb } from '../db'
 import type { RelayMessage } from '../types'
-import { waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
+import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 
 
 // #445: every failure of app:install / app:launch has to reach the caller, carrying the sessionId
@@ -88,13 +88,14 @@ describe('app command failures reach the caller (#445)', () => {
   it('answers an unknown session with an app-specific error, not a generic one', async () => {
     const { agent, browser } = await connectAgentAndBrowser()
 
-    browser.send(JSON.stringify({ type: 'app:install', sessionId: 'no-such-session', buildId: 1 }))
+    browser.send(JSON.stringify({ type: 'app:install', requestId: 'rq-1', sessionId: 'no-such-session', buildId: 1 }))
     // A generic `error` cannot be correlated by construction — the caller cannot tell whose
     // request it answers, so it keeps waiting.
     const msg = await waitForTypeOrNull(browser, 'app:install-error')
 
     expect(msg?.type).toBe('app:install-error')
     expect(msg?.sessionId).toBe('no-such-session')
+    expect(msg?.requestId).toBe('rq-1')
 
     agent.close(); browser.close()
   })
@@ -102,8 +103,12 @@ describe('app command failures reach the caller (#445)', () => {
   it('carries the sessionId when the build is missing', async () => {
     const { agent, browser, sessionId } = await connectAgentAndBrowser()
 
-    browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId: 999999 }))
+    browser.send(JSON.stringify({ type: 'app:install', requestId: 'rq-2', sessionId, buildId: 999999 }))
     const msg = await waitForType(browser, 'app:install-error')
+    // The correlator on this exit is held by nothing else: the compiler sees the field is
+    // present, not that it is the request's, and a wrong value now *latches* the dashboard
+    // rather than merely misattributing — the gate discards it and nothing clears `installing`.
+    expect(msg.requestId).toBe('rq-2')
 
     expect(msg.message).toBe('Build not found')
     expect(msg.sessionId).toBe(sessionId)
@@ -115,8 +120,12 @@ describe('app command failures reach the caller (#445)', () => {
     const { agent, browser, sessionId } = await connectAgentAndBrowser()
     const buildId = insertBuild(null)
 
-    browser.send(JSON.stringify({ type: 'app:launch', sessionId, buildId }))
+    browser.send(JSON.stringify({ type: 'app:launch', requestId: 'rq-3', sessionId, buildId }))
     const msg = await waitForType(browser, 'app:launch-error')
+    // The correlator on this exit is held by nothing else: the compiler sees the field is
+    // present, not that it is the request's, and a wrong value now *latches* the dashboard
+    // rather than merely misattributing — the gate discards it and nothing clears `installing`.
+    expect(msg.requestId).toBe('rq-3')
 
     expect(msg.message).toBe('Bundle ID not available for this build')
     expect(msg.sessionId).toBe(sessionId)
@@ -137,11 +146,12 @@ describe('app command failures reach the caller (#445)', () => {
     agent.close()
     await closed
 
-    browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId }))
+    browser.send(JSON.stringify({ type: 'app:install', requestId: 'rq-4', sessionId, buildId }))
     const msg = await waitForTypeOrNull(browser, 'app:install-error')
 
     expect(msg?.type).toBe('app:install-error')
     expect(msg?.sessionId).toBe(sessionId)
+    expect(msg?.requestId).toBe('rq-4')
 
     browser.close()
   })
@@ -154,11 +164,12 @@ describe('app command failures reach the caller (#445)', () => {
     agent.close()
     await closed
 
-    browser.send(JSON.stringify({ type: 'app:launch', sessionId, buildId }))
+    browser.send(JSON.stringify({ type: 'app:launch', requestId: 'rq-5', sessionId, buildId }))
     const msg = await waitForTypeOrNull(browser, 'app:launch-error')
 
     expect(msg?.type).toBe('app:launch-error')
     expect(msg?.sessionId).toBe(sessionId)
+    expect(msg?.requestId).toBe('rq-5')
 
     browser.close()
   })
@@ -199,11 +210,12 @@ describe('app command failures reach the caller (#445)', () => {
   ])('answers %s without going silent', async (_label, buildId) => {
     const { agent, browser, sessionId } = await connectAgentAndBrowser()
 
-    browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId }))
+    browser.send(JSON.stringify({ type: 'app:install', requestId: 'rq-6', sessionId, buildId }))
     const msg = await waitForTypeOrNull(browser, 'app:install-error')
 
     expect(msg?.type).toBe('app:install-error')
     expect(msg?.sessionId).toBe(sessionId)
+    expect(msg?.requestId).toBe('rq-6')
 
     agent.close(); browser.close()
   })
@@ -219,11 +231,12 @@ describe('app command failures reach the caller (#445)', () => {
   ])('answers a buildId that is %s', async (_label, buildId) => {
     const { agent, browser, sessionId } = await connectAgentAndBrowser()
 
-    browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId }))
+    browser.send(JSON.stringify({ type: 'app:install', requestId: 'rq-7', sessionId, buildId }))
     const msg = await waitForTypeOrNull(browser, 'app:install-error')
 
     expect(msg?.type).toBe('app:install-error')
     expect(msg?.sessionId).toBe(sessionId)
+    expect(msg?.requestId).toBe('rq-7')
 
     agent.close(); browser.close()
   })
@@ -231,11 +244,12 @@ describe('app command failures reach the caller (#445)', () => {
   it('answers an object buildId on the launch path too', async () => {
     const { agent, browser, sessionId } = await connectAgentAndBrowser()
 
-    browser.send(JSON.stringify({ type: 'app:launch', sessionId, buildId: {} }))
+    browser.send(JSON.stringify({ type: 'app:launch', requestId: 'rq-8', sessionId, buildId: {} }))
     const msg = await waitForTypeOrNull(browser, 'app:launch-error')
 
     expect(msg?.type).toBe('app:launch-error')
     expect(msg?.sessionId).toBe(sessionId)
+    expect(msg?.requestId).toBe('rq-8')
 
     agent.close(); browser.close()
   })
@@ -251,7 +265,7 @@ describe('app command failures reach the caller (#445)', () => {
     browser.send(raw)
     // Still serving afterwards is the assertion: a thrown TypeError here would surface as an
     // unhandled error and, in production, take the process with it.
-    browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId: 999999 }))
+    browser.send(JSON.stringify({ type: 'app:install', requestId: 'rq-9', sessionId, buildId: 999999 }))
     const msg = await waitForTypeOrNull(browser, 'app:install-error')
 
     expect(msg?.type).toBe('app:install-error')
@@ -276,17 +290,77 @@ describe('app command failures reach the caller (#445)', () => {
     agent.close(); browser.close()
   })
 
-  it('still forwards a valid install to the agent', async () => {
+  it('still forwards a valid install to the agent, carrying the request\'s correlator', async () => {
     const { agent, browser, sessionId } = await connectAgentAndBrowser()
     const buildId = insertBuild('com.example.demo')
 
-    browser.send(JSON.stringify({ type: 'app:install', sessionId, buildId }))
+    browser.send(JSON.stringify({ type: 'app:install', requestId: 'rq-10', sessionId, buildId }))
     // The error paths are only correct if the success path is untouched.
     const forwarded = await waitForType(agent, 'app:install')
 
     expect(forwarded.sessionId).toBe(sessionId)
     expect((forwarded.payload as { filePath: string }).filePath).toBe('/tmp/demo.app')
+    // This is the whole guard for the rebuild. The relay does not forward this message — it builds a
+    // different one from a DB row — and the agent's reply comes back through a generic forward the relay
+    // never inspects, so an id that does not survive the rebuild makes the reply unattributable. The
+    // compiler catches the field being *absent*; nothing catches the wrong value being copied, because a
+    // brand names a kind and provenance is a property of the instance. Hence this line.
+    //
+    // `rq-10` is deliberately unlike `sessionId` (a UUID), `filePath` and `bundleId`: a fixture that
+    // reused any of those would pass the mutation this exists to fail.
+    expect(forwarded.requestId).toBe('rq-10')
 
     agent.close(); browser.close()
   })
+
+  it('forwards a valid launch to the agent, carrying the request\'s correlator', async () => {
+    // `app:launch` is a separate handler with its own rebuild, so it needs its own assertion — the two
+    // are not one code path with a parameter.
+    const { agent, browser, sessionId } = await connectAgentAndBrowser()
+    const buildId = insertBuild('com.example.demo')
+
+    browser.send(JSON.stringify({ type: 'app:launch', requestId: 'rq-11', sessionId, buildId }))
+    const forwarded = await waitForType(agent, 'app:launch')
+
+    expect(forwarded.sessionId).toBe(sessionId)
+    expect((forwarded.payload as { bundleId: string }).bundleId).toBe('com.example.demo')
+    expect(forwarded.requestId).toBe('rq-11')
+
+    agent.close(); browser.close()
+  })
+
+  // Door drops. Each asserts the request does not reach the agent, which is the half a compile error
+  // cannot cover: `requestId: ''` type-checks against a required `string`, and nothing validates inbound
+  // JSON (#444).
+  //
+  // **A real build row is load-bearing.** The first version of these passed `buildId: 1` with nothing in
+  // the table, so `app:launch` never reached the agent because the *lookup* failed — and the test stayed
+  // green under a mutation that opened the door. The request has to be one that would otherwise be
+  // forwarded, or the assertion is about the wrong thing.
+  //
+  // Two barriers, on two sockets: order holds *within* a connection, so a round-trip on the agent proves
+  // nothing about a message sent on the browser. Browser first — the relay has now processed the request
+  // and forwarded it if it was going to — then the agent, then read.
+  // Both halves of the predicate, not just one: the first version sent only `requestId: ''`, so dropping
+  // the `typeof` half — which lets an **absent** correlator through — left all of these green and only the
+  // previous slice's `open-url` tests failed. The predicate is shared, so each half needs a case.
+  for (const [type, body, correlator] of [
+    ['app:install', 'build', ''],
+    ['app:launch', 'build', undefined],
+    ['app:clear-state', 'bundle', ''],
+  ] as const) {
+    it(`drops a ${type} whose correlator is ${correlator === undefined ? 'absent' : 'an empty string'}`, async () => {
+      const { agent, browser, sessionId } = await connectAgentAndBrowser()
+      const extra = body === 'build'
+        ? { buildId: insertBuild('com.example.demo') }
+        : { payload: { bundleId: 'com.example.demo' } }
+
+      browser.send(JSON.stringify({ type, sessionId, ...(correlator === undefined ? {} : { requestId: correlator }), ...extra }))
+      await barrier(browser)
+      await barrier(agent)
+      expect(await waitForTypeOrNull(agent, type, 0)).toBeNull()
+
+      agent.close(); browser.close()
+    })
+  }
 })

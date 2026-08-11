@@ -90,6 +90,11 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // whichever socket holds the session now — so before `open-url` carried a `requestId` this viewer
   // toasted "Deeplink opened" for an `mcp-server` deeplink it knew nothing about.
   const openUrlIdsRef = useRef<Set<string>>(new Set());
+  // Same for the app commands. The install id is minted here; the launch id is minted by whichever viewer
+  // holds the button, through `launchApp` below — both land in this viewer's records because this viewer
+  // is what consumes the replies.
+  const appInstallIdsRef = useRef<Set<string>>(new Set());
+  const appLaunchIdsRef = useRef<Set<string>>(new Set());
   const [swKeyboardVisible, setSwKeyboardVisible] = useState(false);
   const [swKeyboardPending, setSwKeyboardPending] = useState(false);
 
@@ -267,6 +272,20 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       setInstalled(false);
       setInstallError(null);
       setBootError(null);
+      // A boot cycle invalidates the installs of the previous one, and this handler is where everything
+      // else a new cycle invalidates is already cleared. Without it the record outlives the cycle that
+      // made it: cycle 1's `app:install-done` can arrive while cycle 2's install is still in flight, and
+      // it would set `installed` — showing a Launch control for an app that is not on the device yet.
+      //
+      // The pre-correlation code had the same hole and a wider one (any install reply set the flag,
+      // including another client's), so this is not a regression — but the correlator is what makes the
+      // precise fix possible, and adding the record without a lifetime is what left it.
+      //
+      // Not a generation counter, because the boundary already exists. What this does not cover is two
+      // `device:ready` in one cycle — the relay replays that message on a re-join — and there both ids
+      // install the same build, so the first reply clearing `installing` is imprecise rather than wrong.
+      appInstallIdsRef.current.clear();
+      appLaunchIdsRef.current.clear();
       setChrome(null); // causes active viewer to unmount → cleanup
     }
     if (msg.type === 'device:ready') {
@@ -283,12 +302,26 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
         // The install had not finished when the agent went away, so the app really is missing.
         // Fall through and install it.
       }
-      if (buildId) { setInstalling(true); sendRef.current({ type: 'app:install', sessionId, buildId }); }
+      if (buildId) {
+        setInstalling(true);
+        const requestId = newRequestId();
+        appInstallIdsRef.current.add(requestId);
+        sendRef.current({ type: 'app:install', sessionId, requestId, buildId });
+      }
     }
-    if (msg.type === 'app:install-done') { setInstalling(false); setInstalled(true); }
-    if (msg.type === 'app:install-error') { setInstalling(false); setInstallError(msg.message); }
-    if (msg.type === 'app:launch-done') { setLaunching(false); }
-    if (msg.type === 'app:launch-error') { setLaunching(false); }
+    // Correlated, for the reason `open-url` is: the relay delivers a reply to whichever socket holds the
+    // session, not to whoever asked, so an `mcp-server` install on this session would otherwise flip this
+    // viewer's install state.
+    if (msg.type === 'app:install-done' || msg.type === 'app:install-error') {
+      if (!appInstallIdsRef.current.delete(msg.requestId)) return;
+      setInstalling(false);
+      if (msg.type === 'app:install-done') setInstalled(true);
+      else setInstallError(msg.message);
+    }
+    if (msg.type === 'app:launch-done' || msg.type === 'app:launch-error') {
+      if (!appLaunchIdsRef.current.delete(msg.requestId)) return;
+      setLaunching(false);
+    }
     if (msg.type === 'session:chrome') { setChrome(msg.payload); }
     if (msg.type === 'keyboard:toggled') {
       const { visible } = msg.payload;
@@ -378,10 +411,21 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     sendRef.current({ type: 'open-url', sessionId, requestId, payload: { url } });
   }, [sessionId]);
 
+  const launchApp = useCallback(() => {
+    // Guarded rather than asserted. The old send sat inside `installed && buildId ? …`, where the render
+    // condition narrowed `buildId` to `number`; hoisting it here lost that, and `buildId!` would have been
+    // the same species as the `msg.requestId!` this layer removed from the relay.
+    if (buildId === undefined) return;
+    const requestId = newRequestId();
+    appLaunchIdsRef.current.add(requestId);
+    setLaunching(true);
+    sendRef.current({ type: 'app:launch', sessionId, requestId, buildId });
+  }, [sessionId, buildId]);
+
   const commonProps = {
-    sessionId, buildId, send, openUrl, connected, joined,
+    sessionId, buildId, send, openUrl, launchApp, connected, joined,
     deviceReady, installing, installed, installError, bootError,
-    launching, setLaunching,
+    launching,
     binaryFrameHandlerRef,
     clipboardHandlerRef,
     clipboardSupported: agentCapabilities.includes('clipboard'),

@@ -32,6 +32,8 @@ interface IOSViewerProps {
   send: (msg: BrowserToRelay) => void;
   /** Mints the correlation id and records it, so the viewer only toasts its own reply. */
   openUrl: (url: string) => void;
+  /** Mints and records the correlation id, then sends — the viewer above consumes the reply. */
+  launchApp: () => void;
   connected: boolean;
   joined: boolean;
   deviceReady: boolean;
@@ -40,7 +42,6 @@ interface IOSViewerProps {
   installError: string | null;
   bootError: string | null;
   launching: boolean;
-  setLaunching: (v: boolean) => void;
   chrome: ChromeData;
   binaryFrameHandlerRef: React.MutableRefObject<BinaryFrameHandler | undefined>;
   clipboardHandlerRef: React.MutableRefObject<ClipboardMessageHandler | undefined>;
@@ -53,9 +54,9 @@ interface IOSViewerProps {
 }
 
 export function IOSViewer({
-  sessionId, buildId, send, openUrl, connected, joined,
+  sessionId, buildId, send, openUrl, launchApp, connected, joined,
   deviceReady, installing, installed, installError, bootError,
-  launching, setLaunching, chrome,
+  launching, chrome,
   binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, onRecordingUploaded,
   swKeyboardVisible, swKeyboardPending, onKbdToggle,
   perfHookRef,
@@ -566,7 +567,7 @@ export function IOSViewer({
       <TooltipTrigger asChild>
         <Button variant="ghost" size="icon" className="h-8 w-8" disabled={launching}
           aria-label="Launch app"
-          onClick={() => { setLaunching(true); send({ type: 'app:launch', sessionId, buildId }) }}
+          onClick={launchApp}
         >
           {launching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
         </Button>

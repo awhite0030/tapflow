@@ -49,7 +49,15 @@ function live(buildId?: number) {
   act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
   act(() => { deliver!({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } }) })
   act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
-  if (buildId) act(() => { deliver!({ type: 'app:install-done', sessionId: 's1' }) })
+  if (buildId) act(() => { deliver!({ type: 'app:install-done', sessionId: 's1', requestId: sentId('app:install') }) })
+}
+
+/** The correlator the viewer minted for its most recent request of `type`. Read back rather than invented:
+ *  a fixture that makes up an id would be testing that the gate rejects it. */
+const sentId = (type: string): string => {
+  const call = send.mock.calls.map(([m]) => m).filter((m) => m.type === type).at(-1)
+  expect(call, `no ${type} was sent`).toBeDefined()
+  return (call as { requestId: string }).requestId
 }
 
 const rebound = (capabilities: string[] = []) =>

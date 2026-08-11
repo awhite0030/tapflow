@@ -2,7 +2,10 @@ import os from 'os'
 import { randomUUID } from 'crypto'
 import { WebSocket } from 'ws'
 import type { AndroidButton, ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
-import type { AgentControlOutbound, ClipboardReplyBody, OpenUrlReplyBody } from '@tapflowio/protocol'
+import type {
+  AgentControlOutbound, ClipboardReplyBody, OpenUrlReplyBody,
+  AppInstallReplyBody, AppLaunchReplyBody, AppClearStateReplyBody,
+} from '@tapflowio/protocol'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
 import { outcomeMessage, wireReason, type InputOutcome } from './inputOutcome.js'
 import {
@@ -1012,16 +1015,22 @@ export class AndroidAgent implements DeviceAgent {
       case 'app:install': {
         const { filePath, bundleId } = msg.payload as { filePath: string; bundleId?: string }
         const sessionId = msg.sessionId
+        const { requestId } = msg
+        if (typeof requestId !== 'string' || requestId === '') {
+          console.warn('[tapflow] app:install without a requestId — dropped, cannot correlate a reply')
+          break
+        }
+        // `...body` first — see the iOS handler and `open-url`.
+        const respond = (body: AppInstallReplyBody) => this.sendMsg({ ...body, sessionId, requestId })
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         if (!serial) {
-          this.sendMsg({ type: 'app:install-error', sessionId, message: 'No booted device' })
+          respond({ type: 'app:install-error', message: 'No booted device' })
           break
         }
         if (filePath.endsWith('.app.zip') || filePath.endsWith('.app')) {
-          this.sendMsg({
+          respond({
             type: 'app:install-error',
-            sessionId,
             message: '.app.zip is an iOS simulator build — upload a .apk file for Android.',
           })
           break
@@ -1031,27 +1040,34 @@ export class AndroidAgent implements DeviceAgent {
           await this.adb.installApp(serial, filePath)
         }
         doInstall()
-          .then(() => this.sendMsg({ type: 'app:install-done', sessionId }))
+          .then(() => respond({ type: 'app:install-done' }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.sendMsg({ type: 'app:install-error', sessionId, message })
+            respond({ type: 'app:install-error', message })
           })
         break
       }
       case 'app:launch': {
         const { bundleId } = msg.payload as { bundleId: string }
         const sessionId = msg.sessionId
+        const { requestId } = msg
+        if (typeof requestId !== 'string' || requestId === '') {
+          console.warn('[tapflow] app:launch without a requestId — dropped, cannot correlate a reply')
+          break
+        }
+        // `...body` first — see the iOS handler and `open-url`.
+        const respond = (body: AppLaunchReplyBody) => this.sendMsg({ ...body, sessionId, requestId })
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         if (!serial) {
-          this.sendMsg({ type: 'app:launch-error', sessionId, message: 'No booted device' })
+          respond({ type: 'app:launch-error', message: 'No booted device' })
           break
         }
         this.adb.launchApp(serial, bundleId)
-          .then(() => this.sendMsg({ type: 'app:launch-done', sessionId }))
+          .then(() => respond({ type: 'app:launch-done' }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.sendMsg({ type: 'app:launch-error', sessionId, message })
+            respond({ type: 'app:launch-error', message })
           })
         break
       }
@@ -1282,17 +1298,23 @@ export class AndroidAgent implements DeviceAgent {
       case 'app:clear-state': {
         const { bundleId } = (msg.payload ?? {}) as { bundleId?: string }
         const sessionId = msg.sessionId
+        const { requestId } = msg
+        if (typeof requestId !== 'string' || requestId === '') {
+          console.warn('[tapflow] app:clear-state without a requestId — dropped, cannot correlate a reply')
+          break
+        }
+        const respond = (body: AppClearStateReplyBody) => this.sendMsg({ ...body, sessionId, requestId })
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         if (!serial || !bundleId) {
-          this.sendMsg({ type: 'app:clear-state-error', sessionId, message: !serial ? 'No booted device' : 'bundleId missing' })
+          respond({ type: 'app:clear-state-error', message: !serial ? 'No booted device' : 'bundleId missing' })
           break
         }
         this.adb.clearAppData(serial, bundleId)
-          .then(() => this.sendMsg({ type: 'app:clear-state-done', sessionId }))
+          .then(() => respond({ type: 'app:clear-state-done' }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
-            this.sendMsg({ type: 'app:clear-state-error', sessionId, message })
+            respond({ type: 'app:clear-state-error', message })
           })
         break
       }

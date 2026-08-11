@@ -84,6 +84,66 @@ The per-message bindings in `typeAssertions.ts` (`_InputDone: InputDone['type'] 
 two copies of one fact, so they catch an author who edits one of them; measured, editing both left every
 assertion green.
 
+## Request/response correlation — `requestId`, required on both sides
+
+Four pairs correlate by `requestId` today: `screenshot`, `ui:tree`, `clipboard`, and the app commands
+(`open-url`, `app:install`, `app:launch`, `app:clear-state`). The rest still correlate by `sessionId` +
+message type, which is the root of #499 and of #512's first finding — a reply for one request satisfying
+another's waiter. Each remaining pair is scheduled; the reason a pair is *not* in the set is always one of
+the two below.
+
+**Required on the reply, not optional.** The tempting asymmetry is to leave the reply optional so an agent
+predating the field does not falsify the declaration. It was measured and rejected:
+
+- `required` yields complete, precise in-repo compile errors, because every agent send goes through a typed
+  helper. Ten sites for `open-url`, nothing else.
+- `optional` needs a static check to stand in for the compiler, and that check **cannot exist**. Presence is
+  checkable; the property is *provenance* — that the id is the request's. A check built against the
+  clipboard family, which is 100% correlated, produced seven false positives (a `respond` helper puts the
+  `type` literal and the id in different object literals) and passed when an echo was replaced with a
+  freshly minted id.
+- Absence would carry **two** meanings wanting opposite handling: "an old agent", and "not a reply at all".
+  The relay's `device:ready` replay is a permanent producer of the second.
+
+**What enforces the echo, exactly.** Omission is a compile error — from `requestId: string` on the reply
+interfaces, reached through the agents' send helper. A freshly minted id written as a *literal* at the
+`respond(...)` call is an excess property — that is `<Pair>ReplyBody`, the reply minus the ids. Everything
+else is tests, and **each pair needs its own**: an echo test per outcome and a concurrency test, because
+hoisting the correlator out of per-request scope compiles clean and passes every other test in the suite.
+The helper does not remove that work; a slice that assumed it did shipped six unverified `respond` helpers.
+
+**Do not build a request-direction body type.** Four candidate guards were designed and broken. A branded
+correlator is laundered by any cast to the brand, because a brand names a *kind* while provenance is a
+property of the *instance* and TypeScript has no value-dependent types. A generic `Omit`-body helper does
+not compile without a cast of its own, which is worse than the literal it replaces. The reply side earns its
+type from ~20 literal sites; the request side has one per pair, on the line below the helper that builds it.
+
+**A transformation carries the correlator.** `open-url` and `app:clear-state` are re-serialised whole, so it
+rides for free. `app:install` / `app:launch` arrive with a `buildId` and the relay sends the agent a
+*different* message after a DB lookup — the id must be copied, or the agent's reply, which the relay
+forwards without inspecting, cannot be attributed. Required on the `…ToAgent` members makes dropping the
+copy a compile error; only a test says the copied value is the request's.
+
+**No fallback, and one policy at the door.** There is deliberately no fall-back to `sessionId` + type: a
+second correlation strategy is what this work removes. Every browser request declaring a required
+`requestId` is gated at the relay before it is forwarded, rebuilt or answered, because every reply it can
+produce declares the correlator required too — answering without one means shipping a frame whose required
+field `JSON.stringify` erases, which every correlating consumer then discards, turning a diagnosis into a
+caller waiting out its deadline. That was a live defect twice (`open-url:error`, then `clipboard:error` a
+slice later), so it is checked rather than asserted in prose:
+`scripts/__tests__/correlatedRequestsGated.test.mjs` derives the request set from this file and fails if one
+is ungated.
+
+**Two properties put a pair *outside* this shape**, and both were found by trying:
+
+- **The relay originates the request.** `device:shutdown` is sent by the relay itself when a browser socket
+  closes, and it is one interface shared by both directions — so a required correlator would force the relay
+  to invent an id for a request nobody made.
+- **The reply is also sent unsolicited.** `device:shutdown-done` is read by `SessionList` as a device-status
+  broadcast, and the relay replays `device:ready` from cache on a re-join. A consumer that discards on a
+  correlator mismatch stops learning about state it did not ask about — the cross-requester delivery that is
+  a bug for `open-url` is the feature here.
+
 ## Every direction is declared, and an agent's send is typed
 
 The six unions cover the whole wire: `BrowserToRelay`, `AgentToRelay`, `RelayToAgent`, `RelayToBrowser`,

@@ -153,9 +153,10 @@ export class RelayClient {
   }
 
   async installApp(sessionId: string, buildId: number): Promise<void> {
-    this.send({ type: 'app:install', sessionId, buildId })
+    const requestId = randomUUID()
+    this.send({ type: 'app:install', sessionId, requestId, buildId })
     const msg = await this.waitFor(
-      (m) => (m['type'] === 'app:install-done' || m['type'] === 'app:install-error') && m['sessionId'] === sessionId,
+      (m) => (m['type'] === 'app:install-done' || m['type'] === 'app:install-error') && m['requestId'] === requestId,
       120_000,
       'app install',
     )
@@ -163,9 +164,10 @@ export class RelayClient {
   }
 
   async launchApp(sessionId: string, buildId: number): Promise<void> {
-    this.send({ type: 'app:launch', sessionId, buildId })
+    const requestId = randomUUID()
+    this.send({ type: 'app:launch', sessionId, requestId, buildId })
     const msg = await this.waitFor(
-      (m) => (m['type'] === 'app:launch-done' || m['type'] === 'app:launch-error') && m['sessionId'] === sessionId,
+      (m) => (m['type'] === 'app:launch-done' || m['type'] === 'app:launch-error') && m['requestId'] === requestId,
       30_000,
       'app launch',
     )
@@ -173,9 +175,10 @@ export class RelayClient {
   }
 
   async clearState(sessionId: string, bundleId: string): Promise<void> {
-    this.send({ type: 'app:clear-state', sessionId, payload: { bundleId } })
+    const requestId = randomUUID()
+    this.send({ type: 'app:clear-state', sessionId, requestId, payload: { bundleId } })
     const msg = await this.waitFor(
-      (m) => (m['type'] === 'app:clear-state-done' || m['type'] === 'app:clear-state-error') && m['sessionId'] === sessionId,
+      (m) => (m['type'] === 'app:clear-state-done' || m['type'] === 'app:clear-state-error') && m['requestId'] === requestId,
       30_000,
       'clear state',
     )

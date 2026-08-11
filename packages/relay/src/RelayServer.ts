@@ -93,6 +93,27 @@ const RESOURCE_THRESHOLD = Number.isFinite(_parsedThreshold) ? _parsedThreshold 
 // expect no ack and are dropped silently).
 const TERMINAL_INPUT_TYPES = new Set<string>(['input:touch:end', 'input:pinch:end', 'input:key', 'input:button'])
 
+/** A request that carries a usable correlator.
+ *
+ *  A predicate rather than a bare `typeof` at each site, for two measured reasons. A bare check in the
+ *  `switch` narrows the *property* and not the object, so `this.handleBrowserAppInstall(ws, msg)` still
+ *  sees `requestId?: string` and fails to compile. And narrowing does **not** survive into a nested
+ *  function, so a `fail()` closure built after the check sees `string | undefined` again — whose shortest
+ *  fix is `msg.requestId!`, the write removed in `e98abd4` precisely because it puts a frame with an
+ *  absent required field on the wire. This carries the narrowing through the handler signature instead,
+ *  so neither a `const` copy nor an assertion is needed.
+ *
+ *  Empty string counts as absent: it type-checks against a required `string`, nothing validates inbound
+ *  JSON (#444), and `mcp-server`'s tool schemas are bare `z.string()`. */
+function isCorrelated(msg: RelayMessage): msg is RelayMessage & { requestId: string } {
+  if (typeof msg.requestId === 'string' && msg.requestId !== '') return true
+  // Logged, because the three places this can be dropped are all silent otherwise: the relay `break`s, the
+  // agents' own guards never see the frame, and the browser gate `return`s. An operator who upgrades the
+  // relay but not an independently installed `mcp-server` would watch commands do nothing with no trace.
+  console.warn(`[tapflow] ${msg.type} without a usable requestId — dropped, cannot correlate a reply`)
+  return false
+}
+
 const AGENT_MSG_TYPES = new Set([
   'agent:register', 'agent:resources', 'screenshot:done', 'screenshot:error',
   'ui:tree:response', 'ui:tree:error',
@@ -733,8 +754,10 @@ export class RelayServer {
         }
         break
       }
-      case 'app:install': this.handleBrowserAppInstall(ws, msg); break
-      case 'app:launch':  this.handleBrowserAppLaunch(ws, msg); break
+      // Door checks, one policy per request: an uncorrelatable request is not forwarded, not rebuilt and
+      // not answered, because every reply these produce declares `requestId` as required.
+      case 'app:install': if (isCorrelated(msg)) this.handleBrowserAppInstall(ws, msg); break
+      case 'app:launch':  if (isCorrelated(msg)) this.handleBrowserAppLaunch(ws, msg); break
       case 'open-url': {
         // **At the door, before either branch.** A correlator is required on this request, and the
         // relay has two things it could do with one that lacks it — forward it, or answer it — so
@@ -753,7 +776,7 @@ export class RelayServer {
         // becomes a caller waiting out its full deadline. That was the first draft's other half:
         // `requestId: msg.requestId!`, which is not the `sessionId!` below it in kind, because that
         // one feeds a *read* whose miss still produces a visible error.
-        if (typeof msg.requestId !== 'string' || msg.requestId === '') break
+        if (!isCorrelated(msg)) break
         const session = this.sessions.get(msg.sessionId!)
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
@@ -768,11 +791,19 @@ export class RelayServer {
         break
       }
       case 'app:clear-state': {
+        // Verbatim forward like `open-url`, so the correlator rides for free; the door check and the echo
+        // are the same two lines.
+        if (!isCorrelated(msg)) break
         const session = this.sessions.get(msg.sessionId!)
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
         } else {
-          this.sendTo(ws, { type: 'app:clear-state-error', sessionId: msg.sessionId!, message: 'agent offline' })
+          this.sendTo(ws, {
+            type: 'app:clear-state-error',
+            sessionId: msg.sessionId!,
+            requestId: msg.requestId,
+            message: 'agent offline',
+          })
         }
         break
       }
@@ -818,12 +849,20 @@ export class RelayServer {
       // hanging until the browser gives up.
       case 'clipboard:read':
       case 'clipboard:write': {
+        // Not part of this layer's pair set — clipboard has carried a required `requestId` since it was
+        // written — but it had the identical defect, and leaving it would make this layer's claim of one
+        // policy at the door false the moment it landed. It answered with `requestId: msg.requestId!`,
+        // which is a **write into an outbound frame**: `JSON.stringify` erases the absent key and ships a
+        // `clipboard:error` whose required correlator is missing, which `useClipboardBridge` discards on
+        // `if (!msg.requestId) return` — so "agent offline" became the caller waiting out its budget.
+        // Removed once already in `e98abd4`, for `open-url`, and still here.
+        if (!isCorrelated(msg)) break
         const session = this.sessions.get(msg.sessionId!)
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
         } else if (ws.readyState === WebSocket.OPEN) {
           this.sendTo(ws, {
-            type: 'clipboard:error', sessionId: msg.sessionId!, requestId: msg.requestId!, message: 'agent offline',
+            type: 'clipboard:error', sessionId: msg.sessionId!, requestId: msg.requestId, message: 'agent offline',
           })
         }
         break
@@ -1148,9 +1187,14 @@ export class RelayServer {
    *  caller waits for the reply matching its own sessionId, so anything else is indistinguishable
    *  from silence and it waits out the deadline (#445). `Session not found` is app-specific for the
    *  same reason: a generic `error` cannot be correlated by construction. */
-  private handleBrowserAppInstall(ws: WebSocket, msg: RelayMessage): void {
+  private handleBrowserAppInstall(ws: WebSocket, msg: RelayMessage & { requestId: string }): void {
     const sessionId = msg.sessionId!
-    const fail = (message: string) => this.sendTo(ws, { type: 'app:install-error', sessionId, message })
+    const { requestId } = msg
+    // Closing over the narrowed correlator covers all four failure exits at once. It does **not** cover a
+    // fifth: a throw out of `getDb().prepare(…).get(…)` — SQLITE_BUSY, a closed db, I/O — unwinds to the
+    // message-loop catch and answers nothing at all. Pre-existing and unchanged here, but "every exit
+    // carries the request's id" would be false.
+    const fail = (message: string) => this.sendTo(ws, { type: 'app:install-error', sessionId, requestId, message })
 
     const session = this.sessions.get(sessionId)
     if (!session) return fail('Session not found')
@@ -1169,17 +1213,28 @@ export class RelayServer {
     // Answer now rather than letting the caller time out — the same shape as `open-url` above.
     if (session.agentSocket.readyState !== WebSocket.OPEN) return fail('agent offline')
 
+    // The correlator rides across the rebuild. `open-url` got this for free — the relay re-serialises
+    // that message whole — but this is a *different* message from the one the browser sent, and the
+    // agent's reply is forwarded back generically without the relay looking at it. So if the id does not
+    // reach the agent, nothing downstream can attribute the reply. Nothing type-checks that the value is
+    // the *request's*: a brand cannot express provenance, so a test carries it.
     this.sendTo(session.agentSocket, {
       type: 'app:install',
       sessionId,
+      requestId,
       payload: { filePath: build.file_path, bundleId: build.bundle_id },
     })
   }
 
   /** Relay looks up bundle_id from DB. Same correlation rules as `handleBrowserAppInstall`. */
-  private handleBrowserAppLaunch(ws: WebSocket, msg: RelayMessage): void {
+  private handleBrowserAppLaunch(ws: WebSocket, msg: RelayMessage & { requestId: string }): void {
     const sessionId = msg.sessionId!
-    const fail = (message: string) => this.sendTo(ws, { type: 'app:launch-error', sessionId, message })
+    const { requestId } = msg
+    // Closing over the narrowed correlator covers all four failure exits at once. It does **not** cover a
+    // fifth: a throw out of `getDb().prepare(…).get(…)` — SQLITE_BUSY, a closed db, I/O — unwinds to the
+    // message-loop catch and answers nothing at all. Pre-existing and unchanged here, but "every exit
+    // carries the request's id" would be false.
+    const fail = (message: string) => this.sendTo(ws, { type: 'app:launch-error', sessionId, requestId, message })
 
     const session = this.sessions.get(sessionId)
     if (!session) return fail('Session not found')
@@ -1195,9 +1250,12 @@ export class RelayServer {
 
     if (session.agentSocket.readyState !== WebSocket.OPEN) return fail('agent offline')
 
+    // See `handleBrowserAppInstall` — the correlator rides across the rebuild, and only a test says the
+    // value is the request's.
     this.sendTo(session.agentSocket, {
       type: 'app:launch',
       sessionId,
+      requestId,
       payload: { bundleId: build.bundle_id },
     })
   }

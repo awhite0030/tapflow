@@ -32,6 +32,8 @@ interface AndroidViewerProps {
   send: (msg: BrowserToRelay) => void;
   /** Mints the correlation id and records it, so the viewer only toasts its own reply. */
   openUrl: (url: string) => void;
+  /** Mints and records the correlation id, then sends — the viewer above consumes the reply. */
+  launchApp: () => void;
   connected: boolean;
   joined: boolean;
   deviceReady: boolean;
@@ -40,7 +42,6 @@ interface AndroidViewerProps {
   installError: string | null;
   bootError: string | null;
   launching: boolean;
-  setLaunching: (v: boolean) => void;
   androidButtons: AndroidButton[] | null;
   binaryFrameHandlerRef: React.RefObject<BinaryFrameHandler | undefined>;
   clipboardHandlerRef: React.MutableRefObject<ClipboardMessageHandler | undefined>;
@@ -55,9 +56,9 @@ interface AndroidViewerProps {
 }
 
 export function AndroidViewer({
-  sessionId, buildId, send, openUrl, connected, joined,
+  sessionId, buildId, send, openUrl, launchApp, connected, joined,
   deviceReady, installing, installed, installError, bootError,
-  launching, setLaunching, androidButtons,
+  launching, androidButtons,
   binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, onRecordingUploaded,
   screenWidth, screenHeight, cornerRadius,
   perfHookRef,
@@ -490,7 +491,7 @@ export function AndroidViewer({
       <TooltipTrigger asChild>
         <Button variant="ghost" size="icon" className="h-8 w-8" disabled={launching || installing}
           aria-label="Launch app"
-          onClick={() => { setLaunching(true); send({ type: 'app:launch', sessionId, buildId }) }}
+          onClick={launchApp}
         >
           {launching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
         </Button>

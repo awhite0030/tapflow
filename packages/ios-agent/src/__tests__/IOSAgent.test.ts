@@ -1190,6 +1190,7 @@ describe('IOSAgent', () => {
 
         deliver(agent, {
           type: 'app:install',
+          requestId: 'rq-1',
           sessionId: second[0],
           payload: { filePath: '/tmp/x.app', bundleId: 'com.example.app' },
         })
@@ -1200,11 +1201,69 @@ describe('IOSAgent', () => {
         agent.disconnect()
       })
 
+      // The reply direction, for all three app commands. Nothing asserted it before: review made all six
+      // `respond` helpers emit a fabricated correlator and every suite held its baseline exactly, which is
+      // the only guarantee this layer has — the compiler sees the field is present, never that it is the
+      // request's.
+      //
+      // A wrong echo is now a *loss*, not a misattribution: the dashboard gate discards it and nothing
+      // clears `installing`, and the MCP caller burns its full deadline.
+      const PAIRS = [
+        { req: 'app:install', payload: { filePath: '/tmp/x.app', bundleId: 'com.example.app' }, call: 'installApp' },
+        { req: 'app:launch', payload: { bundleId: 'com.example.app' }, call: 'launchApp' },
+        { req: 'app:clear-state', payload: { bundleId: 'com.example.app' }, call: 'clearAppData' },
+      ] as const
+
+      for (const { req, payload, call } of PAIRS) {
+        it(`${req} echoes the requestId on both outcomes`, async () => {
+          const { simctl, agent, browser } = await bootedAgent()
+
+          const done = waitForType(browser, `${req}-done`)
+          deliver(agent, { type: req, sessionId: agent.sessionId, requestId: 'echo-1', payload })
+          expect((await done)['requestId']).toBe('echo-1')
+
+          simctl[call].mockRejectedValueOnce(new Error('nope'))
+          const err = waitForType(browser, `${req}-error`)
+          deliver(agent, { type: req, sessionId: agent.sessionId, requestId: 'echo-2', payload })
+          const msg = await err
+          expect(msg['requestId']).toBe('echo-2')
+          expect(msg['message']).toBe('nope')
+
+          agent.disconnect(); browser.close()
+        })
+
+        it(`${req} answers two concurrent requests with their own ids`, async () => {
+          // TC5. Hoisting the correlator out of per-request scope — a plausible "share `respond`" refactor
+          // — compiles clean and passes every other test in this file. This is the only thing that sees it,
+          // and concurrency is the reason the correlator exists at all.
+          const { simctl, agent, browser } = await bootedAgent()
+
+          let release: (() => void) | undefined
+          simctl[call]
+            .mockImplementationOnce(() => new Promise<void>((r) => { release = () => r() }))
+            .mockImplementationOnce(() => Promise.resolve())
+
+          deliver(agent, { type: req, sessionId: agent.sessionId, requestId: 'con-A', payload })
+          await vi.waitFor(() => expect(release).toBeDefined())
+
+          // Sequential waits: `waitForType` does not correlate either, so two concurrent ones would hand
+          // the first waiter whichever reply lands first — passing under the very mutation this catches.
+          deliver(agent, { type: req, sessionId: agent.sessionId, requestId: 'con-B', payload })
+          expect((await waitForType(browser, `${req}-done`))['requestId']).toBe('con-B')
+
+          release!()
+          expect((await waitForType(browser, `${req}-done`))['requestId']).toBe('con-A')
+
+          agent.disconnect(); browser.close()
+        })
+      }
+
       it('install carries the udid', async () => {
         const { simctl, agent, browser } = await bootedAgent()
 
         deliver(agent, {
           type: 'app:install',
+          requestId: 'rq-2',
           sessionId: agent.sessionId,
           payload: { filePath: '/tmp/x.app', bundleId: 'com.example.app' },
         })
@@ -1221,6 +1280,7 @@ describe('IOSAgent', () => {
 
         deliver(agent, {
           type: 'app:launch',
+          requestId: 'rq-3',
           sessionId: agent.sessionId,
           payload: { bundleId: 'com.example.app' },
         })
@@ -1315,6 +1375,7 @@ describe('IOSAgent', () => {
 
         deliver(agent, {
           type: 'app:clear-state',
+          requestId: 'rq-4',
           sessionId: agent.sessionId,
           payload: { bundleId: 'com.example.app' },
         })
