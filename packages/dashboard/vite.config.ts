@@ -14,6 +14,30 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    rollupOptions: {
+      output: {
+        // Only split families the app shell already loads synchronously, plus charts.
+        // Grouping @radix-ui / react-hook-form here was measured and reverted: it turned
+        // lazy dialog and form code into modulepreloads, adding ~14 kB Brotli to first paint.
+        manualChunks(id) {
+          if (!id.includes('/node_modules/')) return undefined
+
+          if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) {
+            return 'vendor-react'
+          }
+
+          if (id.includes('/react-router/') || id.includes('/react-router-dom/')) {
+            return 'vendor-router'
+          }
+
+          if (id.includes('/@visx/') || id.includes('/d3-array/')) {
+            return 'vendor-charts'
+          }
+
+          return undefined
+        },
+      },
+    },
   },
   // ESM worker (tinyh264.worker imports tinyh264) — 'es' format so the worker chunk
   // can code-split its static imports. Default 'iife' breaks on code-split workers.
