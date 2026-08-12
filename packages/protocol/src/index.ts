@@ -404,9 +404,11 @@ export interface DeviceReady {
  * Required here is a **specification the relay does not yet meet**, not a description of the wire.
  * Nothing validates inbound messages, so a client that sends `{"type":"input:touch:end"}` with no
  * sessionId reaches `sessions.get(undefined)`, misses, and the relay answers `'Session not found'`
- * through `msg.sessionId!` — `JSON.stringify` then drops the key. Seven sites do this
- * (`RelayServer.ts:721,743,752,786,803,1129,1158`). No in-repo client omits a sessionId, so the
- * gap is reachable only from a third-party one — with one exception measured since: `sessionId: ''`
+ * through `msg.sessionId!` — `JSON.stringify` then drops the key, shipping a frame whose required field
+ * this declaration says is there. **Still seven sites**, re-counted after L5c restructured that file
+ * (`RelayServer.ts:775,827,844,903,1181,1192,1331`) — the correlation work did not widen it and does not
+ * close it, because the fix is the one below: the producer must send `error` instead, which is #444.
+ * No in-repo client omits a sessionId, so the gap is reachable only from a third-party one — with one exception measured since: `sessionId: ''`
  * type-checks and `mcp-server`'s tools take `z.string()`, so an LLM can produce it.
  *
  * Optional would describe that wire accurately and still be the wrong contract: an MCP caller that

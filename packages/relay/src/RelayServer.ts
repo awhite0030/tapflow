@@ -111,6 +111,29 @@ function ownershipRefusal(session: Session): string {
   return session.browserSocket ? 'session held by another client' : 'session not joined'
 }
 
+/** A request that names a session, with the same policy as `isCorrelated` and for the same reason.
+ *
+ *  Nothing validates inbound JSON (#444), so a third-party client — or an LLM driving `mcp-server`, whose
+ *  tool schemas are bare `z.string()` — can send a command with no `sessionId` or an empty one. Every reply
+ *  these doors produce declares `sessionId` **required**, so answering means putting a frame on the wire
+ *  whose required field `JSON.stringify` erases, which every consumer's session gate then discards.
+ *
+ *  **So the request is dropped, not answered**, and the note that used to sit on `SessionError` said the
+ *  opposite: "the only correct thing for it to send with no sessionId is `{ type: 'error' }`". That was
+ *  written before requests carried a second correlator, and its own premise refutes it now — `GenericError`
+ *  has no `requestId`, so a caller that receives one cannot attribute it and waits out the same deadline it
+ *  would have waited out on silence. Answering buys nothing it did not already have; not shipping a frame
+ *  that violates its own declaration is the whole payoff, and dropping achieves that more cheaply.
+ *
+ *  Widening `SessionStartFailure` to carry an "unaddressed" reason was the alternative, and it is what L5d
+ *  is for: that union's own doc says it has a single producer in `handleSessionStart`, and adding a member
+ *  here would make that false while pre-deciding what `error` is. */
+function isAddressed(msg: RelayMessage): msg is RelayMessage & { sessionId: string } {
+  if (typeof msg.sessionId === 'string' && msg.sessionId !== '') return true
+  console.warn(`[tapflow] ${msg.type} without a usable sessionId — dropped, no reply could be addressed`)
+  return false
+}
+
 function isCorrelated(msg: RelayMessage): msg is RelayMessage & { requestId: string } {
   if (typeof msg.requestId === 'string' && msg.requestId !== '') return true
   // Logged, because the three places this can be dropped are all silent otherwise: the relay `break`s, the
@@ -609,7 +632,7 @@ export class RelayServer {
       }
 
       // ── Session / Stream lifecycle ─────────────────────────────────────────
-      case 'session:start':    this.handleSessionStart(ws, msg); break
+      case 'session:start':    if (isAddressed(msg)) this.handleSessionStart(ws, msg); break
       // ── the two session commands, gated but not answered ───────────────────────────────────────
       //
       // Both destroy state a viewer depends on, and until L5c both acted on the strength of the session
@@ -617,6 +640,10 @@ export class RelayServer {
       // strips ownership out from under a mounted viewer — and then that tester's own input is refused,
       // which is why `not-session-owner` needed real copy in the dashboard rather than the `null` a first
       // draft gave it.
+      //
+      // `msg.sessionId &&` rather than `isAddressed`: a falsy check already rejects both an absent id and an
+      // empty one, and the miss below rejects a non-string, so the predicate would add only its log here —
+      // and a mutation confirmed there is nothing observable to hold it with.
       //
       // **Dropped rather than refused, and that is the contract**: neither has a reply, so there is no
       // waiter to tell. The same asymmetry as the input frames nothing acks. Inventing a
@@ -757,7 +784,7 @@ export class RelayServer {
         // `open-url` next door. Both things the relay could do with an id-less boot are downstream of
         // here (forward it, or answer it with a `device:boot-error`), and gating only one of them leaves
         // the guarantee resting on whichever branch was not gated.
-        if (!isCorrelated(msg)) break
+        if (!isCorrelated(msg) || !isAddressed(msg)) break
         // A boot the agent never receives leaves the viewer on "Waiting for first frame…" with nothing
         // said, and the reasons it might not arrive are worth telling apart: `bootDevice` is the first
         // call an MCP caller makes, so reporting a stale session id as a dead Mac sends the reader after
@@ -772,7 +799,7 @@ export class RelayServer {
         if (!boot.ok) {
           this.sendTo(ws, {
             type: 'device:boot-error',
-            sessionId: msg.sessionId!,
+            sessionId: msg.sessionId,
             requestId: msg.requestId,
             message: boot.message,
           })
@@ -787,8 +814,12 @@ export class RelayServer {
         break
       }
       case 'device:shutdown': {
-        // Deliberately ungated: the relay sends this itself from the idle timer, with no browser and
-        // no id behind it, so a correlator cannot be required and an absent one is not an error.
+        // Deliberately **un**correlated: the relay sends this itself from the idle timer, with no browser and
+        // no id behind it, so a correlator cannot be required and an absent one is not an error. Addressing
+        // is different, and it gets **no gate either** — for the reason the unacked input clause does not:
+        // an unaddressed shutdown resolves no session and is dropped by the miss, so a gate would buy only
+        // its log, and a line no test can hold is a line that will drift. A mutation confirmed there is
+        // nothing observable to hold. Ownership is #527.
         const session = this.sessions.get(msg.sessionId!)
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
@@ -797,8 +828,8 @@ export class RelayServer {
       }
       // Door checks, one policy per request: an uncorrelatable request is not forwarded, not rebuilt and
       // not answered, because every reply these produce declares `requestId` as required.
-      case 'app:install': if (isCorrelated(msg)) this.handleBrowserAppInstall(ws, msg); break
-      case 'app:launch':  if (isCorrelated(msg)) this.handleBrowserAppLaunch(ws, msg); break
+      case 'app:install': if (isCorrelated(msg) && isAddressed(msg)) this.handleBrowserAppInstall(ws, msg); break
+      case 'app:launch':  if (isCorrelated(msg) && isAddressed(msg)) this.handleBrowserAppLaunch(ws, msg); break
       case 'open-url': {
         // **At the door, before either branch.** A correlator is required on this request, and the
         // relay has two things it could do with one that lacks it — forward it, or answer it — so
@@ -817,14 +848,14 @@ export class RelayServer {
         // becomes a caller waiting out its full deadline. That was the first draft's other half:
         // `requestId: msg.requestId!`, which is not the `sessionId!` below it in kind, because that
         // one feeds a *read* whose miss still produces a visible error.
-        if (!isCorrelated(msg)) break
+        if (!isCorrelated(msg) || !isAddressed(msg)) break
         const target = this.dispatchTarget(ws, msg.sessionId)
         if (target.ok) {
           target.session.agentSocket.send(JSON.stringify(msg))
         } else {
           this.sendTo(ws, {
             type: 'open-url:error',
-            sessionId: msg.sessionId!,
+            sessionId: msg.sessionId,
             requestId: msg.requestId,
             message: target.message,
           })
@@ -834,14 +865,14 @@ export class RelayServer {
       case 'app:clear-state': {
         // Verbatim forward like `open-url`, so the correlator rides for free; the door check and the echo
         // are the same two lines.
-        if (!isCorrelated(msg)) break
+        if (!isCorrelated(msg) || !isAddressed(msg)) break
         const target = this.dispatchTarget(ws, msg.sessionId)
         if (target.ok) {
           target.session.agentSocket.send(JSON.stringify(msg))
         } else {
           this.sendTo(ws, {
             type: 'app:clear-state-error',
-            sessionId: msg.sessionId!,
+            sessionId: msg.sessionId,
             requestId: msg.requestId,
             message: target.message,
           })
@@ -864,6 +895,12 @@ export class RelayServer {
       case 'input:keyboard:toggle': {
         // No ack, so no correlator to check and nothing to answer. An unowned frame is dropped rather
         // than refused for the same reason: there is no waiter to tell.
+        //
+        // **And no `isAddressed` gate**, unlike the answered five. An unaddressed frame resolves no session
+        // and is dropped by the miss either way, so the gate would buy only its log — one line per
+        // `input:touch:move`, which is the ~60/s the ownership warn was removed from this same method for.
+        // A mutation confirmed it: adding the gate here changes nothing a test can observe, and a line no
+        // test can hold is a line that will drift.
         this.forwardUnacked(ws, msg)
         break
       }
@@ -874,7 +911,7 @@ export class RelayServer {
       case 'input:type': {
         // One policy at the door, as for the app commands: an uncorrelatable request is not forwarded and
         // not answered, because every reply it could produce declares `requestId` required.
-        if (isCorrelated(msg)) this.handleAckedInput(ws, msg)
+        if (isCorrelated(msg) && isAddressed(msg)) this.handleAckedInput(ws, msg)
         break
       }
       // Kept out of the input:* chain above: these need their own error type, and the caller
@@ -889,7 +926,7 @@ export class RelayServer {
         // `clipboard:error` whose required correlator is missing, which `useClipboardBridge` discards on
         // `if (!msg.requestId) return` — so "agent offline" became the caller waiting out its budget.
         // Removed once already in `e98abd4`, for `open-url`, and still here.
-        if (!isCorrelated(msg)) break
+        if (!isCorrelated(msg) || !isAddressed(msg)) break
         // Ownership matters most here of all of them: a `clipboard:write` from a socket that does not hold
         // the session pastes its text into someone else's device, and a `clipboard:read` presses the copy
         // or cut chord on it — and the reply routes to the session's own browser, so the payload lands on
@@ -900,7 +937,7 @@ export class RelayServer {
           clip.session.agentSocket.send(JSON.stringify(msg))
         } else if (ws.readyState === WebSocket.OPEN) {
           this.sendTo(ws, {
-            type: 'clipboard:error', sessionId: msg.sessionId!, requestId: msg.requestId, message: clip.message,
+            type: 'clipboard:error', sessionId: msg.sessionId, requestId: msg.requestId, message: clip.message,
           })
         }
         break
@@ -1133,8 +1170,8 @@ export class RelayServer {
     logger.info(`agent connected: ${msg.agentName ?? msg.agentId ?? 'unknown'} (${msg.platform ?? 'unknown'}) — ${registeredSessions.length} device(s)`)
   }
 
-  private handleSessionStart(ws: WebSocket, msg: RelayMessage): void {
-    const session = this.sessions.get(msg.sessionId!)
+  private handleSessionStart(ws: WebSocket, msg: RelayMessage & { sessionId: string }): void {
+    const session = this.sessions.get(msg.sessionId)
     if (!session) {
       this.sendTo(ws, { type: 'error', message: 'Session not found', reason: 'session-not-found' })
       return
@@ -1163,7 +1200,7 @@ export class RelayServer {
       }
     }
     try {
-      this.sessions.join(msg.sessionId!, ws)
+      this.sessions.join(msg.sessionId, ws)
     } catch (e) {
       // `join()` throws for not-found as well as busy, and the check above already answered busy — so
       // reaching here means something this handler did not anticipate. Reporting it as `session-busy`
@@ -1178,7 +1215,7 @@ export class RelayServer {
     // the other end — an agent that predates a feature omits it, and the dashboard degrades
     // deliberately instead of inferring anything from a timeout.
     this.sendTo(ws, {
-      type: 'session:joined', sessionId: msg.sessionId!, capabilities: session.agentCapabilities ?? [],
+      type: 'session:joined', sessionId: msg.sessionId, capabilities: session.agentCapabilities ?? [],
     })
     if (agentAway) {
       // Joining into a held session. Refusing instead would be worse than it sounds: the viewer
@@ -1189,7 +1226,7 @@ export class RelayServer {
       //
       // Everything below describes the agent that went away, so it stops here. The viewer will get
       // it all again from the boot it sends on `session:rebound`.
-      this.sendTo(ws, { type: 'session:agent-away', sessionId: msg.sessionId! })
+      this.sendTo(ws, { type: 'session:agent-away', sessionId: msg.sessionId })
       return
     }
     // These three replay a session's cached state to a re-joining viewer. They carry `sessionId`
@@ -1230,9 +1267,9 @@ export class RelayServer {
    */
   private dispatchTarget(
     ws: WebSocket,
-    sessionId: string | undefined,
+    sessionId: string,
   ): { ok: true; session: Session } | { ok: false; message: string } {
-    const session = this.sessions.get(sessionId!)
+    const session = this.sessions.get(sessionId)
     if (!session) return { ok: false, message: 'Session not found' }
     if (!this.ownsSession(ws, session)) return { ok: false, message: ownershipRefusal(session) }
     if (session.agentSocket.readyState !== WebSocket.OPEN) return { ok: false, message: 'agent offline' }
@@ -1279,7 +1316,7 @@ export class RelayServer {
    *  a 2s deadline must not be dropped silently, because the caller's fallback reports silence from a
    *  session that has never acked as **success** (#457) — so a silent drop here would report an input that
    *  never left the relay as landed, which is worse than the misrouting it replaced. */
-  private handleAckedInput(ws: WebSocket, msg: RelayMessage & { requestId: string }): void {
+  private handleAckedInput(ws: WebSocket, msg: RelayMessage & { requestId: string; sessionId: string }): void {
     const session = this.sessions.get(msg.sessionId!)
 
     if (session && !this.ownsSession(ws, session)) {
@@ -1323,12 +1360,12 @@ export class RelayServer {
    *  and burned its caller's full deadline. */
   private refuseInput(
     ws: WebSocket,
-    msg: RelayMessage & { requestId: string },
+    msg: RelayMessage & { requestId: string; sessionId: string },
     message: string,
     reason: InputErrorReason,
   ): void {
     if (ws.readyState !== WebSocket.OPEN) return
-    const { sessionId, requestId } = { sessionId: msg.sessionId!, requestId: msg.requestId }
+    const { sessionId, requestId } = { sessionId: msg.sessionId, requestId: msg.requestId }
     this.sendTo(ws, msg.type === 'input:type'
       ? { type: 'input:type-error', sessionId, requestId, message, reason }
       : { type: 'input:error', sessionId, requestId, message, reason })
@@ -1341,8 +1378,8 @@ export class RelayServer {
    *  caller waits for the reply matching its own sessionId, so anything else is indistinguishable
    *  from silence and it waits out the deadline (#445). `Session not found` is app-specific for the
    *  same reason: a generic `error` cannot be correlated by construction. */
-  private handleBrowserAppInstall(ws: WebSocket, msg: RelayMessage & { requestId: string }): void {
-    const sessionId = msg.sessionId!
+  private handleBrowserAppInstall(ws: WebSocket, msg: RelayMessage & { requestId: string; sessionId: string }): void {
+    const sessionId = msg.sessionId
     const { requestId } = msg
     // Closing over the narrowed correlator covers all four failure exits at once. It does **not** cover a
     // fifth: a throw out of `getDb().prepare(…).get(…)` — SQLITE_BUSY, a closed db, I/O — unwinds to the
@@ -1387,8 +1424,8 @@ export class RelayServer {
   }
 
   /** Relay looks up bundle_id from DB. Same correlation rules as `handleBrowserAppInstall`. */
-  private handleBrowserAppLaunch(ws: WebSocket, msg: RelayMessage & { requestId: string }): void {
-    const sessionId = msg.sessionId!
+  private handleBrowserAppLaunch(ws: WebSocket, msg: RelayMessage & { requestId: string; sessionId: string }): void {
+    const sessionId = msg.sessionId
     const { requestId } = msg
     // Closing over the narrowed correlator covers all four failure exits at once. It does **not** cover a
     // fifth: a throw out of `getDb().prepare(…).get(…)` — SQLITE_BUSY, a closed db, I/O — unwinds to the

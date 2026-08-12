@@ -76,15 +76,19 @@ export const INPUT_ERROR_NOTICE: Record<InputErrorReason, InputErrorNotice | nul
   // is bounded and ends up visible.
   'no-gesture': null,
   // **Reachable, and a first draft had this as `null` on the grounds that it was not.** The claim was that
-  // this viewer only ever sends input for the session it joined, so the relay would never address it here.
-  // That holds for the join path and not for the session's lifetime: `session:leave` is forwarded on the
-  // strength of the session existing, with no check that the sender owns it, and it nulls `browserSocket`.
-  // So another client can strip ownership out from under a mounted viewer, and from that moment this
-  // tester's own taps are refused. Silent there is the #426 symptom exactly — a picture that keeps updating
-  // while input stops working, with nothing said.
+  // this viewer only ever sends input for the session it joined, so the relay could never address it here.
+  // That is true of the join and false of the reconnect: `DeviceViewer` re-sends `session:start` from an
+  // effect on every `connected` edge, while the pointer handlers in the platform viewers are not gated on
+  // `joined` at all — so a tap between the socket coming back and the re-join being answered is refused,
+  // and a Wi-Fi blip or a laptop waking is all it takes.
   //
-  // The action names re-entering the session rather than the device, because nothing about the device is
-  // wrong: the frame was refused at the relay's door and never reached it.
+  // (An earlier version of this note blamed an unguarded `session:leave` stripping ownership from a mounted
+  // viewer. That was true when written and stopped being true inside the same change, which widened the
+  // ownership check to `session:leave` among others. The reachable path is the ordinary one above.)
+  //
+  // Silent here is the #426 symptom exactly — a picture that keeps updating while input stops working, with
+  // nothing said. The action names re-entering the session rather than the device, because nothing about the
+  // device is wrong: the frame was refused at the relay's door and never reached it.
   'not-session-owner': {
     title: 'This session is no longer yours',
     action: 'Go back and open the device again — another tester may have taken it. Nothing you just did reached the device.',

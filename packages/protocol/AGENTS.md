@@ -91,7 +91,7 @@ Correlated by `requestId` today: `screenshot`, `ui:tree`, `clipboard`, the app c
 「Lifecycle correlation」), and **the inputs an ack answers** (see 「Input correlation」). What is left correlates
 by `sessionId` + message type, and the reason a pair is *not* in the set is always one of the two below.
 
-#499 was the last of the defects that came from having no correlator, and it was the sharpest: the four pairs
+`#499` was the last of the defects that came from having no correlator, and it was the sharpest: the four pairs
 above arrive at the speed a person clicks a button, while a swipe is dozens of frames, so an ack that missed
 its own deadline being consumed by the **next** input's waiter was not a corner case.
 

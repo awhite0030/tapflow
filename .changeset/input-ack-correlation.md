@@ -83,6 +83,35 @@ One diagnosis improved for free: `open-url` answered `'agent offline'` for a ses
 which is the wrong-diagnosis class #492 fixed for `device:boot` and `input:error` and had left here. The
 shared resolver corrected it, and the test that pinned the old prose says so.
 
+## A second door predicate: the request must name a session
+
+CodeRabbit found that `isCorrelated` validated `requestId` only, so a command with no `sessionId` — or an
+empty one, which type-checks and which `mcp-server`'s bare `z.string()` tool schemas let a model produce —
+reached the reply builders and shipped a frame whose **required** `sessionId` `JSON.stringify` erases. Every
+consumer's session gate then discards it, so the caller waits out its deadline with the diagnosis in hand and
+no way to attribute it. `isAddressed` closes it at the same doors, with the same policy: not forwarded, not
+answered, logged.
+
+**Dropped rather than answered, and the note this contradicts is in this repo.** `SessionError`'s doc said
+"the only correct thing for it to send with no sessionId is `{ type: 'error' }`". That was written before
+requests carried a second correlator, and its own premise refutes it now: `GenericError` has no `requestId`,
+so a caller that receives one cannot attribute it and waits out the same deadline it would have waited out on
+silence. Answering was never the payoff — not shipping a frame that violates its own declaration is, and
+dropping achieves that more cheaply. Widening `SessionStartFailure` to carry an "unaddressed" reason was the
+alternative, and it is what L5d is for: that union's own doc says it has a single producer in
+`handleSessionStart`, so adding a member would make that false while pre-deciding what `error` is.
+
+Narrowing `dispatchTarget` to `sessionId: string` is what found the doors — exactly four compile errors, then
+the handler signatures carried the rest. **Seven `msg.sessionId!` assertions went away** on the request side
+as a consequence, which is the payoff `SessionError`'s doc predicted. The eleven left are all agent→browser
+forwards, unchanged in count from `main`, and still #444.
+
+Three places got the predicate and then **had it removed again**, because a mutation showed there was nothing
+observable to hold it with: the unacked input clause, `device:shutdown`, and the two session commands. In each
+the frame is dropped by the session miss anyway, so the gate bought only its log — one line per
+`input:touch:move` in the first case, which is the ~60/s the ownership warn had already been removed from that
+same method for. A line no test can hold is a line that will drift, and the reason is recorded at each site.
+
 ## The ledger records a *correlated* ack
 
 `ackedSessions` gates whether silence is fatal, and it now records `input:done` only when it carries a

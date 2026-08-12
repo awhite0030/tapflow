@@ -297,6 +297,60 @@ describe('input:error from the relay carries a reason (#492)', () => {
     agent.close(); browser.close(); other.close()
   })
 
+  // ── the second door predicate: a request must name a session (CodeRabbit on #528) ──────────────
+  //
+  // `isCorrelated` validated `requestId` only, so a command with no `sessionId` — or an empty one, which
+  // type-checks and which `mcp-server`'s bare `z.string()` tool schemas let a model produce — reached the
+  // reply builders and shipped a frame whose **required** `sessionId` `JSON.stringify` erases. Every
+  // consumer's session gate then discards it, so the caller waits out its deadline with the diagnosis in
+  // hand and no way to attribute it.
+  //
+  // Dropped rather than answered, the same policy as an uncorrelatable request, and for a reason the note on
+  // `SessionError` used to contradict: `GenericError` carries no `requestId`, so answering an unaddressed
+  // request is *also* unattributable — it buys the caller nothing that silence did not, while widening what
+  // `error` means. See `isAddressed`.
+  for (const bad of [undefined, ''] as Array<string | undefined>) {
+    const label = bad === undefined ? 'absent' : 'the empty string'
+    it(`drops a request whose sessionId is ${label}, and answers nothing`, async () => {
+      const { agent, browser, sessionId } = await live()
+      void sessionId
+
+      for (const type of ['input:touch:end', 'device:boot', 'open-url', 'app:clear-state', 'clipboard:read', 'app:install', 'app:launch']) {
+        browser.send(JSON.stringify({
+          type, requestId: `rq-${type}`, ...(bad === undefined ? {} : { sessionId: bad }),
+          buildId: 1,
+          payload: { x: 0.5, y: 0.5, deviceId: 'dev-1', url: 'x://y', bundleId: 'com.example', press: 'copy' },
+        }))
+      }
+      await barrier(browser)
+      await barrier(agent)
+
+      // Nothing forwarded, and nothing answered — an answer would be the frame that violates its own
+      // declaration, which is what this predicate exists to stop.
+      for (const type of ['input:touch:end', 'device:boot', 'open-url', 'app:clear-state', 'clipboard:read', 'app:install', 'app:launch']) {
+        expect(await waitForTypeOrNull(agent, type, 0), `${type} was forwarded`).toBeNull()
+      }
+      for (const reply of ['input:error', 'device:boot-error', 'open-url:error', 'app:clear-state-error', 'clipboard:error', 'app:install-error', 'app:launch-error']) {
+        expect(await waitForTypeOrNull(browser, reply, 0), `${reply} was sent`).toBeNull()
+      }
+
+      agent.close(); browser.close()
+    })
+  }
+
+  it('drops an unaddressed session:start rather than answering session:joined without an id', async () => {
+    // The door that made the defect visible: `session:joined` declares `sessionId` required, and this branch
+    // built it from `msg.sessionId!`.
+    const browser = await outsider()
+    browser.send(JSON.stringify({ type: 'session:start' }))
+    await barrier(browser)
+
+    expect(await waitForTypeOrNull(browser, 'session:joined', 0)).toBeNull()
+    expect(await waitForTypeOrNull(browser, 'error', 0)).toBeNull()
+
+    browser.close()
+  })
+
   // ── the same gate on every other browser→agent command (L5c, widened) ─────────────────────────
   //
   // Input was one branch of ten. Review found the rest still forwarding on the strength of the session
