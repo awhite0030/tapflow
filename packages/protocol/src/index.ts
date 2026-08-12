@@ -553,12 +553,34 @@ export type SessionStartFailure =
   /** The Mac is over its resource ceiling and refused to take another session. */
   | 'agent-resources-exhausted'
 
-// The escape hatch for a failure the relay cannot correlate to a session. Every typed member above
-// carries a sessionId; when there is genuinely none to carry, this is the message to send — not a
-// typed error with the key dropped by `JSON.stringify`.
-export interface GenericError {
+/**
+ * The answer to a `session:start` the relay refused. **Not a general escape hatch**, which is what this
+ * comment used to claim — and the claim could not coexist with `SessionStartFailure`'s, one screen up, that
+ * the reason has a single producer inside `handleSessionStart`. Both were in HEAD at once for two months.
+ *
+ * L5c settled it by removing the general role rather than the specific one: a request that names no session
+ * is now **dropped at the relay's door** (`isAddressed`), because answering it would ship a frame whose own
+ * required `sessionId` `JSON.stringify` erases, and `error` has no `requestId` either — so a caller could not
+ * attribute the answer and would wait out the same deadline silence costs. With nothing left needing an
+ * unaddressed failure, every producer of this message answers one specific join.
+ *
+ * **So it extends `SessionError`**, and that is the honest form rather than a field bolted on: the shape is
+ * the base verbatim, and the base's own definition — a failure a *session* is waiting on — is now exactly
+ * what this is. `protocolMessageNames.test.mjs` enforces that membership, and its note saying `error`
+ * "cannot be a `SessionError`" described a nature this change replaced.
+ *
+ * What the address buys: the join waiters in `mcp-server` and `flow-runner` matched
+ * `sessionId === undefined || sessionId === mine`, and with no such key the left half was **always true**, so
+ * any `error` resolved any pending join. Two concurrent `connect_device` calls and the first refusal woke the
+ * wrong one — reported as a failure the other session never had, while the one that did fail waited out its
+ * deadline. `dispatch` resolves only the first matching waiter, so that is one wrong answer and one timeout.
+ *
+ * The name stays `GenericError` despite the narrowed role. The derivation rule would give `Error`, which
+ * shadows the global, so the exception exists for the literal rather than the role — renaming to
+ * `SessionStartError` needs an exception entry just the same, and removing it needs a new wire literal.
+ */
+export interface GenericError extends SessionError {
   type: 'error'
-  message: string
   reason: SessionStartFailure
 }
 

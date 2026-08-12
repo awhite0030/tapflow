@@ -55,7 +55,7 @@ describe('SessionList when a shutdown is refused', () => {
     expect(screen.getByText(/shutting down/i)).toBeInTheDocument()
 
     act(() => {
-      deliver!({ type: 'error', message: 'Session busy', reason: 'session-busy' })
+      deliver!({ type: 'error', sessionId: 's1', message: 'Session busy', reason: 'session-busy' })
     })
 
     // The badge is gone, so the row's buttons are back and the tester can act.
@@ -78,7 +78,7 @@ describe('SessionList when a shutdown is refused', () => {
     act(() => { screen.getByRole('button', { name: /shutdown/i }).click() })
     expect(send.mock.calls.map(([m]) => m.type)).toEqual(['agents:list', 'session:start'])
 
-    act(() => { deliver!({ type: 'error', message: 'Session busy', reason: 'session-busy' }) })
+    act(() => { deliver!({ type: 'error', sessionId: 's1', message: 'Session busy', reason: 'session-busy' }) })
 
     expect(send.mock.calls.some(([m]) => m.type === 'device:shutdown')).toBe(false)
   })

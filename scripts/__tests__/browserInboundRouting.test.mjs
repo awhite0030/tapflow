@@ -257,7 +257,7 @@ describe('browser-inbound routing matches the protocol union', () => {
       'session:terminated': 'reason sessionId',
       'session:agent-away': 'sessionId',
       'session:rebound': 'capabilities sessionId',
-      error: 'message reason',
+      error: 'message reason sessionId',
     },
   }
 

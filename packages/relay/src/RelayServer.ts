@@ -1170,10 +1170,16 @@ export class RelayServer {
     logger.info(`agent connected: ${msg.agentName ?? msg.agentId ?? 'unknown'} (${msg.platform ?? 'unknown'}) — ${registeredSessions.length} device(s)`)
   }
 
+  /** The only producer of `error` — all four exits below, and nothing else in the repo sends that message.
+   *
+   *  That is what makes the address possible rather than aspirational: `msg.sessionId` is narrowed to a
+   *  non-empty `string` by the door (`isAddressed`), so every refusal can name the join it refuses. Before
+   *  L5d they carried none, and the clients' join waiters matched `sessionId === undefined || sessionId ===
+   *  mine` — with no such key the left half was always true, so any refusal resolved any pending join. */
   private handleSessionStart(ws: WebSocket, msg: RelayMessage & { sessionId: string }): void {
     const session = this.sessions.get(msg.sessionId)
     if (!session) {
-      this.sendTo(ws, { type: 'error', message: 'Session not found', reason: 'session-not-found' })
+      this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message: 'Session not found', reason: 'session-not-found' })
       return
     }
     // Occupancy first, because it is the more specific answer and both can be true at once. A tester
@@ -1184,7 +1190,7 @@ export class RelayServer {
     // `!== ws` because a socket re-joining the session it already holds is not contending with anyone:
     // `SessionList` sends `session:start` before a shutdown, so pressing shutdown twice hit this.
     if (session.browserSocket && session.browserSocket !== ws && session.browserSocket.readyState === WebSocket.OPEN) {
-      this.sendTo(ws, { type: 'error', message: 'Session busy', reason: 'session-busy' })
+      this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message: 'Session busy', reason: 'session-busy' })
       return
     }
     // Read before the resource gate, and answered before it too. The gate would otherwise read the
@@ -1195,7 +1201,7 @@ export class RelayServer {
     if (resources) {
       const memPercent = (resources.memUsedMB / resources.memTotalMB) * 100
       if (resources.cpuPercent > RESOURCE_THRESHOLD || memPercent > RESOURCE_THRESHOLD) {
-        this.sendTo(ws, { type: 'error', message: 'Agent resources exhausted', reason: 'agent-resources-exhausted' })
+        this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message: 'Agent resources exhausted', reason: 'agent-resources-exhausted' })
         return
       }
     }
@@ -1208,7 +1214,7 @@ export class RelayServer {
       // `catch {}` also discarded the error entirely: nothing reached the route-level handler, because
       // this swallowed it first.
       logger.error(`session:start could not join ${msg.sessionId}:`, e)
-      this.sendTo(ws, { type: 'error', message: 'Session not found', reason: 'session-not-found' })
+      this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message: 'Session not found', reason: 'session-not-found' })
       return
     }
     // Include the agent's capabilities so the viewer knows up front what is implemented on

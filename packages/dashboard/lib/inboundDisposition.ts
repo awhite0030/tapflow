@@ -51,6 +51,16 @@ export const INBOUND_DISPOSITION = {
   'device:booting': { at: 'DeviceViewer' },
   'device:ready': { at: 'DeviceViewer, SessionList' },
   'device:shutdown-done': { at: 'SessionList' },
+  // **`useAgentSession`'s branch cannot fire, and it is still named here.** L5d measured it: all four
+  // producers are `sendTo(ws, …)` to the socket that sent `session:start`, and that hook's socket only ever
+  // sends `agents:list` and `device:shutdown`. So relay failures do **not** surface in the device list, which
+  // naming three files here implies.
+  //
+  // The name stays because `at` answers "which files compare `.type` against this", and the reverse-direction
+  // check derives exactly that — dropping the name made the table stale the other way. A first attempt did
+  // drop it and that check said so. Reachability is a different question from handling, and this comment is
+  // where it belongs; the branch is a correct handler for a message that does not arrive, so whoever removes
+  // it can, and this says why.
   'error': { at: 'DeviceViewer, SessionList, useAgentSession' },
   'input:error': { at: 'DeviceViewer' },
   'keyboard:toggled': { at: 'DeviceViewer' },
@@ -58,6 +68,7 @@ export const INBOUND_DISPOSITION = {
   'open-url:error': { at: 'DeviceViewer' },
   'session:agent-away': { at: 'DeviceViewer' },
   'session:chrome': { at: 'DeviceViewer' },
+  // Same as `error` above: `useAgentSession`'s branch cannot fire, and is named for the same reason.
   'session:joined': { at: 'DeviceViewer, SessionList, useAgentSession' },
   'session:rebound': { at: 'DeviceViewer' },
   'session:terminated': { at: 'DeviceViewer' },

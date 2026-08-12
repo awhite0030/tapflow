@@ -275,3 +275,71 @@ describe('RelayClient.bootDevice — an optional correlator, with a fallback', (
     await expect(client.bootDevice('s1', 'dev-1')).rejects.toThrow('emulator gone')
   })
 })
+
+
+// L5d. `error` is the answer to a `session:start` the relay refused, and it carries the session it refuses.
+// This file had **no `error` fixture at all** before, so removing the waiter's `sessionId === undefined`
+// escape was untested in both directions — the review that found that is why these exist.
+describe('RelayClient.joinSession — a refusal is addressed', () => {
+  let wss: WebSocketServer | null = null
+
+  afterEach(async () => {
+    const s = wss
+    wss = null
+    if (!s) return
+    for (const c of s.clients) c.terminate()
+    await new Promise<void>((r) => s.close(() => r()))
+  })
+
+  /** A relay that answers `session:start` with whatever the test returns. */
+  async function relay(reply: (msg: Record<string, unknown>) => Record<string, unknown>) {
+    wss = new WebSocketServer({ port: 0 })
+    wss.on('connection', (ws) => {
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] === 'session:start') ws.send(JSON.stringify(reply(msg)))
+      })
+    })
+    const port = (wss.address() as { port: number }).port
+    const client = new RelayClient(`ws://localhost:${port}`, '')
+    await client.connect()
+    return client
+  }
+
+  it('fails the join on a refusal that names its session', async () => {
+    const client = await relay((m) => ({
+      type: 'error', sessionId: m['sessionId'], message: 'Session busy', reason: 'session-busy',
+    }))
+    await expect(client.joinSession('s1')).rejects.toThrow('Session busy')
+  })
+
+  it('does not take a refusal meant for another session', async () => {
+    // The other half of #512's first finding: with the old `sessionId === undefined` escape this resolved,
+    // and the caller was told a failure that belonged to a join it had not made.
+    const client = await relay(() => ({
+      type: 'error', sessionId: 'someone-else', message: 'Session busy', reason: 'session-busy',
+    }))
+    const settled = await Promise.race([
+      client.joinSession('s1').then(() => 'resolved').catch(() => 'rejected'),
+      new Promise<string>((r) => setTimeout(() => r('still-waiting'), 150)),
+    ])
+    expect(settled).toBe('still-waiting')
+  })
+
+  it('logs once when a refusal carries no address, and still times out', async () => {
+    // A relay older than L5d. There is no version handshake anywhere, so this frame is the only signal that
+    // the two sides disagree — and without the log the join simply times out with no stated reason, which is
+    // #512's complaint arriving through a different door.
+    const logged: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((m: unknown) => { logged.push(String(m)) })
+    try {
+      const client = await relay(() => ({ type: 'error', message: 'Session busy', reason: 'session-busy' }))
+      const settled = await Promise.race([
+        client.joinSession('s1').then(() => 'resolved').catch(() => 'rejected'),
+        new Promise<string>((r) => setTimeout(() => r('still-waiting'), 200)),
+      ])
+      expect(settled).toBe('still-waiting')
+    } finally { spy.mockRestore() }
+    expect(logged.filter((l) => l.includes('predates addressed errors'))).toHaveLength(1)
+  })
+})

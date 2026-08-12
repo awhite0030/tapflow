@@ -126,13 +126,61 @@ describe('TapflowClient', () => {
       expect(msg).toMatchObject({ type: 'session:start', sessionId: 'sess-1' })
     })
 
+    // These two send an **addressed** refusal, as the relay does since L5d. The fake relay's `send` takes
+    // `Record<string, unknown>`, so nothing typed them and they carried neither `sessionId` nor the required
+    // `reason` — they passed only because the waiter had a `sessionId === undefined` escape. Removing that
+    // escape is what closes #512's first finding, and it is what would have turned these two red with no
+    // compile error to point at them.
     it('throws on session busy error', async () => {
-      setTimeout(() => relay.send({ type: 'error', message: 'Session busy' }), 10)
+      setTimeout(() => relay.send({ type: 'error', sessionId: 'sess-1', message: 'Session busy', reason: 'session-busy' }), 10)
       await expect(client.connectDevice('sess-1')).rejects.toThrow('Session busy')
     })
 
+    it('does not resolve one join with another session\'s refusal', async () => {
+      // **#512 finding 1.** Before L5d `error` carried no address, so the waiter's `sessionId === undefined`
+      // half was always true and any refusal resolved any pending join. Two joins in flight and the first
+      // refusal woke the wrong one — reported as a failure that session never had — while the one that was
+      // actually refused waited out its deadline, because `dispatch` resolves only the first match.
+      const other = client.connectDevice('sess-OTHER')
+      relay.send({ type: 'error', sessionId: 'sess-1', message: 'Session busy', reason: 'session-busy' })
+
+      expect(await Promise.race([
+        other.then(() => 'resolved').catch(() => 'rejected'),
+        new Promise<string>((r) => setTimeout(() => r('still-waiting'), 150)),
+      ])).toBe('still-waiting')
+      other.catch(() => { /* times out on its own deadline */ })
+    }, 15_000)
+
+    it('is not resolved by an unaddressed refusal, and logs the skew once', async () => {
+      // The `sessionId === undefined` escape only fires for a refusal carrying **no** address, so the
+      // foreign-address test above does not exercise it — a mutation putting the escape back left all 80
+      // tests passing. This is the case that holds it, and the same one that holds the skew log.
+      //
+      // A relay older than L5d sends unaddressed refusals. They match nothing now, so the join runs to its
+      // deadline instead of throwing `'Session busy'` — advice the caller could have acted on. Taken
+      // deliberately over a fallback, and logged once per socket because nothing else announces a relay's
+      // version and the join's own timeout says nothing about why.
+      const logged: string[] = []
+      const spy = vi.spyOn(console, 'error').mockImplementation((m: unknown) => { logged.push(String(m)) })
+      try {
+        const pending = client.connectDevice('sess-1')
+        relay.send({ type: 'error', message: 'Session busy', reason: 'session-busy' })   // no sessionId
+        await new Promise((r) => setTimeout(r, 20))
+        relay.send({ type: 'error', message: 'Session busy', reason: 'session-busy' })   // and again
+        await new Promise((r) => setTimeout(r, 20))
+
+        expect(await Promise.race([
+          pending.then(() => 'resolved').catch(() => 'rejected'),
+          new Promise<string>((r) => setTimeout(() => r('still-waiting'), 150)),
+        ])).toBe('still-waiting')
+        pending.catch(() => { /* times out on its own deadline */ })
+      } finally { spy.mockRestore() }
+      // Once, not twice: an old relay refuses every join this way, and a line per refusal would bury it.
+      expect(logged.filter((l) => l.includes('predates addressed errors'))).toHaveLength(1)
+    }, 15_000)
+
     it('throws on session not found error', async () => {
-      setTimeout(() => relay.send({ type: 'error', message: 'Session not found' }), 10)
+      setTimeout(() => relay.send({ type: 'error', sessionId: 'sess-1', message: 'Session not found', reason: 'session-not-found' }), 10)
       await expect(client.connectDevice('sess-1')).rejects.toThrow('Session not found')
     })
   })

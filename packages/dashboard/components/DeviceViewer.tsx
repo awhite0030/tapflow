@@ -123,9 +123,15 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     // narrowing rather than the widening it used to be — it was `in msg` because the local copy of
     // this union omitted the field on messages the wire always stamped it on.
     //
-    // `'sessionId' in msg` stays, because two members genuinely carry none — `agents:listed` and
-    // `error`, whose whole point is a failure the relay could not attribute. Both are the *only* two,
-    // checked against the union.
+    // `'sessionId' in msg` stays, and as of L5d **one** member genuinely carries none: `agents:listed`,
+    // which is about the relay's inventory rather than any session. `error` used to be the second — "a
+    // failure the relay could not attribute" — and is now the answer to a specific `session:start`, so it
+    // passes through the comparison instead of around it.
+    //
+    // That makes the gate reject a foreign `error`, which is a no-op rather than a change: every producer
+    // sends it with `sendTo(ws, …)` to the socket that asked, and this viewer's only `session:start` names
+    // the session it holds for the life of the socket. So there is no `error` the wire can deliver here that
+    // this line will drop — defence in depth, measured rather than assumed.
     //
     // **Why this gate is safe at all**: the relay only ever sends a session-scoped message to that
     // session's own `browserSocket`, so a mismatch means a stale socket rather than normal traffic. If

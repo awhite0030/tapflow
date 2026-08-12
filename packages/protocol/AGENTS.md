@@ -70,7 +70,7 @@ conversion, so they are written down here instead:
 
 ### The name must be derivable from the literal
 
-`InputDone` ↔ `input:done`: PascalCase over the literal's `:` and `-` segments. Five names deliberately
+`InputDone` ↔ `input:done`: PascalCase over the literal's `:` and `-` segments. Six names deliberately
 break the rule and are listed in `scripts/__tests__/protocolMessageNames.test.mjs` — `GenericError`
 (`Error` would shadow the global), and `AppInstall`/`AppLaunch` × `ToAgent`/`ToRelay`, because those two
 literals travel in both directions carrying **different shapes**: the browser sends `buildId`, the relay
@@ -275,6 +275,37 @@ whose failure half does not exist would leave it half-correlated, and the half t
 platform-asymmetric — Android's toggle has no device-side effect at all, so what its failure even means is a
 decision that slice has to make. `#517` is the prerequisite.
 
+## `error` is the session-start refusal, not an escape hatch
+
+L5d ended a contradiction that sat in this file and in `index.ts` at once for two months. `GenericError`'s doc
+claimed *"the escape hatch for a failure the relay cannot correlate to a session"*, while
+`SessionStartFailure`'s claimed the reason has **a single producer inside `handleSessionStart`**. Both cannot
+be true, and the program plan recorded that they were both in HEAD.
+
+L5c settled it by removing the general role rather than the specific one. A request naming no session is
+dropped at the relay's door (`isAddressed`), because answering it would ship a frame whose own required
+`sessionId` `JSON.stringify` erases — and `error` has no `requestId` either, so a caller could not attribute
+the answer and would wait out the same deadline silence costs. With nothing left needing an unaddressed
+failure, all four producers answer one specific join, and `error` **extends `SessionError`**: the shape is the
+base verbatim, and the base's own definition — a failure a *session* is waiting on — is now exactly what it is.
+
+**What the address buys.** The join waiters in `mcp-server` and `flow-runner` matched
+`sessionId === undefined || sessionId === mine`, and with no such key the left half was *always* true — so any
+refusal resolved any pending join. Two concurrent joins and the first refusal woke the wrong one, reported as a
+failure that session never had, while the one that was actually refused waited out its deadline, because
+`dispatch` resolves only the first matching waiter. That is #512's first finding, and the escape was it.
+
+**The name stays `GenericError` even though the role narrowed.** The derivation rule would give `Error`, which
+shadows the global, so the exception is anchored to the *literal* rather than to the role — `SessionStartError`
+would need an exception entry just the same, and removing the entry needs a new wire literal. Renaming would
+have cost every consumer plus `typeAssertions` and bought nothing.
+
+**Skew is logged, not hedged.** A client newer than its relay sees unaddressed refusals, which now match
+nothing, so the join runs to its deadline instead of reporting why. There is no version handshake anywhere in
+this protocol, so the alternative was a fallback — the ambiguity this work exists to remove. Both clients log
+once per session instead, the same shape and the same reasoning as the input-ack skew record: logging is not
+matching.
+
 ## Every direction is declared, and an agent's send is typed
 
 The six unions cover the whole wire: `BrowserToRelay`, `AgentToRelay`, `RelayToAgent`, `RelayToBrowser`,
@@ -350,9 +381,11 @@ widen the declaration:
   `flow-runner`) set it too" — true when written, and falsified by the work that typed them.)
 - `'Session not found'` answers a sessionId that did not **match** — a stale tab, a terminated
   session — not one that was absent.
-- `{ type: 'error'; message: string }` is the escape hatch for a genuinely uncorrelatable failure. So
-  the right move when there is no sessionId is to send *that*, and the required field is what forces
-  the choice.
+- `{ type: 'error' }` **is not** an escape hatch, as of L5d — it is the answer to a `session:start` the relay
+  refused, it extends `SessionError`, and it names the session it refuses. The paragraph that stood here said
+  the right move with no sessionId was to send *that*; L5c settled it the other way, by dropping a request
+  that names no session at the door. Both halves of the old advice are gone: there is no unaddressed failure
+  left to send, and nothing left that would need one.
 
 Widening would let #444 delete those `!` with no consumer forced to care, and the guarantee would go
 quietly with them. It is also close to irreversible: once optional, every consumer grows a guard.

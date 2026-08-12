@@ -367,7 +367,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
     act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
 
-    act(() => { deliver!({ type: 'error', message: 'Session not found', reason: 'session-not-found' }) })
+    act(() => { deliver!({ type: 'error', sessionId: 's1', message: 'Session not found', reason: 'session-not-found' }) })
 
     expect(onSessionEnded).toHaveBeenCalledWith('agent-disconnected')
   })
@@ -383,7 +383,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     const onSessionEnded = vi.fn()
     render(<DeviceViewer sessionId="s1" deviceId="dev-1" onSessionEnded={onSessionEnded} />)
 
-    act(() => { deliver!({ type: 'error', message: 'Session busy', reason: 'session-busy' }) })
+    act(() => { deliver!({ type: 'error', sessionId: 's1', message: 'Session busy', reason: 'session-busy' }) })
 
     // Not `agent-disconnected`: the agent is fine and so is the device. That reason tells the tester to
     // re-pick the Mac, which is advice for a problem they do not have.

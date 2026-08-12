@@ -147,6 +147,23 @@ export class TapflowClient {
    *  second correlation strategy. */
   private skewedSessions = new Set<string>()
 
+  /** Sessions seen refused by an **unaddressed** `error`, so a relay older than L5d.
+   *
+   *  Kept apart from the ack skew set only because the two answer different questions; the reasoning is the
+   *  same one. An unaddressed refusal cannot match a join waiter, so the join burns its deadline and the
+   *  caller is told "timed out" instead of "this session is in use" — #512's complaint arriving through a
+   *  different door. Nothing announces a relay's version, so this frame is the only signal there is. */
+  private addressSkewSessions = new Set<string>()
+
+  private noteAddressSkew(sessionId: string): void {
+    if (this.addressSkewSessions.has(sessionId)) return
+    this.addressSkewSessions.add(sessionId)
+    console.error(
+      `[tapflow] a session:start refusal for ${sessionId} carried no sessionId — this relay predates addressed ` +
+      'errors, so the join will time out rather than report why it was refused. Upgrade the relay.',
+    )
+  }
+
   private noteAckSkew(sessionId: string): void {
     if (this.skewedSessions.has(sessionId)) return
     this.skewedSessions.add(sessionId)
@@ -206,6 +223,14 @@ export class TapflowClient {
     // the one that arrives *late*: it missed its window, was reported optimistically, and still proves
     // this agent acks — so the next input can be judged strictly. A ledger kept at the waiter would
     // never see it.
+    // An unaddressed refusal matches no waiter now, so without this it is dropped in silence and the join
+    // that it answers reports a timeout. Recorded here rather than at the waiter for the same reason the ack
+    // ledger is: the frame arrives whether or not anything is still waiting for it.
+    if (msg['type'] === 'error' && typeof msg['sessionId'] !== 'string') {
+      // No session to key on, so key on the one the caller asked about — there is exactly one join in flight
+      // per socket, and `waiters` is where it is.
+      this.noteAddressSkew('a pending join')
+    }
     if (msg['type'] === 'input:done') {
       const sid = msg['sessionId']
       const id = msg['requestId']
@@ -252,7 +277,19 @@ export class TapflowClient {
     const msg = await this.waitFor(
       (m) =>
         (m['type'] === 'session:joined' && m['sessionId'] === sessionId) ||
-        (m['type'] === 'error' && (m['sessionId'] === undefined || m['sessionId'] === sessionId)),
+        // **No `=== undefined` escape.** `error` carries an address as of L5d, and the escape is what #512's
+        // first finding was: with no such key the left half was always true, so *any* refusal resolved *any*
+        // pending join. Two concurrent joins and the first refusal woke the wrong one — reported as a failure
+        // the other session never had, while the one that did fail waited out its deadline, because
+        // `dispatch` resolves only the first matching waiter.
+        //
+        // The cost is version skew, and it is taken deliberately rather than hedged: a client newer than its
+        // relay sees unaddressed refusals, which now match nothing, so the join runs to its deadline instead
+        // of throwing `'Session busy'` — advice the caller could have acted on. There is no version handshake
+        // anywhere in this protocol, so the alternative was a fallback, and a fallback here is exactly the
+        // ambiguity this work removes. `noteAddressSkew` logs it instead, once per session: the same shape as
+        // the input-ack skew record, on the same reasoning that logging is not matching.
+        (m['type'] === 'error' && m['sessionId'] === sessionId),
       5_000,
     )
     if (msg['type'] === 'error') throw new Error((msg['message'] as string) ?? 'Connect failed')

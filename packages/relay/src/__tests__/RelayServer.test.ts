@@ -181,6 +181,40 @@ describe('RelayServer', () => {
     browser.close()
   })
 
+  it('addresses the refusal from the unanticipated join failure too', async () => {
+    // The fourth `error` exit, and the only one no other test reaches: `join()` throws for not-found and busy
+    // as well, and both are answered above it, so getting here means a condition the handler did not foresee.
+    // Its own comment says so, and that is why it exists — an earlier version was a bare `catch {}` that
+    // swallowed the cause entirely.
+    //
+    // Forced with a spy rather than left unpinned. A mutation confirmed the gap: replacing this exit's address
+    // with a literal passed all 619 relay tests, and an address no test can hold is one that will drift.
+    const devices = [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'shutdown' }]
+    const agent = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(agent)
+    agent.send(JSON.stringify({ type: 'agent:register', devices }))
+    const { registeredSessions } = await waitForMessage(agent)
+    const sessionId = registeredSessions![0].sessionId
+
+    const sessions = (server as unknown as { sessions: { join(id: string, ws: WebSocket): void } }).sessions
+    const join = vi.spyOn(sessions, 'join').mockImplementation(() => { throw new Error('unforeseen') })
+    try {
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+      const msg = await waitForMessage(browser)
+
+      expect(msg.type).toBe('error')
+      expect(msg.sessionId).toBe(sessionId)
+      // `session-not-found` rather than `session-busy`, because busy was already answered above — putting a
+      // specific claim on an unknown cause is what `reason` exists to stop.
+      expect(msg.reason).toBe('session-not-found')
+      browser.close()
+    } finally { join.mockRestore() }
+
+    agent.close()
+  })
+
   it('returns error when joining a non-existent session', async () => {
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
@@ -188,6 +222,10 @@ describe('RelayServer', () => {
     const msg = await waitForMessage(browser)
     expect(msg.type).toBe('error')
     expect(msg.message).toBe('Session not found')
+    // The refusal names the id it could not find — the session does not exist, but the *request* does, and it
+    // is the request the caller's waiter is keyed on.
+    expect(msg.sessionId).toBe('bad-id')
+    expect(msg.reason).toBe('session-not-found')
     browser.close()
   })
 
@@ -210,6 +248,13 @@ describe('RelayServer', () => {
     const msg = await waitForMessage(browser2)
     expect(msg.type).toBe('error')
     expect(msg.message).toBe('Session busy')
+    // L5d. Every refusal names the join it refuses, and each of the four exits needs its own assertion:
+    // asserting one leaves the other three free to carry a literal, and the two `'Session not found'` exits
+    // are especially easy to mistake for one. Before this, `error` carried no address at all and the clients'
+    // join waiters had a `sessionId === undefined` escape that let any refusal resolve any pending join —
+    // #512's first finding.
+    expect(msg.sessionId).toBe(sessionId)
+    expect(msg.reason).toBe('session-busy')
 
     agent.close()
     browser1.close()
@@ -1245,6 +1290,7 @@ describe('RelayServer', () => {
       const msg = await waitForMessage(browser)
       expect(msg.type).toBe('error')
       expect(msg.message).toBe('Agent resources exhausted')
+      expect(msg.sessionId).toBe(sessionId)
 
       agent.close()
       browser.close()
@@ -1261,6 +1307,7 @@ describe('RelayServer', () => {
       const msg = await waitForMessage(browser)
       expect(msg.type).toBe('error')
       expect(msg.message).toBe('Agent resources exhausted')
+      expect(msg.sessionId).toBe(sessionId)
 
       agent.close()
       browser.close()
