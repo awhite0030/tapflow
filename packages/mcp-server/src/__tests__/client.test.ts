@@ -179,6 +179,42 @@ describe('TapflowClient', () => {
       expect(logged.filter((l) => l.includes('predates addressed errors'))).toHaveLength(1)
     }, 15_000)
 
+    it('logs the skew for a refusal that arrives with nothing waiting for it', async () => {
+      // **The stated reason for recording this in `dispatch`**, and nothing held it: adding
+      // `&& this.waiters.length > 0` to the guard passed all 81 tests, because every other fixture has a join
+      // still pending when the refusal lands. The case that reason exists for is the opposite one — a refusal
+      // arriving *after* its join gave up, from a relay slow enough that the deadline won the race. That
+      // caller has already been told "timed out" with no cause, so this line is the only thing that can
+      // explain it, and a waiters-guard would drop precisely it.
+      const logged: string[] = []
+      const spy = vi.spyOn(console, 'error').mockImplementation((m: unknown) => { logged.push(String(m)) })
+      try {
+        relay.send({ type: 'error', message: 'Session busy', reason: 'session-busy' })   // no join in flight
+        await new Promise((r) => setTimeout(r, 20))
+      } finally { spy.mockRestore() }
+      expect(logged.filter((l) => l.includes('predates addressed errors'))).toHaveLength(1)
+    })
+
+    it('names the relay and not a session it cannot know', async () => {
+      // The first draft keyed the record on the literal `'a pending join'` and rendered it into the line, so
+      // the set could only ever hold that sentinel — "once per session" in the docstring, once per *process*
+      // in fact, and against an old relay the second refused session logged nothing at all. Keying per
+      // session is not available: the frame carries no address, and `Waiter` keeps its predicate as a closure
+      // so no session id survives on the record. Naming one anyway would be a guess between the pending
+      // joins, which is the false attribution this slice exists to remove. The relay is what the operator
+      // acts on, and it is per client, so once per client is the honest cardinality.
+      const logged: string[] = []
+      const spy = vi.spyOn(console, 'error').mockImplementation((m: unknown) => { logged.push(String(m)) })
+      try {
+        relay.send({ type: 'error', message: 'Session busy', reason: 'session-busy' })
+        await new Promise((r) => setTimeout(r, 20))
+      } finally { spy.mockRestore() }
+      const line = logged.find((l) => l.includes('predates addressed errors'))
+      expect(line).toBeDefined()
+      expect(line).toContain('Upgrade the relay')
+      expect(line).not.toContain('pending join')
+    })
+
     it('throws on session not found error', async () => {
       setTimeout(() => relay.send({ type: 'error', sessionId: 'sess-1', message: 'Session not found', reason: 'session-not-found' }), 10)
       await expect(client.connectDevice('sess-1')).rejects.toThrow('Session not found')

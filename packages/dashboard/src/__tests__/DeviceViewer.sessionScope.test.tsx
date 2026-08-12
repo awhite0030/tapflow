@@ -68,6 +68,42 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
     expect(screen.getByText(/Install failed: Build not found/)).toBeInTheDocument()
   })
 
+  it('ignores a session:start refusal belonging to a different session', () => {
+    // **L5d put `error` under this gate for the first time** — the message had no `sessionId` before, so
+    // `'sessionId' in msg` was false and every refusal reached the handler. Nothing pinned the new reach in
+    // either direction: adding `&& msg.type !== 'error'` to the gate passed all 329 tests.
+    //
+    // The consequence is not reachable today, and that is a property of the dashboard rather than of this
+    // line. `useRelay` opens a socket per hook instance, so this viewer's socket sends exactly one
+    // `session:start` — for the session it holds — and all four producers answer `sendTo(ws, …)` to that
+    // socket. So no foreign refusal can arrive here now.
+    //
+    // It is tested anyway because the unreachability **expires**, and the thing that expires it is already
+    // filed: #527 asks whether `useAgentSession` should join, and any move toward one shared socket puts
+    // another component's refusal on this handler. A `session-not-found` for someone else's session then
+    // calls `onSessionEnded('agent-disconnected')` on a healthy viewer, which tears down a working stream
+    // and sends the tester to re-pick a Mac that was fine. Pinning it now costs one test; discovering it
+    // then costs a debugging session, and the L5c rule cuts the other way here — a line a test *can* hold is
+    // one that should be held.
+    const onSessionEnded = vi.fn()
+    render(<DeviceViewer sessionId="mine" deviceId="dev-1" onSessionEnded={onSessionEnded} />)
+
+    act(() => { deliver!({ type: 'error', sessionId: 'someone-else', message: 'Session not found', reason: 'session-not-found' }) })
+
+    expect(onSessionEnded).not.toHaveBeenCalled()
+  })
+
+  it('still acts on a refusal that is its own', () => {
+    // The other direction, and the one that makes the test above mean something: a gate that dropped every
+    // `error` would also pass the assertion above, and this is #426's silent-wait defect returning.
+    const onSessionEnded = vi.fn()
+    render(<DeviceViewer sessionId="mine" deviceId="dev-1" onSessionEnded={onSessionEnded} />)
+
+    act(() => { deliver!({ type: 'error', sessionId: 'mine', message: 'Session not found', reason: 'session-not-found' }) })
+
+    expect(onSessionEnded).toHaveBeenCalledWith('agent-disconnected')
+  })
+
   it('ignores a device:ready whose session id is empty', () => {
     // The discriminating case for dropping `&& msg.sessionId` from the gate. An empty sessionId is
     // falsy, so the truthiness check let it *pass* and the message was applied to whichever viewer was

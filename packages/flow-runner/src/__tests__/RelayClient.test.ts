@@ -291,13 +291,17 @@ describe('RelayClient.joinSession — a refusal is addressed', () => {
     await new Promise<void>((r) => s.close(() => r()))
   })
 
-  /** A relay that answers `session:start` with whatever the test returns. */
-  async function relay(reply: (msg: Record<string, unknown>) => Record<string, unknown>) {
+  /** A relay that answers `session:start` with whatever the test returns — one frame, or several. */
+  async function relay(
+    reply: (msg: Record<string, unknown>) => Record<string, unknown> | Record<string, unknown>[],
+  ) {
     wss = new WebSocketServer({ port: 0 })
     wss.on('connection', (ws) => {
       ws.on('message', (data) => {
         const msg = JSON.parse(String(data)) as Record<string, unknown>
-        if (msg['type'] === 'session:start') ws.send(JSON.stringify(reply(msg)))
+        if (msg['type'] !== 'session:start') return
+        const out = reply(msg)
+        for (const frame of Array.isArray(out) ? out : [out]) ws.send(JSON.stringify(frame))
       })
     })
     const port = (wss.address() as { port: number }).port
@@ -339,6 +343,27 @@ describe('RelayClient.joinSession — a refusal is addressed', () => {
         new Promise<string>((r) => setTimeout(() => r('still-waiting'), 200)),
       ])
       expect(settled).toBe('still-waiting')
+    } finally { spy.mockRestore() }
+    expect(logged.filter((l) => l.includes('predates addressed errors'))).toHaveLength(1)
+  })
+
+  it('logs the skew once even when the old relay refuses more than once', async () => {
+    // The once-guard above was **free**: the harness answered a single `session:start`, so "once" and "every
+    // time" produced the same one line and removing `!this.addressSkewLogged` passed all 70 tests. An old
+    // relay refuses *every* join this way, and a client driving a flow of many steps would get a line per
+    // refusal — the volume that buries the one message telling the operator what to fix. Two frames is the
+    // smallest fixture where the guard is observable.
+    const logged: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((m: unknown) => { logged.push(String(m)) })
+    try {
+      const client = await relay(() => [
+        { type: 'error', message: 'Session busy', reason: 'session-busy' },
+        { type: 'error', message: 'Session busy', reason: 'session-busy' },
+      ])
+      await Promise.race([
+        client.joinSession('s1').catch(() => 'rejected'),
+        new Promise((r) => setTimeout(r, 200)),
+      ])
     } finally { spy.mockRestore() }
     expect(logged.filter((l) => l.includes('predates addressed errors'))).toHaveLength(1)
   })

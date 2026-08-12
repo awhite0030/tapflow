@@ -176,6 +176,14 @@ describe('RelayServer', () => {
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
     const msg = await waitForMessage(browser)
     expect(msg.type).toBe('session:joined')
+    // **The address on the success half, and nothing held it.** L5d added four assertions that each
+    // *refusal* names the right session and none that the reply does — and the reply is the one both
+    // clients already matched strictly (`sessionId === mine`), so it had the largest blast radius and the
+    // least coverage. Measured: pointing it at `session.deviceId` instead passed relay 620, ios 382,
+    // android 263 and the static suite, while **no client could join at all** — viewer spinning forever,
+    // `connect_device` and `joinSession` burning their deadlines. The agent suites miss it because they
+    // wait on the type alone; `waitForMessage` here returns the frame, so the id is readable.
+    expect(msg.sessionId).toBe(sessionId)
 
     agent.close()
     browser.close()

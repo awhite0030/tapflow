@@ -64,17 +64,28 @@ conversion, so they are written down here instead:
   invisibly, because `src/__tests__` is outside that package's tsconfig.
 - **An `interface` can be reopened by a consumer.** `declare module '@tapflowio/protocol'` can add a
   field to any message, which an anonymous union member could not. Measured: a consumer can give
-  `GenericError` a `sessionId` and defeat the assertion in `typeAssertions.ts` that says it has none.
+  `session:joined` a `deviceId` and defeat the `typeAssertions.ts` assertion that says it has none —
+  the file's only whole-message excess-property check. (That example used to be `GenericError` and a
+  `sessionId`; L5d made that field **required**, so the augmentation it described is now the declaration.)
   It takes deliberate augmentation, so the risk is low — but the HOW NOT rule below ("do not widen a
   message") is now bypassable without editing this package.
 
 ### The name must be derivable from the literal
 
 `InputDone` ↔ `input:done`: PascalCase over the literal's `:` and `-` segments. Six names deliberately
-break the rule and are listed in `scripts/__tests__/protocolMessageNames.test.mjs` — `GenericError`
-(`Error` would shadow the global), and `AppInstall`/`AppLaunch` × `ToAgent`/`ToRelay`, because those two
-literals travel in both directions carrying **different shapes**: the browser sends `buildId`, the relay
-resolves it into `payload: { filePath, bundleId }`. Naming forced that split into the open.
+break the rule and are listed in `scripts/__tests__/protocolMessageNames.test.mjs` — count the list here
+against `NAME_EXCEPTIONS`, because a number that stopped matching its own enumeration is a defect this
+section has already shipped once:
+
+- `GenericError`, because `Error` would shadow the global. Renaming the interface does not remove the
+  exception — the derivation reads the **wire literal**, so only renaming `'error'` itself would, and that
+  reaches every consumer.
+- `AgentResourceReport`, because `agent:resources` derives `AgentResources`, which this package already
+  exports as the *payload* shape the message carries. Renaming the payload is a breaking change to a
+  published type that `agent-core`, `relay` and `dashboard` all re-export.
+- `AppInstall`/`AppLaunch` × `ToAgent`/`ToRelay`, because those two literals travel in both directions
+  carrying **different shapes**: the browser sends `buildId`, the relay resolves it into
+  `payload: { filePath, bundleId }`. Naming forced that split into the open.
 
 `device:shutdown` is the opposite case — identical in both directions, so it is **one** interface that
 `RelayToAgent` and `BrowserToRelay` both reference, which states that the relay forwards it untouched.
@@ -371,9 +382,13 @@ A browser receives 28 message types. They come from two producers, and the diffe
 
 ### `sessionId` stays required, even where the relay cannot prove it
 
-The relay reaches seven of its own error sites through `msg.sessionId!` — an assertion the compiler
-cannot verify — and `JSON.stringify` drops a key whose value is `undefined`. The fix is **not** to
-widen the declaration:
+The relay reaches eleven sessions through `msg.sessionId!` — an assertion the compiler cannot verify —
+and `JSON.stringify` drops a key whose value is `undefined`. **Eight are agent→browser forwards and three
+are request-side paths that deliberately have no address gate**; the seven *reply* sites this paragraph
+used to count went away with L5c's door predicates, and the number outlived them here. The composition
+matters more than the total, because "all forwards" invites the conclusion that the request side is
+settled — and `device:shutdown` is on the request side with no ownership gate either (#527). The fix is
+**not** to widen the declaration:
 
 - Every in-repo sender does supply one. `BrowserToRelay` declares `sessionId: string` on every member
   but `agents:list`, and since L4c all three senders are typed against that union, so the compiler

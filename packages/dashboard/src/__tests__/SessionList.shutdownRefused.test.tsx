@@ -112,8 +112,12 @@ describe('SessionList when a shutdown is refused', () => {
   })
 
   it('refuses a second shutdown while one is still unanswered', () => {
-    // `error` carries no sessionId, so two in flight would leave the handler unable to say which row a
-    // refusal belongs to. The previous version cleared every row instead, which was a guess.
+    // Not the original reason any more. That one was "`error` carries no sessionId, so two in flight would
+    // leave the handler unable to say which row a refusal belongs to" — and it **expired in L5d**, which made
+    // the refusal name its session. The guard is what keeps `pendingRef` a single slot, which is what the
+    // handler's unconditional clear depends on, and #527 has this list joining before it shuts down as a
+    // stand-in for a missing server check, so two in flight would interleave those joins. See
+    // `SessionList.tsx`'s comment on `handleShutdown`, which carries the same correction.
     render(<SessionList onSelect={vi.fn()} />)
     act(() => { deliver!({ type: 'agents:listed', sessions: TWO_DEVICES }) })
 
