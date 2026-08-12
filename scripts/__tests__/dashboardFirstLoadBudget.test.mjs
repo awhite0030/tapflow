@@ -5,7 +5,7 @@
 // index.html, and budget the precompressed Brotli bytes that the relay serves.
 import { beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'child_process'
-import { existsSync, readFileSync, statSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { dirname, relative, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -13,6 +13,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DASHBOARD_DIST = resolve(ROOT, 'packages', 'dashboard', 'dist')
 const INDEX_HTML = resolve(DASHBOARD_DIST, 'index.html')
 const FIRST_LOAD_BROTLI_BUDGET = 155_000
+const MAX_RAW_JS_CHUNK_SIZE = 500_000
 
 function buildDashboardDist() {
   const env = { ...process.env, NODE_ENV: 'production' }
@@ -80,6 +81,22 @@ function firstLoadBrotliReport() {
   return { total, details: lines.join('\n') }
 }
 
+function oversizedJavascriptChunks() {
+  const assetsDir = resolve(DASHBOARD_DIST, 'assets')
+  if (!existsSync(assetsDir)) {
+    throw new Error('packages/dashboard/dist/assets is missing after dashboard build')
+  }
+
+  return readdirSync(assetsDir)
+    .filter((name) => name.endsWith('.js'))
+    .map((name) => {
+      const asset = resolve(assetsDir, name)
+      return { name, size: statSync(asset).size }
+    })
+    .filter(({ size }) => size > MAX_RAW_JS_CHUNK_SIZE)
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
 describe('dashboard first-load JavaScript budget', () => {
   beforeAll(() => {
     buildDashboardDist()
@@ -91,5 +108,14 @@ describe('dashboard first-load JavaScript budget', () => {
       total,
       `First-load Brotli JS is ${total} B, budget is ${FIRST_LOAD_BROTLI_BUDGET} B.\n\nAssets:\n${details}`,
     ).toBeLessThanOrEqual(FIRST_LOAD_BROTLI_BUDGET)
+  })
+
+  it('keeps emitted JavaScript chunks below the Vite large-chunk threshold', () => {
+    const oversized = oversizedJavascriptChunks()
+    const details = oversized.map(({ name, size }) => `- ${name}: ${size} B`).join('\n')
+    expect(
+      oversized,
+      `JavaScript chunks exceed ${MAX_RAW_JS_CHUNK_SIZE} B raw:\n${details}`,
+    ).toHaveLength(0)
   })
 })
