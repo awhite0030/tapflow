@@ -49,8 +49,20 @@ landed to a model that then moved on (#457). Three things about the fix are easy
   relay may have forwarded it. A close says nothing about whether the agent acks — only that we stopped
   being able to hear it — so it is unconfirmed regardless of the ledger.
 - **Whether silence is fatal is decided by what the session has already done**, not by a negotiated
-  flag: `ackedSessions` records any session that has answered an input with `input:done`, and only
-  those are judged strictly. **`input:done` and not `input:error`**, because the relay originates
+  flag: `ackedSessions` records a session that has answered an input with `input:done` **carrying a
+  correlator**, and only those are judged strictly. L5c added that qualifier and it is the whole content of
+  the rule: `strict` licenses exactly one inference — *silence here is an anomaly, not an agent that does not
+  ack* — and for an agent that never carries a correlator, silence at the waiter is **structural**, since its
+  acks can never match. Recording it would make every input after the first report a failure the agent never
+  had a chance to avoid.
+  It is not a provenance question. An id-less `input:done` is still the agent's word, because nothing else
+  produces that message; what it lacks is *attribution*, and attribution is the waiter's question rather than
+  this ledger's. Nor is the condition "an id **this client** issued" — recognising that after the fact needs a
+  set of issued ids outliving their waiters, and the late ack is precisely the one worth recording, so the set
+  would never shrink in a long-lived stdio process. A correlated ack for someone else's input still
+  demonstrates that this agent echoes correlators, which is what the ledger is for.
+
+  **`input:done` and not `input:error`**, because the relay originates
   `input:error` to this same socket for a terminal input it cannot dispatch — counting those would let
   one agent-offline blip mark a session as acking when its agent may never have answered anything, and
   then report every later input as unconfirmed on evidence the agent did not produce. Nothing in the
@@ -72,11 +84,19 @@ landed to a model that then moved on (#457). Three things about the fix are easy
   decision, and `REASON_ADVICE` is what it decides on — including the warning that `no-gesture` may
   already have applied part of the input.
 
-**A known gap this does not close**: an ack carries no correlation id, so the waiter matches any ack for
-the session. An ack that arrives after its own input timed out is consumed by the *next* input's waiter,
-which then reports the previous input's outcome — including reporting an unanswered input as landed. That
-needs a field on the wire and is tracked in #499; it is stated here rather than papered over, because it
-is the one way the gate above can still be defeated.
+**That gap is closed (#499).** The ack used to carry no correlation id, so the waiter matched any ack for the
+session and one that arrived after its own input had timed out was consumed by the *next* input's waiter —
+which then reported the previous input's outcome, including reporting an unanswered input as landed. It was
+the one way the gate above could still be defeated. `awaitInputAck` now matches on `requestId`, **with no
+fallback for an absent one**: accepting an id-less ack would keep exactly the behaviour that defect was.
+
+The cost lands on agents predating the correlator, and it is bounded by the ledger above rather than by a
+version check — there is no protocol or agent version handshake anywhere in this system. Their acks never
+match, so those sessions never become strict and keep the optimistic path: the residual exemption this file
+already described, now widened from "agents predating the ack protocol" to "agents predating the correlator".
+An id-less ack is therefore the only skew signal that exists, so it is recorded in `skewedSessions` — which
+carries no strictness — and logged once per session. Dropping it silently would return the session to
+optimistic reporting, which from an operator's seat is indistinguishable from the defect #457 fixed.
 
 ## HOW NOT
 

@@ -75,6 +75,20 @@ export const INPUT_ERROR_NOTICE: Record<InputErrorReason, InputErrorNotice | nul
   // frame — but that case exhausts the respawn budget and surfaces as `channel-unavailable`, so it
   // is bounded and ends up visible.
   'no-gesture': null,
+  // **Reachable, and a first draft had this as `null` on the grounds that it was not.** The claim was that
+  // this viewer only ever sends input for the session it joined, so the relay would never address it here.
+  // That holds for the join path and not for the session's lifetime: `session:leave` is forwarded on the
+  // strength of the session existing, with no check that the sender owns it, and it nulls `browserSocket`.
+  // So another client can strip ownership out from under a mounted viewer, and from that moment this
+  // tester's own taps are refused. Silent there is the #426 symptom exactly — a picture that keeps updating
+  // while input stops working, with nothing said.
+  //
+  // The action names re-entering the session rather than the device, because nothing about the device is
+  // wrong: the frame was refused at the relay's door and never reached it.
+  'not-session-owner': {
+    title: 'This session is no longer yours',
+    action: 'Go back and open the device again — another tester may have taken it. Nothing you just did reached the device.',
+  },
 }
 
 /**

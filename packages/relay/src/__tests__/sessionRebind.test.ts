@@ -344,7 +344,7 @@ describe('a session survives its agent restarting (#426)', () => {
     await waitForType(browser, 'session:rebound')
 
     browser.send(JSON.stringify({ type: 'input:touch:start', sessionId, payload: { x: 1, y: 1 } }))
-    browser.send(JSON.stringify({ type: 'input:touch:end', sessionId, payload: { x: 1, y: 1 } }))
+    browser.send(JSON.stringify({ type: 'input:touch:end', sessionId, requestId: 'rq-rebind', payload: { x: 1, y: 1 } }))
 
     await expect(waitForType(second.agent, 'input:touch:start')).resolves.toBeTruthy()
     await expect(waitForType(second.agent, 'input:touch:end')).resolves.toBeTruthy()

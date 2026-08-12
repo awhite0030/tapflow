@@ -163,7 +163,7 @@ describe('browser-inbound routing matches the protocol union', () => {
 
   it('RelayOrAgentToBrowser is shared by both directions rather than copied', () => {
     const shared = unionMembers(protocolSrc, 'RelayOrAgentToBrowser')
-    expect(shared.size).toBe(10)
+    expect(shared.size).toBe(11)
     for (const name of ['RelayToBrowser', 'AgentToBrowser']) {
       expect(protocolSrc).toContain(`export type ${name} =\n  | RelayOrAgentToBrowser`)
     }
@@ -196,9 +196,8 @@ describe('browser-inbound routing matches the protocol union', () => {
       'app:launch-done': 'requestId sessionId',
       'app:clear-state-done': 'requestId sessionId',
       'open-url:done': 'requestId sessionId',
-      'input:done': 'sessionId',
-      'input:type-done': 'sessionId',
-      'input:type-error': 'message sessionId',
+      'input:done': 'requestId sessionId',
+      'input:type-done': 'requestId sessionId',
       'keyboard:toggled': 'payload sessionId',
       'clipboard:data': 'payload requestId sessionId',
       'clipboard:write-done': 'requestId sessionId',
@@ -212,7 +211,10 @@ describe('browser-inbound routing matches the protocol union', () => {
       'device:boot-error': 'message requestId? sessionId',
       'open-url:error': 'message requestId sessionId',
       'app:clear-state-error': 'message requestId sessionId',
-      'input:error': 'message reason? sessionId',
+      'input:error': 'message reason? requestId sessionId',
+      // Moved here from AgentToBrowser in L5c: the relay refuses an `input:type` whose session the sender
+      // does not hold, and the waiters key on this pair rather than on `input:error`.
+      'input:type-error': 'message reason? requestId sessionId',
       'clipboard:error': 'message payload? requestId sessionId',
     },
     BrowserToRelay: {
@@ -228,13 +230,13 @@ describe('browser-inbound routing matches the protocol union', () => {
       'open-url': 'payload requestId sessionId',
       'input:touch:start': 'payload sessionId',
       'input:touch:move': 'payload sessionId',
-      'input:touch:end': 'payload? sessionId',
+      'input:touch:end': 'payload? requestId sessionId',
       'input:pinch:start': 'payload sessionId',
       'input:pinch:move': 'payload sessionId',
-      'input:pinch:end': 'sessionId',
-      'input:key': 'payload sessionId',
-      'input:type': 'payload sessionId',
-      'input:button': 'payload sessionId',
+      'input:pinch:end': 'requestId sessionId',
+      'input:key': 'payload requestId sessionId',
+      'input:type': 'payload requestId sessionId',
+      'input:button': 'payload requestId sessionId',
       'input:rotate': 'sessionId',
       'input:keyboard:toggle': 'sessionId',
       'clipboard:read': 'payload? requestId sessionId',

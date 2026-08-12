@@ -308,6 +308,22 @@ export type InputErrorReason =
    * giving up. Distinct from `channel-starting` for the same reason — waiting does not help.
    */
   | 'no-gesture'
+  /**
+   * The sender does not hold the session it addressed. The relay forwards a browser-role input after
+   * resolving the session and, until this existed, without checking that the socket asking is the one the
+   * session is bound to — so any authenticated client could drive a device another tester was looking at,
+   * and the agent's ack went to the session holder rather than to whoever asked.
+   *
+   * **Not folded into `channel-unavailable`**, on that set's own rule — a reason exists per thing a consumer
+   * must do differently. `channel-unavailable` means reconnect or re-join *this* session; this means the
+   * caller never held it, so the move is to join first, and it may find someone else holding it.
+   *
+   * And it is the **only** reason that guarantees nothing reached the device. Every other one leaves partial
+   * delivery open — `no-gesture` most sharply, which is why nothing retries on it (#491). Here the frame was
+   * refused at the relay's door, so a retry after joining is safe, and that makes this the first member
+   * whose advice can say so.
+   */
+  | 'not-session-owner'
 
 // ── relay → browser ──────────────────────────────────────────────────────────
 //
@@ -436,6 +452,9 @@ export interface AppClearStateError extends SessionError {
 
 export interface InputError extends SessionError {
   type: 'input:error'
+  /** Required — see `InputDone`. The relay produces this message too, so omission is a compile error there
+   *  rather than something only a test could hold. */
+  requestId: string
   reason?: InputErrorReason
 }
 
@@ -463,6 +482,11 @@ export type RelayOrAgentToBrowser =
   | OpenUrlError
   | AppClearStateError
   | InputError
+  // Moved out of `AgentToBrowser` in L5c: the relay originates this one now. An `input:type` whose session
+  // the sender does not hold is refused here, and it has to be refused in *this* shape — the waiters in
+  // `mcp-server` and `flow-runner` key on the `input:type-*` pair and ignore an `input:error` entirely,
+  // which is why widening `TERMINAL_INPUT_TYPES` was never the fix for it.
+  | InputTypeError
   | ClipboardError
 
 export interface AgentsListed {
@@ -586,15 +610,35 @@ export interface OpenUrlDone {
 export interface InputDone {
   type: 'input:done'
   sessionId: string
+  /**
+   * Required, and this is the pair where an absent correlator costs the most. The four already correlated
+   * arrive at the speed a person clicks a button; a swipe is dozens of frames, so a late ack landing in the
+   * next input's waiter is not a corner case — it is #499.
+   *
+   * There is no unsolicited producer to make this optional (the discriminator this repo uses): `ackInput`
+   * on both agents is the only sender, and it fires on terminal outcomes only. Contrast the lifecycle pair,
+   * where an Android stream dying mid-session produces a `device:boot-error` answering nothing.
+   */
+  requestId: string
 }
 
 export interface InputTypeDone {
   type: 'input:type-done'
   sessionId: string
+  requestId: string
 }
 
 export interface InputTypeError extends SessionError {
   type: 'input:type-error'
+  requestId: string
+  /**
+   * Optional because the agents' own failures carry none — they answer with prose from a rejected `adb` or
+   * pasteboard write. The **relay** sets it, and without this field one of the five requests it can refuse
+   * had no machine-readable answer at all: `not-session-owner`'s whole value is the promise that nothing
+   * reached the device, and a consumer that can only read `message` cannot act on it. Branching on prose is
+   * the thing #492 legislated against.
+   */
+  reason?: InputErrorReason
 }
 
 // iOS only — Android's `input:keyboard:toggle` is a client-side forwarding flag with no device
@@ -651,7 +695,6 @@ export type AgentToBrowser =
   | OpenUrlDone
   | InputDone
   | InputTypeDone
-  | InputTypeError
   | KeyboardToggled
   | ClipboardData
   | ClipboardWriteDone
@@ -845,6 +888,16 @@ export type AgentControlOutbound = AgentToRelay | AgentToBrowser
 export interface InputKey {
   type: 'input:key'
   sessionId: string
+  /**
+   * Required. A terminal input is the only kind that gets an ack, and #499 is what an unattributed one
+   * costs: an ack that arrives after its own deadline is consumed by the **next** input's waiter, which
+   * then reports the previous input's outcome — including reporting an unanswered input as landed.
+   *
+   * Opening and move frames deliberately do **not** carry this. They get no reply
+   * (`ios-agent/AGENTS.md`: "Opening frames stay silent: they carry no ack obligation"), so an id there
+   * would be minted for a waiter that does not exist. Nor does `input:rotate`, for the same reason.
+   */
+  requestId: string
   payload: { code: string; modifiers?: number }
 }
 
@@ -1000,6 +1053,7 @@ export interface InputTouchMove {
 export interface InputTouchEnd {
   type: 'input:touch:end'
   sessionId: string
+  requestId: string
   payload?: Point
 }
 
@@ -1018,17 +1072,20 @@ export interface InputPinchMove {
 export interface InputPinchEnd {
   type: 'input:pinch:end'
   sessionId: string
+  requestId: string
 }
 
 export interface InputType {
   type: 'input:type'
   sessionId: string
+  requestId: string
   payload: { text: string }
 }
 
 export interface InputButton {
   type: 'input:button'
   sessionId: string
+  requestId: string
   payload: { name: string; phase?: 'down' | 'up' }
 }
 

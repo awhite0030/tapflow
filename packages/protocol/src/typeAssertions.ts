@@ -46,7 +46,7 @@ export const legacyKeyField: BrowserToRelay = { type: 'input:key', sessionId: 's
 
 export const validOutbound: RelayOutbound = { type: 'stream:request-idr', sessionId: 's' }
 export const validInbound: BrowserToRelay = {
-  type: 'input:key', sessionId: 's', payload: { code: 'KeyA', modifiers: 2 },
+  type: 'input:key', sessionId: 's', requestId: 'rq', payload: { code: 'KeyA', modifiers: 2 },
 }
 export const validClipboard: BrowserToRelay = {
   type: 'clipboard:write', sessionId: 's', requestId: 'r', payload: { text: 'x', pasteAfter: true },
@@ -65,7 +65,7 @@ export const relayCannotOriginateForward: RelayOutbound = { type: 'input:done', 
 export const relayCannotOriginateKeyboard: RelayOutbound = { type: 'keyboard:toggled', sessionId: 's', payload: { visible: true } }
 
 // A consumer reads the whole surface, whoever sent it — both of the above are valid here.
-export const inboundFromAgent: BrowserInbound = { type: 'input:done', sessionId: 's' }
+export const inboundFromAgent: BrowserInbound = { type: 'input:done', sessionId: 's', requestId: 'rq' }
 export const inboundFromRelay: BrowserInbound = { type: 'error', message: 'x', reason: 'session-busy' }
 
 // @ts-expect-error - sessionId is required on every one of the twelve forward-only messages
@@ -86,8 +86,8 @@ export const streamIsNotBrowserInbound: BrowserInbound = { type: 'stream:registe
 // The field is optional on purpose: an agent that predates it omits it, and a consumer must read
 // absence as "unknown" rather than "fine". Making it required is the breaking step.
 
-export const errorWithoutReason: RelayOutbound = { type: 'input:error', sessionId: 's', message: 'agent offline' }
-export const errorWithReason: RelayOutbound = { type: 'input:error', sessionId: 's', message: 'agent offline', reason: 'channel-unavailable' }
+export const errorWithoutReason: RelayOutbound = { type: 'input:error', sessionId: 's', requestId: 'rq', message: 'agent offline' }
+export const errorWithReason: RelayOutbound = { type: 'input:error', sessionId: 's', requestId: 'rq', message: 'agent offline', reason: 'channel-unavailable' }
 
 // @ts-expect-error - the reason set is closed; a free string would let each agent invent its own
 export const errorWithFreeReason: RelayOutbound = { type: 'input:error', sessionId: 's', message: 'x', reason: 'something-else' }

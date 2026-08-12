@@ -388,8 +388,8 @@ describe('IOSAgent', () => {
       const sent = vi.spyOn(ws, 'send')
 
       for (const frame of [
-        { type: 'input:touch:end', payload: { x: 0.4, y: 0.6 } },
-        { type: 'input:touch:end', sessionId: 42, payload: { x: 0.4, y: 0.6 } },
+        { type: 'input:touch:end', requestId: 'rq-in1', payload: { x: 0.4, y: 0.6 } },
+        { type: 'input:touch:end', requestId: 'rq-in2', sessionId: 42, payload: { x: 0.4, y: 0.6 } },
       ]) ws.emit('message', Buffer.from(JSON.stringify(frame)))
 
       const answers = () => sent.mock.calls
@@ -399,7 +399,7 @@ describe('IOSAgent', () => {
 
       // A well-formed frame on the same path is still dispatched, so the guard is not rejecting everything.
       ws.emit('message', Buffer.from(JSON.stringify(
-        { type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.4, y: 0.6 } },
+        { type: 'input:touch:end', requestId: 'rq-in3', sessionId: agent.sessionId, payload: { x: 0.4, y: 0.6 } },
       )))
       await vi.waitFor(() => expect(answers()).toHaveLength(1), { timeout: 500 })
 
@@ -426,7 +426,7 @@ describe('IOSAgent', () => {
       const { browser, agent } = await joinBootlessSession()
 
       browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
-      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', requestId: 'rq-in4', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
 
       await vi.waitFor(() => {
         expect(MockTouchHelper.mock.results).toHaveLength(1)
@@ -455,8 +455,14 @@ describe('IOSAgent', () => {
 
       const done = waitForType(browser, 'input:done')
       browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
-      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
-      expect((await done).sessionId).toBe(agent.sessionId)
+      browser.send(JSON.stringify({ type: 'input:touch:end', requestId: 'rq-in5', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      const ack = await done
+      expect(ack.sessionId).toBe(agent.sessionId)
+      // L5c. The ack must carry **the terminal frame's** id, and nothing else here would say so: replacing
+      // the echo with a literal left all 382 tests passing in the mutation round. `#499` is what an
+      // unattributed ack costs — a late one is consumed by the next input's waiter, which then reports the
+      // previous input's outcome, including reporting an unanswered input as landed.
+      expect(ack.requestId).toBe('rq-in5')
 
       agent.disconnect()
       browser.close()
@@ -483,10 +489,16 @@ describe('IOSAgent', () => {
 
       const errored = waitForType(browser, 'input:error')
       browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
-      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', requestId: 'rq-in6', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
       const e = await errored
       expect(e.sessionId).toBe(agent.sessionId)
       expect(e.message).toBe('device not booted')
+      // The **error** half of `ackInput`, and it needs its own assertion: the `input:done` line above is
+      // pinned one test up, and a literal on this line survived the whole suite in review. Worse than a
+      // hang, too — `awaitInputAck` drops an unmatched reply into its catch, and on a session that is not
+      // yet strict that path resolves *optimistically*. So a device failure the agent stated plainly would
+      // be reported to the caller as success: #457 restored for exactly the frames that carry the failure.
+      expect(e.requestId).toBe('rq-in6')
 
       agent.disconnect()
       browser.close()
@@ -515,13 +527,13 @@ describe('IOSAgent', () => {
       type Internals = {
         ws: WebSocket
         deviceStates: Map<string, unknown>
-        handleRelayMessage(msg: { type: string; sessionId?: string; payload?: unknown }): void
+        handleRelayMessage(msg: { type: string; sessionId?: string; requestId?: string; payload?: unknown }): void
       }
       const internals = (a: IOSAgent): Internals => a as unknown as Internals
 
       function inputErrors(spy: ReturnType<typeof vi.spyOn>) {
         return spy.mock.calls
-          .map(([raw]) => JSON.parse(raw as string) as { type: string; sessionId?: string; message?: string; reason?: string })
+          .map(([raw]) => JSON.parse(raw as string) as { type: string; sessionId?: string; requestId?: string; message?: string; reason?: string })
           .filter((m) => m.type === 'input:error')
       }
 
@@ -539,12 +551,15 @@ describe('IOSAgent', () => {
           const sent = vi.spyOn(internals(agent).ws, 'send')
           internals(agent).deviceStates.clear()
 
-          internals(agent).handleRelayMessage({ type, sessionId: sessionId!, payload })
+          internals(agent).handleRelayMessage({ type, sessionId: sessionId!, requestId: 'rq-gone', payload })
 
           const acks = inputErrors(sent)
           expect(acks).toHaveLength(1)
           expect(acks[0]!.sessionId).toBe(sessionId)
           expect(acks[0]!.reason).toBe('channel-unavailable')
+          // `ackNoSession` is the one reply path with no `state` to hang anything on, so the correlator has
+          // to arrive as an argument. A literal there survived the whole suite in the mutation round.
+          expect(acks[0]!.requestId).toBe('rq-gone')
 
           agent.disconnect()
           browser.close()
@@ -596,7 +611,7 @@ describe('IOSAgent', () => {
       th.ownsGesture.mockReturnValue(false)
 
       const errored = waitForType(browser, 'input:error')
-      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', requestId: 'rq-in7', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
 
       expect((await errored)['reason']).toBe('no-gesture')
 
@@ -618,7 +633,7 @@ describe('IOSAgent', () => {
       th.ownsGesture.mockReturnValue(false) // nothing was owned: the open was refused
 
       const errored = waitForType(browser, 'input:error')
-      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', requestId: 'rq-in8', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
 
       const msg = await errored
       expect(msg['reason']).toBe('no-gesture')
@@ -634,7 +649,7 @@ describe('IOSAgent', () => {
       startingHelper(th)
 
       const errored = waitForType(browser, 'input:error')
-      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
+      browser.send(JSON.stringify({ type: 'input:key', requestId: 'rq-in9', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
 
       expect((await errored)['reason']).toBe('channel-starting')
 
@@ -647,7 +662,7 @@ describe('IOSAgent', () => {
       killHelper(th)
 
       const errored = waitForType(browser, 'input:error')
-      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', requestId: 'rq-in10', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
 
       const msg = await errored
       // No channel at all outranks "no gesture": re-opening one could not help.
@@ -662,7 +677,7 @@ describe('IOSAgent', () => {
       const { browser, agent } = await bootedSession()
 
       const errored = waitForType(browser, 'input:error')
-      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyNope', modifiers: 0 } }))
+      browser.send(JSON.stringify({ type: 'input:key', requestId: 'rq-in11', sessionId: agent.sessionId, payload: { code: 'KeyNope', modifiers: 0 } }))
 
       const msg = await errored
       expect(msg['reason']).toBe('unsupported')
@@ -678,7 +693,7 @@ describe('IOSAgent', () => {
 
       const errored = waitForType(browser, 'input:error')
       browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
-      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', requestId: 'rq-in12', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
 
       // The device is still booted — this is the input channel failing, not the device.
       expect((await errored).message).toBe('input channel not ready')
@@ -694,7 +709,7 @@ describe('IOSAgent', () => {
       const errored = waitForType(browser, 'input:error')
       const f0 = { x: 0.2, y: 0.2 }, f1 = { x: 0.8, y: 0.8 }
       browser.send(JSON.stringify({ type: 'input:pinch:start', sessionId: agent.sessionId, payload: { f0, f1 } }))
-      browser.send(JSON.stringify({ type: 'input:pinch:end', sessionId: agent.sessionId, payload: { f0, f1 } }))
+      browser.send(JSON.stringify({ type: 'input:pinch:end', requestId: 'rq-in13', sessionId: agent.sessionId, payload: { f0, f1 } }))
       expect((await errored).message).toBe('input channel not ready')
 
       agent.disconnect()
@@ -705,7 +720,7 @@ describe('IOSAgent', () => {
       const { browser, agent, th } = await bootedSession()
       killHelper(th)
       const errored = waitForType(browser, 'input:error')
-      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', requestId: 'rq-in14', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
       await errored
 
       // TouchHelper respawns itself, so the session heals in place — the same object starts
@@ -714,7 +729,7 @@ describe('IOSAgent', () => {
       th.isReady.mockReturnValue(true)
 
       const done = waitForType(browser, 'input:done')
-      browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+      browser.send(JSON.stringify({ type: 'input:touch:end', requestId: 'rq-in15', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
       expect((await done).sessionId).toBe(agent.sessionId)
 
       agent.disconnect()
@@ -726,7 +741,7 @@ describe('IOSAgent', () => {
       killHelper(th)
 
       const errored = waitForType(browser, 'input:error')
-      browser.send(JSON.stringify({ type: 'input:button', sessionId: agent.sessionId, payload: { name: 'home' } }))
+      browser.send(JSON.stringify({ type: 'input:button', requestId: 'rq-in16', sessionId: agent.sessionId, payload: { name: 'home' } }))
       expect((await errored).message).toBe('input channel not ready')
 
       agent.disconnect()
@@ -750,7 +765,7 @@ describe('IOSAgent', () => {
         const { browser, agent, th } = await bootedSession()
 
         const done = waitForType(browser, 'input:done')
-        browser.send(JSON.stringify({ type: 'input:button', sessionId: agent.sessionId, payload }))
+        browser.send(JSON.stringify({ type: 'input:button', requestId: 'rq-in17', sessionId: agent.sessionId, payload }))
         expect((await done).sessionId).toBe(agent.sessionId)
         expect(th.pressLegacyButton).not.toHaveBeenCalled()
         expect(th.pressButtonDown).not.toHaveBeenCalled()
@@ -764,7 +779,7 @@ describe('IOSAgent', () => {
         killHelper(th)
 
         const errored = waitForType(browser, 'input:error')
-        browser.send(JSON.stringify({ type: 'input:button', sessionId: agent.sessionId, payload }))
+        browser.send(JSON.stringify({ type: 'input:button', requestId: 'rq-in18', sessionId: agent.sessionId, payload }))
         expect((await errored).message).toBe('input channel not ready')
 
         agent.disconnect()
@@ -777,7 +792,7 @@ describe('IOSAgent', () => {
       killHelper(th)
 
       const errored = waitForType(browser, 'input:error')
-      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
+      browser.send(JSON.stringify({ type: 'input:key', requestId: 'rq-in19', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
       expect((await errored).message).toBe('input channel not ready')
 
       agent.disconnect()
@@ -795,7 +810,7 @@ describe('IOSAgent', () => {
       startingHelper(th)
 
       const errored = waitForType(browser, 'input:error')
-      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
+      browser.send(JSON.stringify({ type: 'input:key', requestId: 'rq-in20', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
 
       const msg = await errored
       expect(msg['reason']).toBe('channel-starting')
@@ -814,7 +829,7 @@ describe('IOSAgent', () => {
       killHelper(th)
 
       const errored = waitForType(browser, 'input:error')
-      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
+      browser.send(JSON.stringify({ type: 'input:key', requestId: 'rq-in21', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
       expect((await errored).message).toBe('input channel not ready')
       expect(simctl.hideSoftwareKeyboard).toHaveBeenCalledWith('dev-1')
 
@@ -925,8 +940,13 @@ describe('IOSAgent', () => {
       killHelper(th)
 
       const errored = waitForType(browser, 'input:type-error')
-      browser.send(JSON.stringify({ type: 'input:type', sessionId: agent.sessionId, payload: { text: 'hello' } }))
-      expect((await errored).message).toContain('no input channel')
+      browser.send(JSON.stringify({ type: 'input:type', requestId: 'rq-in22', sessionId: agent.sessionId, payload: { text: 'hello' } }))
+      const e = await errored
+      expect(e.message).toContain('no input channel')
+      // All three `input:type-*` producers here took a literal in the mutation round with nothing failing.
+      // The client tests that echo it echo it correctly, so a predicate that stopped checking matched either
+      // way — which is what makes an assertion at the producer the only real one.
+      expect(e.requestId).toBe('rq-in22')
 
       agent.disconnect()
       browser.close()
@@ -974,12 +994,14 @@ describe('IOSAgent', () => {
       // register the ack listener before sending — the done can arrive before
       // the assertions below finish awaiting
       const done = waitForType(browser, 'input:type-done')
-      browser.send(JSON.stringify({ type: 'input:type', sessionId: agent.sessionId, payload: { text: '안녕 hi' } }))
+      browser.send(JSON.stringify({ type: 'input:type', requestId: 'rq-in23', sessionId: agent.sessionId, payload: { text: '안녕 hi' } }))
       // the ack must arrive AFTER the work completed — so once done lands, the
       // pasteboard write and Cmd+V (KeyV 0x19, MetaLeft 0x08) are already done.
       // (a synchronous check here, not waitFor, so moving .then(done) ahead of
       // the paste would fail this test — the ordering is what's under guard)
-      expect((await done).sessionId).toBe(agent.sessionId)
+      const ack = await done
+      expect(ack.sessionId).toBe(agent.sessionId)
+      expect(ack.requestId).toBe('rq-in23')
       expect(simctl.setPasteboard).toHaveBeenCalledWith('dev-1', '안녕 hi')
       expect(thInstance.sendKey).toHaveBeenCalledWith(0x19, 0x08)
 
@@ -1004,7 +1026,7 @@ describe('IOSAgent', () => {
       await waitForType(browser, 'keyboard:toggled')
 
       const typed = waitForType(browser, 'input:type-done')
-      browser.send(JSON.stringify({ type: 'input:type', sessionId: agent.sessionId, payload: { text: 'hi' } }))
+      browser.send(JSON.stringify({ type: 'input:type', requestId: 'rq-in24', sessionId: agent.sessionId, payload: { text: 'hi' } }))
       await typed
       // hidden before the Cmd+V chord (mirrors the input:key guard)
       expect(simctl.hideSoftwareKeyboard).toHaveBeenCalledWith('dev-1')
@@ -1039,7 +1061,7 @@ describe('IOSAgent', () => {
 
     it('input:pinch:end calls touchHelper.pinchEnd', async () => {
       const { browser, agent, thInstance } = await setupPinchSession()
-      browser.send(JSON.stringify({ type: 'input:pinch:end', sessionId: agent.sessionId }))
+      browser.send(JSON.stringify({ type: 'input:pinch:end', requestId: 'rq-in25', sessionId: agent.sessionId }))
       await vi.waitFor(() => expect(thInstance.pinchEnd).toHaveBeenCalled(), { timeout: 500 })
       agent.disconnect()
       browser.close()
@@ -1048,7 +1070,7 @@ describe('IOSAgent', () => {
     // home has no HID down/up split — a down+up pair from the dashboard must not fire it twice.
     it('input:button home (no phase) presses the legacy button once', async () => {
       const { browser, agent, thInstance } = await setupPinchSession()
-      browser.send(JSON.stringify({ type: 'input:button', sessionId: agent.sessionId, payload: { name: 'home' } }))
+      browser.send(JSON.stringify({ type: 'input:button', requestId: 'rq-in26', sessionId: agent.sessionId, payload: { name: 'home' } }))
       await vi.waitFor(() => expect(thInstance.pressLegacyButton).toHaveBeenCalledWith(0), { timeout: 500 })
       expect(thInstance.pressLegacyButton).toHaveBeenCalledTimes(1)
       agent.disconnect()
@@ -1057,8 +1079,8 @@ describe('IOSAgent', () => {
 
     it('input:button home fires only on the up phase, not on down', async () => {
       const { browser, agent, thInstance } = await setupPinchSession()
-      browser.send(JSON.stringify({ type: 'input:button', sessionId: agent.sessionId, payload: { name: 'home', phase: 'down' } }))
-      browser.send(JSON.stringify({ type: 'input:button', sessionId: agent.sessionId, payload: { name: 'home', phase: 'up' } }))
+      browser.send(JSON.stringify({ type: 'input:button', requestId: 'rq-in27', sessionId: agent.sessionId, payload: { name: 'home', phase: 'down' } }))
+      browser.send(JSON.stringify({ type: 'input:button', requestId: 'rq-in28', sessionId: agent.sessionId, payload: { name: 'home', phase: 'up' } }))
       await vi.waitFor(() => expect(thInstance.pressLegacyButton).toHaveBeenCalledWith(0), { timeout: 500 })
       expect(thInstance.pressLegacyButton).toHaveBeenCalledTimes(1)
       agent.disconnect()
@@ -1899,7 +1921,7 @@ describe('IOSAgent', () => {
 
     it('input:key Backspace calls touchHelper.sendKey with HID usage 0x2A', async () => {
       const { browser, agent, thInstance } = await setupSession()
-      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'Backspace', modifiers: 0 } }))
+      browser.send(JSON.stringify({ type: 'input:key', requestId: 'rq-in29', sessionId: agent.sessionId, payload: { code: 'Backspace', modifiers: 0 } }))
       await vi.waitFor(() => expect(thInstance.sendKey).toHaveBeenCalledWith(HID_BACKSPACE, 0), { timeout: 500 })
       agent.disconnect()
       browser.close()
@@ -1907,7 +1929,7 @@ describe('IOSAgent', () => {
 
     it('input:key KeyA calls touchHelper.sendKey with HID usage 0x04', async () => {
       const { browser, agent, thInstance } = await setupSession()
-      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
+      browser.send(JSON.stringify({ type: 'input:key', requestId: 'rq-in30', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
       await vi.waitFor(() => expect(thInstance.sendKey).toHaveBeenCalledWith(HID_KEY_A, 0), { timeout: 500 })
       agent.disconnect()
       browser.close()
@@ -1915,7 +1937,7 @@ describe('IOSAgent', () => {
 
     it('input:key with Shift modifier forwards modifier bits', async () => {
       const { browser, agent, thInstance } = await setupSession()
-      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0x02 } }))
+      browser.send(JSON.stringify({ type: 'input:key', requestId: 'rq-in31', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0x02 } }))
       await vi.waitFor(() => expect(thInstance.sendKey).toHaveBeenCalledWith(HID_KEY_A, 0x02), { timeout: 500 })
       agent.disconnect()
       browser.close()
@@ -1925,8 +1947,8 @@ describe('IOSAgent', () => {
       const { browser, agent, thInstance } = await setupSession()
       // Send unknown key first, then a known key as a sentinel.
       // WebSocket messages are ordered — when KeyA is processed, UnknownKey was already processed.
-      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'UnknownKey', modifiers: 0 } }))
-      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
+      browser.send(JSON.stringify({ type: 'input:key', requestId: 'rq-in32', sessionId: agent.sessionId, payload: { code: 'UnknownKey', modifiers: 0 } }))
+      browser.send(JSON.stringify({ type: 'input:key', requestId: 'rq-in33', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
       await vi.waitFor(() => expect(thInstance.sendKey).toHaveBeenCalledTimes(1), { timeout: 500 })
       expect(thInstance.sendKey).toHaveBeenCalledWith(HID_KEY_A, 0)
       agent.disconnect()
@@ -2008,7 +2030,7 @@ describe('IOSAgent', () => {
       browser.send(JSON.stringify({ type: 'input:keyboard:toggle', sessionId: agent.sessionId }))
       await waitForType(browser, 'keyboard:toggled')
       // hardware key press → hide must be called before sendKey
-      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
+      browser.send(JSON.stringify({ type: 'input:key', requestId: 'rq-in34', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
       await vi.waitFor(() => expect(sim.hideSoftwareKeyboard).toHaveBeenCalledWith('dev-1'), { timeout: 500 })
       await vi.waitFor(() => {
         expect(MockTouchHelper.mock.results[0].value.sendKey).toHaveBeenCalledWith(HID_KEY_A, 0)
@@ -2023,7 +2045,7 @@ describe('IOSAgent', () => {
     it('input:key 수신 시 SW 꺼져 있으면 hideSoftwareKeyboard를 호출하지 않는다', async () => {
       const sim = mockSimctl(true)
       const { browser, agent } = await setupSession(sim)
-      browser.send(JSON.stringify({ type: 'input:key', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
+      browser.send(JSON.stringify({ type: 'input:key', requestId: 'rq-in35', sessionId: agent.sessionId, payload: { code: 'KeyA', modifiers: 0 } }))
       await vi.waitFor(() => {
         const thInstance = MockTouchHelper.mock.results[0].value
         return expect(thInstance.sendKey).toHaveBeenCalledWith(HID_KEY_A, 0)

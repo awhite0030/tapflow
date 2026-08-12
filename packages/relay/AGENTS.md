@@ -38,15 +38,12 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
 - Control message protocol: `input:touch:*`, `input:pinch:*`, `input:button`, `input:key`, `input:type`, `input:rotate`, `input:keyboard:toggle`, `device:boot`, `device:shutdown`, `session:start`, `session:end`, `clipboard:read`, `clipboard:write`.
 - **The message shapes live in [`@tapflowio/protocol`](../protocol/AGENTS.md), not here.** Every message the relay *originates* goes through `sendTo(socket, msg: RelayOutbound)`, so adding one means adding it to that union first — the compiler will not let you do it in the other order. Messages the relay only *forwards* keep their inbound type and are re-serialised unchanged.
 - **Clipboard bridge** (`clipboard:*`): browser→agent `clipboard:read` (`payload.press`: `'copy' | 'cut'` presses that chord on the device first) and `clipboard:write` (`payload.text`, `payload.pasteAfter`); agent→browser `clipboard:data` / `clipboard:write-done` / `clipboard:error`, correlated by `requestId`. Unlike the other agent→browser replies these are **bound to the session's own `agentSocket`** — their payload lands on the viewer's host OS clipboard, so a second agent must not be able to address someone else's session. An undeliverable request answers `clipboard:error` immediately rather than letting the caller's deadline expire. Agents advertise `capabilities: ['clipboard']` in `agent:register`; the relay echoes them on `session:joined` so a viewer can tell a capable agent from one that predates the feature instead of inferring it from silence.
-- **A terminal input the relay cannot dispatch is answered here, with a reason.** `input:touch:end` /
-  `input:pinch:end` / `input:key` / `input:button` (`TERMINAL_INPUT_TYPES`) get an `input:error` when
-  the session's agent socket is not open, so an MCP or browser caller fails now instead of waiting out
-  its own timeout — which its fallback would report as success. Everything outside that set gets
-  nothing, and the set is not "the ones that matter": moves and starts have no waiter, but `input:type`
-  does (`input:type-done` / `input:type-error`, awaited in `mcp-server` and `flow-runner`) and receives
-  no answer here, so a type on an offline agent still burns its full deadline. Adding it to this set
-  would not fix that — those waiters key on the `input:type-*` pair and would ignore an `input:error`
-  — so the honest fix is a separate reply, which is why the set was left as it is rather than widened.
+- **An input the relay cannot dispatch is answered here, with a reason.** The four terminal frames get an
+  `input:error` and `input:type` gets an `input:type-error`, so an MCP or browser caller fails now instead of
+  waiting out its own timeout — which its fallback would report as success. `input:type` used to receive
+  nothing and burn its full deadline; widening the terminal set would not have fixed it, because its waiters
+  key on the `input:type-*` pair and ignore an `input:error`, and L5c did what the note here called the
+  honest fix — a reply in the shape those waiters read.
   Two situations reach that reply and only one is the agent's fault, so they carry **different prose
   and the same reason**: a held session with a closed socket is `agent offline`, while no session at
   all is `Session not found` — evicted after the reconnect grace, or never valid, and the agent may be
@@ -54,6 +51,36 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
   `channel-unavailable` for both because the set is derived from what a consumer must *do* differently
   and both want a reconnect or a re-join; the machine field was right for both while the prose was
   wrong for one, which is the concrete case for reading `reason` rather than `message` (#492).
+  **Everything else gets nothing, and that is the contract**: opening and move frames, `input:rotate` and
+  `input:keyboard:toggle` have no waiter, so a reply would be one nobody is listening for.
+  The eleven `input:*` cases are **two clauses**, split by whether an ack answers them, and the split is
+  load-bearing rather than tidy — the correlator gate belongs on the answered five, and written into the
+  shared body it would have dropped every opening and move frame with it.
+- **A browser-role command is acted on only from the socket the session is bound to.** The mirror of the
+  clipboard rule above, and it was missing until L5c on **every** branch: the relay resolved the session and
+  forwarded without asking who was asking, so any authenticated client that knew a session id could drive a
+  device another tester was looking at — `clipboard:write` pasting its text into that device,
+  `clipboard:read` pressing copy or cut on it with the payload landing on *that* tester's host OS clipboard,
+  `session:end` deleting their session. The reply then routed to the session's own browser, never to the
+  injector.
+  `dispatchTarget` decides it once for all of them — session exists, **this socket holds it**, agent
+  connected — and each case wraps the prose it returns in the reply type its own waiter reads. The two
+  ownership strings are one reason with different prose (`ownershipRefusal`), the treatment #492 settled:
+  telling a caller the session is in use when it is idle steers it off a device it could have had.
+  **A refusal is answered where a waiter exists and dropped where none does.** `input:*`, `device:boot`,
+  `open-url`, `app:*` and `clipboard:*` are answered — `awaitInputAck` reports silence from a session that
+  has never acked as *success*, so a silent refusal would report a command that never left the relay as
+  having landed. `session:leave` and `session:end` are dropped, because neither has a reply and inventing
+  one would grow the wire for a message no consumer reads.
+  **`device:shutdown` is the one exception, and the blocker is not here** — three of the dashboard's four
+  senders come from `useAgentSession`, whose socket never joins, so the gate would break going back and the
+  unmount teardown. `SessionList` joins before shutting down and documents why, so the dashboard already
+  carries two conventions for this message. Tracked in #527; the question there is whether
+  `useAgentSession` should join, not whether the relay should check.
+  The app-command handlers check ownership **after** the session lookup and **before** the build lookup,
+  deliberately not through `dispatchTarget`: that resolver also decides agent liveness, and using it there
+  would move `agent offline` ahead of `Build not found`, changing which of two simultaneous problems the
+  caller is told about.
 - JWTs are issued based on team invite links.
 - Serves the `public/` directory as HTTP static files (dashboard build output).
 - The relay does not buffer stream data — it forwards immediately on arrival.

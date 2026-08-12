@@ -210,10 +210,17 @@ export class RelayClient {
     if (msg['type'] === 'app:clear-state-error') throw new PlatformError((msg['message'] as string) ?? 'clear state failed')
   }
 
+  // `tap`, `swipe` and `pressKey` mint a correlator that nothing here reads — they are fire-and-forget,
+  // unlike `typeText` below. The id is not optional slack: the terminal frame declares it required, because
+  // the relay gates on it and every ack echoes it. Minting it at the sender is also what a waiter added
+  // later would need already on the wire; a flow that cannot see a failed tap is a separate gap.
+  //
+  // The **opening and move frames carry none**, and that is the contract rather than an omission: nothing
+  // acks them, so an id there would name a waiter that does not exist.
   tap(sessionId: string, x: number, y: number): void {
     const payload = { x, y }
     this.send({ type: 'input:touch:start', sessionId, payload })
-    this.send({ type: 'input:touch:end', sessionId, payload })
+    this.send({ type: 'input:touch:end', sessionId, requestId: randomUUID(), payload })
   }
 
   async swipe(sessionId: string, from: [number, number], to: [number, number], durationMs: number): Promise<void> {
@@ -230,13 +237,15 @@ export class RelayClient {
       })
     }
     await delay(interval)
-    this.send({ type: 'input:touch:end', sessionId, payload: { x: to[0], y: to[1] } })
+    this.send({ type: 'input:touch:end', sessionId, requestId: randomUUID(), payload: { x: to[0], y: to[1] } })
   }
 
   async typeText(sessionId: string, text: string): Promise<void> {
-    this.send({ type: 'input:type', sessionId, payload: { text } })
+    const requestId = randomUUID()
+    this.send({ type: 'input:type', sessionId, requestId, payload: { text } })
     const msg = await this.waitFor(
-      (m) => (m['type'] === 'input:type-done' || m['type'] === 'input:type-error') && m['sessionId'] === sessionId,
+      (m) => (m['type'] === 'input:type-done' || m['type'] === 'input:type-error')
+        && m['sessionId'] === sessionId && m['requestId'] === requestId,
       15_000,
       'type text',
     )
@@ -244,7 +253,7 @@ export class RelayClient {
   }
 
   pressKey(sessionId: string, code: string): void {
-    this.send({ type: 'input:key', sessionId, payload: { code, modifiers: 0 } })
+    this.send({ type: 'input:key', sessionId, requestId: randomUUID(), payload: { code, modifiers: 0 } })
   }
 
   async openUrl(sessionId: string, url: string): Promise<void> {

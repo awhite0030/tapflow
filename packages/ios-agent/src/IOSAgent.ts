@@ -29,6 +29,9 @@ const INPUT_ERROR_MESSAGES: Record<InputErrorReason, string> = {
   unsupported: 'this input is not supported on the active connection to the device',
   malformed: 'this input does not fit what the device is doing',
   'no-gesture': 'no gesture is in progress to complete — start a new one',
+  // The relay is the only producer of this one — an agent has no way to know which socket asked. Present
+  // because the map is exhaustive, which is what makes a new reason a decision rather than an omission.
+  'not-session-owner': 'this input was addressed to a session the sender does not hold',
 }
 
 // Cross-platform button name → iOS device-chrome button name. Chrome uses
@@ -733,12 +736,28 @@ export class IOSAgent implements DeviceAgent {
   // device can now sit behind two sessions, which leaves the second unseeded. Answering costs four
   // lines; staying silent costs a terminal input swallowed and the caller's own fallback reporting
   // success. Android already answers, and `channel-unavailable` is what it maps this to.
-  private ackNoSession(sessionId: string): void {
+  /** The correlator on an input an ack answers, or `null` if the frame cannot be attributed.
+   *
+   *  A local capture rather than a guard at the top of the dispatcher, and that is the point: a guard there
+   *  would not narrow `msg.requestId` inside the case, so the shortest way to satisfy the reply's required
+   *  field would be `msg.requestId!` — the assertion removed from `open-url` and then from clipboard. This
+   *  hands back a `string` the case can close over.
+   *
+   *  It is unvalidated JSON, so the check is real work rather than ceremony: the declaration is required and
+   *  every in-repo sender is typed against it, but nothing validates inbound (#444), and `mcp-server`'s tool
+   *  schemas are bare `z.string()` so a model can produce `''`. */
+  private correlatorOf(msg: { type: string; requestId?: string }): string | null {
+    if (typeof msg.requestId === 'string' && msg.requestId !== '') return msg.requestId
+    logger.warn(`${msg.type} without a usable requestId — dropped, its ack could not be attributed`)
+    return null
+  }
+
+  private ackNoSession(sessionId: string, requestId: string): void {
     // The `if (!sessionId) return` this used to open with is gone: the dispatcher now declares
     // `sessionId: string`, so there is no undefined to guard against and the guard would have been a
     // silent drop with nothing left that could reach it.
     this.sendMsg({
-      type: 'input:error', sessionId,
+      type: 'input:error', sessionId, requestId,
       message: INPUT_ERROR_MESSAGES['channel-unavailable'],
       reason: 'channel-unavailable' satisfies InputErrorReason,
     })
@@ -779,15 +798,19 @@ export class IOSAgent implements DeviceAgent {
   // HID is fire-and-forget). Otherwise `input:error` carries a machine-readable `reason` so a caller
   // can tell "retry in a moment" from "reconnect" from "never retry"; `message` stays human prose.
   // Off the sync inject path, so start/end pairing is unaffected.
-  private async ackInput(state: DeviceState, outcome: 'delivered' | InputErrorReason): Promise<void> {
+  //
+  // `requestId` is a parameter, never read from shared state: a gesture is dozens of frames and two can
+  // overlap, so a correlator hoisted out of per-request scope would answer one input with another's id —
+  // which is #499 rebuilt inside the agent. Same reason `seq` is passed in on the Android side.
+  private async ackInput(state: DeviceState, outcome: 'delivered' | InputErrorReason, requestId: string): Promise<void> {
     const reason: InputErrorReason | null = outcome !== 'delivered'
       ? outcome
       : (state.booted || (await this.isBooted(state.deviceId))) ? null : 'not-booted'
     if (reason === null) state.booted = true // cache the post-reconnect verify so later inputs skip simctl
     this.sendMsg(
       reason === null
-        ? { type: 'input:done', sessionId: state.sessionId }
-        : { type: 'input:error', sessionId: state.sessionId, message: INPUT_ERROR_MESSAGES[reason], reason })
+        ? { type: 'input:done', sessionId: state.sessionId, requestId }
+        : { type: 'input:error', sessionId: state.sessionId, requestId, message: INPUT_ERROR_MESSAGES[reason], reason })
   }
 
   private async isBooted(deviceId: string): Promise<boolean> {
@@ -883,13 +906,15 @@ export class IOSAgent implements DeviceAgent {
         break
       }
       case 'input:touch:end': {
+        const requestId = this.correlatorOf(msg)
+        if (requestId === null) break
         const state = this.deviceStates.get(msg.sessionId)
-        if (!state) { this.ackNoSession(msg.sessionId); break }
+        if (!state) { this.ackNoSession(msg.sessionId, requestId); break }
         // The helper's answer, not its existence: a helper whose process has died reports every
         // write as dropped, and that is what the caller needs to hear (#482).
         const helper = state.touchHelper
         // terminal of a tap/swipe → ack the gesture
-        void this.ackInput(state, helper?.touchEnd() ? 'delivered' : this.refusalReason(helper, 'continuation'))
+        void this.ackInput(state, helper?.touchEnd() ? 'delivered' : this.refusalReason(helper, 'continuation'), requestId)
         break
       }
       case 'input:pinch:start': {
@@ -908,10 +933,12 @@ export class IOSAgent implements DeviceAgent {
         break
       }
       case 'input:pinch:end': {
+        const requestId = this.correlatorOf(msg)
+        if (requestId === null) break
         const state = this.deviceStates.get(msg.sessionId)
-        if (!state) { this.ackNoSession(msg.sessionId); break }
+        if (!state) { this.ackNoSession(msg.sessionId, requestId); break }
         const pinchHelper = state.touchHelper
-        void this.ackInput(state, pinchHelper?.pinchEnd() ? 'delivered' : this.refusalReason(pinchHelper, 'continuation'))
+        void this.ackInput(state, pinchHelper?.pinchEnd() ? 'delivered' : this.refusalReason(pinchHelper, 'continuation'), requestId)
         break
       }
       case 'input:rotate': {
@@ -947,12 +974,14 @@ export class IOSAgent implements DeviceAgent {
         break
       }
       case 'input:type': {
+        const requestId = this.correlatorOf(msg)
+        if (requestId === null) break
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         if (state) this.ensureTouchHelper(state)
         const { text } = (msg.payload ?? {}) as { text?: string }
         if (!state?.touchHelper) {
-          this.sendMsg({ type: 'input:type-error', sessionId, message: 'No booted device' })
+          this.sendMsg({ type: 'input:type-error', sessionId, requestId, message: 'No booted device' })
           break
         }
         // simctl pbcopy → Cmd+V paste. Works for arbitrary Unicode (unlike a
@@ -981,17 +1010,19 @@ export class IOSAgent implements DeviceAgent {
         // Shares the clipboard queue: this writes the pasteboard, so running it alongside a
         // clipboard:read would overwrite that read's sentinel and be returned as "copied".
         this.clipboardQueue(state.deviceId, doType)
-          .then(() => this.sendMsg({ type: 'input:type-done', sessionId }))
+          .then(() => this.sendMsg({ type: 'input:type-done', sessionId, requestId }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
             logger.error('input:type (pbcopy+paste) failed:', e)
-            this.sendMsg({ type: 'input:type-error', sessionId, message })
+            this.sendMsg({ type: 'input:type-error', sessionId, requestId, message })
           })
         break
       }
       case 'input:key': {
+        const requestId = this.correlatorOf(msg)
+        if (requestId === null) break
         const state = this.deviceStates.get(msg.sessionId)
-        if (!state) { this.ackNoSession(msg.sessionId); break }
+        if (!state) { this.ackNoSession(msg.sessionId, requestId); break }
         this.ensureTouchHelper(state)
         const { code, modifiers } = msg.payload as { code: string; modifiers?: number }
         const usage = KEY_CODE_MAP[code]
@@ -999,7 +1030,7 @@ export class IOSAgent implements DeviceAgent {
           // Prose preserved (it names the code), reason added: `unsupported` tells a caller never to
           // retry, which the message alone could not.
           this.sendMsg({
-            type: 'input:error', sessionId: msg.sessionId,
+            type: 'input:error', sessionId: msg.sessionId, requestId,
             message: `unknown key code: ${code}`, reason: 'unsupported' satisfies InputErrorReason,
           })
           break
@@ -1016,17 +1047,19 @@ export class IOSAgent implements DeviceAgent {
             .catch((e: unknown) => { logger.error('hideSoftwareKeyboard (on key) failed:', e) })
             .then(() => {
               const h = state.touchHelper
-              return this.ackInput(state, h?.sendKey(usage, modifiers ?? 0) ? 'delivered' : this.refusalReason(h, 'standalone'))
+              return this.ackInput(state, h?.sendKey(usage, modifiers ?? 0) ? 'delivered' : this.refusalReason(h, 'standalone'), requestId)
             })
         } else {
           const h = state.touchHelper
-          void this.ackInput(state, h?.sendKey(usage, modifiers ?? 0) ? 'delivered' : this.refusalReason(h, 'standalone'))
+          void this.ackInput(state, h?.sendKey(usage, modifiers ?? 0) ? 'delivered' : this.refusalReason(h, 'standalone'), requestId)
         }
         break
       }
       case 'input:button': {
+        const requestId = this.correlatorOf(msg)
+        if (requestId === null) break
         const state = this.deviceStates.get(msg.sessionId)
-        if (!state) { this.ackNoSession(msg.sessionId); break }
+        if (!state) { this.ackNoSession(msg.sessionId, requestId); break }
         this.ensureTouchHelper(state)
         const { name, phase } = msg.payload as { name: string; phase?: 'down' | 'up' }
         // Map the cross-platform button vocabulary (used by MCP) onto this
@@ -1059,7 +1092,7 @@ export class IOSAgent implements DeviceAgent {
             else outcome = wrote(btnHelper?.pressButton(btn.usagePage, btn.usage) ?? false)
           }
         }
-        void this.ackInput(state, outcome)
+        void this.ackInput(state, outcome, requestId)
         break
       }
       case 'open-url': {

@@ -102,6 +102,10 @@ export const REASON_ADVICE: Record<InputErrorReason, string> = {
   unsupported: 'This input is not supported on the active connection to the device. Do not retry it.',
   malformed: 'The message did not carry what the input needs. This is a bug in tapflow rather than something to retry.',
   'no-gesture': 'The gesture this input was completing is gone. Part of it may already have been applied to the device, so repeating it may duplicate what landed.',
+  // The only entry in this table that can promise nothing landed, and the promise is what makes it
+  // actionable: the relay refused the frame at its door, before any agent saw it. Every other reason
+  // leaves partial delivery open, which is why none of them says "retry" without a hedge.
+  'not-session-owner': 'You do not hold this session, so the input was refused and nothing reached the device. Call connect_device for it first, then send the input again — the accompanying message says whether the session is idle or held by someone else. If the join is refused it is in use; pick another device.',
 }
 
 export function reasonAdvice(reason: string | undefined): string {
@@ -117,8 +121,41 @@ export function reasonAdvice(reason: string | undefined): string {
 export class TapflowClient {
   private ws: WebSocket | null = null
   private waiters: Waiter[] = []
-  /** Sessions that have answered at least one input. See `awaitInputAck`. */
+  /** Sessions that have answered at least one input **in a form this client's waiter can match**.
+   *
+   *  A correlated `input:done` only, and the qualifier is the whole content of the rule. `strict` licenses
+   *  exactly one inference — *silence here is an anomaly, not an agent that does not ack* — and for an agent
+   *  that never carries a correlator, silence at the waiter is **structural**: its acks can never match, so
+   *  the inference is false for it and this set must not record it. It is not a provenance question; an
+   *  id-less `input:done` is still the agent's word, since nothing else produces that message. What it
+   *  lacks is attribution, and attribution is the waiter's question rather than this one's.
+   *
+   *  Deliberately **not** "an id this client issued". Recognising that after the fact needs a set of issued
+   *  ids outliving their waiters — the late ack is precisely the one worth recording (see `dispatch`) and
+   *  nothing ever says an id will not be answered, so the set would never shrink in a long-lived stdio
+   *  process. And it would answer the wrong question: a correlated ack for someone else's input still
+   *  demonstrates that this agent echoes correlators, which is what this set is for. */
   private ackedSessions = new Set<string>()
+
+  /** Sessions seen answering with an **uncorrelated** ack, so an agent older than the correlator.
+   *
+   *  Kept apart from `ackedSessions` because it must carry no strictness: judging this session strictly is
+   *  the thing the rule above rules out. It exists because there is **no protocol or agent version
+   *  handshake anywhere** in this system — an id-less ack is the only skew signal there is, and dropping it
+   *  silently returns the session to optimistic reporting, which from an operator's seat is
+   *  indistinguishable from the defect #457 fixed. Logging is not matching, so this does not reintroduce a
+   *  second correlation strategy. */
+  private skewedSessions = new Set<string>()
+
+  private noteAckSkew(sessionId: string): void {
+    if (this.skewedSessions.has(sessionId)) return
+    this.skewedSessions.add(sessionId)
+    console.error(
+      `[tapflow] input:done for ${sessionId} carried no requestId — this agent predates input correlation, ` +
+      'so an unanswered input on this session is reported optimistically rather than as a failure. ' +
+      'Upgrade the agent to get truthful input acks.',
+    )
+  }
 
   constructor(
     private readonly relayUrl: string,
@@ -171,7 +208,10 @@ export class TapflowClient {
     // never see it.
     if (msg['type'] === 'input:done') {
       const sid = msg['sessionId']
-      if (typeof sid === 'string') this.ackedSessions.add(sid)
+      const id = msg['requestId']
+      if (typeof sid !== 'string') { /* nothing to key on */ }
+      else if (typeof id === 'string' && id !== '') this.ackedSessions.add(sid)
+      else this.noteAckSkew(sid)
     }
     for (let i = 0; i < this.waiters.length; i++) {
       if (this.waiters[i].predicate(msg)) {
@@ -290,14 +330,19 @@ export class TapflowClient {
    * input's waiter, which then reports the previous input's outcome. Recorded as a known gap rather than
    * papered over — see the issue linked from `AGENTS.md`.
    */
-  private async awaitInputAck(sessionId: string): Promise<void> {
+  private async awaitInputAck(sessionId: string, requestId: string): Promise<void> {
     const strict = this.ackedSessions.has(sessionId)
     let msg: RelayMsg
     try {
       msg = await this.waitFor(
+        // **No fallback for an absent id.** #499 is what `sessionId` + type alone cost: an ack that missed
+        // its own deadline was consumed by the next input's waiter, which then reported the previous input's
+        // outcome — including reporting an unanswered input as landed. Accepting an id-less ack here would
+        // keep exactly that. An old agent's acks therefore never match, and the ledger above is what makes
+        // that degrade to the optimistic path instead of to a false failure.
         (m) =>
           (m['type'] === 'input:done' || m['type'] === 'input:error') &&
-          m['sessionId'] === sessionId,
+          m['sessionId'] === sessionId && m['requestId'] === requestId,
         2_000,
       )
     } catch (e) {
@@ -332,8 +377,9 @@ export class TapflowClient {
   async tap(sessionId: string, x: number, y: number): Promise<void> {
     const payload = { x, y }
     this.send({ type: 'input:touch:start', sessionId, payload })
-    this.send({ type: 'input:touch:end', sessionId, payload })
-    await this.awaitInputAck(sessionId)
+    const requestId = randomUUID()
+    this.send({ type: 'input:touch:end', sessionId, requestId, payload })
+    await this.awaitInputAck(sessionId, requestId)
   }
 
   async swipe(
@@ -363,22 +409,32 @@ export class TapflowClient {
       })
     }
     await delay(interval)
-    this.send({ type: 'input:touch:end', sessionId, payload: { x: endX, y: endY } })
-    await this.awaitInputAck(sessionId)
+    const requestId = randomUUID()
+    this.send({ type: 'input:touch:end', sessionId, requestId, payload: { x: endX, y: endY } })
+    await this.awaitInputAck(sessionId, requestId)
   }
 
   // Awaits the agent's ack so a following input (e.g. pressKey Enter) is sent
   // only after the text has landed — the paste/adb write runs async agent-side.
   async typeText(sessionId: string, text: string): Promise<void> {
-    this.send({ type: 'input:type', sessionId, payload: { text } })
+    const requestId = randomUUID()
+    this.send({ type: 'input:type', sessionId, requestId, payload: { text } })
     const msg = await this.waitFor(
       (m) =>
         (m['type'] === 'input:type-done' || m['type'] === 'input:type-error') &&
-        m['sessionId'] === sessionId,
+        m['sessionId'] === sessionId && m['requestId'] === requestId,
       15_000,
     )
     if (msg['type'] === 'input:type-error') {
-      throw new Error((msg['message'] as string) ?? 'Type text failed')
+      // The reason is read here for the same purpose as on `input:error`: the prose is the producer's and
+      // says what happened, the reason is the contract and says what to do. Agents send none — their
+      // failures are a rejected `adb` or pasteboard write — so this stays prose-only for them. The relay
+      // sets it, and without reading it here `not-session-owner` was unreachable for one of the five
+      // requests it can refuse: the only reason that promises nothing reached the device, delivered as a
+      // string the caller would have had to branch on (#492).
+      const reason = msg['reason'] as string | undefined
+      const prose = (msg['message'] as string) ?? 'Type text failed'
+      throw new Error(reason ? `${prose} (${reason}) — ${reasonAdvice(reason)}` : prose)
     }
   }
 
@@ -386,16 +442,18 @@ export class TapflowClient {
   // 'Return' is accepted as an alias — neither platform maps it, 'Enter' is the code.
   async pressKey(sessionId: string, key: string): Promise<void> {
     const code = key === 'Return' ? 'Enter' : key
-    this.send({ type: 'input:key', sessionId, payload: { code, modifiers: 0 } })
-    await this.awaitInputAck(sessionId)
+    const requestId = randomUUID()
+    this.send({ type: 'input:key', sessionId, requestId, payload: { code, modifiers: 0 } })
+    await this.awaitInputAck(sessionId, requestId)
   }
 
   // Agents consume { name, phase? } on input:button; a phase-less message is a
   // single press on both platforms (iOS 'home' is legacy-pressed once, chrome
   // buttons and Android BUTTON_KEY_MAP names resolve by name).
   async pressButton(sessionId: string, button: string): Promise<void> {
-    this.send({ type: 'input:button', sessionId, payload: { name: button } })
-    await this.awaitInputAck(sessionId)
+    const requestId = randomUUID()
+    this.send({ type: 'input:button', sessionId, requestId, payload: { name: button } })
+    await this.awaitInputAck(sessionId, requestId)
   }
 
   async openUrl(sessionId: string, url: string): Promise<void> {

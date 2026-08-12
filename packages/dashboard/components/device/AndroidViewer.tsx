@@ -1,6 +1,7 @@
 'use client';
 
 import type { BrowserToRelay } from '@tapflowio/protocol'
+import { newRequestId } from '@/lib/requestId';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useClientRecording } from '@/hooks/useClientRecording';
 import { ArrowLeft, Home, LayoutGrid, Loader2, Play, Power, Volume1, Volume2 } from 'lucide-react';
@@ -228,7 +229,7 @@ export function AndroidViewer({
   }, [])
 
   const sendChord = useCallback((code: 'KeyC' | 'KeyV' | 'KeyX', modifiers: number) => {
-    send({ type: 'input:key', sessionId, payload: { code, modifiers } })
+    send({ type: 'input:key', sessionId, requestId: newRequestId(), payload: { code, modifiers } })
   }, [send, sessionId])
   useClipboardBridge({
     sessionId, send, active: keyboardActive, supported: clipboardSupported,
@@ -257,11 +258,11 @@ export function AndroidViewer({
       if (clipboardSupported && isBridgedChord(e)) return
       e.preventDefault()
       const modifiers = (e.shiftKey ? 0x02 : 0) | (e.ctrlKey ? 0x01 : 0) | (e.metaKey ? 0x08 : 0)
-      send({ type: 'input:key', sessionId, payload: { code: e.code, modifiers } })
+      send({ type: 'input:key', sessionId, requestId: newRequestId(), payload: { code: e.code, modifiers } })
     }
     const endPinch = () => {
       if (isPinchMode.current) {
-        isPinchMode.current = false; setPinchActive(false); send({ type: 'input:pinch:end', sessionId })
+        isPinchMode.current = false; setPinchActive(false); send({ type: 'input:pinch:end', sessionId, requestId: newRequestId() })
       }
       isOptionHeld.current = false; setPinchHint(null)
     }
@@ -388,7 +389,7 @@ export function AndroidViewer({
   const handlePointerUp = useCallback(() => {
     if (isPinchMode.current) {
       isPinchMode.current = false; setPinchActive(false); setPinchHint(null)
-      send({ type: 'input:pinch:end', sessionId }); return
+      send({ type: 'input:pinch:end', sessionId, requestId: newRequestId() }); return
     }
     touchStartPos.current = null
     cursorStateRef.current = 'release'; releaseAnimRef.current = { startTime: performance.now() }
@@ -398,17 +399,17 @@ export function AndroidViewer({
       _lc.style.background = 'transparent'; _lc.style.border = '1.5px solid rgba(255,255,255,0.6)'
       _lc.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.3)'
     }
-    send({ type: 'input:touch:end', sessionId })
+    send({ type: 'input:touch:end', sessionId, requestId: newRequestId() })
   }, [send, sessionId])
 
   const handlePointerCancel = useCallback(() => {
     if (isPinchMode.current) {
       isPinchMode.current = false; setPinchActive(false); setPinchHint(null)
-      send({ type: 'input:pinch:end', sessionId }); return
+      send({ type: 'input:pinch:end', sessionId, requestId: newRequestId() }); return
     }
     touchStartPos.current = null
     cursorStateRef.current = 'release'; releaseAnimRef.current = { startTime: performance.now() }
-    send({ type: 'input:touch:end', sessionId })
+    send({ type: 'input:touch:end', sessionId, requestId: newRequestId() })
   }, [send, sessionId])
 
   const handlePointerLeave = useCallback(() => {
@@ -470,7 +471,7 @@ export function AndroidViewer({
           <TooltipTrigger asChild>
             <Button variant="ghost" size="icon" className="h-8 w-8"
               aria-label={btn.accessibilityTitle}
-              onClick={() => send({ type: 'input:button', sessionId, payload: { name: btn.name } })}
+              onClick={() => send({ type: 'input:button', sessionId, requestId: newRequestId(), payload: { name: btn.name } })}
             >
               {btn.name === 'back' ? <ArrowLeft className="h-4 w-4" />
                 : btn.name === 'recent_apps' ? <LayoutGrid className="h-4 w-4" />
