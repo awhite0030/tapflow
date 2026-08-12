@@ -1,6 +1,7 @@
 'use client';
 
 import type { BrowserToRelay } from '@tapflowio/protocol'
+import { newRequestId } from '@/lib/requestId';
 import { useCallback, useEffect, useRef, useState, Fragment } from 'react';
 import { useClientRecording } from '@/hooks/useClientRecording';
 import { Home, Keyboard, Loader2, Play } from 'lucide-react';
@@ -294,7 +295,7 @@ export function IOSViewer({
   }, [])
 
   const sendChord = useCallback((code: 'KeyC' | 'KeyV' | 'KeyX', modifiers: number) => {
-    send({ type: 'input:key', sessionId, payload: { code, modifiers } })
+    send({ type: 'input:key', sessionId, requestId: newRequestId(), payload: { code, modifiers } })
   }, [send, sessionId])
   useClipboardBridge({
     sessionId, send, active: keyboardActive, supported: clipboardSupported,
@@ -313,7 +314,7 @@ export function IOSViewer({
           if (!e.shiftKey && e.code === 'KeyS') { e.preventDefault(); handleScreenshot(); return }
           if (e.shiftKey && e.code === 'KeyY') { e.preventDefault(); handleRecordToggle(); return }
           if (e.shiftKey && e.code === 'KeyO') { e.preventDefault(); handleRotate(); return }
-          if (e.shiftKey && e.code === 'KeyU') { e.preventDefault(); send({ type: 'input:button', sessionId, payload: { name: 'home' } }); return }
+          if (e.shiftKey && e.code === 'KeyU') { e.preventDefault(); send({ type: 'input:button', sessionId, requestId: newRequestId(), payload: { name: 'home' } }); return }
           if (e.shiftKey && e.code === 'KeyK') { e.preventDefault(); if (!swKeyboardPending) onKbdToggle(); return }
         }
       }
@@ -325,10 +326,10 @@ export function IOSViewer({
       if (clipboardSupported && isBridgedChord(e)) return
       e.preventDefault()
       const modifiers = (e.shiftKey ? 0x02 : 0) | (e.ctrlKey ? 0x01 : 0) | (e.metaKey ? 0x08 : 0)
-      send({ type: 'input:key', sessionId, payload: { code: e.code, modifiers } })
+      send({ type: 'input:key', sessionId, requestId: newRequestId(), payload: { code: e.code, modifiers } })
     }
     const endPinch = () => {
-      if (isPinchMode.current) { isPinchMode.current = false; setPinchActive(false); send({ type: 'input:pinch:end', sessionId }) }
+      if (isPinchMode.current) { isPinchMode.current = false; setPinchActive(false); send({ type: 'input:pinch:end', sessionId, requestId: newRequestId() }) }
       isOptionHeld.current = false; setPinchHint(null)
     }
     const onKeyUp = (e: KeyboardEvent) => { if (e.code === 'AltLeft' || e.code === 'AltRight') endPinch() }
@@ -418,7 +419,7 @@ export function IOSViewer({
     if (btn) {
       pressedButton.current = btn; setFlashedButton(btn)
       ;(e.target as Element).setPointerCapture(e.pointerId)
-      send({ type: 'input:button', sessionId, payload: { name: btn, phase: 'down' } })
+      send({ type: 'input:button', sessionId, requestId: newRequestId(), payload: { name: btn, phase: 'down' } })
       return
     }
     const pos = toNormScreen(e); if (!pos) return
@@ -484,11 +485,11 @@ export function IOSViewer({
 
   const handlePointerUp = useCallback(() => {
     if (isPinchMode.current) {
-      isPinchMode.current = false; setPinchActive(false); setPinchHint(null); send({ type: 'input:pinch:end', sessionId }); return
+      isPinchMode.current = false; setPinchActive(false); setPinchHint(null); send({ type: 'input:pinch:end', sessionId, requestId: newRequestId() }); return
     }
     touchStartPos.current = null
     if (pressedButton.current) {
-      send({ type: 'input:button', sessionId, payload: { name: pressedButton.current, phase: 'up' } })
+      send({ type: 'input:button', sessionId, requestId: newRequestId(), payload: { name: pressedButton.current, phase: 'up' } })
       pressedButton.current = null; setTimeout(() => setFlashedButton(null), 100); return
     }
     cursorStateRef.current = 'release'; releaseAnimRef.current = { startTime: performance.now() }
@@ -498,21 +499,21 @@ export function IOSViewer({
       _lc.style.background = 'transparent'; _lc.style.border = '1.5px solid rgba(255,255,255,0.6)'
       _lc.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.3)'
     }
-    send({ type: 'input:touch:end', sessionId })
+    send({ type: 'input:touch:end', sessionId, requestId: newRequestId() })
   }, [send, sessionId])
 
   const handlePointerCancel = useCallback(() => {
     if (isPinchMode.current) {
-      isPinchMode.current = false; setPinchActive(false); setPinchHint(null); send({ type: 'input:pinch:end', sessionId }); return
+      isPinchMode.current = false; setPinchActive(false); setPinchHint(null); send({ type: 'input:pinch:end', sessionId, requestId: newRequestId() }); return
     }
     touchStartPos.current = null
     if (pressedButton.current) {
       // Release the held button, else the HID button stays down on the device.
-      send({ type: 'input:button', sessionId, payload: { name: pressedButton.current, phase: 'up' } })
+      send({ type: 'input:button', sessionId, requestId: newRequestId(), payload: { name: pressedButton.current, phase: 'up' } })
       pressedButton.current = null; setFlashedButton(null); return
     }
     cursorStateRef.current = 'release'; releaseAnimRef.current = { startTime: performance.now() }
-    send({ type: 'input:touch:end', sessionId })
+    send({ type: 'input:touch:end', sessionId, requestId: newRequestId() })
   }, [send, sessionId])
 
   const handlePointerLeave = useCallback(() => {
@@ -538,7 +539,7 @@ export function IOSViewer({
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon" className="h-8 w-8"
-            onClick={() => send({ type: 'input:button', sessionId, payload: { name: 'home' } })}
+            onClick={() => send({ type: 'input:button', sessionId, requestId: newRequestId(), payload: { name: 'home' } })}
           >
             <Home className="h-4 w-4" />
           </Button>

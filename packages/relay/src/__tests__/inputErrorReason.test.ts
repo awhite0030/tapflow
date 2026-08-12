@@ -6,7 +6,7 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
 import type { RelayMessage } from '../types'
-import { waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
+import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 
 // #492. The relay answers a terminal input it cannot dispatch, and it was the last producer of
 // `input:error` sending no `reason` — while being the one that knows the answer with the most
@@ -78,7 +78,7 @@ describe('input:error from the relay carries a reason (#492)', () => {
     it(`answers ${type} with reason channel-unavailable when the agent's socket is gone`, async () => {
       const { browser, sessionId } = await agentGone()
 
-      browser.send(JSON.stringify({ type, sessionId, payload }))
+      browser.send(JSON.stringify({ type, sessionId, requestId: 'rq-terminal', payload }))
       // By type, not "the next message": losing the agent also produces a `session:agent-away`, and
       // whichever lands first is not this test's subject. (Not `session:terminated` — that waits for
       // the 15s grace to expire, long after this test is over.)
@@ -99,7 +99,7 @@ describe('input:error from the relay carries a reason (#492)', () => {
     await waitForOpen(browser)
 
     browser.send(JSON.stringify({
-      type: 'input:touch:end', sessionId: 'no-such-session', payload: { x: 0.5, y: 0.5 },
+      type: 'input:touch:end', sessionId: 'no-such-session', requestId: 'rq-unknown', payload: { x: 0.5, y: 0.5 },
     }))
     const err = await waitForType(browser, 'input:error')
     expect(err.sessionId).toBe('no-such-session')
@@ -116,10 +116,10 @@ describe('input:error from the relay carries a reason (#492)', () => {
   it('uses one reason for both branches while the wording differs', async () => {
     const { browser, sessionId } = await agentGone()
 
-    browser.send(JSON.stringify({ type: 'input:touch:end', sessionId, payload: { x: 0.5, y: 0.5 } }))
+    browser.send(JSON.stringify({ type: 'input:touch:end', sessionId, requestId: 'rq-held', payload: { x: 0.5, y: 0.5 } }))
     const held = await waitForType(browser, 'input:error')
 
-    browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: 'nope', payload: { x: 0.5, y: 0.5 } }))
+    browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: 'nope', requestId: 'rq-nope', payload: { x: 0.5, y: 0.5 } }))
     const unknown = await waitForType(browser, 'input:error')
 
     // Named, not merely equal: two absent reasons are also equal, and that is the state this whole
@@ -131,21 +131,354 @@ describe('input:error from the relay carries a reason (#492)', () => {
     browser.close()
   })
 
-  // This change adds a field to an existing reply; it does not widen what gets answered. Every input
-  // type outside `TERMINAL_INPUT_TYPES` is listed, because the two ways of widening it are both
-  // harmful and neither is caught by testing one representative: adding `input:touch:start` would
-  // answer twice per tap, and adding `input:type` would answer a message whose waiters key on
-  // `input:type-done` / `input:type-error` (`mcp-server`, `flow-runner`) — they would ignore it and
-  // wait out the full deadline anyway, which is the failure this reply exists to prevent.
+  // ── the door, and who is allowed through it (L5c) ─────────────────────────────────────────────
+  //
+  // These were the mutation-round survivors: with the correlator gate deleted and again with the ownership
+  // check deleted, all 600 relay tests passed. Nothing here had ever sent an id-less acked input, and
+  // nothing had ever sent input from a socket that did not hold the session — so the two guards that make
+  // this layer mean anything were held by their own absence of counterexamples.
+
+  /** Opens a second browser socket that has **not** joined `sessionId`. */
+  async function outsider() {
+    const ws = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(ws)
+    return ws
+  }
+
+  /** A joined browser, a live agent, and the session they share. */
+  async function live() {
+    const agent = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(agent)
+    agent.send(JSON.stringify({
+      type: 'agent:register',
+      devices: [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }],
+    }))
+    const reg = await waitForType<RelayMessage>(agent, 'agent:registered')
+    const sessionId = reg.registeredSessions![0]!.sessionId
+    const browser = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(browser)
+    browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(browser, 'session:joined')
+    return { agent, browser, sessionId }
+  }
+
+  for (const bad of [undefined, ''] as Array<string | undefined>) {
+    it(`drops an acked input whose correlator is ${bad === undefined ? 'absent' : 'the empty string'}`, async () => {
+      // Both halves of the shared predicate. A gate written as `!== undefined` lets `''` through, and
+      // `mcp-server`'s tool schemas are bare `z.string()` so a model can produce it.
+      const { agent, browser, sessionId } = await live()
+
+      browser.send(JSON.stringify({
+        type: 'input:touch:end', sessionId, ...(bad === undefined ? {} : { requestId: bad }),
+        payload: { x: 0.5, y: 0.5 },
+      }))
+      await barrier(browser)
+      await barrier(agent)
+
+      // Not forwarded, and not answered either: answering would ship a reply whose required correlator
+      // `JSON.stringify` erases, which every correlating consumer then discards.
+      expect(await waitForTypeOrNull(agent, 'input:touch:end', 0)).toBeNull()
+      expect(await waitForTypeOrNull(browser, 'input:error', 0)).toBeNull()
+
+      agent.close(); browser.close()
+    })
+  }
+
+  it('forwards an acked input from the socket that holds the session', async () => {
+    // The control for the two below: the ownership check must not refuse the normal path.
+    const { agent, browser, sessionId } = await live()
+
+    const fwd = waitForType<RelayMessage>(agent, 'input:touch:end')
+    browser.send(JSON.stringify({
+      type: 'input:touch:end', sessionId, requestId: 'rq-own', payload: { x: 0.5, y: 0.5 },
+    }))
+    expect((await fwd).requestId).toBe('rq-own')
+
+    agent.close(); browser.close()
+  })
+
+  it('refuses an acked input from a socket that does not hold the session', async () => {
+    // `session:start` is exclusive, so a second socket cannot *join* — but until L5c it could still drive
+    // the device, because the input branch resolved the session and forwarded without asking who was
+    // asking. `clipboard:data` asks the mirror question one branch up. The agent's ack went to the session
+    // holder, never to the injector, so the tester watching the screen saw input they did not send.
+    const { agent, browser, sessionId } = await live()
+    const other = await outsider()
+
+    other.send(JSON.stringify({
+      type: 'input:touch:end', sessionId, requestId: 'rq-inject', payload: { x: 0.5, y: 0.5 },
+    }))
+    const err = await waitForType<RelayMessage>(other, 'input:error')
+
+    expect(err.reason).toBe('not-session-owner')
+    expect(err.requestId).toBe('rq-inject')
+    // **Answered, not dropped**, and that is the point rather than a nicety: `awaitInputAck` reports
+    // silence from a session that has never acked as *success*, so a silent refusal would report an input
+    // that never left the relay as landed — worse than the misrouting it replaced.
+    await barrier(other)
+    await barrier(agent)
+    expect(await waitForTypeOrNull(agent, 'input:touch:end', 0)).toBeNull()
+
+    agent.close(); browser.close(); other.close()
+  })
+
+  it('refuses input for a session nobody holds, and says which of the two it is', async () => {
+    // `ownsSession` is `browserSocket === ws`, so an **unheld** session is refused too — and every other
+    // outsider case here runs against a held one, so relaxing the check to `session?.browserSocket &&`
+    // survived all 607 tests in review. That relaxation is a "nobody is holding it, so anybody may drive
+    // it" policy for precisely the window the check exists to close, and `session:leave` is forwarded with
+    // no ownership check of its own, so an outsider can *create* the unheld state and then use it.
+    //
+    // One reason, two prose strings — the treatment #492 settled for `agent offline` / `Session not found`.
+    // Telling a caller the session is in use when it is idle steers it off a device it could have had.
+    const { agent, browser, sessionId } = await live()
+    browser.send(JSON.stringify({ type: 'session:leave', sessionId }))
+    await barrier(browser)
+
+    const other = await outsider()
+    other.send(JSON.stringify({
+      type: 'input:touch:end', sessionId, requestId: 'rq-unheld', payload: { x: 0.5, y: 0.5 },
+    }))
+    const err = await waitForType<RelayMessage>(other, 'input:error')
+
+    expect(err.reason).toBe('not-session-owner')
+    expect(err.message).toBe('session not joined')
+    await barrier(agent)
+    expect(await waitForTypeOrNull(agent, 'input:touch:end', 0)).toBeNull()
+
+    agent.close(); browser.close(); other.close()
+  })
+
+  it('names the held case differently from the unheld one', async () => {
+    const { agent, browser, sessionId } = await live()
+    const other = await outsider()
+
+    other.send(JSON.stringify({
+      type: 'input:key', sessionId, requestId: 'rq-held-prose', payload: { code: 'KeyA' },
+    }))
+    const err = await waitForType<RelayMessage>(other, 'input:error')
+
+    expect(err.reason).toBe('not-session-owner')
+    expect(err.message).toBe('session held by another client')
+
+    agent.close(); browser.close(); other.close()
+  })
+
+  it('refuses an outsider input:type in the shape its waiters read', async () => {
+    const { agent, browser, sessionId } = await live()
+    const other = await outsider()
+
+    other.send(JSON.stringify({ type: 'input:type', sessionId, requestId: 'rq-t', payload: { text: 'hi' } }))
+    const err = await waitForType<RelayMessage>(other, 'input:type-error')
+
+    expect(err.requestId).toBe('rq-t')
+    // The reason rides this shape too. Without it, `not-session-owner` was unreachable for one of the five
+    // requests the relay can refuse — the only reason that promises nothing reached the device, delivered as
+    // a string the caller would have to branch on (#492). `InputTypeError` gained `reason?` for this.
+    expect(err.reason).toBe('not-session-owner')
+    expect(await waitForTypeOrNull(other, 'input:error', 100)).toBeNull()
+
+    agent.close(); browser.close(); other.close()
+  })
+
+  it('drops an outsider frame that no ack answers, without inventing a reply', async () => {
+    // The asymmetry the split clause exists for: refusing means answering, and a move frame has no waiter
+    // to answer. `clipboard:data`'s silent break is the precedent that fits here and not above.
+    const { agent, browser, sessionId } = await live()
+    const other = await outsider()
+
+    other.send(JSON.stringify({ type: 'input:touch:move', sessionId, payload: { x: 0.5, y: 0.5 } }))
+    await barrier(other)
+    await barrier(agent)
+
+    expect(await waitForTypeOrNull(agent, 'input:touch:move', 0)).toBeNull()
+    expect(await waitForTypeOrNull(other, 'input:error', 0)).toBeNull()
+
+    agent.close(); browser.close(); other.close()
+  })
+
+  // ── the second door predicate: a request must name a session (CodeRabbit on #528) ──────────────
+  //
+  // `isCorrelated` validated `requestId` only, so a command with no `sessionId` — or an empty one, which
+  // type-checks and which `mcp-server`'s bare `z.string()` tool schemas let a model produce — reached the
+  // reply builders and shipped a frame whose **required** `sessionId` `JSON.stringify` erases. Every
+  // consumer's session gate then discards it, so the caller waits out its deadline with the diagnosis in
+  // hand and no way to attribute it.
+  //
+  // Dropped rather than answered, the same policy as an uncorrelatable request, and for a reason the note on
+  // `SessionError` used to contradict: `GenericError` carries no `requestId`, so answering an unaddressed
+  // request is *also* unattributable — it buys the caller nothing that silence did not, while widening what
+  // `error` means. See `isAddressed`.
+  for (const bad of [undefined, ''] as Array<string | undefined>) {
+    const label = bad === undefined ? 'absent' : 'the empty string'
+    it(`drops a request whose sessionId is ${label}, and answers nothing`, async () => {
+      const { agent, browser, sessionId } = await live()
+      void sessionId
+
+      for (const type of ['input:touch:end', 'device:boot', 'open-url', 'app:clear-state', 'clipboard:read', 'app:install', 'app:launch']) {
+        browser.send(JSON.stringify({
+          type, requestId: `rq-${type}`, ...(bad === undefined ? {} : { sessionId: bad }),
+          buildId: 1,
+          payload: { x: 0.5, y: 0.5, deviceId: 'dev-1', url: 'x://y', bundleId: 'com.example', press: 'copy' },
+        }))
+      }
+      await barrier(browser)
+      await barrier(agent)
+
+      // Nothing forwarded, and nothing answered — an answer would be the frame that violates its own
+      // declaration, which is what this predicate exists to stop.
+      for (const type of ['input:touch:end', 'device:boot', 'open-url', 'app:clear-state', 'clipboard:read', 'app:install', 'app:launch']) {
+        expect(await waitForTypeOrNull(agent, type, 0), `${type} was forwarded`).toBeNull()
+      }
+      for (const reply of ['input:error', 'device:boot-error', 'open-url:error', 'app:clear-state-error', 'clipboard:error', 'app:install-error', 'app:launch-error']) {
+        expect(await waitForTypeOrNull(browser, reply, 0), `${reply} was sent`).toBeNull()
+      }
+
+      agent.close(); browser.close()
+    })
+  }
+
+  it('drops an unaddressed session:start rather than answering session:joined without an id', async () => {
+    // The door that made the defect visible: `session:joined` declares `sessionId` required, and this branch
+    // built it from `msg.sessionId!`.
+    const browser = await outsider()
+    browser.send(JSON.stringify({ type: 'session:start' }))
+    await barrier(browser)
+
+    expect(await waitForTypeOrNull(browser, 'session:joined', 0)).toBeNull()
+    expect(await waitForTypeOrNull(browser, 'error', 0)).toBeNull()
+
+    browser.close()
+  })
+
+  // ── the same gate on every other browser→agent command (L5c, widened) ─────────────────────────
+  //
+  // Input was one branch of ten. Review found the rest still forwarding on the strength of the session
+  // existing — `clipboard:write` pastes attacker text into the victim's device and `clipboard:read` with
+  // `press: 'cut'` presses cut on it, with the reply landing on **that** tester's host OS clipboard;
+  // `session:end` deletes their session. Each is refused in the shape its own waiter reads, and the two
+  // session commands are dropped because neither has one.
+  //
+  // Table-driven so a command added later is a visible omission rather than an invisible one.
+  const gated: Array<[string, Record<string, unknown>, string]> = [
+    ['device:boot', { payload: { deviceId: 'dev-1' } }, 'device:boot-error'],
+    ['open-url', { payload: { url: 'x://y' } }, 'open-url:error'],
+    ['app:clear-state', { payload: { bundleId: 'com.example' } }, 'app:clear-state-error'],
+    ['clipboard:read', { payload: { press: 'copy' } }, 'clipboard:error'],
+    ['clipboard:write', { payload: { text: 'stolen', pasteAfter: true } }, 'clipboard:error'],
+  ]
+
+  for (const [type, extra, errType] of gated) {
+    it(`refuses ${type} from a socket that does not hold the session`, async () => {
+      const { agent, browser, sessionId } = await live()
+      const other = await outsider()
+
+      other.send(JSON.stringify({ type, sessionId, requestId: `rq-${type}`, ...extra }))
+      const err = await waitForType<RelayMessage>(other, errType)
+
+      expect(err.message).toBe('session held by another client')
+      // The correlator rides the refusal, or the caller cannot attribute it and waits out its deadline —
+      // the defect this file's sibling tests record as having shipped twice.
+      expect(err.requestId).toBe(`rq-${type}`)
+
+      await barrier(other)
+      await barrier(agent)
+      expect(await waitForTypeOrNull(agent, type, 0)).toBeNull()
+
+      agent.close(); browser.close(); other.close()
+    })
+  }
+
+  it('refuses app:install from a non-owner before it reads the build', async () => {
+    // Ownership is checked ahead of the build lookup but **after** the session lookup, deliberately: the
+    // resolver used by the cases above also decides agent liveness, and using it here would move
+    // `agent offline` ahead of `Build not found`, changing which of two simultaneous problems is reported.
+    const { agent, browser, sessionId } = await live()
+    const other = await outsider()
+
+    other.send(JSON.stringify({ type: 'app:install', sessionId, requestId: 'rq-inst', buildId: 999999 }))
+    const err = await waitForType<RelayMessage>(other, 'app:install-error')
+
+    // Not `Build not found`, which is what an owner would get for this buildId.
+    expect(err.message).toBe('session held by another client')
+    expect(err.requestId).toBe('rq-inst')
+
+    agent.close(); browser.close(); other.close()
+  })
+
+  it('ignores session:leave and session:end from a non-owner, and answers nothing', async () => {
+    // Dropped rather than refused: neither has a reply, so there is no waiter to tell — the same asymmetry
+    // as the input frames nothing acks. `session:leave` is the sharper of the two, because it nulls
+    // `browserSocket`: an unguarded one strips ownership from a mounted viewer, and that viewer's own input
+    // is then refused. That is why `not-session-owner` needed real copy in the dashboard.
+    const { agent, browser, sessionId } = await live()
+    const other = await outsider()
+
+    other.send(JSON.stringify({ type: 'session:leave', sessionId }))
+    other.send(JSON.stringify({ type: 'session:end', sessionId }))
+    await barrier(other)
+
+    // Nothing answered, and the session still works for the socket that holds it.
+    expect(await waitForTypeOrNull<RelayMessage>(other, 'error', 0)).toBeNull()
+    const fwd = waitForType<RelayMessage>(agent, 'input:touch:end')
+    browser.send(JSON.stringify({
+      type: 'input:touch:end', sessionId, requestId: 'rq-survived', payload: { x: 0.5, y: 0.5 },
+    }))
+    expect((await fwd).requestId).toBe('rq-survived')
+
+    agent.close(); browser.close(); other.close()
+  })
+
+  it('lets the holder leave its own session', async () => {
+    // The control: the gate must not break the ordinary path, and `session:leave` has no reply to confirm
+    // with — so this reads the effect instead. After leaving, the holder no longer owns it, so its next
+    // input is refused, which is the observable consequence of the leave having worked.
+    const { agent, browser, sessionId } = await live()
+
+    browser.send(JSON.stringify({ type: 'session:leave', sessionId }))
+    await barrier(browser)
+    browser.send(JSON.stringify({
+      type: 'input:touch:end', sessionId, requestId: 'rq-after-leave', payload: { x: 0.5, y: 0.5 },
+    }))
+    const err = await waitForType<RelayMessage>(browser, 'input:error')
+    expect(err.message).toBe('session not joined')
+
+    agent.close(); browser.close()
+  })
+
+  // Every input type that is still answered by nothing. Listed rather than sampled, because the ways of
+  // widening the set are harmful in different ways and testing one representative catches neither:
+  // answering `input:touch:start` would answer twice per tap, and answering any of these at all would put
+  // a reply on a frame with no waiter.
+  //
+  // **`input:type` left this list in L5c.** The comment that used to stand here said adding it to
+  // `TERMINAL_INPUT_TYPES` would be useless, because its waiters key on the `input:type-*` pair and would
+  // ignore an `input:error` and burn the full deadline anyway — and it named the honest fix, a reply in the
+  // shape those waiters read. That is what landed, so the case below asserts it rather than its absence.
   const nonTerminals: Array<[string, Record<string, unknown>]> = [
     ['input:touch:start', { x: 0.5, y: 0.5 }],
     ['input:touch:move', { x: 0.5, y: 0.5 }],
     ['input:pinch:start', { f0: { x: 0.4, y: 0.4 }, f1: { x: 0.6, y: 0.6 } }],
     ['input:pinch:move', { f0: { x: 0.4, y: 0.4 }, f1: { x: 0.6, y: 0.6 } }],
-    ['input:type', { text: 'hello' }],
     ['input:rotate', { orientation: 'landscapeLeft' }],
     ['input:keyboard:toggle', {}],
   ]
+
+  it('answers input:type in the shape its waiters read, not with input:error', async () => {
+    const { browser, sessionId } = await agentGone()
+
+    browser.send(JSON.stringify({ type: 'input:type', sessionId, requestId: 'rq-type', payload: { text: 'hi' } }))
+    const err = await waitForType(browser, 'input:type-error')
+
+    expect(err.sessionId).toBe(sessionId)
+    expect(err.requestId).toBe('rq-type')
+    expect(err.message).toBe('agent offline')
+    // And **not** an `input:error`: that is the frame its waiters ignore, so sending one would be the
+    // deadline-burning non-answer this reply replaced.
+    expect(await waitForTypeOrNull(browser, 'input:error', 100)).toBeNull()
+
+    browser.close()
+  })
 
   for (const [type, payload] of nonTerminals) {
     it(`still answers nothing for ${type}`, async () => {

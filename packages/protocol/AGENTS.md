@@ -86,11 +86,14 @@ assertion green.
 
 ## Request/response correlation — `requestId`, required on both sides
 
-Four pairs correlate by `requestId` today: `screenshot`, `ui:tree`, `clipboard`, and the app commands
-(`open-url`, `app:install`, `app:launch`, `app:clear-state`). The rest still correlate by `sessionId` +
-message type, which is the root of #499 and of #512's first finding — a reply for one request satisfying
-another's waiter. Each remaining pair is scheduled; the reason a pair is *not* in the set is always one of
-the two below.
+Correlated by `requestId` today: `screenshot`, `ui:tree`, `clipboard`, the app commands (`open-url`,
+`app:install`, `app:launch`, `app:clear-state`), the device lifecycle (`device:boot`, `device:shutdown` — see
+「Lifecycle correlation」), and **the inputs an ack answers** (see 「Input correlation」). What is left correlates
+by `sessionId` + message type, and the reason a pair is *not* in the set is always one of the two below.
+
+`#499` was the last of the defects that came from having no correlator, and it was the sharpest: the four pairs
+above arrive at the speed a person clicks a button, while a swipe is dozens of frames, so an ack that missed
+its own deadline being consumed by the **next** input's waiter was not a corner case.
 
 **Required on the reply, not optional.** The tempting asymmetry is to leave the reply optional so an agent
 predating the field does not falsify the declaration. It was measured and rejected:
@@ -188,6 +191,89 @@ rebind on `device:ready`, and a replayed ready currently consumes one and fires 
 relay, so one door gates and logs every sender at once. A reply does not — the relay forwards it with
 `JSON.stringify` without inspecting it — so "log the uncorrelatable frame" has to be written once per consuming
 client, and one of those clients must not drop at all.
+
+## Input correlation — the pair where the request is not one message
+
+Five requests carry a required `requestId`: the four terminal frames (`input:touch:end`, `input:pinch:end`,
+`input:key`, `input:button`) and `input:type`. The four replies do too — `input:done`, `input:error`,
+`input:type-done`, `input:type-error`.
+
+**Opening and move frames carry none, and neither does `input:rotate`.** Nothing acks them
+(`ios-agent/AGENTS.md`: *"Opening frames stay silent: they carry no ack obligation"*), so an id there would
+name a waiter that does not exist. `input:keyboard:toggle` is out for a different reason — see below.
+
+**Required on both sides, unlike the lifecycle pair**, and the discriminator is the one this file already
+uses: no producer of these four replies sends one unsolicited. `ackInput` on both agents fires on terminal
+outcomes only; `ackNoSession` answers a terminal input for a session the agent lost; the relay answers a
+terminal input it cannot dispatch. Six producers of `input:error`, every one of them behind a request.
+
+**So the compiler holds more here than anywhere else in this work.** The relay's own `input:error` goes
+through `sendTo(socket, msg: RelayOutbound)` and the agents' through `sendMsg(msg: AgentControlOutbound)`, so
+with the reply required, omitting the echo is a **compile error** — not something only a test could see. That
+is the position the lifecycle pair could not reach, and it is where the same defect had already shipped twice.
+
+**`input:type-error` moved from `AgentToBrowser` to `RelayOrAgentToBrowser`.** The relay refuses an
+`input:type` whose session the sender does not hold, and it has to refuse in *that* shape: the waiters in
+`mcp-server` and `flow-runner` key on the `input:type-*` pair and ignore an `input:error` entirely. Answering
+one would be the deadline-burning non-answer this reply replaced — which is also why widening the terminal
+set was never the fix for it.
+
+### The correlator is a parameter, never shared state
+
+A gesture is dozens of frames and two can overlap, so `ackInput` and `ackNoSession` take the id as an
+argument, beside `seq` and for the same reason: state moves under the awaited dispatch. A correlator read
+from `DeviceState` would answer one input with another's id — #499 rebuilt inside the agent, where no test
+downstream could see it.
+
+`correlatorOf` on each agent is a **local capture**, not a guard at the top of the dispatcher. A guard there
+does not narrow `msg.requestId` inside the case, so the shortest way to satisfy the reply's required field
+would be `msg.requestId!` — the assertion removed from `open-url` and then from clipboard.
+
+### The eleven input cases became two clauses
+
+`input:*` shared one `case` body. Only five of them are answered, so a gate written into a shared body would
+have dropped every opening and move frame with it: no swipe, no pinch, no rotation, and nothing said.
+`correlatedRequestsGated` resolves fall-through by sharing the next non-empty body, so it would have read one
+gate as covering all eleven. The split is what makes the gate unable to reach them, and
+`TERMINAL_INPUT_TYPES` was deleted because the clause labels are now the definition — a second source of
+truth for "which inputs are answered" is the thing this package exists to remove.
+
+### The sender must hold the session, and a refusal is answered where a waiter exists
+
+Not an input-only rule, though it was found there. The relay resolved the session and forwarded **every**
+browser→agent command without asking whether the socket asking was the one the session is bound to —
+`clipboard:data` asks the mirror-image question one branch up, with the reason beside it, and the browser
+direction had no equivalent anywhere. So any authenticated client that knew a session id could drive a device
+another tester was looking at, and the reply routed to that session's browser rather than to whoever asked.
+
+Every branch that can take the check now has it: the five acked inputs, `device:boot`, `open-url`,
+`app:install`, `app:launch`, `app:clear-state`, `clipboard:read`, `clipboard:write`, `session:leave`,
+`session:end`. **`device:shutdown` is the exception**, and the blocker is in the dashboard rather than the
+relay — three of its four senders never join the session. #527.
+
+A refusal is **answered where a waiter exists** and dropped where none does. Answering matters more than it
+looks: `awaitInputAck` reports silence from a session that has never acked as *success*, so a silent refusal
+would report a command that never left the relay as landed — worse than the misrouting it replaced. The two
+session commands have no reply at all, so they are dropped; the same asymmetry as the input frames nothing
+acks, which is why the clause split matters twice.
+
+One diagnosis improved for free. `open-url` answered `'agent offline'` for a session the relay does not have
+— the wrong-diagnosis class #492 fixed for `device:boot` and `input:error`, still present here — and routing
+it through the shared resolver corrected it.
+
+`not-session-owner` is its own reason rather than folded into `channel-unavailable`, on this set's own rule —
+a reason exists per thing a consumer must do differently. And it is the **only** member that can promise
+nothing reached the device, because the refusal happens at the door; every other one leaves partial delivery
+open, which is why none of them says "retry" without a hedge (#491).
+
+### What this does not close
+
+`input:keyboard:toggle` is **not** in the set, and the reason is not that it has no reply — it has one on
+iOS, `keyboard:toggled`, with a consumer that sets session state. Its **failure half** is missing: the
+`.catch` only logs, so the pending flag never clears and the button latches off (#517). Correlating a pair
+whose failure half does not exist would leave it half-correlated, and the half that is missing is
+platform-asymmetric — Android's toggle has no device-side effect at all, so what its failure even means is a
+decision that slice has to make. `#517` is the prerequisite.
 
 ## Every direction is declared, and an agent's send is typed
 

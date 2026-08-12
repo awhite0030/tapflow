@@ -76,7 +76,7 @@ describe('app:clear-state relay routing', () => {
     agent.close()
     await agentClosed
 
-    browser.send(JSON.stringify({ type: 'input:touch:end', sessionId, payload: { x: 0.5, y: 0.5 } }))
+    browser.send(JSON.stringify({ type: 'input:touch:end', sessionId, requestId: 'rq-cs1', payload: { x: 0.5, y: 0.5 } }))
     const err = await waitForType(browser, 'input:error')
     expect(err.sessionId).toBe(sessionId)
     expect(err.message).toBe('agent offline')
@@ -139,7 +139,7 @@ describe('app:clear-state relay routing', () => {
       }
     })
 
-    browser.send(JSON.stringify({ type: 'input:type', sessionId, payload: { text: 'hi' } }))
+    browser.send(JSON.stringify({ type: 'input:type', sessionId, requestId: 'rq-cs2', payload: { text: 'hi' } }))
     const done = await waitForType(browser, 'input:type-done')
     expect(done.sessionId).toBe(sessionId)
 

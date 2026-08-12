@@ -34,7 +34,10 @@ describe('input:error reason — one contract, two producers', () => {
     // A bare length check passed on any non-empty union, including a truncated parse — this file's
     // parser terminates on a blank line, so a reformat could have silently shortened the set.
     expect(declaredReasons()).toEqual(
-      ['channel-starting', 'channel-unavailable', 'dispatch-failed', 'malformed', 'no-gesture', 'not-booted', 'unsupported'],
+      ['channel-starting', 'channel-unavailable', 'dispatch-failed', 'malformed', 'no-gesture', 'not-booted',
+       // L5c. The relay is its only producer — an agent cannot know which socket asked — and it is the one
+       // member whose advice can promise nothing reached the device, because the refusal happens at the door.
+       'not-session-owner', 'unsupported'],
     )
   })
 

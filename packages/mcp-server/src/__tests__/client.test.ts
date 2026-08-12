@@ -25,11 +25,14 @@ function createMockRelay(): {
       try { msg = JSON.parse(data.toString()) as Record<string, unknown> } catch { return }
       received.push(msg)
       if (inputAck !== 'none' && TERMINAL.has(msg['type'] as string)) {
+        // Echoes `requestId`, because an agent must (L5c). Read back off the request rather than invented:
+        // a made-up id would only prove the waiter rejects made-up ids, which is a different claim.
+        const requestId = msg['requestId']
         ws.send(JSON.stringify(inputAck === 'error'
-          ? { type: 'input:error', sessionId: msg['sessionId'], message: 'device not booted' }
+          ? { type: 'input:error', sessionId: msg['sessionId'], requestId, message: 'device not booted' }
           : inputAck === 'error-with-reason'
-          ? { type: 'input:error', sessionId: msg['sessionId'], message: 'the input channel is still starting — retry in a moment', reason: 'channel-starting' }
-          : { type: 'input:done', sessionId: msg['sessionId'] }))
+          ? { type: 'input:error', sessionId: msg['sessionId'], requestId, message: 'the input channel is still starting — retry in a moment', reason: 'channel-starting' }
+          : { type: 'input:done', sessionId: msg['sessionId'], requestId }))
       }
     })
   })
@@ -297,11 +300,62 @@ describe('TapflowClient', () => {
     it('learns from an ack that arrives after its window expired', async () => {
       relay.setInputAck('none')
       await expect(client.tap('sess-1', 1, 2)).resolves.toBeUndefined() // optimistic, nothing acked
-      relay.send({ type: 'input:done', sessionId: 'sess-1' })           // the late ack, no waiter armed
+      // The late ack carries the id the first tap minted. Read back, not invented: the ledger records a
+      // **correlated** done and only that, so an invented id would test the opposite of this test's subject.
+      const sent = relay.sentMessages().filter((m) => m['type'] === 'input:touch:end').at(-1)
+      relay.send({ type: 'input:done', sessionId: 'sess-1', requestId: sent!['requestId'] })
       await new Promise((r) => setTimeout(r, 20))
       await expect(client.tap('sess-1', 3, 4)).rejects.toThrow(/could not confirm/i)
       // Two serial 2s windows plus a handshake; vitest's unconfigured default is 5s, which this would
       // otherwise sit at 80% of and flake on a loaded runner.
+    }, 15_000)
+
+    it('is not satisfied by an ack carrying no correlator', async () => {
+      // **The no-fallback rule, and nothing else held it**: adding `m['requestId'] === undefined ||` to the
+      // waiter left all 77 tests passing in the mutation round. A fallback here would keep #499 exactly as
+      // it is — an ack that missed its own deadline still matching the next input's waiter — which is the
+      // one thing this layer exists to remove. The lifecycle pair (#521) has a fallback because its replies
+      // have producers that answer no request; every producer of `input:done` answers a terminal input.
+      const ws = relay.lastClient()
+      relay.setInputAck('none')
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] !== 'input:touch:end') return
+        ws.send(JSON.stringify({ type: 'input:done', sessionId: msg['sessionId'] })) // no requestId
+      })
+      // Resolves optimistically rather than on that ack — the session has never produced a matchable one,
+      // so `strict` is false. What this pins is that the ack did not *satisfy the waiter*: with a fallback
+      // it would, and the assertion below is what tells the two apart.
+      await expect(client.tap('sess-1', 1, 2)).resolves.toBeUndefined()
+
+      // Now make the session strict with a correlated ack, then send an uncorrelated one for the next tap.
+      relay.setInputAck('done')
+      await client.tap('sess-1', 3, 4)
+      relay.setInputAck('none')
+      await expect(client.tap('sess-1', 5, 6)).rejects.toThrow(/could not confirm/i)
+    }, 15_000)
+
+    it('does not learn from an uncorrelated late ack, and says why once', async () => {
+      // An agent predating the correlator. Its acks can never match a waiter, so silence on this session is
+      // **structural** rather than anomalous — recording it would make every later input report a failure
+      // the agent never had a chance to avoid. The skew is logged instead, because nothing else in this
+      // system announces an agent's version and dropping the signal silently returns the session to
+      // optimistic reporting, which reads exactly like the defect #457 fixed.
+      const logged: string[] = []
+      const spy = vi.spyOn(console, 'error').mockImplementation((m: unknown) => { logged.push(String(m)) })
+      try {
+        relay.setInputAck('none')
+        await expect(client.tap('sess-1', 1, 2)).resolves.toBeUndefined()
+        relay.send({ type: 'input:done', sessionId: 'sess-1' })   // no requestId: an old agent
+        await new Promise((r) => setTimeout(r, 20))
+        // Still optimistic, because the ledger did not record an ack it cannot match.
+        await expect(client.tap('sess-1', 3, 4)).resolves.toBeUndefined()
+        relay.send({ type: 'input:done', sessionId: 'sess-1' })
+        await new Promise((r) => setTimeout(r, 20))
+      } finally { spy.mockRestore() }
+      // Once per session, not once per ack: an old agent answers every input this way, and a line per tap
+      // would bury the one thing the operator needs to read.
+      expect(logged.filter((l) => l.includes('predates input correlation'))).toHaveLength(1)
     }, 15_000)
 
     // A per-session ledger, not a per-client one: one session's agent acking says nothing about
@@ -342,14 +396,43 @@ describe('TapflowClient', () => {
   })
 
   describe('typeText', () => {
+    // Answered off the request rather than on a timer, because the reply must now carry the id the client
+    // minted and that id is only knowable once the request has arrived.
+    const answerType = (reply: (m: Record<string, unknown>) => Record<string, unknown>) => {
+      const ws = relay.lastClient()
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] === 'input:type') ws.send(JSON.stringify(reply(msg)))
+      })
+    }
+
     it('sends input:type and resolves on input:type-done', async () => {
-      setTimeout(() => relay.send({ type: 'input:type-done', sessionId: 'sess-1' }), 10)
+      answerType((m) => ({ type: 'input:type-done', sessionId: 'sess-1', requestId: m['requestId'] }))
       await expect(client.typeText('sess-1', 'hello')).resolves.toBeUndefined()
       expect(await waitForMessage(relay, 'input:type')).toMatchObject({ type: 'input:type', sessionId: 'sess-1', payload: { text: 'hello' } })
     })
 
+    it('does not take the previous typing\'s reply', async () => {
+      // Both tests here answer with the id the client minted, so dropping `requestId` from the predicate
+      // matched either way — the echo made the assertion vacuous, which review measured. A **stale** reply
+      // is what tells the two apart, and it is #499's shape for `input:type` specifically: a late
+      // `input:type-done` from the previous call landing in this one's waiter.
+      // The stale reply is an **error** and the real one a success, so which of the two resolved the call is
+      // observable. A first version sent two successes and asserted the request count — 1 either way, so it
+      // passed with the correlator check deleted. Asserting a property needs the mutation that removes it to
+      // fail, and counting requests was not that.
+      answerType((m) => {
+        const ws = relay.lastClient()
+        setTimeout(() => ws.send(JSON.stringify({
+          type: 'input:type-done', sessionId: 'sess-1', requestId: m['requestId'],
+        })), 20)
+        return { type: 'input:type-error', sessionId: 'sess-1', requestId: 'a-previous-call', message: 'stale' }
+      })
+      await expect(client.typeText('sess-1', 'hello')).resolves.toBeUndefined()
+    }, 20_000)
+
     it('throws on input:type-error', async () => {
-      setTimeout(() => relay.send({ type: 'input:type-error', sessionId: 'sess-1', message: 'No booted device' }), 10)
+      answerType((m) => ({ type: 'input:type-error', sessionId: 'sess-1', requestId: m['requestId'], message: 'No booted device' }))
       await expect(client.typeText('sess-1', 'x')).rejects.toThrow('No booted device')
     })
   })

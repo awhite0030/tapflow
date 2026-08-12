@@ -953,7 +953,22 @@ export class AndroidAgent implements DeviceAgent {
   // it awaited the dispatch. Reading it here would be too late: a reboot that started under that
   // await would already have been counted, and caching `booted` across it poisons every later input
   // on the session, since they all skip the verify.
-  private async ackInput(state: DeviceState, outcome: InputOutcome, seq: number): Promise<void> {
+  /** The correlator on an input an ack answers, or `null` if the frame cannot be attributed.
+   *
+   *  A local capture rather than a guard at the top of the dispatcher: a guard there would not narrow
+   *  `msg.requestId` inside the case, so the shortest way to satisfy the reply's required field would be
+   *  `msg.requestId!` — the assertion removed from `open-url` and then from clipboard. Inbound is
+   *  unvalidated (#444) and `mcp-server`'s tool schemas are bare `z.string()`, so `''` is reachable. */
+  private correlatorOf(msg: { type: string; requestId?: string }): string | null {
+    if (typeof msg.requestId === 'string' && msg.requestId !== '') return msg.requestId
+    logger.warn(`${msg.type} without a usable requestId — dropped, its ack could not be attributed`)
+    return null
+  }
+
+  // `requestId` joins `seq` as a caller-captured parameter, for the same reason stated above it: state
+  // moves under the awaited dispatch, and a correlator read from shared state would answer one input with
+  // another's id — #499 rebuilt inside the agent.
+  private async ackInput(state: DeviceState, outcome: InputOutcome, seq: number, requestId: string): Promise<void> {
     // Only worth verifying the device when we believe we dispatched: every other outcome already
     // knows why it failed, and asking adb would add a round trip to say the same thing.
     const resolved: InputOutcome = outcome !== 'delivered'
@@ -962,20 +977,20 @@ export class AndroidAgent implements DeviceAgent {
     if (resolved === 'delivered' && seq === state.bootSeq) state.booted = true // cache the verify
     this.sendMsg(
       resolved === 'delivered'
-        ? { type: 'input:done', sessionId: state.sessionId }
-        : { type: 'input:error', sessionId: state.sessionId, message: outcomeMessage(resolved), reason: wireReason(resolved) })
+        ? { type: 'input:done', sessionId: state.sessionId, requestId }
+        : { type: 'input:error', sessionId: state.sessionId, requestId, message: outcomeMessage(resolved), reason: wireReason(resolved) })
   }
 
   // A terminal input naming a session this agent holds no state for. `deviceStates` is never
   // deleted, so this is an unregistered sessionId rather than an evicted one — and the relay only
   // answers on an agent's behalf when the agent is *offline*, so nothing else would answer at all
   // and the caller would wait out its own timeout.
-  private ackNoSession(sessionId: string): void {
+  private ackNoSession(sessionId: string, requestId: string): void {
     // The `if (!sessionId) return` this used to open with is gone: the dispatcher now declares
     // `sessionId: string`, so there is no undefined to guard against and the guard would have been a
     // silent drop with nothing left that could reach it.
     this.sendMsg({
-      type: 'input:error', sessionId, message: outcomeMessage('no-session'), reason: wireReason('no-session'),
+      type: 'input:error', sessionId, requestId, message: outcomeMessage('no-session'), reason: wireReason('no-session'),
     })
   }
 
@@ -1110,8 +1125,10 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       case 'input:touch:end': {
+        const requestId = this.correlatorOf(msg)
+        if (requestId === null) break
         const state = this.deviceStates.get(msg.sessionId)
-        if (!state) { this.ackNoSession(msg.sessionId); break }
+        if (!state) { this.ackNoSession(msg.sessionId, requestId); break }
         const pc = this.pointerControl(state)
         const helper = state.touchHelper
         const seq = state.bootSeq
@@ -1120,7 +1137,7 @@ export class AndroidAgent implements DeviceAgent {
           pc ? await this.dispatchTo(pc, () => pc.touchUp(0, state.lastTouchPx.x, state.lastTouchPx.y))
             : helper ? await helper.touchEnd()
             : 'channel-down',
-          seq,
+          seq, requestId,
         ))().catch((e) => logger.error('input:touch:end ack failed:', e))
         break
       }
@@ -1153,8 +1170,10 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       case 'input:pinch:end': {
+        const requestId = this.correlatorOf(msg)
+        if (requestId === null) break
         const state = this.deviceStates.get(msg.sessionId)
-        if (!state) { this.ackNoSession(msg.sessionId); break }
+        if (!state) { this.ackNoSession(msg.sessionId, requestId); break }
         const pc = this.pointerControl(state)
         const helper = state.touchHelper
         const seq = state.bootSeq
@@ -1162,7 +1181,7 @@ export class AndroidAgent implements DeviceAgent {
           pc ? await this.dispatchTo(pc, () => pc.pinchEnd())
             : helper ? helper.pinchEnd()   // 'unsupported' — the adb path has no pinch at all
             : 'channel-down',
-          seq,
+          seq, requestId,
         ))().catch((e) => logger.error('input:pinch:end ack failed:', e))
         break
       }
@@ -1181,8 +1200,10 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       case 'input:button': {
+        const requestId = this.correlatorOf(msg)
+        if (requestId === null) break
         const state = this.deviceStates.get(msg.sessionId)
-        if (!state) { this.ackNoSession(msg.sessionId); break }
+        if (!state) { this.ackNoSession(msg.sessionId, requestId); break }
         // Buttons go through the adb helper on BOTH backends — this is the path that actually runs
         // a command in production, so its outcome is the one that matters most here.
         // Destructuring inside the async body: doing it out here would throw synchronously on a
@@ -1191,9 +1212,9 @@ export class AndroidAgent implements DeviceAgent {
         void (async () => {
           const { name } = (msg.payload ?? {}) as { name?: string }
           const helper = state.touchHelper
-          if (name === undefined) return this.ackInput(state, 'malformed', seq)
-          if (!helper) return this.ackInput(state, 'channel-down', seq)
-          return this.ackInput(state, await helper.pressButton(name), seq)
+          if (name === undefined) return this.ackInput(state, 'malformed', seq, requestId)
+          if (!helper) return this.ackInput(state, 'channel-down', seq, requestId)
+          return this.ackInput(state, await helper.pressButton(name), seq, requestId)
         })().catch((e) => logger.error('input:button ack failed:', e))
         break
       }
@@ -1241,12 +1262,14 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       case 'input:type': {
+        const requestId = this.correlatorOf(msg)
+        if (requestId === null) break
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
         const { text } = (msg.payload ?? {}) as { text?: string }
         if (!serial) {
-          this.sendMsg({ type: 'input:type-error', sessionId, message: 'No booted device' })
+          this.sendMsg({ type: 'input:type-error', sessionId, requestId, message: 'No booted device' })
           break
         }
         // Empty text is a successful no-op, not a failure: the caller asked for nothing and nothing
@@ -1256,26 +1279,28 @@ export class AndroidAgent implements DeviceAgent {
         // Ack on completion so a following input step (e.g. pressKey Enter) is
         // only sent after the text has actually landed.
         Promise.resolve(text ? this.adb.inputText(serial, text) : undefined)
-          .then(() => this.sendMsg({ type: 'input:type-done', sessionId }))
+          .then(() => this.sendMsg({ type: 'input:type-done', sessionId, requestId }))
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e)
             logger.error('input:type failed:', e)
-            this.sendMsg({ type: 'input:type-error', sessionId, message })
+            this.sendMsg({ type: 'input:type-error', sessionId, requestId, message })
           })
         break
       }
       case 'input:key': {
+        const requestId = this.correlatorOf(msg)
+        if (requestId === null) break
         const state = this.deviceStates.get(msg.sessionId)
-        if (!state) { this.ackNoSession(msg.sessionId); break }
+        if (!state) { this.ackNoSession(msg.sessionId, requestId); break }
         const seq = state.bootSeq
         void (async () => {
           const serial = this.adb.getSerial(state.deviceId)
-          if (!serial) return this.ackInput(state, 'channel-down', seq)
+          if (!serial) return this.ackInput(state, 'channel-down', seq, requestId)
           // `modifiers` is optional in the contract and iOS already defaults it; match that here so
           // both agents read the same message the same way.
           const { code, modifiers } = (msg.payload ?? {}) as { code?: string; modifiers?: number }
-          if (code === undefined) return this.ackInput(state, 'malformed', seq)
-          return this.ackInput(state, await this.handleKeyInput(serial, code, modifiers ?? 0), seq)
+          if (code === undefined) return this.ackInput(state, 'malformed', seq, requestId)
+          return this.ackInput(state, await this.handleKeyInput(serial, code, modifiers ?? 0), seq, requestId)
         })().catch((e) => logger.error('input:key ack failed:', e))
         break
       }

@@ -1137,7 +1137,11 @@ describe('RelayServer', () => {
     browser.send(JSON.stringify({ type: 'open-url', sessionId: 'nonexistent-session', requestId: 'req-nos', payload: { url: 'myapp://home' } }))
     const received = await msgPromise
     expect(received.type).toBe('open-url:error')
-    expect(received.message).toBe('agent offline')
+    // **Was `'agent offline'`, and that was the wrong diagnosis** — the same one #492 fixed for
+    // `device:boot` and `input:error`: the relay has no session for this id, which says nothing about any
+    // agent's health, and telling an MCP caller its Mac is down sends the reader after the wrong problem.
+    // `open-url` still had it, and routing this branch through `dispatchTarget` corrected it for free.
+    expect(received.message).toBe('Session not found')
     expect(received.requestId).toBe('req-nos')
 
     browser.close()

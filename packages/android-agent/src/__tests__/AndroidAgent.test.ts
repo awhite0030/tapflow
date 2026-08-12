@@ -864,7 +864,7 @@ describe('AndroidAgent', () => {
       it('touch:end lifts at the last touched px', () => {
         const control = getState().scrcpySession!.control
         inject({ type: 'input:touch:start', payload: { x: 0.1, y: 0.2 } })
-        inject({ type: 'input:touch:end' })
+        inject({ type: 'input:touch:end', requestId: 'rq-lift' })
         // last px from start: 0.1*1080 = 108, 0.2*2400 = 480
         expect(control.touchUp).toHaveBeenCalledWith(0, 108, 480)
       })
@@ -873,8 +873,14 @@ describe('AndroidAgent', () => {
       it('acks input:done on touch:end for a booted session', async () => {
         const done = waitForType(browser, 'input:done')
         browser.send(JSON.stringify({ type: 'input:touch:start', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
-        browser.send(JSON.stringify({ type: 'input:touch:end', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
-        expect((await done).sessionId).toBe(agent.sessionId)
+        browser.send(JSON.stringify({ type: 'input:touch:end', requestId: 'rq-in1', sessionId: agent.sessionId, payload: { x: 0.5, y: 0.5 } }))
+        const ack = await done
+        expect(ack.sessionId).toBe(agent.sessionId)
+        // L5c. The terminal frame's id, not any id: replacing the echo with a literal left all 263 tests
+        // passing in the mutation round. `requestId` rides beside `seq` as a caller-captured argument for
+        // the same reason — a gesture is dozens of frames and two can overlap, so a correlator read from
+        // shared state would answer one input with another's id, which is #499 rebuilt inside the agent.
+        expect(ack.requestId).toBe('rq-in1')
       })
     })
 
@@ -890,7 +896,7 @@ describe('AndroidAgent', () => {
         const control = getState().scrcpySession!.control
         inject({ type: 'input:pinch:move', payload: { f0: { x: 0.5, y: 0.5 }, f1: { x: 0.5, y: 0.5 } } })
         expect(control.pinchMove).toHaveBeenCalledWith(540, 1200, 540, 1200)
-        inject({ type: 'input:pinch:end' })
+        inject({ type: 'input:pinch:end', requestId: 'rq-pinch' })
         expect(control.pinchEnd).toHaveBeenCalledOnce()
       })
     })
@@ -920,7 +926,7 @@ describe('AndroidAgent', () => {
         let resolveInput!: () => void
         const spy = vi.spyOn(adb, 'inputText').mockReturnValue(new Promise<void>((r) => { resolveInput = r }))
         const ack = waitForType(browser, 'input:type-done')
-        inject({ type: 'input:type', payload: { text: 'hello' } })
+        inject({ type: 'input:type', requestId: 'rq-in2', payload: { text: 'hello' } })
         await vi.waitFor(() => expect(spy).toHaveBeenCalledWith('emulator-5554', 'hello'), { timeout: 500 })
         // ack must NOT have fired while inputText is still pending
         let acked = false
@@ -937,23 +943,28 @@ describe('AndroidAgent', () => {
       it('acks input:type-done for empty text without touching adb', async () => {
         const inputText = vi.spyOn(adb, 'inputText')
         const ack = waitForType(browser, 'input:type-done')
-        inject({ type: 'input:type', payload: { text: '' } })
-        await ack
+        inject({ type: 'input:type', requestId: 'rq-in3', payload: { text: '' } })
+        // The correlator on the success half. All three `input:type-*` producers here took a literal in the
+        // mutation round without a single test noticing — and the two client tests that echo it echo it
+        // *correctly*, so a predicate that stopped checking would have matched either way.
+        expect((await ack).requestId).toBe('rq-in3')
         expect(inputText).not.toHaveBeenCalled()
       })
 
       it('acks input:type-error when the text is rejected', async () => {
         vi.spyOn(adb, 'inputText').mockRejectedValue(new Error('ASCII only'))
         const ack = waitForType(browser, 'input:type-error')
-        inject({ type: 'input:type', payload: { text: '안녕' } })
-        expect((await ack).message).toBe('ASCII only')
+        inject({ type: 'input:type', requestId: 'rq-in4', payload: { text: '안녕' } })
+        const err = await ack
+        expect(err.message).toBe('ASCII only')
+        expect(err.requestId).toBe('rq-in4')
       })
     })
 
     describe('input — button', () => {
       it('forwards a named button press to the touch helper', () => {
         const helper = getState().touchHelper!
-        inject({ type: 'input:button', payload: { name: 'home' } })
+        inject({ type: 'input:button', requestId: 'rq-in5', payload: { name: 'home' } })
         expect(helper.pressButton).toHaveBeenCalledWith('home')
       })
     })
@@ -961,25 +972,25 @@ describe('AndroidAgent', () => {
     describe('input — keyboard', () => {
       it('sends a keyevent for a special key (Enter → 66)', () => {
         const keyEvSpy = vi.spyOn(adb, 'sendKeyEvent')
-        inject({ type: 'input:key', payload: { code: 'Enter', modifiers: 0 } })
+        inject({ type: 'input:key', requestId: 'rq-in6', payload: { code: 'Enter', modifiers: 0 } })
         expect(keyEvSpy).toHaveBeenCalledWith('emulator-5554', '66')
       })
 
       it('types a lowercase character for a letter key with no shift', () => {
         const inputSpy = vi.spyOn(adb, 'sendInput')
-        inject({ type: 'input:key', payload: { code: 'KeyA', modifiers: 0 } })
+        inject({ type: 'input:key', requestId: 'rq-in7', payload: { code: 'KeyA', modifiers: 0 } })
         expect(inputSpy).toHaveBeenCalledWith('emulator-5554', 'text', 'a')
       })
 
       it('types an uppercase character when shift modifier is set', () => {
         const inputSpy = vi.spyOn(adb, 'sendInput')
-        inject({ type: 'input:key', payload: { code: 'KeyA', modifiers: 0x02 } })
+        inject({ type: 'input:key', requestId: 'rq-in8', payload: { code: 'KeyA', modifiers: 0x02 } })
         expect(inputSpy).toHaveBeenCalledWith('emulator-5554', 'text', 'A')
       })
 
       it('maps a shifted digit to its symbol (Digit1 + shift → !)', () => {
         const inputSpy = vi.spyOn(adb, 'sendInput')
-        inject({ type: 'input:key', payload: { code: 'Digit1', modifiers: 0x02 } })
+        inject({ type: 'input:key', requestId: 'rq-in9', payload: { code: 'Digit1', modifiers: 0x02 } })
         expect(inputSpy).toHaveBeenCalledWith('emulator-5554', 'text', '!')
       })
 
@@ -988,7 +999,7 @@ describe('AndroidAgent', () => {
       it('maps Cmd+C (meta) to KEYCODE_COPY, not a typed "c"', () => {
         const keyEvSpy = vi.spyOn(adb, 'sendKeyEvent')
         const inputSpy = vi.spyOn(adb, 'sendInput')
-        inject({ type: 'input:key', payload: { code: 'KeyC', modifiers: 0x08 } })
+        inject({ type: 'input:key', requestId: 'rq-in10', payload: { code: 'KeyC', modifiers: 0x08 } })
         expect(keyEvSpy).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_COPY')
         expect(inputSpy).not.toHaveBeenCalled()
       })
@@ -996,8 +1007,8 @@ describe('AndroidAgent', () => {
       it('maps Cmd+V to KEYCODE_PASTE and Ctrl+X to KEYCODE_CUT', () => {
         const keyEvSpy = vi.spyOn(adb, 'sendKeyEvent')
         const inputSpy = vi.spyOn(adb, 'sendInput')
-        inject({ type: 'input:key', payload: { code: 'KeyV', modifiers: 0x08 } })
-        inject({ type: 'input:key', payload: { code: 'KeyX', modifiers: 0x01 } })
+        inject({ type: 'input:key', requestId: 'rq-in11', payload: { code: 'KeyV', modifiers: 0x08 } })
+        inject({ type: 'input:key', requestId: 'rq-in12', payload: { code: 'KeyX', modifiers: 0x01 } })
         expect(keyEvSpy).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_PASTE')
         expect(keyEvSpy).toHaveBeenCalledWith('emulator-5554', 'KEYCODE_CUT')
         expect(inputSpy).not.toHaveBeenCalled()
@@ -1006,14 +1017,14 @@ describe('AndroidAgent', () => {
       it('does not type the raw letter for a non-clipboard chord (Cmd+A)', () => {
         const keyEvSpy = vi.spyOn(adb, 'sendKeyEvent')
         const inputSpy = vi.spyOn(adb, 'sendInput')
-        inject({ type: 'input:key', payload: { code: 'KeyA', modifiers: 0x08 } })
+        inject({ type: 'input:key', requestId: 'rq-in13', payload: { code: 'KeyA', modifiers: 0x08 } })
         expect(inputSpy).not.toHaveBeenCalled()
         expect(keyEvSpy).not.toHaveBeenCalled()
       })
 
       it('still types a plain letter with no chord modifier (regression)', () => {
         const inputSpy = vi.spyOn(adb, 'sendInput')
-        inject({ type: 'input:key', payload: { code: 'KeyC', modifiers: 0 } })
+        inject({ type: 'input:key', requestId: 'rq-in14', payload: { code: 'KeyC', modifiers: 0 } })
         expect(inputSpy).toHaveBeenCalledWith('emulator-5554', 'text', 'c')
       })
 
@@ -1055,13 +1066,15 @@ describe('AndroidAgent', () => {
           const sent = vi.spyOn(internals(agent).ws!, 'send')
           internals(agent).deviceStates.clear()
 
-          internals(agent).handleRelayMessage({ type, sessionId, payload })
+          internals(agent).handleRelayMessage({ type, sessionId, requestId: 'rq-gone', payload })
 
           const acks = sent.mock.calls
-            .map(([raw]) => JSON.parse(raw as string) as { type: string; message?: string })
+            .map(([raw]) => JSON.parse(raw as string) as { type: string; requestId?: string; message?: string })
             .filter((m) => m.type === 'input:error')
           expect(acks).toHaveLength(1)
           expect(acks[0].message).toContain('no active session')
+          // `ackNoSession` has no `state` to hang a correlator on, so it must arrive as an argument.
+          expect(acks[0].requestId).toBe('rq-gone')
         })
       }
     })
@@ -1075,9 +1088,13 @@ describe('AndroidAgent', () => {
 
         const errored = waitForType(browser, 'input:error')
         inject({ type: 'input:touch:start', payload: { x: 0.5, y: 0.5 } })
-        inject({ type: 'input:touch:end', payload: { x: 0.5, y: 0.5 } })
+        inject({ type: 'input:touch:end', requestId: 'rq-in15', payload: { x: 0.5, y: 0.5 } })
 
-        expect((await errored)['message']).toBe('input channel not ready')
+        const e = await errored
+        expect(e['message']).toBe('input channel not ready')
+        // The error half of `ackInput`. See the iOS twin: an unmatched `input:error` is resolved
+        // optimistically by `awaitInputAck`, so a stated device failure reaches the caller as success.
+        expect(e['requestId']).toBe('rq-in15')
         expect(control.touchUp).not.toHaveBeenCalled()
       })
 
@@ -1093,7 +1110,7 @@ describe('AndroidAgent', () => {
 
         const errored = waitForType(browser, 'input:error')
         inject({ type: 'input:touch:start', payload: { x: 0.5, y: 0.5 } })
-        inject({ type: 'input:touch:end', payload: { x: 0.5, y: 0.5 } })
+        inject({ type: 'input:touch:end', requestId: 'rq-in16', payload: { x: 0.5, y: 0.5 } })
 
         expect((await errored)['message']).toBe('the device rejected the input')
       })
@@ -1105,7 +1122,7 @@ describe('AndroidAgent', () => {
         helper.pressButton.mockResolvedValue('failed')
 
         const errored = waitForType(browser, 'input:error')
-        inject({ type: 'input:button', payload: { name: 'back' } })
+        inject({ type: 'input:button', requestId: 'rq-in17', payload: { name: 'back' } })
 
         expect((await errored)['message']).toBe('the device rejected the input')
       })
@@ -1115,7 +1132,7 @@ describe('AndroidAgent', () => {
         helper.pressButton.mockResolvedValue('unsupported')
 
         const errored = waitForType(browser, 'input:error')
-        inject({ type: 'input:button', payload: { name: 'not_a_button' } })
+        inject({ type: 'input:button', requestId: 'rq-in18', payload: { name: 'not_a_button' } })
 
         expect((await errored)['message']).toContain('not supported')
       })
@@ -1128,7 +1145,7 @@ describe('AndroidAgent', () => {
         state.grpcClient = null
 
         const errored = waitForType(browser, 'input:error')
-        inject({ type: 'input:pinch:end', payload: { f0: { x: 0.5, y: 0.5 }, f1: { x: 0.5, y: 0.5 } } })
+        inject({ type: 'input:pinch:end', requestId: 'rq-in19', payload: { f0: { x: 0.5, y: 0.5 }, f1: { x: 0.5, y: 0.5 } } })
 
         expect((await errored)['message']).toContain('not supported')
       })
@@ -1140,7 +1157,7 @@ describe('AndroidAgent', () => {
         state.touchHelper = null
 
         const errored = waitForType(browser, 'input:error')
-        inject({ type: 'input:touch:end', payload: { x: 0.5, y: 0.5 } })
+        inject({ type: 'input:touch:end', requestId: 'rq-in20', payload: { x: 0.5, y: 0.5 } })
 
         expect((await errored)['message']).toBe('input channel not ready')
       })
@@ -1151,7 +1168,7 @@ describe('AndroidAgent', () => {
       for (const type of ['input:button', 'input:key']) {
         it(`answers malformed — not channel-down — for a ${type} with no payload`, async () => {
           const errored = waitForType(browser, 'input:error')
-          internals(agent).handleRelayMessage({ type, sessionId: agent.sessionId })
+          internals(agent).handleRelayMessage({ type, sessionId: agent.sessionId, requestId: 'rq-malformed' })
           expect((await errored)['message']).toContain('missing what it needs')
         })
       }
@@ -1169,7 +1186,7 @@ describe('AndroidAgent', () => {
 
         const done = waitForType(browser, 'input:done')
         inject({ type: 'input:touch:start', payload: { x: 0.5, y: 0.5 } })
-        inject({ type: 'input:touch:end', payload: { x: 0.5, y: 0.5 } })
+        inject({ type: 'input:touch:end', requestId: 'rq-in21', payload: { x: 0.5, y: 0.5 } })
         state.bootSeq += 1 // a reboot begins while the dispatch is still in flight
         release('delivered')
         await done
@@ -1188,7 +1205,7 @@ describe('AndroidAgent', () => {
         for (const attempt of [1, 2]) {
           const errored = waitForType(browser, 'input:error')
           inject({ type: 'input:touch:start', payload: { x: 0.5, y: 0.5 } })
-          inject({ type: 'input:touch:end', payload: { x: 0.5, y: 0.5 } })
+          inject({ type: 'input:touch:end', requestId: 'rq-in22', payload: { x: 0.5, y: 0.5 } })
           expect((await errored)['message'], `attempt ${attempt}`).toBe('device not booted')
         }
         // Re-verified rather than trusting a cache that the first attempt must not have written.
@@ -1202,7 +1219,7 @@ describe('AndroidAgent', () => {
       it('answers unsupported for a chord it deliberately does not send', async () => {
         const sendKeyEvent = vi.spyOn(adb, 'sendKeyEvent')
         const errored = waitForType(browser, 'input:error')
-        inject({ type: 'input:key', payload: { code: 'KeyA', modifiers: 0x08 } }) // Cmd+A
+        inject({ type: 'input:key', requestId: 'rq-in23', payload: { code: 'KeyA', modifiers: 0x08 } }) // Cmd+A
         expect((await errored)['message']).toContain('not supported')
         expect(sendKeyEvent).not.toHaveBeenCalled()
       })
@@ -1210,27 +1227,27 @@ describe('AndroidAgent', () => {
       it('answers unsupported for a code that is only a prototype member', async () => {
         const sendKeyEvent = vi.spyOn(adb, 'sendKeyEvent')
         const errored = waitForType(browser, 'input:error')
-        inject({ type: 'input:key', payload: { code: 'constructor', modifiers: 0 } })
+        inject({ type: 'input:key', requestId: 'rq-in24', payload: { code: 'constructor', modifiers: 0 } })
         expect((await errored)['message']).toContain('not supported')
         expect(sendKeyEvent).not.toHaveBeenCalled()
       })
 
       it('answers unsupported for a code with no character mapping', async () => {
         const errored = waitForType(browser, 'input:error')
-        inject({ type: 'input:key', payload: { code: 'CapsLock', modifiers: 0 } })
+        inject({ type: 'input:key', requestId: 'rq-in25', payload: { code: 'CapsLock', modifiers: 0 } })
         expect((await errored)['message']).toContain('not supported')
       })
 
       it('answers failed when the key dispatch rejects', async () => {
         vi.spyOn(adb, 'sendInput').mockRejectedValue(new Error('offline'))
         const errored = waitForType(browser, 'input:error')
-        inject({ type: 'input:key', payload: { code: 'KeyA', modifiers: 0 } })
+        inject({ type: 'input:key', requestId: 'rq-in26', payload: { code: 'KeyA', modifiers: 0 } })
         expect((await errored)['message']).toBe('the device rejected the input')
       })
 
       it('still answers input:done for a key it does send', async () => {
         const done = waitForType(browser, 'input:done')
-        inject({ type: 'input:key', payload: { code: 'Enter', modifiers: 0 } })
+        inject({ type: 'input:key', requestId: 'rq-in27', payload: { code: 'Enter', modifiers: 0 } })
         await done
       })
     })

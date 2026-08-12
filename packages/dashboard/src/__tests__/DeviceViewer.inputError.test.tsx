@@ -183,7 +183,7 @@ describe('DeviceViewer — input:error (#485)', () => {
   it('ignores an input:error for another session', () => {
     mounted()
     act(() => {
-      deliver!({ type: 'input:error', sessionId: 'other', message: 'x', reason: 'channel-unavailable' })
+      deliver!({ type: 'input:error', sessionId: 'other', requestId: 'rq-other', message: 'x', reason: 'channel-unavailable' })
     })
     expect(toastError).not.toHaveBeenCalled()
   })
@@ -207,7 +207,7 @@ describe('DeviceViewer — input:error (#485)', () => {
   it('does nothing on input:done', () => {
     mounted()
     inputError('channel-unavailable')
-    act(() => { deliver!({ type: 'input:done', sessionId: 's1' }) })
+    act(() => { deliver!({ type: 'input:done', sessionId: 's1', requestId: 'rq-done' }) })
     quiet()
     expect(toastError).toHaveBeenCalledTimes(1)
   })
@@ -219,7 +219,7 @@ describe('DeviceViewer — input:error (#485)', () => {
   it('lets a success between two failures change nothing', () => {
     mounted()
     inputError('channel-unavailable')
-    act(() => { deliver!({ type: 'input:done', sessionId: 's1' }) })
+    act(() => { deliver!({ type: 'input:done', sessionId: 's1', requestId: 'rq-done' }) })
     inputError('channel-unavailable')
     expect(toastError).toHaveBeenCalledTimes(2)
     quiet()

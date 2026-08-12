@@ -70,6 +70,115 @@ describe('RelayClient.queryUITree — transient vs permanent classification', ()
 //
 // Nothing else covers it: the correlator is optional, so `<Pair>ReplyBody` cannot exist for it and
 // `correlatedRequestsGated` derives only required declarations.
+// L5c. `tap`, `swipe` and `pressKey` await nothing, so the correlator they mint is the only thing standing
+// between a flow and a silent no-op: the relay drops an acked input whose id is absent or `''`, without
+// answering, and these three senders would never know. Review measured it — setting all three to `''` left
+// all 63 tests passing, and a flow whose every tap, swipe and key press never left the relay reports **PASS**.
+// The old code could not fail this way, because there was no id to get wrong.
+//
+// Read off the wire rather than asserted at the call site: what matters is what the relay would receive.
+describe('RelayClient — the fire-and-forget input senders mint a usable correlator', () => {
+  let wss: WebSocketServer | null = null
+
+  afterEach(async () => {
+    const s = wss
+    wss = null
+    if (!s) return
+    for (const c of s.clients) c.terminate()
+    await new Promise<void>((r) => s.close(() => r()))
+  })
+
+  async function capture() {
+    const received: Record<string, unknown>[] = []
+    wss = new WebSocketServer({ port: 0 })
+    wss.on('connection', (ws) => {
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        received.push(msg)
+        if (msg['type'] === 'session:start') {
+          ws.send(JSON.stringify({ type: 'session:joined', sessionId: msg['sessionId'], capabilities: [] }))
+        }
+      })
+    })
+    const port = (wss.address() as { port: number }).port
+    const client = new RelayClient(`ws://localhost:${port}`, '')
+    await client.connect()
+    await client.joinSession('s1')
+    return { client, received }
+  }
+
+  const usable = (m: Record<string, unknown> | undefined, what: string) => {
+    expect(m, `no ${what} was sent`).toBeDefined()
+    expect(typeof m!['requestId']).toBe('string')
+    expect(m!['requestId']).not.toBe('')
+  }
+
+  it('tap sends a terminal frame with a usable id, and an opening frame with none', async () => {
+    const { client, received } = await capture()
+    client.tap('s1', 0.5, 0.5)
+    await vi.waitFor(() => expect(received.some((m) => m['type'] === 'input:touch:end')).toBe(true))
+
+    usable(received.find((m) => m['type'] === 'input:touch:end'), 'input:touch:end')
+    // And the opening frame carries none — nothing acks it, so an id there would name a waiter that does
+    // not exist. Pinned so a later edit cannot quietly add one.
+    expect(received.find((m) => m['type'] === 'input:touch:start')).not.toHaveProperty('requestId')
+  })
+
+  it('swipe sends a terminal frame with a usable id, and its moves with none', async () => {
+    const { client, received } = await capture()
+    await client.swipe('s1', [0.1, 0.1], [0.9, 0.9], 40)
+    // `swipe` resolves once it has *sent* the terminal frame; the server receiving it is a separate turn.
+    await vi.waitFor(() => expect(received.some((m) => m['type'] === 'input:touch:end')).toBe(true))
+
+    usable(received.find((m) => m['type'] === 'input:touch:end'), 'input:touch:end')
+    const moves = received.filter((m) => m['type'] === 'input:touch:move')
+    expect(moves.length).toBeGreaterThan(0)
+    for (const m of moves) expect(m).not.toHaveProperty('requestId')
+  })
+
+  it('pressKey sends a usable id', async () => {
+    const { client, received } = await capture()
+    client.pressKey('s1', 'Enter')
+    await vi.waitFor(() => expect(received.some((m) => m['type'] === 'input:key')).toBe(true))
+
+    usable(received.find((m) => m['type'] === 'input:key'), 'input:key')
+  })
+
+  it('typeText correlates, so its waiter cannot take the previous typing\'s reply', async () => {
+    // The one input sender here with a waiter. Dropping `requestId` from its predicate leaves #499 alive for
+    // `input:type` specifically: a late `input:type-done` from the previous call lands in this one's waiter.
+    const received: Record<string, unknown>[] = []
+    wss = new WebSocketServer({ port: 0 })
+    wss.on('connection', (ws) => {
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        received.push(msg)
+        if (msg['type'] === 'session:start') {
+          ws.send(JSON.stringify({ type: 'session:joined', sessionId: msg['sessionId'], capabilities: [] }))
+        }
+        if (msg['type'] === 'input:type') {
+          // The stale reply is an **error** so that resolving on it is observable. A first version sent two
+          // successes, which passed with the correlator check deleted — the mutation that removes the
+          // property has to fail the test, and two indistinguishable successes cannot do that.
+          ws.send(JSON.stringify({
+            type: 'input:type-error', sessionId: 's1', requestId: 'stale', message: 'a previous call',
+          }))
+          setTimeout(() => ws.send(JSON.stringify({
+            type: 'input:type-done', sessionId: 's1', requestId: msg['requestId'],
+          })), 20)
+        }
+      })
+    })
+    const port = (wss.address() as { port: number }).port
+    const client = new RelayClient(`ws://localhost:${port}`, '')
+    await client.connect()
+    await client.joinSession('s1')
+
+    await expect(client.typeText('s1', 'hi')).resolves.toBeUndefined()
+    usable(received.find((m) => m['type'] === 'input:type'), 'input:type')
+  })
+})
+
 describe('RelayClient.bootDevice — an optional correlator, with a fallback', () => {
   let wss: WebSocketServer | null = null
 
