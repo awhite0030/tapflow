@@ -314,8 +314,14 @@ have cost every consumer plus `typeAssertions` and bought nothing.
 **Skew is logged, not hedged.** A client newer than its relay sees unaddressed refusals, which now match
 nothing, so the join runs to its deadline instead of reporting why. There is no version handshake anywhere in
 this protocol, so the alternative was a fallback — the ambiguity this work exists to remove. Both clients log
-once per session instead, the same shape and the same reasoning as the input-ack skew record: logging is not
-matching.
+instead, on the same reasoning as the input-ack skew record: logging is not matching.
+
+**The same reasoning, a different cardinality — once per *client*, where the ack record is once per session.**
+An agent is per session, so one old agent says nothing about the next device's; a relay is one per client for
+the life of the process. Keying this one per session is not available either: the frame carries no address,
+and naming the join in flight would mean guessing between pending ones, which is the false attribution L5d
+removes. A first draft keyed on a literal and documented itself as per-session, which made it per-*process* —
+so against an old relay the first refused session logged and every later one was silent.
 
 ## Every direction is declared, and an agent's send is typed
 

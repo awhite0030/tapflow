@@ -171,7 +171,8 @@ export class RelayClient {
         // refusal resolved any pending join. The cost is version skew — a client newer than its relay sees
         // unaddressed refusals, which match nothing, so the join burns its deadline instead of reporting why
         // it was refused. Taken deliberately: there is no version handshake in this protocol, and the
-        // alternative is a fallback, which is the ambiguity this work removes. Logged once per session.
+        // alternative is a fallback, which is the ambiguity this work removes. Logged once per **client**,
+        // not per session — a relay is per client, and the frame carries no session to key on anyway.
         (m['type'] === 'error' && m['sessionId'] === sessionId),
       5_000,
       'session join',
