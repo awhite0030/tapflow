@@ -60,8 +60,8 @@ conversion, so they are written down here instead:
   inbound-only. The third, `test-utils/src/socket.ts`, is where this constraint bit in the other
   direction: its comment claimed the looseness accommodated each importer's richer view via
   `waitForType<T extends SocketMessage>`, and that extension point is what an interface having no index
-  signature **broke** — no protocol type satisfies the constraint, so all 25 call sites violated it
-  invisibly while `src/__tests__` sat outside every tsconfig. #422 fixed both halves: the tree is
+  signature **broke** — no protocol type satisfies the constraint, so every call site that named a type
+  (49 of them, measured) violated it invisibly while `src/__tests__` sat outside every tsconfig. #422 fixed both halves: the tree is
   type-checked now, and the constraint is `{ type: string }` while `SocketMessage` stays the *default*
   — a constraint only an anonymous literal can satisfy admits no named message at all.
 - **An `interface` can be reopened by a consumer.** `declare module '@tapflowio/protocol'` can add a

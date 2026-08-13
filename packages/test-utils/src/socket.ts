@@ -4,9 +4,10 @@ import type { WebSocket } from 'ws'
  *
  *  Kept as the **default**, and no longer as the **constraint** — those are different jobs and conflating them
  *  is what #505 broke. Messages became named interfaces, which have no implicit index signature, so no protocol
- *  type satisfies `Record<string, unknown>`; all 25 call sites passed `RelayMessage`, itself a named interface,
- *  and all 25 violated the constraint invisibly because `src/__tests__` sat outside every tsconfig. The
- *  looseness had stopped accommodating the richer views and started blocking them.
+ *  type satisfies `Record<string, unknown>`. Every call site that named a type passed `RelayMessage`, itself a
+ *  named interface, so every one of them violated the constraint — invisibly, because `src/__tests__` sat
+ *  outside every tsconfig. Measured at the time #422 turned the checker on: 49. The looseness had stopped
+ *  accommodating the richer views and started blocking them.
  *
  *  This file's own note said fixing it meant bringing the test tree into a tsconfig first, "which is a separate
  *  job" — #422 is that job, and this is the first thing it found. */
@@ -109,10 +110,10 @@ export const waitForOpen = (ws: WebSocket): Promise<void> => {
  * The next message of `type`, taken from the recording if it has already arrived.
  *
  * The type parameter lets a caller narrow to its own wire type — `waitForType<RelayMessage>(…)`.
- * That narrowing is now checked: #422 brought every test tree into a `tsconfig.test.json`, so a
+ * That narrowing is now checked: #422 gave every test tree a `src/__tests__/tsconfig.json`, so a
  * mismatch between the type named here and the message actually asserted on is a compile error
  * rather than a comment. It was decorative for as long as `src/__tests__` sat outside every
- * tsconfig, which is also how all 25 call sites came to violate the old constraint unnoticed.
+ * tsconfig, which is how the old constraint came to be violated by every call site that named a type.
  */
 export function waitForType<T extends SocketMessageLike = SocketMessage>(ws: WebSocket, type: string): Promise<T> {
   const rec = record(ws)

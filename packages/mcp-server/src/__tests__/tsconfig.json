@@ -2,7 +2,12 @@
 //
 // Tests must not reach `dist`, so they cannot simply join the build's `include` — the same shape as
 // `protocol/tsconfig.assertions.json`, and for the same reason. Wired into the package's `typecheck`
-// script, which runs it after `tsc -b` so the sibling `dist` it resolves against is current.
+// script.
+//
+// This package's script is `tsc --noEmit`, which builds no project references, so running it alone
+// checks these tests against whatever sibling `dist` happens to be on disk. The root `pnpm typecheck`
+// leads with `tsc -b`, which is what makes that current — the seven packages whose own script is
+// `tsc -b` do not depend on the order.
 //
 // **Named `tsconfig.json` and placed here on purpose.** typescript-eslint's `projectService` finds a
 // file's project the way tsserver does — by walking up for a `tsconfig.json` — so a
