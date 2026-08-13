@@ -23,31 +23,44 @@ const PERMANENT_QUERY_STATUSES = new Set([400, 401, 403, 404, 409])
 // on the device; this one only has to cross the relay.
 const INPUT_ACK_TIMEOUT_MS = 10_000
 
-// Written out rather than derived: `protocol`'s main entry must erase under `import type`, so it holds no
-// runtime value a guard could read. Adding a member there without adding it here degrades that member to
-// `unknown`, which is the conservative direction — a caller sees "not retryable" rather than a wrong retry.
-const SESSION_START_FAILURES = ['session-not-found', 'session-busy', 'agent-resources-exhausted'] as const
+/**
+ * A runtime mirror of `SessionStartFailure`, which `protocol` cannot export as a value — its main entry has
+ * to erase under `import type`.
+ *
+ * `Record<SessionStartFailure, true>` rather than a `string[]`: the array form degrades silently when the
+ * union grows, and this makes that a **compile error** in this file while still erasing to nothing at
+ * runtime on protocol's side. `typeAssertions.ts` is the same idea one package over.
+ */
+const SESSION_START_FAILURES: Record<SessionStartFailure, true> = {
+  'session-not-found': true,
+  'session-busy': true,
+  'agent-resources-exhausted': true,
+}
 
+// `Object.hasOwn`, not `in`: this reads a value off the wire, and a name that happens to be a prototype
+// member would otherwise pass. The agents narrow key codes the same way for the same reason.
 function isSessionStartFailure(v: unknown): v is SessionStartFailure {
-  return typeof v === 'string' && (SESSION_START_FAILURES as readonly string[]).includes(v)
+  return typeof v === 'string' && Object.hasOwn(SESSION_START_FAILURES, v)
 }
 
 /**
  * A `session:start` the relay refused, carrying the machine-readable `reason` (#512, finding 2).
  *
- * The three members want different things from the caller, which is why the prose was never enough:
- * `session-busy` means someone else holds the device and a retry can work; `session-not-found` means nothing
- * is ever coming; `agent-resources-exhausted` means the Mac is over its ceiling and the answer is to free
- * something or pick another device. `retryable` is the only distinction this client can act on, and it is
- * exposed rather than acted on — a flow runner's retry policy belongs to whoever owns the run, not to a
- * transport method.
+ * The three want different responses, which is why the prose was never enough — but this class
+ * deliberately does **not** rank them. A draft exposed a `retryable` getter that was true for
+ * `session-busy` alone, and reading the relay refutes it in both directions: `session-busy` is another
+ * browser socket being open (`handleSessionStart`), which is a person holding the device in the dashboard
+ * and can last hours, while `agent-resources-exhausted` is a *sampled* CPU/memory reading over 80% — a
+ * build spike that clears in seconds and is re-read on the next attempt. The transient one was the one
+ * marked permanent.
+ *
+ * Ranking them needs to know whether the caller can wait and what else it could pick, which is the run's
+ * business, not a transport method's. So the reason is reported and the policy stays with the caller.
  */
 export class SessionJoinError extends PlatformError {
   constructor(message: string, readonly reason: SessionStartFailure | 'unknown', options?: ErrorOptions) {
     super(message, options)
   }
-
-  get retryable(): boolean { return this.reason === 'session-busy' }
 }
 
 // Protocol owns the wire shape. The name stays `DeviceInfo` because it is exported from this
@@ -145,6 +158,30 @@ export class RelayClient {
   }
 
   private addressSkewLogged = false
+  private readonly inputSilenceLogged = new Set<string>()
+
+  /**
+   * Says out loud that an input went unanswered, once per session.
+   *
+   * Two causes and the client cannot tell them apart, which is exactly why it has to name both: an agent
+   * predating input correlation answers with no `requestId`, so its ack matches nothing here and every input
+   * in the run burns the deadline; or a current agent is simply slow, in which case the input landed. The
+   * step's own failure says neither, and this file already logs the equivalent skew for the join
+   * (`addressSkewLogged`) and for id-less lifecycle replies — the input path was the only one failing hard
+   * and silently.
+   *
+   * Per **session**, unlike the join's per-client flag: one flow can address several, and a slow first input
+   * after a boot is a per-session event.
+   */
+  private warnInputAckSilence(sessionId: string): void {
+    if (this.inputSilenceLogged.has(sessionId)) return
+    this.inputSilenceLogged.add(sessionId)
+    console.error(
+      `[tapflow] an input on session ${sessionId} went unanswered for ${INPUT_ACK_TIMEOUT_MS}ms. Either the ` +
+      'agent predates input correlation (its acks carry no requestId and will never match), or it is slow — ' +
+      'in which case the input did land. Upgrade the agent to tell the two apart.',
+    )
+  }
 
   private dispatch(msg: RelayMsg): void {
     if (msg['type'] === 'error' && typeof msg['sessionId'] !== 'string' && !this.addressSkewLogged) {
@@ -325,26 +362,46 @@ export class RelayClient {
    *
    * Without this a refused input was reported as a **UI** problem: the tap landed nowhere, the next
    * `assertVisible` polled until its own deadline, and the flow failed with "selector not found". For a test
-   * runner that is the worst place to lose a cause — it turns an infrastructure failure into a product one in
-   * the report, and the report is the artefact CI keeps.
+   * runner that is the worst place to lose a cause.
+   *
+   * What this fixes is the **message**, not the classification. `runFlow` catches every throw from a step as
+   * `status: 'failed'` and the CLI maps any failed flow to exit 1, so a refusal whose reason is entirely
+   * environmental — `not-booted`, `channel-unavailable`, `not-session-owner`, which the relay raises before an
+   * agent ever sees the frame — still leaves CI a flow failure rather than the exit 2 this package's
+   * AGENTS.md reserves for it. Routing it there means a failure kind the engine can distinguish, which is a
+   * separate slice; naming the reason is the prerequisite either way.
    *
    * **No automatic retry, deliberately.** `channel-starting` is the reason that would succeed 200ms later, and
    * retrying it here would be one line — but the retry belongs to whoever owns the step's timeout, not to a
    * transport method that cannot see it. `RelayDriver` is where a policy would go. Naming the reason is what
    * makes that decision possible at all; today it is not even visible.
    *
-   * **A missing ack fails rather than passing.** `mcp-server` treats ack silence as success (#457) because an
-   * LLM re-observes the screen and recovers; a flow replays a fixed script and cannot. Every in-repo agent
-   * answers every terminal input, and the relay answers when it cannot reach one (#492), so silence here means
-   * an agent older than those — which is exactly the case a deterministic runner must not paper over.
+   * **Silence fails the step, but it is never reported as a drop.** A draft said silence "means an agent older
+   * than the ack contract"; that is false and the repo already records why. `IOSAgent.ackInput` awaits an
+   * `isBooted` verify — an untimed `simctl list` — on the first input after a boot or reconnect, on the same
+   * Mac the relay gates at 80% CPU, so **an ack past this window can belong to an input that did land.**
+   * `mcp-server` answers that with "could not confirm" and never with "dropped" (#457), and the reasoning
+   * transfers: a flow cannot continue on an unconfirmed input the way an LLM can re-observe the screen, so
+   * the step fails — but "tap timed out" reads as *the tap did not happen*, which is the same false certainty
+   * this change exists to remove with the sign flipped.
    */
   private async awaitInputAck(sessionId: string, requestId: string, what: string): Promise<void> {
-    const msg = await this.waitFor(
-      (m) => (m['type'] === 'input:done' || m['type'] === 'input:error')
-        && m['sessionId'] === sessionId && m['requestId'] === requestId,
-      INPUT_ACK_TIMEOUT_MS,
-      what,
-    )
+    let msg: RelayMsg
+    try {
+      msg = await this.waitFor(
+        (m) => (m['type'] === 'input:done' || m['type'] === 'input:error')
+          && m['sessionId'] === sessionId && m['requestId'] === requestId,
+        INPUT_ACK_TIMEOUT_MS,
+        what,
+      )
+    } catch (e) {
+      this.warnInputAckSilence(sessionId)
+      throw new PlatformError(
+        `${what} was not confirmed (${(e as Error).message}) — it may have reached the device, so do not ` +
+        'repeat it blindly',
+        { cause: e },
+      )
+    }
     if (msg['type'] !== 'input:error') return
     // `reason` is optional on the wire and absent means *unknown*, never *fine* — an agent predating the
     // field. Absent, or a member this build does not know, both read as `channel-unavailable`, which is the

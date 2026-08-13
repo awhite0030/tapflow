@@ -177,6 +177,29 @@ describe('RelayClient — the input senders mint a correlator and await the ack'
       .rejects.toThrow(/pressKey Enter was refused by the device \(channel-unavailable\): no channel/)
   })
 
+  it('reports an unanswered input as unconfirmed, not as dropped, and says so once', async () => {
+    // `IOSAgent.ackInput` awaits an untimed `simctl list` on the first input after a boot, on the same Mac
+    // the relay gates at 80% CPU — so an ack that never reaches this waiter can still belong to an input
+    // that landed. "tap timed out" reads as *the tap did not happen*, which is the false certainty this
+    // change removes, sign flipped. And the run needs to hear that the agent may simply be too old to
+    // correlate, since the step's own failure says neither.
+    //
+    // Driven by closing the socket rather than by waiting out `INPUT_ACK_TIMEOUT_MS`: both reject the same
+    // waiter and take the same branch, and one of them costs 10 seconds per run of the suite.
+    const logged: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((m: unknown) => { logged.push(String(m)) })
+    try {
+      const { client } = await capture(() => null)
+      const pending = client.tap('s1', 0.5, 0.5)
+      for (const c of wss!.clients) c.terminate()
+      const err = await pending.catch((e: unknown) => e) as Error
+      expect(err.message).toContain('was not confirmed')
+      expect(err.message).toContain('may have reached the device')
+      expect(err.message).not.toContain('refused')
+    } finally { spy.mockRestore() }
+    expect(logged.filter((l) => l.includes('went unanswered'))).toHaveLength(1)
+  })
+
   it('does not take another input\'s ack', async () => {
     // The correlator is the point, and it is why #499 exists: a gesture is dozens of frames and a late ack
     // from the previous input lands in this one's waiter. The stale reply is an **error** so resolving on it
@@ -369,16 +392,12 @@ describe('RelayClient.joinSession — a refusal is addressed', () => {
     // three wordings, and dropped `Session busy` silently. This client was still reading the prose, so the
     // three outcomes were indistinguishable to a caller: retry works, nothing is ever coming, or the Mac is
     // over its ceiling.
-    for (const [reason, retryable] of [
-      ['session-busy', true],
-      ['session-not-found', false],
-      ['agent-resources-exhausted', false],
-    ] as const) {
+    for (const reason of ['session-busy', 'session-not-found', 'agent-resources-exhausted'] as const) {
       const client = await relay((m) => ({ type: 'error', sessionId: m['sessionId'], message: 'refused', reason }))
       const err = await client.joinSession('s1').catch((e: unknown) => e)
       expect(err).toBeInstanceOf(SessionJoinError)
       expect((err as SessionJoinError).reason).toBe(reason)
-      expect((err as SessionJoinError).retryable).toBe(retryable)
+      expect((err as Error).message).toContain(reason)
       const s = wss
       wss = null
       for (const c of s!.clients) c.terminate()
@@ -386,16 +405,15 @@ describe('RelayClient.joinSession — a refusal is addressed', () => {
     }
   })
 
-  it('reads a reason it does not know as unknown, and therefore not retryable', async () => {
-    // `protocol`'s entry erases under `import type`, so the guard's member list is written out here and can
-    // fall behind. It degrades toward "not retryable", which is the safe direction — a caller that retries a
-    // permanent refusal loops, one that does not retry a transient one reports it.
+  it('reads a reason it does not know as unknown rather than passing it through', async () => {
+    // The guard's member list lives in this package — `protocol`'s entry erases under `import type` — so a
+    // string off the wire that is not a member must not be reported as if it were one. `Record<
+    // SessionStartFailure, true>` is what makes falling behind a compile error rather than a silent widening.
     const client = await relay((m) => ({
       type: 'error', sessionId: m['sessionId'], message: 'refused', reason: 'a-reason-from-the-future',
     }))
     const err = await client.joinSession('s1').catch((e: unknown) => e) as SessionJoinError
     expect(err.reason).toBe('unknown')
-    expect(err.retryable).toBe(false)
   })
 
   it('does not take a refusal meant for another session', async () => {
