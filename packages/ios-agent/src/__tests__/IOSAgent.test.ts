@@ -152,7 +152,7 @@ function mockSimctl(booted: boolean | 'unknown' = false): SimctlWrapper {
   const status = booted === 'unknown' ? 'unknown' : booted ? 'booted' : 'shutdown'
   pasteboard = ''
   pasteboardApplyDelayMs = 0
-  return {
+  const sw = {
     listDevices: vi.fn().mockResolvedValue([
       { id: 'dev-1', name: 'iPhone 15', platform: 'ios', status, osVersion: 'iOS 18.3' },
     ]),
@@ -178,6 +178,27 @@ function mockSimctl(booted: boolean | 'unknown' = false): SimctlWrapper {
     getPasteboard: vi.fn(async () => pasteboard),
     stopKeyboardDaemon: vi.fn(),
   } as unknown as SimctlWrapper
+  // `handleDeviceBoot` awaits this before it announces readiness (#486). The real one polls
+  // `listDevices` until the device reports `booted`, so the double reads the same list — a test that
+  // rewrites it (`mockSimctlTwoDevices`, and the per-test `mockResolvedValue` overrides) then gets
+  // the device the agent actually asked for rather than a fixture pinned here. It answers `booted`
+  // because that is the only status the poll returns on; the polling itself, its deadline, its grace
+  // for a settled device and its `isStale` signal are all covered in `SimctlWrapper.test.ts`, which
+  // drives real transitions through the runner.
+  //
+  // **`opts.isStale` is deliberately ignored here.** This double does not poll, so there is nothing
+  // to cancel — and the agent-side claim worth testing is the other guard: the `bootSeq` re-check on
+  // the far side of the wait, which only runs once the wait returns.
+  //
+  // One caller does not get the shared list: `{ ...mockSimctl(false), listDevices: … }` spreads the
+  // object, and the copy's `waitUntilBooted` still closes over the original `sw`. That test does not
+  // boot, and the failure mode if one did would be a loud `device:boot-error`, not a silent pass.
+  sw.waitUntilBooted = vi.fn(async (deviceId: string, _opts?: { isStale?: () => boolean }) => {
+    const device = (await sw.listDevices()).find((d) => d.id === deviceId)
+    if (!device) throw new PlatformError(`Device ${deviceId} did not finish booting`)
+    return { ...device, status: 'booted' as const }
+  })
+  return sw
 }
 
 describe('IOSAgent', () => {
@@ -918,10 +939,16 @@ describe('IOSAgent', () => {
       }
       expect(joined).not.toBeNull()
 
-      // The abandoned boot returns at the seq check *before* its second `listDevices`, so that
-      // call not happening is the assertion — no sleep, and it fails if the bump is removed
-      // (the boot then runs on to `listDevices` and builds the helper). `setImmediate` drains the
-      // microtask queue, which is all the guarded path needs to reach its early return.
+      // The abandoned boot returns at the seq check that follows `simctl.boot`, before it reaches
+      // `waitUntilBooted` — so no further `listDevices` happening is the assertion. No sleep, and it
+      // fails if the bump is removed (the boot then runs on and builds the helper). `setImmediate`
+      // drains the microtask queue, which is all the guarded path needs to reach its early return.
+      //
+      // The extra reading it would make is now the double's, not the handler's: `mockSimctl`'s
+      // `waitUntilBooted` reads the shared list to answer with the right device. That keeps this
+      // assertion working, but the `MockTouchHelper` check below is the one that does not depend on
+      // how the double is written. The later seq check — the one on the far side of the wait — is a
+      // different guard with its own test in `device:boot handler`.
       const listCallsBeforeRelease = (simctl.listDevices as ReturnType<typeof vi.fn>).mock.calls.length
       releaseBoot()
       await new Promise((r) => setImmediate(r))
@@ -1089,6 +1116,8 @@ describe('IOSAgent', () => {
   })
 
   describe('device:boot handler', () => {
+    beforeEach(() => { MockTouchHelper.mockClear() })
+
     it('sends device:booting then device:ready for a shutdown device', async () => {
       const simctl = mockSimctl(false)
       const agent = new IOSAgent({ intervalMs: 50 }, simctl)
@@ -1107,6 +1136,161 @@ describe('IOSAgent', () => {
       const ready = await readyPromise
       expect((ready.payload as { deviceId: string }).deviceId).toBe('dev-1')
       expect(simctl.boot).toHaveBeenCalledWith('dev-1')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('holds device:ready until the simulator has finished booting (#486)', async () => {
+      // `simctl boot` returns when the boot has been *initiated* — measured 7.6s short of Booted on an
+      // iPhone 17 Pro / iOS 26.5. Announcing readiness there tells `mcp-server` to install and tap a
+      // device that is not up, which is the half of #440 ("No devices are booted") that targeting the
+      // session udid did not remove. Android has waited since the beginning.
+      //
+      // The wait is held open and `session:deviceInfo` is what is asserted absent, not `device:ready`.
+      // Two earlier drafts of this test passed under the mutation that drops the `await`:
+      //   - a 30ms mock + `events.push('ready')` after `await waitForType` stamps the *read* rather
+      //     than the arrival, and the stream handoff between the two outlasts 30ms;
+      //   - releasing the wait as soon as it had been called still ran ahead of the mutated path,
+      //     because `openStreamWs` sits between the mutation site and `device:ready`.
+      // `sendChromeData` is the first thing after the wait and it sends `session:deviceInfo`
+      // synchronously, so with the await gone it arrives with nothing in front of it to hide behind.
+      const simctl = mockSimctl(false)
+      let releaseWait = (): void => {}
+      ;(simctl.waitUntilBooted as ReturnType<typeof vi.fn>).mockImplementation(
+        () => new Promise((resolve) => {
+          releaseWait = () =>
+            resolve({ id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' })
+        }),
+      )
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-486', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:booting')
+      await vi.waitFor(() => expect(simctl.waitUntilBooted).toHaveBeenCalledWith('dev-1', expect.anything()), { timeout: 2000 })
+
+      expect(await waitForTypeOrNull(browser, 'session:deviceInfo', 300)).toBeNull()
+      // `device:ready` too, and not only `session:deviceInfo`. The recording is already running, so
+      // this reads whatever arrived during the 300ms above rather than waiting again — and without
+      // it, moving the `sendMsg({ type: 'device:ready' })` above the wait while leaving
+      // `sendChromeData` below it passes this test, which is #486 itself restored.
+      expect(await waitForTypeOrNull(browser, 'device:ready', 0)).toBeNull()
+      // In-process and hop-free: `sendChromeData` constructs the helper synchronously, before either
+      // message goes out, so this holds even if a socket were slower than the deadline above.
+      expect(MockTouchHelper.mock.results).toHaveLength(0)
+
+      const ready = waitForType(browser, 'device:ready')
+      releaseWait()
+      await ready
+      expect(await waitForTypeOrNull(browser, 'session:deviceInfo', 0)).not.toBeNull()
+      // The wait runs after the boot, not instead of it.
+      const bootOrder = (simctl.boot as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!
+      const waitOrder = (simctl.waitUntilBooted as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!
+      expect(bootOrder).toBeLessThan(waitOrder)
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('reports a boot that never finishes as device:boot-error (#486)', async () => {
+      // What the deadline answers with. `device:ready` is the alternative — ready-anyway with a
+      // warning — and it would put the caller back where it started, acting on a device that is not up.
+      const simctl = mockSimctl(false)
+      ;(simctl.waitUntilBooted as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new PlatformError('Device dev-1 did not finish booting within 90000ms (last seen: unknown)'),
+      )
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      const errored = waitForType(browser, 'device:boot-error')
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-486b', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      const e = await errored
+      expect(e.message).toContain('did not finish booting')
+      expect(e.requestId).toBe('rq-486b')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('keeps the argv line out of a boot failure toast', async () => {
+      // `Shutting Down` is the state a device caught mid-quit is in, and `simctl boot` refuses it.
+      // Refusing is right — swallowing it would put the wait back to polling a device nobody is
+      // bringing up — so this refusal is what the tester reads, and node's own first line is
+      // `Command failed: xcrun simctl boot <UDID>`, which says nothing and echoes the udid.
+      const simctl = mockSimctl(false)
+      ;(simctl.boot as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error('Command failed: xcrun simctl boot 1A2B-3C4D\nUnable to boot device in current state: Shutting Down'),
+      )
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      const errored = waitForType(browser, 'device:boot-error')
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-486f', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      const e = await errored
+      expect(e.message).toBe('Unable to boot device in current state: Shutting Down')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('installs no helper when a shutdown lands while the boot is waiting (#486)', async () => {
+      // The `bootSeq` re-check on the far side of the wait, which nothing reached before. The
+      // existing reconnect test bumps the seq while `simctl.boot` is in flight, so it returns at the
+      // check *before* this one — its own comment says so — and deleting the check after the wait
+      // left all 388 tests green. The gap it guards used to be sub-second and is now the boot itself
+      // (measured 7.6s), so it is the wider of the two.
+      //
+      // `isStale` covers the same window from inside the poll, but only while the poll is running.
+      // This is the microtask-thin case it cannot see: the wait has already resolved and the seq
+      // moves before the handler resumes.
+      const simctl = mockSimctl(false)
+      let releaseWait = (): void => {}
+      ;(simctl.waitUntilBooted as ReturnType<typeof vi.fn>).mockImplementation(
+        () => new Promise((resolve) => {
+          releaseWait = () =>
+            resolve({ id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' })
+        }),
+      )
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-486c', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:booting')
+      await vi.waitFor(() => expect(simctl.waitUntilBooted).toHaveBeenCalled(), { timeout: 2000 })
+      expect(MockTouchHelper.mock.results).toHaveLength(0)
+
+      // `device:shutdown` bumps `bootSeq` on its first line. Its reply is the barrier: the agent has
+      // finished with the shutdown before the wait is released, so this is an answer rather than a
+      // guess about timing.
+      browser.send(JSON.stringify({ type: 'device:shutdown', requestId: 'rq-486d', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:shutdown-done')
+
+      releaseWait()
+      await new Promise((r) => setImmediate(r))
+
+      expect(MockTouchHelper.mock.results).toHaveLength(0)
+      expect(await waitForTypeOrNull(browser, 'device:ready', 0)).toBeNull()
 
       agent.disconnect()
       browser.close()
@@ -1700,7 +1884,19 @@ describe('IOSAgent', () => {
       browser.close()
     })
 
-    it('skips boot call for already-booted device', async () => {
+    it('re-issues the boot even for a device the list reported as booted (#486)', async () => {
+      // This used to assert the opposite — the boot was skipped when the list said `booted`. That
+      // skip arrived with the original on-demand boot feature (`42a5ea6`) as an obvious economy,
+      // with no recorded reason, and it became load-bearing in the wrong direction once
+      // `waitUntilBooted` existed: it was the only path reaching the wait with **nothing bringing
+      // the device up**, so a tester who ⌘Q'd the simulator in the width of one `xcrun` round trip
+      // got a 90s deadline instead of a boot.
+      //
+      // A short grace on `shutdown` inside the poll was tried first and rejected in review: that
+      // reading is not distinguishable from a slow machine's healthy boot, so the clock would fail
+      // real boots to shorten a case that can simply be removed. `SimctlWrapper.boot` swallows
+      // `Unable to boot device in current state: Booted`, so the cost for a device that really is
+      // up is one no-op subprocess.
       const simctl = mockSimctl(true)
       const agent = new IOSAgent({ intervalMs: 50 }, simctl)
       await agent.connect(`ws://localhost:${port}`)
@@ -1713,7 +1909,9 @@ describe('IOSAgent', () => {
       const readyPromise = waitForType(browser, 'device:ready')
       browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-19', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await readyPromise
-      expect(simctl.boot).not.toHaveBeenCalled()
+      expect(simctl.boot).toHaveBeenCalledWith('dev-1')
+      // Not the erase path — that one has its own boot call and a very different meaning.
+      expect(simctl.erase).not.toHaveBeenCalled()
 
       agent.disconnect()
       browser.close()

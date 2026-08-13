@@ -41,7 +41,7 @@ const CLIPBOARD_CMD_TIMEOUT_MS = 5_000
 // which says nothing and echoes the device UDID, so prefer any other line. When there is none
 // (e.g. the timeout path, where stderr is empty) fall back to a plain description rather than
 // the argv line this exists to drop.
-function firstLine(e: unknown): string {
+export function firstLine(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e)
   const lines = msg.split('\n').map((l) => l.trim()).filter(Boolean)
   return lines.find((l) => !l.startsWith('Command failed:')) ?? 'the simulator did not respond'
@@ -94,8 +94,15 @@ export class SimctlWrapper {
 
   constructor(private readonly runner: SimctlRunner = defaultRunner) {}
 
-  async listDevices(): Promise<Device[]> {
-    const output = await this.runner.exec('list', 'devices', '--json')
+  /**
+   * `timeoutMs` bounds the underlying `xcrun simctl list`. Left off everywhere except the boot poll:
+   * a blanket timeout would fail a legitimately slow call, which is the reason `SimctlExecOpts.timeoutMs`
+   * is per-call in the first place.
+   */
+  async listDevices(timeoutMs?: number): Promise<Device[]> {
+    const output = timeoutMs === undefined
+      ? await this.runner.exec('list', 'devices', '--json')
+      : await this.runner.execWithOpts({ timeoutMs }, 'list', 'devices', '--json')
     const parsed: SimctlListOutput = JSON.parse(output)
     const devices: Device[] = []
 
@@ -125,6 +132,93 @@ export class SimctlWrapper {
       // already booted is not an error
       if (stderr.includes('Unable to boot device in current state: Booted')) return
       throw err
+    }
+  }
+
+  // `boot` returns when CoreSimulator has *accepted* the boot, and the device reaches `Booted`
+  // seconds later — measured at 7.6s on an iPhone 17 Pro / iOS 26.5 (#486). A caller that announces
+  // readiness on `boot` resolving is announcing something that is not yet true, which is what
+  // `app install intermittently fails with "No devices are booted"` (#440) was left standing on.
+  // Android has waited since the beginning (`EmulatorLauncher.waitForBoot`); this is the counterpart.
+  private static readonly BOOT_READY_TIMEOUT_MS = 90_000
+  private static readonly BOOT_POLL_INTERVAL_MS = 500
+  // Bounds one reading, not the wait. `listDevices` is otherwise untimed, so a wedged
+  // CoreSimulatorService makes the deadline below unreachable — the loop would sit inside a single
+  // `xcrun` forever and never look at the clock again. A fixed ceiling rather than "whatever is left of
+  // the deadline": the latter lets the last reading swallow the remaining 89 seconds with no retry, and
+  // a healthy `simctl list` answers in well under a second, so 5s is already several times slack.
+  private static readonly BOOT_POLL_READ_TIMEOUT_MS = 5_000
+
+  /**
+   * Polls the device list until `deviceId` reports `booted`, and returns it — so the caller sends
+   * on the value it read rather than asserting one.
+   *
+   * **Every status other than `booted` counts as still coming up, `shutdown` included.**
+   * `toDeviceStatus` collapses `Booting` into `unknown`, and this only ever runs after a `boot` was
+   * accepted — `handleDeviceBoot` issues one on every path, deliberately including the one where
+   * the list already said `booted`, precisely so this sentence stays true. So a `shutdown` reading
+   * here is the transition not yet observed, and failing on it would race a boot that was about to
+   * succeed. A draft gave `shutdown` a 3s grace instead; it was removed, because the reading it
+   * would end early is indistinguishable from a slow machine's, the 3s answered no measurement, and
+   * the case it was for is better removed than timed.
+   *
+   * **A failed reading is not a reading.** `listDevices` spawns `xcrun simctl list`, and this does
+   * it up to `timeoutMs / pollIntervalMs` times where the old code did it once — every one an
+   * independent chance to kill a healthy boot, during the interval when CoreSimulator is busiest.
+   * Failures are swallowed and retried, and the last one is reported with the deadline so the cause
+   * is not lost. Android's poll has always done this (`EmulatorLauncher.waitForBoot`); the first
+   * draft of this method did not, which made the "counterpart" claim false in the one way that
+   * matters.
+   *
+   * **And a reading has to end.** Each one is bounded by `BOOT_POLL_READ_TIMEOUT_MS`, because
+   * `listDevices` is otherwise untimed: a wedged CoreSimulatorService would park the loop inside one
+   * `xcrun` and the deadline below would never be consulted again. Bounding the reading is what makes
+   * the deadline a deadline; swallowing the failure is what stops it ending the boot.
+   *
+   * `isStale` is checked every iteration. This loop outlives the boot that started it — the handler
+   * is fire-and-forget, and its `bootSeq` check runs only once the wait *returns* — so a shutdown
+   * arriving mid-wait would otherwise leave a poll spawning a process twice a second for the rest
+   * of the deadline, against a device that is now deliberately off and therefore never converges.
+   */
+  async waitUntilBooted(
+    deviceId: string,
+    opts: {
+      timeoutMs?: number
+      pollIntervalMs?: number
+      isStale?: () => boolean
+    } = {},
+  ): Promise<Device> {
+    const {
+      timeoutMs = SimctlWrapper.BOOT_READY_TIMEOUT_MS,
+      pollIntervalMs = SimctlWrapper.BOOT_POLL_INTERVAL_MS,
+      isStale,
+    } = opts
+    const deadline = Date.now() + timeoutMs
+    let lastError: unknown = null
+
+    for (;;) {
+      if (isStale?.()) throw new PlatformError(`Boot of ${deviceId} was superseded while waiting for it to come up`)
+
+      let device: Device | undefined
+      try {
+        device = (await this.listDevices(SimctlWrapper.BOOT_POLL_READ_TIMEOUT_MS)).find((d) => d.id === deviceId)
+        // Cleared on every success, so the deadline blames a failed poll only when the *last* one
+        // failed. Leaving it set would report a recovered-from error as the reason for the timeout.
+        lastError = null
+      } catch (err) {
+        lastError = err
+      }
+      if (device?.status === 'booted') return device
+
+      // Checked after the read, not before it, so a zero timeout still gets one look — a device that
+      // is already up must not need a poll interval to be reported as up.
+      if (Date.now() >= deadline) {
+        const seen = lastError !== null
+          ? `last poll failed: ${firstLine(lastError)}`
+          : `last seen: ${device?.status ?? 'no longer listed'}`
+        throw new PlatformError(`Device ${deviceId} did not finish booting within ${timeoutMs}ms (${seen})`)
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
     }
   }
 

@@ -63,7 +63,7 @@ import {
   sendAudioYieldingToVideo,
 } from '@tapflowio/agent-core/utils'
 import type { AudioFrame } from '@tapflowio/agent-core'
-import { SimctlWrapper, isDeviceMissingError, ClipboardTooLargeError } from './SimctlWrapper.js'
+import { SimctlWrapper, isDeviceMissingError, ClipboardTooLargeError, firstLine } from './SimctlWrapper.js'
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
@@ -610,23 +610,36 @@ export class IOSAgent implements DeviceAgent {
           throw err
         }
         await this.simctl.boot(deviceId)
-      } else if (target.status !== 'booted') {
+      } else {
+        // Unconditionally, including when the list above said `booted`. That reading is already
+        // stale by the time we act on it — a tester can ⌘Q the simulator, or run `simctl shutdown`,
+        // in the width of one `xcrun` round trip — and skipping the boot on it is the only way to
+        // reach the wait below with *nothing bringing the device up*, which then costs the full
+        // deadline to discover. `SimctlWrapper.boot` swallows `Unable to boot device in current
+        // state: Booted`, so re-issuing it for a device that really is up costs one no-op
+        // subprocess and makes "the wait only ever runs after a boot was accepted" true.
         await this.bootWithZombieRecovery(deviceId)
       }
 
       if (seq !== state.bootSeq) return
 
-      const refreshed = await this.simctl.listDevices()
-      // Another await, and `sendChromeData` below starts a helper process. A shutdown or a newer
-      // boot arriving in this gap would otherwise get a helper installed for the device it is
-      // taking down — and one that revives itself, so the stale reference outlives the boot that
-      // returns just below.
+      // `simctl boot` returns on initiation, so everything below used to run while the device was
+      // still coming up — measured 7.6s early (#486). The status sent with the chrome data was
+      // hardcoded `'booted'` over a value that had just been fetched and discarded, and
+      // `device:ready` went out a few lines later. A human is slower than the gap and rarely
+      // notices; `mcp-server` installs and taps the moment it sees ready, which is what #440's
+      // "No devices are booted" was.
+      // `isStale` rather than a check on the far side alone: this handler is fire-and-forget, so a
+      // shutdown arriving mid-wait bumps `bootSeq` and leaves the poll spawning `xcrun simctl list`
+      // twice a second against a device that is now deliberately off — for the rest of the deadline,
+      // with nothing left that wants the answer.
+      const bootedDevice = await this.simctl.waitUntilBooted(deviceId, { isStale: () => seq !== state.bootSeq })
+      // Another await — a multi-second one — and `sendChromeData` below starts a helper process. A
+      // shutdown or a newer boot arriving in this gap would otherwise get a helper installed for the
+      // device it is taking down — and one that revives itself, so the stale reference outlives the
+      // boot that returns just below.
       if (seq !== state.bootSeq) return
-      const refreshedDevice = refreshed.find((d) => d.id === deviceId) ?? target
-      this.sendChromeData(state, {
-        ...refreshedDevice,
-        status: 'booted',
-      } as Device)
+      this.sendChromeData(state, bootedDevice)
 
       const streamWs = await this.openStreamWs(state)
       if (seq !== state.bootSeq) {
@@ -650,8 +663,12 @@ export class IOSAgent implements DeviceAgent {
 
     } catch (e) {
       if (seq !== state.bootSeq) return
-      const message = e instanceof Error ? e.message : String(e)
-      this.sendMsg({ type: 'device:boot-error', sessionId, requestId, message })
+      // `firstLine`, not `e.message`: this reaches a toast, and node's first line is
+      // `Command failed: xcrun simctl boot <UDID>`, which says nothing and echoes the udid. That
+      // matters more now that the boot is issued unconditionally — a device caught mid `Shutting
+      // Down` refuses the boot, and refusing is correct (swallowing it would put us back to waiting
+      // on a device nobody is bringing up), so the refusal is what the tester reads.
+      this.sendMsg({ type: 'device:boot-error', sessionId, requestId, message: firstLine(e) })
     }
   }
 
