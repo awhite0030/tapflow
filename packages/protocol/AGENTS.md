@@ -64,17 +64,28 @@ conversion, so they are written down here instead:
   invisibly, because `src/__tests__` is outside that package's tsconfig.
 - **An `interface` can be reopened by a consumer.** `declare module '@tapflowio/protocol'` can add a
   field to any message, which an anonymous union member could not. Measured: a consumer can give
-  `GenericError` a `sessionId` and defeat the assertion in `typeAssertions.ts` that says it has none.
+  `session:joined` a `deviceId` and defeat the `typeAssertions.ts` assertion that says it has none —
+  the file's only whole-message excess-property check. (That example used to be `GenericError` and a
+  `sessionId`; L5d made that field **required**, so the augmentation it described is now the declaration.)
   It takes deliberate augmentation, so the risk is low — but the HOW NOT rule below ("do not widen a
   message") is now bypassable without editing this package.
 
 ### The name must be derivable from the literal
 
-`InputDone` ↔ `input:done`: PascalCase over the literal's `:` and `-` segments. Five names deliberately
-break the rule and are listed in `scripts/__tests__/protocolMessageNames.test.mjs` — `GenericError`
-(`Error` would shadow the global), and `AppInstall`/`AppLaunch` × `ToAgent`/`ToRelay`, because those two
-literals travel in both directions carrying **different shapes**: the browser sends `buildId`, the relay
-resolves it into `payload: { filePath, bundleId }`. Naming forced that split into the open.
+`InputDone` ↔ `input:done`: PascalCase over the literal's `:` and `-` segments. Six names deliberately
+break the rule and are listed in `scripts/__tests__/protocolMessageNames.test.mjs` — count the list here
+against `NAME_EXCEPTIONS`, because a number that stopped matching its own enumeration is a defect this
+section has already shipped once:
+
+- `GenericError`, because `Error` would shadow the global. Renaming the interface does not remove the
+  exception — the derivation reads the **wire literal**, so only renaming `'error'` itself would, and that
+  reaches every consumer.
+- `AgentResourceReport`, because `agent:resources` derives `AgentResources`, which this package already
+  exports as the *payload* shape the message carries. Renaming the payload is a breaking change to a
+  published type that `agent-core`, `relay` and `dashboard` all re-export.
+- `AppInstall`/`AppLaunch` × `ToAgent`/`ToRelay`, because those two literals travel in both directions
+  carrying **different shapes**: the browser sends `buildId`, the relay resolves it into
+  `payload: { filePath, bundleId }`. Naming forced that split into the open.
 
 `device:shutdown` is the opposite case — identical in both directions, so it is **one** interface that
 `RelayToAgent` and `BrowserToRelay` both reference, which states that the relay forwards it untouched.
@@ -275,6 +286,43 @@ whose failure half does not exist would leave it half-correlated, and the half t
 platform-asymmetric — Android's toggle has no device-side effect at all, so what its failure even means is a
 decision that slice has to make. `#517` is the prerequisite.
 
+## `error` is the session-start refusal, not an escape hatch
+
+L5d ended a contradiction that sat in this file and in `index.ts` at once for two months. `GenericError`'s doc
+claimed *"the escape hatch for a failure the relay cannot correlate to a session"*, while
+`SessionStartFailure`'s claimed the reason has **a single producer inside `handleSessionStart`**. Both cannot
+be true, and the program plan recorded that they were both in HEAD.
+
+L5c settled it by removing the general role rather than the specific one. A request naming no session is
+dropped at the relay's door (`isAddressed`), because answering it would ship a frame whose own required
+`sessionId` `JSON.stringify` erases — and `error` has no `requestId` either, so a caller could not attribute
+the answer and would wait out the same deadline silence costs. With nothing left needing an unaddressed
+failure, all four producers answer one specific join, and `error` **extends `SessionError`**: the shape is the
+base verbatim, and the base's own definition — a failure a *session* is waiting on — is now exactly what it is.
+
+**What the address buys.** The join waiters in `mcp-server` and `flow-runner` matched
+`sessionId === undefined || sessionId === mine`, and with no such key the left half was *always* true — so any
+refusal resolved any pending join. Two concurrent joins and the first refusal woke the wrong one, reported as a
+failure that session never had, while the one that was actually refused waited out its deadline, because
+`dispatch` resolves only the first matching waiter. That is #512's first finding, and the escape was it.
+
+**The name stays `GenericError` even though the role narrowed.** The derivation rule would give `Error`, which
+shadows the global, so the exception is anchored to the *literal* rather than to the role — `SessionStartError`
+would need an exception entry just the same, and removing the entry needs a new wire literal. Renaming would
+have cost every consumer plus `typeAssertions` and bought nothing.
+
+**Skew is logged, not hedged.** A client newer than its relay sees unaddressed refusals, which now match
+nothing, so the join runs to its deadline instead of reporting why. There is no version handshake anywhere in
+this protocol, so the alternative was a fallback — the ambiguity this work exists to remove. Both clients log
+instead, on the same reasoning as the input-ack skew record: logging is not matching.
+
+**The same reasoning, a different cardinality — once per *client*, where the ack record is once per session.**
+An agent is per session, so one old agent says nothing about the next device's; a relay is one per client for
+the life of the process. Keying this one per session is not available either: the frame carries no address,
+and naming the join in flight would mean guessing between pending ones, which is the false attribution L5d
+removes. A first draft keyed on a literal and documented itself as per-session, which made it per-*process* —
+so against an old relay the first refused session logged and every later one was silent.
+
 ## Every direction is declared, and an agent's send is typed
 
 The six unions cover the whole wire: `BrowserToRelay`, `AgentToRelay`, `RelayToAgent`, `RelayToBrowser`,
@@ -340,9 +388,13 @@ A browser receives 28 message types. They come from two producers, and the diffe
 
 ### `sessionId` stays required, even where the relay cannot prove it
 
-The relay reaches seven of its own error sites through `msg.sessionId!` — an assertion the compiler
-cannot verify — and `JSON.stringify` drops a key whose value is `undefined`. The fix is **not** to
-widen the declaration:
+The relay reaches eleven sessions through `msg.sessionId!` — an assertion the compiler cannot verify —
+and `JSON.stringify` drops a key whose value is `undefined`. **Eight are agent→browser forwards and three
+are request-side paths that deliberately have no address gate**; the seven *reply* sites this paragraph
+used to count went away with L5c's door predicates, and the number outlived them here. The composition
+matters more than the total, because "all forwards" invites the conclusion that the request side is
+settled — and `device:shutdown` is on the request side with no ownership gate either (#527). The fix is
+**not** to widen the declaration:
 
 - Every in-repo sender does supply one. `BrowserToRelay` declares `sessionId: string` on every member
   but `agents:list`, and since L4c all three senders are typed against that union, so the compiler
@@ -350,9 +402,11 @@ widen the declaration:
   `flow-runner`) set it too" — true when written, and falsified by the work that typed them.)
 - `'Session not found'` answers a sessionId that did not **match** — a stale tab, a terminated
   session — not one that was absent.
-- `{ type: 'error'; message: string }` is the escape hatch for a genuinely uncorrelatable failure. So
-  the right move when there is no sessionId is to send *that*, and the required field is what forces
-  the choice.
+- `{ type: 'error' }` **is not** an escape hatch, as of L5d — it is the answer to a `session:start` the relay
+  refused, it extends `SessionError`, and it names the session it refuses. The paragraph that stood here said
+  the right move with no sessionId was to send *that*; L5c settled it the other way, by dropping a request
+  that names no session at the door. Both halves of the old advice are gone: there is no unaddressed failure
+  left to send, and nothing left that would need one.
 
 Widening would let #444 delete those `!` with no consumer forced to care, and the guarantee would go
 quietly with them. It is also close to irreversible: once optional, every consumer grows a guard.

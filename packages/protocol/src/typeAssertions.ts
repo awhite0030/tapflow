@@ -28,8 +28,17 @@ export const unknownType: RelayOutbound = { type: 'nope', message: 'x' }
 // @ts-expect-error - `capabilities` is required on session:joined
 export const missingField: RelayOutbound = { type: 'session:joined', sessionId: 's' }
 
-// @ts-expect-error - `error` carries no sessionId
-export const extraField: RelayOutbound = { type: 'error', message: 'x', sessionId: 's' }
+// L5d made `error` an addressed `session:start` reply, so the line that used to sit here — asserting it
+// carries **no** `sessionId` — now describes the opposite of the contract. It is not simply deleted: it was
+// this file's only whole-message excess-property assertion (`unknownType` tests a bad literal, `missingField`
+// a missing required field, `legacyKeyField` an excess key nested inside `payload`), and an unused
+// `@ts-expect-error` is itself an error, so retiring it silently would drop an assertion *class* as a side
+// effect of narrowing one message. Relocated to a message that has no reason to grow a field.
+// @ts-expect-error - `session:joined` has no `deviceId`; the session already names the device
+export const extraField: RelayOutbound = { type: 'session:joined', sessionId: 's', capabilities: [], deviceId: 'd' }
+
+// And `error` now belongs to the family, which is the positive half of the same change.
+export const addressedError: RelayOutbound = { type: 'error', sessionId: 's', message: 'x', reason: 'session-busy' }
 
 // Kept on one line each: `@ts-expect-error` applies to the next line only, so a multi-line literal
 // whose error lands three lines down leaves the directive unused — which reads as a failure of the
@@ -66,7 +75,7 @@ export const relayCannotOriginateKeyboard: RelayOutbound = { type: 'keyboard:tog
 
 // A consumer reads the whole surface, whoever sent it — both of the above are valid here.
 export const inboundFromAgent: BrowserInbound = { type: 'input:done', sessionId: 's', requestId: 'rq' }
-export const inboundFromRelay: BrowserInbound = { type: 'error', message: 'x', reason: 'session-busy' }
+export const inboundFromRelay: BrowserInbound = { type: 'error', sessionId: 's', message: 'x', reason: 'session-busy' }
 
 // @ts-expect-error - sessionId is required on every one of the twelve forward-only messages
 export const forwardWithoutSession: AgentToBrowser = { type: 'app:install-done' }

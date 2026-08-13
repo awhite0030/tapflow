@@ -138,15 +138,19 @@ describe('protocol message interfaces', () => {
     for (const [name, { literal, extends: base, body }] of messages) {
       const isFailure = /error$/.test(literal) && !REQUEST_SCOPED.has(literal)
       const hasSession = /^ {2}sessionId[?]?:/m.test(body) || base === 'SessionError'
-      // `error` is the escape hatch for a failure that cannot be attributed to a session, so it has no
-      // `sessionId` and cannot be a `SessionError`. That is the member's nature, not an exception.
+      // `error` used to be excluded here, on the grounds that it was the escape hatch for a failure that
+      // could not be attributed to a session — "the member's nature, not an exception". L5d replaced that
+      // nature: a request naming no session is dropped at the relay's door, so every producer of `error`
+      // answers one specific join, and it joins the family like every other session-scoped failure. The
+      // predicate needed no change; what changed is that `error` now satisfies it.
       if (!isFailure || !hasSession) continue
       if (base !== 'SessionError') offenders.push(`${name} ('${literal}')`)
     }
     expect(offenders).toEqual([])
-    expect([...messages].filter(([, m]) => m.extends === 'SessionError')).toHaveLength(8)
-    // The failures that deliberately do not inherit, each for its own reason.
-    expect(messages.get('GenericError')).toMatchObject({ literal: 'error', extends: null })
+    expect([...messages].filter(([, m]) => m.extends === 'SessionError')).toHaveLength(9)
+    // `error` is the ninth, as of L5d. Pinned by name rather than only by the count, because the count alone
+    // would be satisfied by any new member and this is the one whose membership was argued.
+    expect(messages.get('GenericError')).toMatchObject({ literal: 'error', extends: 'SessionError' })
     expect(REQUEST_SCOPED.size).toBe(2)
     for (const literal of REQUEST_SCOPED) {
       const entry = [...messages].find(([, m]) => m.literal === literal)

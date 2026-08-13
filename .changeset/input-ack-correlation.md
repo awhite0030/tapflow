@@ -103,8 +103,11 @@ alternative, and it is what L5d is for: that union's own doc says it has a singl
 
 Narrowing `dispatchTarget` to `sessionId: string` is what found the doors — exactly four compile errors, then
 the handler signatures carried the rest. **Seven `msg.sessionId!` assertions went away** on the request side
-as a consequence, which is the payoff `SessionError`'s doc predicted. The eleven left are all agent→browser
-forwards, unchanged in count from `main`, and still #444.
+as a consequence, which is the payoff `SessionError`'s doc predicted. Twelve are left, and reviewing L5d
+corrected the sentence that stood here: they are **not** all agent→browser forwards. Eight are; `stream:register`,
+`device:shutdown` and `forwardUnacked` are request-side paths that deliberately carry no address gate, and
+`handleAckedInput`'s assertion is dead — this slice's own door predicate narrowed that parameter, so the `!`
+counted itself into #444's body while asserting nothing. Still #444, minus one line L5d removes.
 
 Three places got the predicate and then **had it removed again**, because a mutation showed there was nothing
 observable to hold it with: the unacked input clause, `device:shutdown`, and the two session commands. In each

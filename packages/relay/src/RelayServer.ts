@@ -118,12 +118,19 @@ function ownershipRefusal(session: Session): string {
  *  these doors produce declares `sessionId` **required**, so answering means putting a frame on the wire
  *  whose required field `JSON.stringify` erases, which every consumer's session gate then discards.
  *
- *  **So the request is dropped, not answered**, and the note that used to sit on `SessionError` said the
- *  opposite: "the only correct thing for it to send with no sessionId is `{ type: 'error' }`". That was
- *  written before requests carried a second correlator, and its own premise refutes it now — `GenericError`
- *  has no `requestId`, so a caller that receives one cannot attribute it and waits out the same deadline it
- *  would have waited out on silence. Answering buys nothing it did not already have; not shipping a frame
- *  that violates its own declaration is the whole payoff, and dropping achieves that more cheaply.
+ *  **So the request is dropped, not answered.** `SessionError`'s doc argued the opposite until L5d — "the
+ *  only correct thing for it to send with no sessionId is `{ type: 'error' }`" — and its own premise refutes
+ *  it: `GenericError` has no `requestId`, so a caller that receives one cannot attribute it and waits out the
+ *  same deadline it would have waited out on silence. Answering buys nothing it did not already have; not
+ *  shipping a frame that violates its own declaration is the whole payoff, and dropping achieves that more
+ *  cheaply. L5d then made `error` require `sessionId`, so the escape it named no longer exists at all.
+ *
+ *  The general form of that argument — "a caller cannot attribute an unaddressed answer" — is **narrower than
+ *  it sounds**, and worth stating so nobody builds on the wide version. A dashboard viewer holds one session
+ *  per socket, so an unaddressed reply would land somewhere sensible there; `SessionList` attributes a
+ *  shutdown by single-slot convention with no correlator at all. What makes dropping right here is not that
+ *  attribution is impossible for every consumer, but that the frame would violate its own declaration and be
+ *  discarded by each consumer's session gate before any of them looked.
  *
  *  Widening `SessionStartFailure` to carry an "unaddressed" reason was the alternative, and it is what L5d
  *  is for: that union's own doc says it has a single producer in `handleSessionStart`, and adding a member
@@ -1170,10 +1177,16 @@ export class RelayServer {
     logger.info(`agent connected: ${msg.agentName ?? msg.agentId ?? 'unknown'} (${msg.platform ?? 'unknown'}) — ${registeredSessions.length} device(s)`)
   }
 
+  /** The only producer of `error` — all four exits below, and nothing else in the repo sends that message.
+   *
+   *  That is what makes the address possible rather than aspirational: `msg.sessionId` is narrowed to a
+   *  non-empty `string` by the door (`isAddressed`), so every refusal can name the join it refuses. Before
+   *  L5d they carried none, and the clients' join waiters matched `sessionId === undefined || sessionId ===
+   *  mine` — with no such key the left half was always true, so any refusal resolved any pending join. */
   private handleSessionStart(ws: WebSocket, msg: RelayMessage & { sessionId: string }): void {
     const session = this.sessions.get(msg.sessionId)
     if (!session) {
-      this.sendTo(ws, { type: 'error', message: 'Session not found', reason: 'session-not-found' })
+      this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message: 'Session not found', reason: 'session-not-found' })
       return
     }
     // Occupancy first, because it is the more specific answer and both can be true at once. A tester
@@ -1184,7 +1197,7 @@ export class RelayServer {
     // `!== ws` because a socket re-joining the session it already holds is not contending with anyone:
     // `SessionList` sends `session:start` before a shutdown, so pressing shutdown twice hit this.
     if (session.browserSocket && session.browserSocket !== ws && session.browserSocket.readyState === WebSocket.OPEN) {
-      this.sendTo(ws, { type: 'error', message: 'Session busy', reason: 'session-busy' })
+      this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message: 'Session busy', reason: 'session-busy' })
       return
     }
     // Read before the resource gate, and answered before it too. The gate would otherwise read the
@@ -1195,7 +1208,7 @@ export class RelayServer {
     if (resources) {
       const memPercent = (resources.memUsedMB / resources.memTotalMB) * 100
       if (resources.cpuPercent > RESOURCE_THRESHOLD || memPercent > RESOURCE_THRESHOLD) {
-        this.sendTo(ws, { type: 'error', message: 'Agent resources exhausted', reason: 'agent-resources-exhausted' })
+        this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message: 'Agent resources exhausted', reason: 'agent-resources-exhausted' })
         return
       }
     }
@@ -1208,7 +1221,7 @@ export class RelayServer {
       // `catch {}` also discarded the error entirely: nothing reached the route-level handler, because
       // this swallowed it first.
       logger.error(`session:start could not join ${msg.sessionId}:`, e)
-      this.sendTo(ws, { type: 'error', message: 'Session not found', reason: 'session-not-found' })
+      this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message: 'Session not found', reason: 'session-not-found' })
       return
     }
     // Include the agent's capabilities so the viewer knows up front what is implemented on
@@ -1317,7 +1330,9 @@ export class RelayServer {
    *  session that has never acked as **success** (#457) — so a silent drop here would report an input that
    *  never left the relay as landed, which is worse than the misrouting it replaced. */
   private handleAckedInput(ws: WebSocket, msg: RelayMessage & { requestId: string; sessionId: string }): void {
-    const session = this.sessions.get(msg.sessionId!)
+    // No `!`: the door predicate narrowed the parameter, so the assertion here was dead and counted itself
+    // into #444's remaining body as if it were a real gap.
+    const session = this.sessions.get(msg.sessionId)
 
     if (session && !this.ownsSession(ws, session)) {
       // `not-session-owner` rather than `channel-unavailable`, on that set's own rule — a reason exists per

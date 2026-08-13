@@ -397,25 +397,35 @@ export interface DeviceReady {
 }
 
 /**
- * `sessionId` is what makes a failure findable. A dashboard viewer holds one session per socket,
- * so an uncorrelated error still lands somewhere sensible — but an MCP caller waits for the reply
- * that carries its own sessionId, and without one it waits out the deadline instead (#445).
+ * `sessionId` is what makes a failure findable. An MCP caller waits for the reply that carries its own
+ * sessionId, and without one it waits out the deadline instead (#445).
  *
  * Required here is a **specification the relay does not yet meet**, not a description of the wire.
  * Nothing validates inbound messages, so a client that sends `{"type":"input:touch:end"}` with no
- * sessionId reaches `sessions.get(undefined)`, misses, and the relay answers `'Session not found'`
- * through `msg.sessionId!` — `JSON.stringify` then drops the key, shipping a frame whose required field
- * this declaration says is there. **Still seven sites**, re-counted after L5c restructured that file
- * (`RelayServer.ts:775,827,844,903,1181,1192,1331`) — the correlation work did not widen it and does not
- * close it, because the fix is the one below: the producer must send `error` instead, which is #444.
- * No in-repo client omits a sessionId, so the gap is reachable only from a third-party one — with one exception measured since: `sessionId: ''`
- * type-checks and `mcp-server`'s tools take `z.string()`, so an LLM can produce it.
+ * sessionId reaches `sessions.get(undefined)`, misses, and the relay answers through `msg.sessionId!` —
+ * `JSON.stringify` then drops the key, shipping a frame whose required field this declaration says is there.
+ * No in-repo client omits a sessionId, so the gap is reachable only from a third-party one — with one
+ * exception measured since: `sessionId: ''` type-checks and `mcp-server`'s tools take `z.string()`, so an LLM
+ * can produce it.
+ *
+ * **The request side is closed and the count below is not the one it used to be.** L5c's door predicates
+ * (`isCorrelated`, `isAddressed`) narrowed the handlers, which removed the seven reply sites this note used
+ * to enumerate; the line numbers it carried outlived them and pointed at unrelated code for one release. What
+ * is left is eleven `sessions.get(msg.sessionId!)` in `RelayServer.ts`, and it is **not** uniformly one kind:
+ * eight are agent→browser forwards (`session:chrome`, `session:deviceInfo`, `device:booting`,
+ * `device:boot-error`, `device:shutdown-done`, `device:ready`, `keyboard:toggled`, `clipboard:error`), and
+ * three are request-side paths that deliberately carry no address gate — `stream:register` on a stream-role
+ * socket, `device:shutdown` (whose gate a mutation showed nothing could hold, since an unaddressed shutdown
+ * is dropped by the session miss anyway), and `forwardUnacked`. Count them by reading the sites, not by
+ * trusting this sentence: a stale number here is what taught the lesson.
  *
  * Optional would describe that wire accurately and still be the wrong contract: an MCP caller that
- * receives an uncorrelatable `input:error` has nothing it can do with it — it waits out the
- * deadline either way. The producer is what has to change, and the only correct thing for it to
- * send with no sessionId is `{ type: 'error' }` below, which exists for exactly that. So this
- * required field is what makes #444 "send `error` instead" rather than "delete the `!`".
+ * receives an uncorrelatable `input:error` has nothing it can do with it — it waits out the deadline either
+ * way. The producer is what has to change, and #444 is the validator that makes it. An earlier version of
+ * this note said the producer should "send `error` instead", pointing at `GenericError` below as an escape
+ * hatch for a failure with no session. **That escape is gone**: `GenericError` requires `sessionId` since
+ * L5d, and the door predicates drop such a request rather than answering it, because a reply carrying no
+ * `requestId` cannot be attributed and costs the caller the same deadline silence would.
  */
 export interface SessionError {
   sessionId: string
@@ -553,12 +563,34 @@ export type SessionStartFailure =
   /** The Mac is over its resource ceiling and refused to take another session. */
   | 'agent-resources-exhausted'
 
-// The escape hatch for a failure the relay cannot correlate to a session. Every typed member above
-// carries a sessionId; when there is genuinely none to carry, this is the message to send — not a
-// typed error with the key dropped by `JSON.stringify`.
-export interface GenericError {
+/**
+ * The answer to a `session:start` the relay refused. **Not a general escape hatch**, which is what this
+ * comment used to claim — and the claim could not coexist with `SessionStartFailure`'s, one screen up, that
+ * the reason has a single producer inside `handleSessionStart`. Both were in HEAD at once for two months.
+ *
+ * L5c settled it by removing the general role rather than the specific one: a request that names no session
+ * is now **dropped at the relay's door** (`isAddressed`), because answering it would ship a frame whose own
+ * required `sessionId` `JSON.stringify` erases, and `error` has no `requestId` either — so a caller could not
+ * attribute the answer and would wait out the same deadline silence costs. With nothing left needing an
+ * unaddressed failure, every producer of this message answers one specific join.
+ *
+ * **So it extends `SessionError`**, and that is the honest form rather than a field bolted on: the shape is
+ * the base verbatim, and the base's own definition — a failure a *session* is waiting on — is now exactly
+ * what this is. `protocolMessageNames.test.mjs` enforces that membership, and its note saying `error`
+ * "cannot be a `SessionError`" described a nature this change replaced.
+ *
+ * What the address buys: the join waiters in `mcp-server` and `flow-runner` matched
+ * `sessionId === undefined || sessionId === mine`, and with no such key the left half was **always true**, so
+ * any `error` resolved any pending join. Two concurrent `connect_device` calls and the first refusal woke the
+ * wrong one — reported as a failure the other session never had, while the one that did fail waited out its
+ * deadline. `dispatch` resolves only the first matching waiter, so that is one wrong answer and one timeout.
+ *
+ * The name stays `GenericError` despite the narrowed role. The derivation rule would give `Error`, which
+ * shadows the global, so the exception exists for the literal rather than the role — renaming to
+ * `SessionStartError` needs an exception entry just the same, and removing it needs a new wire literal.
+ */
+export interface GenericError extends SessionError {
   type: 'error'
-  message: string
   reason: SessionStartFailure
 }
 

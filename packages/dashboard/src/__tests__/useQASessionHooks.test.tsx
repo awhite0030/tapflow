@@ -128,11 +128,19 @@ describe('useAgentSession', () => {
     expect(result.current.status).toBe('Connected')
   })
 
+  // This and the `session:joined` case above call `handleMessage` directly, so they pin the handler's
+  // contract and **not** that either message reaches this hook. L5d measured that it does not: `error` and
+  // `session:joined` are both sent with `sendTo(ws, …)` to the socket that sent `session:start`, and this
+  // hook's socket only ever sends `agents:list` and `device:shutdown`. `inboundDisposition` records that.
+  //
+  // `sessionId` here is arbitrary — the handler does not read it — and required only because L5d made
+  // `error` an addressed reply. That the compiler asked for it at all is what surfaced the reachability
+  // question: a fixture had to name a session this socket never joins.
   it('clears booting flag and sets error status on error message', () => {
     const { result } = renderHook(() => useAgentSession('android'))
 
     act(() => result.current.startDevice(makeDevice()))
-    act(() => capturedOnMessage({ type: 'error', message: 'boom', reason: 'agent-resources-exhausted' }))
+    act(() => capturedOnMessage({ type: 'error', sessionId: 'avd:Pixel_7', message: 'boom', reason: 'agent-resources-exhausted' }))
 
     expect(result.current.booting).toBe(false)
     expect(result.current.status).toBe('Error: boom')

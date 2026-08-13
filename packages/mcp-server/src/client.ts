@@ -147,6 +147,31 @@ export class TapflowClient {
    *  second correlation strategy. */
   private skewedSessions = new Set<string>()
 
+  /** Whether an **unaddressed** `error` has been seen, so a relay older than L5d. Once per client.
+   *
+   *  Same reasoning as the ack skew set above and a **different cardinality**, which is the part worth
+   *  stating: an agent is per session, so its skew is recorded per session — different devices answer from
+   *  different agents, and one old agent says nothing about the next. A relay is per *client*. This class
+   *  holds one socket to one relay for the life of the process, so "this relay predates addressed errors" is
+   *  answered once and cannot change under us.
+   *
+   *  Keying it per session was tried and is not available: the frame carries **no** session, and the only
+   *  other candidate — the join in flight — is unreadable, because `Waiter` keeps its predicate as a closure
+   *  and no session id survives on the record. Reaching for it anyway would mean naming a session on a
+   *  guess, and one refusal cannot be attributed to one of several pending joins. That guess is the defect
+   *  this whole slice removes, so the diagnostic must not reintroduce it: the line names the relay, which is
+   *  what the operator has to act on, and does not name a session it cannot know. */
+  private addressSkewLogged = false
+
+  private noteAddressSkew(): void {
+    if (this.addressSkewLogged) return
+    this.addressSkewLogged = true
+    console.error(
+      '[tapflow] a session:start refusal carried no sessionId — this relay predates addressed errors, so ' +
+      'joins will time out rather than report why they were refused. Upgrade the relay.',
+    )
+  }
+
   private noteAckSkew(sessionId: string): void {
     if (this.skewedSessions.has(sessionId)) return
     this.skewedSessions.add(sessionId)
@@ -206,6 +231,13 @@ export class TapflowClient {
     // the one that arrives *late*: it missed its window, was reported optimistically, and still proves
     // this agent acks — so the next input can be judged strictly. A ledger kept at the waiter would
     // never see it.
+    // An unaddressed refusal matches no waiter now, so without this it is dropped in silence and the join
+    // that it answers reports a timeout. Recorded here rather than at the waiter for the same reason the ack
+    // ledger is: the frame arrives whether or not anything is still waiting for it — and the refusal that
+    // arrives *after* its join gave up is the one an operator most needs explained, because that caller has
+    // already been told "timed out" with no cause. A `waiters.length > 0` guard here would drop exactly that
+    // one, which is why a test holds its absence.
+    if (msg['type'] === 'error' && typeof msg['sessionId'] !== 'string') this.noteAddressSkew()
     if (msg['type'] === 'input:done') {
       const sid = msg['sessionId']
       const id = msg['requestId']
@@ -252,7 +284,19 @@ export class TapflowClient {
     const msg = await this.waitFor(
       (m) =>
         (m['type'] === 'session:joined' && m['sessionId'] === sessionId) ||
-        (m['type'] === 'error' && (m['sessionId'] === undefined || m['sessionId'] === sessionId)),
+        // **No `=== undefined` escape.** `error` carries an address as of L5d, and the escape is what #512's
+        // first finding was: with no such key the left half was always true, so *any* refusal resolved *any*
+        // pending join. Two concurrent joins and the first refusal woke the wrong one — reported as a failure
+        // the other session never had, while the one that did fail waited out its deadline, because
+        // `dispatch` resolves only the first matching waiter.
+        //
+        // The cost is version skew, and it is taken deliberately rather than hedged: a client newer than its
+        // relay sees unaddressed refusals, which now match nothing, so the join runs to its deadline instead
+        // of throwing `'Session busy'` — advice the caller could have acted on. There is no version handshake
+        // anywhere in this protocol, so the alternative was a fallback, and a fallback here is exactly the
+        // ambiguity this work removes. `noteAddressSkew` logs it instead, once per client: the same shape as
+        // the input-ack skew record, on the same reasoning that logging is not matching.
+        (m['type'] === 'error' && m['sessionId'] === sessionId),
       5_000,
     )
     if (msg['type'] === 'error') throw new Error((msg['message'] as string) ?? 'Connect failed')

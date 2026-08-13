@@ -112,7 +112,18 @@ export class RelayClient {
     this.ws = null
   }
 
+  private addressSkewLogged = false
+
   private dispatch(msg: RelayMsg): void {
+    if (msg['type'] === 'error' && typeof msg['sessionId'] !== 'string' && !this.addressSkewLogged) {
+      // A relay older than L5d. The refusal matches no waiter, so the join times out with no reason — this is
+      // the only trace. One flow run holds one client, so once is once.
+      this.addressSkewLogged = true
+      console.error(
+        '[tapflow] a session:start refusal carried no sessionId — this relay predates addressed errors, so a ' +
+        'refused join times out rather than reporting why. Upgrade the relay.',
+      )
+    }
     for (let i = 0; i < this.waiters.length; i++) {
       if (this.waiters[i].predicate(msg)) {
         const [w] = this.waiters.splice(i, 1)
@@ -155,7 +166,14 @@ export class RelayClient {
     const msg = await this.waitFor(
       (m) =>
         (m['type'] === 'session:joined' && m['sessionId'] === sessionId) ||
-        (m['type'] === 'error' && (m['sessionId'] === undefined || m['sessionId'] === sessionId)),
+        // No `=== undefined` escape — see the twin in `mcp-server`. `error` carries an address as of L5d, and
+        // the escape *was* #512's first finding: with no such key the left half was always true, so any
+        // refusal resolved any pending join. The cost is version skew — a client newer than its relay sees
+        // unaddressed refusals, which match nothing, so the join burns its deadline instead of reporting why
+        // it was refused. Taken deliberately: there is no version handshake in this protocol, and the
+        // alternative is a fallback, which is the ambiguity this work removes. Logged once per **client**,
+        // not per session — a relay is per client, and the frame carries no session to key on anyway.
+        (m['type'] === 'error' && m['sessionId'] === sessionId),
       5_000,
       'session join',
     )

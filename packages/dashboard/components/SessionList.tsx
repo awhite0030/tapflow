@@ -83,9 +83,13 @@ export function SessionList({ onSelect }: Props) {
       // the badge stayed on "Shutting down..." for good and `isShutting` hid both buttons — the row went
       // inert. Same defect `DeviceViewer` had for `Session busy`, in a second place.
       //
-      // `error` carries no sessionId — by design, since the relay sends it when it cannot correlate — so
-      // the device comes from the request this list is waiting on. One is in flight at a time (see
-      // `handleShutdown`), which is what makes that unambiguous rather than merely likely.
+      // `error` **does** carry a sessionId as of L5d — it is the answer to a specific `session:start`, not
+      // the uncorrelatable failure this comment used to describe. The device still comes from the request
+      // this list is waiting on, and one is in flight at a time (see `handleShutdown`), so the behaviour is
+      // unchanged. What changed is that the serialisation is no longer the *only* thing making it
+      // unambiguous — `pending.sessionId` could be compared against `msg.sessionId` now, which would make
+      // the guard below rest on the wire rather than on a convention. Left as it is because this slice does
+      // not touch the shutdown flow; recorded so the option is visible.
       const pending = pendingRef.current
       pendingRef.current = null
       if (pending) {
@@ -114,9 +118,13 @@ export function SessionList({ onSelect }: Props) {
     onSelect(sessionId, deviceId)
   }
 
-  // One shutdown at a time. `error` carries no sessionId, so a second request in flight would leave the
-  // handler unable to say which row a refusal belongs to — and the previous version cleared *every* row
-  // on any error, which was a guess dressed as a comment.
+  // One shutdown at a time. The original reason was that `error` carried no sessionId, so a second request
+  // in flight would leave the handler unable to say which row a refusal belongs to — and an earlier version
+  // cleared *every* row on any error, which was a guess dressed as a comment. **That reason expired in
+  // L5d**: a refusal now names its session. The guard stays because it is still the thing that keeps this
+  // list's `pendingRef` a single slot, and because #527 has this list joining before it shuts down as a
+  // client-side stand-in for a missing server check — two in flight would interleave those joins. Deleting
+  // it on the strength of the old comment would unlock the wrong row's badge.
   const handleShutdown = (deviceId: string, sessionId: string) => {
     if (pendingRef.current) return
     pendingRef.current = { deviceId, sessionId }
