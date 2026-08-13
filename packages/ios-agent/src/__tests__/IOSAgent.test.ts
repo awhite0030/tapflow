@@ -1223,6 +1223,32 @@ describe('IOSAgent', () => {
       browser.close()
     })
 
+    it('keeps the argv line out of a boot failure toast', async () => {
+      // `Shutting Down` is the state a device caught mid-quit is in, and `simctl boot` refuses it.
+      // Refusing is right — swallowing it would put the wait back to polling a device nobody is
+      // bringing up — so this refusal is what the tester reads, and node's own first line is
+      // `Command failed: xcrun simctl boot <UDID>`, which says nothing and echoes the udid.
+      const simctl = mockSimctl(false)
+      ;(simctl.boot as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error('Command failed: xcrun simctl boot 1A2B-3C4D\nUnable to boot device in current state: Shutting Down'),
+      )
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      const errored = waitForType(browser, 'device:boot-error')
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-486f', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      const e = await errored
+      expect(e.message).toBe('Unable to boot device in current state: Shutting Down')
+
+      agent.disconnect()
+      browser.close()
+    })
+
     it('installs no helper when a shutdown lands while the boot is waiting (#486)', async () => {
       // The `bootSeq` re-check on the far side of the wait, which nothing reached before. The
       // existing reconnect test bumps the seq while `simctl.boot` is in flight, so it returns at the

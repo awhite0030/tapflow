@@ -41,7 +41,7 @@ const CLIPBOARD_CMD_TIMEOUT_MS = 5_000
 // which says nothing and echoes the device UDID, so prefer any other line. When there is none
 // (e.g. the timeout path, where stderr is empty) fall back to a plain description rather than
 // the argv line this exists to drop.
-function firstLine(e: unknown): string {
+export function firstLine(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e)
   const lines = msg.split('\n').map((l) => l.trim()).filter(Boolean)
   return lines.find((l) => !l.startsWith('Command failed:')) ?? 'the simulator did not respond'

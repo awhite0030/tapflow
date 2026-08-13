@@ -63,7 +63,7 @@ import {
   sendAudioYieldingToVideo,
 } from '@tapflowio/agent-core/utils'
 import type { AudioFrame } from '@tapflowio/agent-core'
-import { SimctlWrapper, isDeviceMissingError, ClipboardTooLargeError } from './SimctlWrapper.js'
+import { SimctlWrapper, isDeviceMissingError, ClipboardTooLargeError, firstLine } from './SimctlWrapper.js'
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
@@ -663,8 +663,12 @@ export class IOSAgent implements DeviceAgent {
 
     } catch (e) {
       if (seq !== state.bootSeq) return
-      const message = e instanceof Error ? e.message : String(e)
-      this.sendMsg({ type: 'device:boot-error', sessionId, requestId, message })
+      // `firstLine`, not `e.message`: this reaches a toast, and node's first line is
+      // `Command failed: xcrun simctl boot <UDID>`, which says nothing and echoes the udid. That
+      // matters more now that the boot is issued unconditionally — a device caught mid `Shutting
+      // Down` refuses the boot, and refusing is correct (swallowing it would put us back to waiting
+      // on a device nobody is bringing up), so the refusal is what the tester reads.
+      this.sendMsg({ type: 'device:boot-error', sessionId, requestId, message: firstLine(e) })
     }
   }
 

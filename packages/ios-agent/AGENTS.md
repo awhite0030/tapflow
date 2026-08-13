@@ -462,7 +462,9 @@ await vi.waitFor(() => expect(MockTouchHelper.mock.results.length).toBeGreaterTh
 const touchHelper = MockTouchHelper.mock.results[0].value
 ```
 
-`mockSimctl(true)` (booted=true) → skips `device:booting` and delivers `device:ready` immediately.
+`mockSimctl(true)` (booted=true) reaches `device:ready` fastest, but it takes the same path as any other
+boot — `device:booting` goes out before the handler's `try` on every call, and since #486 `simctl boot` is
+issued for a device the list called `booted` too. Nothing short-circuits on the device already being up.
 
 **`device:ready` is not a sync point.** It is sent as soon as the stream is handed off, before the helpers a test is usually about to read are observable — so `waitForType(browser, 'device:ready')` returning does not mean `MockCapture` or `MockTouchHelper` has been constructed. Always `vi.waitFor` on the mock you are about to read, never on the message alone.
 
