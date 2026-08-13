@@ -51,6 +51,17 @@ Measured against a killed emulator: the gRPC RPC rejects in **4ms** with `14 UNA
 - `ANDROID_HOME` or `ADB_PATH` environment variable is required. Missing → clear error and immediate exit.
 - Apple Silicon Mac: `system-images;android-34;google_apis;arm64-v8a` image required.
 
+### A screenshot reply names what was produced, never what was asked for
+
+`screencap -p` produces PNG and takes no format argument, so `screenshot:done` answers `format: 'png'`
+unconditionally — including for a JPEG request. The request's `format` is a **preference** and this
+platform cannot honour it; only the reply describes an outcome (see `ScreenshotRequest` in protocol).
+
+Echoing the request is #508: the relay writes that field into the HTTP `Content-Type`, so PNG bytes went
+out as `image/jpeg`, and `mcp-server` picked a JPEG parser for the dimensions it hands the LLM as
+`tap`'s divisors. The type system cannot see it — `'png' | 'jpeg'` is correct on both sides — so the
+test that pins a jpeg request to a `png` answer is the whole enforcement.
+
 ### Mapping internal reasons onto the wire
 
 `inputOutcome.ts` keeps this agent's seven internal reasons; `wireReason()` maps them onto the closed

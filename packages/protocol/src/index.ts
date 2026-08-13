@@ -243,6 +243,20 @@ export interface ScreenshotRequest {
   type: 'screenshot:request'
   sessionId: string
   requestId: string
+  /**
+   * A **preference, not a requirement.** An agent may produce something else, and says what it
+   * produced in `ScreenshotDone.format`.
+   *
+   * That asymmetry is not slack, it is the platform contract: `DeviceAgent.screenshot()` takes no
+   * format argument at all, so no agent has ever been asked to honour this — iOS happens to
+   * (`simctl io … --type`), Android cannot (`screencap -p` produces PNG and takes no format), and a
+   * third-party platform registered through `AgentRegistry.register()` is free to produce whatever
+   * it can. Required here only because every in-repo sender supplies one; absence would have to mean
+   * "no preference", which is what `'png'` already means.
+   *
+   * A consumer that needs to know what it is holding reads the **bytes**, not this field and not the
+   * reply's echo of it — #508 was this field being read as an outcome.
+   */
   format: 'png' | 'jpeg'
 }
 
@@ -785,8 +799,17 @@ export interface ScreenshotDone {
   type: 'screenshot:done'
   sessionId: string
   requestId: string
-  /** What the agent says it produced — the relay turns this into the HTTP `Content-Type`. Android
-   *  currently echoes the *requested* format while always producing PNG (#508). */
+  /**
+   * What the agent produced — the relay turns this into the HTTP `Content-Type`.
+   *
+   * The **only** field on this pair that describes an outcome; the request's `format` is a
+   * preference (see `ScreenshotRequest`). Android echoed the request here while always producing
+   * PNG, so a JPEG request came back as PNG bytes labelled `image/jpeg` (#508).
+   *
+   * Still a claim rather than a guarantee: it is what the agent *says*, and an agent older than the
+   * fix says the wrong thing. The relay logs a mismatch against the bytes but does not overwrite
+   * this — a consumer whose behaviour depends on the real format sniffs the bytes itself.
+   */
   format: 'png' | 'jpeg'
   /** base64. */
   data: string

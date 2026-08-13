@@ -57,6 +57,24 @@ const HEARTBEAT_MS = 30_000
 // times over and about half of a hand-typed restart. What bounds it is the other direction: the
 // device stays claimed by a session nobody can use until the window closes.
 const DEFAULT_AGENT_GRACE_MS = 15_000
+
+/**
+ * What a buffer actually is, from its magic bytes, or `null` for anything else.
+ *
+ * Duplicated in `mcp-server` rather than shared: `protocol`'s entry must erase under `import type`
+ * so it cannot hold a runtime value, and `mcp-server` does not depend on `agent-core`. The same
+ * situation as `correlatesWith` across the two clients, and the same answer — each copy has tests.
+ * These two signatures have not changed since 1992 and 1996, so there is little for them to drift to.
+ */
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+
+function sniffImageFormat(buf: Buffer): 'png' | 'jpeg' | null {
+  // All eight signature bytes — see the note on the `mcp-server` copy for why the trailing four earn
+  // their place. Here a false `png` would report a mismatch that is not one.
+  if (buf.length >= PNG_SIGNATURE.length && PNG_SIGNATURE.every((b, i) => buf[i] === b)) return 'png'
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xd8) return 'jpeg'
+  return null
+}
 import { handleVerifyReset, handleDoReset, handleSendMemberReset } from './api/passwordReset.js'
 import { handleListBuilds, handleGetBuild, handleUpdateBuild, handleUploadBuild, handleScheduleBuildDeletion, handleCancelBuildDeletion, purgeExpiredBuilds } from './api/builds.js'
 import { handleListApps, handleCreateApp, handleUpdateApp, handleDeleteApp } from './api/apps.js'
@@ -1605,7 +1623,21 @@ export class RelayServer {
     const pending = this.pendingScreenshots.get(msg.requestId)
     if (!pending) return
     const buf = Buffer.from(msg.data ?? '', 'base64')
-    pending.resolve(buf, msg.format ?? 'png')
+    const claimed = msg.format ?? 'png'
+    // Logged, **not** overwritten. The field means what the agent says it produced, and correcting it
+    // here would make the relay the authority on something only the agent can know — a contract
+    // change, where this is a drift detector. It costs four bytes of an already-decoded buffer.
+    //
+    // Worth having because the consumer-side fix for #508 sniffs the bytes and would otherwise hide a
+    // lying agent forever: #508 was found by a person noticing, and nothing would have reported it.
+    const actual = sniffImageFormat(buf)
+    if (actual !== null && actual !== claimed) {
+      logger.warn(
+        `[relay] screenshot from session ${msg.sessionId ?? '?'} is ${actual} but the agent called it ` +
+        `${claimed} — the Content-Type will be wrong. Upgrade the agent (#508).`,
+      )
+    }
+    pending.resolve(buf, claimed)
   }
 
   private handleScreenshotError(msg: RelayMessage): void {

@@ -24,6 +24,17 @@ Connects to the relay over WebSocket + REST (`TapflowClient`), registers MCP too
 - Client: `src/client.ts` — WebSocket connection to relay + REST calls for build/app data. Its `send()` takes `BrowserToRelay` from [`@tapflowio/protocol`](../protocol/AGENTS.md), so a new outbound message goes in that union first. Receiving stays loose (`Record<string, unknown>` + a predicate) — a **deferral, not a settled decision**, tracked in #512. Narrowing it would catch a live defect (`error` is matched on a `sessionId` that message does not have, so one session's failure can be reported against another's join) but it also makes `message: string`, turning this file's `?? 'failed'` fallbacks into unreachable code. Deleting those while nothing validates inbound JSON removes a real defence, so the validators (#444) come first.
 - Tools: `src/tools.ts` — all MCP tool definitions. One `registerTools(server, client)` call registers everything.
 - Screenshots are saved to a temp file and returned as MCP `image` content with base64 encoding.
+- **The screenshot's format is read from its magic bytes, not from the request or the reply** (#508).
+  The request's `format` is a preference (`ScreenshotRequest` in protocol) and the reply's is a claim, so
+  neither can decide how to *parse* the bytes — and `getImageDimensions` picks a parser by format, feeding
+  numbers the LLM hands back as `tap`'s divisors. Android produces PNG whatever is asked and used to echo
+  the request, so a JPEG request was measured with a JPEG parser against PNG bytes, where a stray `ff c0`
+  in the IDAT reads as a SOF0 marker and yields a wrong size. Sniffing here rather than trusting the
+  agent's fix is what makes it work against an agent that has **not** been upgraded — separate processes,
+  separate release lines, no version handshake. Unrecognised bytes fall back to the request and the
+  response says so.
+
+
 
 ### Tool semantics (non-obvious)
 

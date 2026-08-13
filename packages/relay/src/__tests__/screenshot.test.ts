@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import http from 'http'
 import fs from 'fs'
 import os from 'os'
@@ -103,6 +103,77 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     expect(res.body).toEqual(FAKE_PNG)
 
     agent.close()
+  })
+
+  it('TC1b: warns when the label disagrees with the bytes, without overwriting it (#508)', async () => {
+    // The consumer-side sniff fixes the symptom and hides a lying agent forever. #508 was found by a
+    // person noticing, and nothing reported it — so the detector is worth the eight bytes read off a
+    // buffer the relay had already decoded.
+    //
+    // Not overwriting is the point. The field is what the agent says it produced, and correcting it
+    // here would make the relay the authority on something only the agent can know. So the
+    // Content-Type still goes out wrong, and the warning is what says so.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { agent, sessionId } = await setupAgent()
+      agent.on('message', (data) => {
+        const msg = JSON.parse(data.toString()) as RelayMessage
+        if (msg.type === 'screenshot:request') {
+          agent.send(JSON.stringify({
+            type: 'screenshot:done',
+            sessionId: msg.sessionId,
+            requestId: msg.requestId,
+            format: 'jpeg',
+            data: FAKE_PNG.toString('base64'),
+          }))
+        }
+      })
+
+      const res = await httpGet(
+        port,
+        `/api/v1/sessions/${sessionId}/screenshot?format=jpeg`,
+        { Cookie: makeAuthCookie() },
+      )
+
+      expect(res.status).toBe(200)
+      expect(res.headers['content-type']).toBe('image/jpeg')
+      expect(warn.mock.calls.flat().join(' ')).toMatch(/is png but the agent called it jpeg/)
+
+      agent.close()
+    } finally { warn.mockRestore() }
+  })
+
+  it('TC1c: stays silent when the label and the bytes agree', async () => {
+    // TC1b's twin. On its own that test passes for an implementation whose condition is `true` — a
+    // warning on every screenshot is not a drift detector but noise, and a real mismatch is then
+    // buried in it.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { agent, sessionId } = await setupAgent()
+      agent.on('message', (data) => {
+        const msg = JSON.parse(data.toString()) as RelayMessage
+        if (msg.type === 'screenshot:request') {
+          agent.send(JSON.stringify({
+            type: 'screenshot:done',
+            sessionId: msg.sessionId,
+            requestId: msg.requestId,
+            format: 'png',
+            data: FAKE_PNG.toString('base64'),
+          }))
+        }
+      })
+
+      const res = await httpGet(
+        port,
+        `/api/v1/sessions/${sessionId}/screenshot`,
+        { Cookie: makeAuthCookie() },
+      )
+
+      expect(res.status).toBe(200)
+      expect(warn.mock.calls.flat().join(' ')).not.toMatch(/the agent called it/)
+
+      agent.close()
+    } finally { warn.mockRestore() }
   })
 
   it('TC2: JPEG 포맷 요청 — agent가 jpeg 응답 시 200 image/jpeg', async () => {
