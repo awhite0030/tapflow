@@ -13,8 +13,8 @@ export class RelayDriver implements FlowDriver {
 
   queryUITree(signal?: AbortSignal) { return this.client.queryUITree(this.sessionId, signal) }
 
-  async tap(x: number, y: number): Promise<void> {
-    this.client.tap(this.sessionId, x, y)
+  tap(x: number, y: number): Promise<void> {
+    return this.client.tap(this.sessionId, x, y)
   }
 
   swipe(from: [number, number], to: [number, number], durationMs: number) {
@@ -25,8 +25,8 @@ export class RelayDriver implements FlowDriver {
     return this.client.typeText(this.sessionId, text)
   }
 
-  async pressKey(code: string): Promise<void> {
-    this.client.pressKey(this.sessionId, code)
+  pressKey(code: string): Promise<void> {
+    return this.client.pressKey(this.sessionId, code)
   }
 
   openUrl(url: string) { return this.client.openUrl(this.sessionId, url) }

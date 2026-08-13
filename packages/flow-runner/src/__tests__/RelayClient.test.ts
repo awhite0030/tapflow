@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
-import { RelayClient } from '../RelayClient.js'
+import { RelayClient, SessionJoinError } from '../RelayClient.js'
 import { TransientQueryError } from '../errors.js'
 
 // Minimal Response stub for the ui-tree GET.
@@ -77,7 +77,7 @@ describe('RelayClient.queryUITree — transient vs permanent classification', ()
 // The old code could not fail this way, because there was no id to get wrong.
 //
 // Read off the wire rather than asserted at the call site: what matters is what the relay would receive.
-describe('RelayClient — the fire-and-forget input senders mint a usable correlator', () => {
+describe('RelayClient — the input senders mint a correlator and await the ack', () => {
   let wss: WebSocketServer | null = null
 
   afterEach(async () => {
@@ -88,7 +88,12 @@ describe('RelayClient — the fire-and-forget input senders mint a usable correl
     await new Promise<void>((r) => s.close(() => r()))
   })
 
-  async function capture() {
+  // `ack` is what the agents and the relay do for every terminal input. A server that stays silent models an
+  // agent older than the ack contract, which is not what these tests are about — the refusal tests below
+  // pass their own reply instead.
+  async function capture(ack: (msg: Record<string, unknown>) => Record<string, unknown> | null = (m) => ({
+    type: 'input:done', sessionId: m['sessionId'], requestId: m['requestId'],
+  })) {
     const received: Record<string, unknown>[] = []
     wss = new WebSocketServer({ port: 0 })
     wss.on('connection', (ws) => {
@@ -97,6 +102,12 @@ describe('RelayClient — the fire-and-forget input senders mint a usable correl
         received.push(msg)
         if (msg['type'] === 'session:start') {
           ws.send(JSON.stringify({ type: 'session:joined', sessionId: msg['sessionId'], capabilities: [] }))
+        }
+        // The five acked requests, per protocol/AGENTS.md — the four terminal frames and `input:type`.
+        // Opening and move frames are silent by contract.
+        if (msg['type'] === 'input:touch:end' || msg['type'] === 'input:key') {
+          const reply = ack(msg)
+          if (reply) ws.send(JSON.stringify(reply))
         }
       })
     })
@@ -115,8 +126,7 @@ describe('RelayClient — the fire-and-forget input senders mint a usable correl
 
   it('tap sends a terminal frame with a usable id, and an opening frame with none', async () => {
     const { client, received } = await capture()
-    client.tap('s1', 0.5, 0.5)
-    await vi.waitFor(() => expect(received.some((m) => m['type'] === 'input:touch:end')).toBe(true))
+    await client.tap('s1', 0.5, 0.5)
 
     usable(received.find((m) => m['type'] === 'input:touch:end'), 'input:touch:end')
     // And the opening frame carries none — nothing acks it, so an id there would name a waiter that does
@@ -127,8 +137,6 @@ describe('RelayClient — the fire-and-forget input senders mint a usable correl
   it('swipe sends a terminal frame with a usable id, and its moves with none', async () => {
     const { client, received } = await capture()
     await client.swipe('s1', [0.1, 0.1], [0.9, 0.9], 40)
-    // `swipe` resolves once it has *sent* the terminal frame; the server receiving it is a separate turn.
-    await vi.waitFor(() => expect(received.some((m) => m['type'] === 'input:touch:end')).toBe(true))
 
     usable(received.find((m) => m['type'] === 'input:touch:end'), 'input:touch:end')
     const moves = received.filter((m) => m['type'] === 'input:touch:move')
@@ -138,10 +146,49 @@ describe('RelayClient — the fire-and-forget input senders mint a usable correl
 
   it('pressKey sends a usable id', async () => {
     const { client, received } = await capture()
-    client.pressKey('s1', 'Enter')
-    await vi.waitFor(() => expect(received.some((m) => m['type'] === 'input:key')).toBe(true))
+    await client.pressKey('s1', 'Enter')
 
     usable(received.find((m) => m['type'] === 'input:key'), 'input:key')
+  })
+
+  it('a refused input fails the step, naming the reason (#512)', async () => {
+    // The whole point of awaiting the ack. Without it the tap is refused, nothing notices, and the next
+    // `assertVisible` polls until its own deadline and fails with "selector not found" — an infrastructure
+    // failure written into the report as a product failure, which for a test runner is the worst place to
+    // lose a cause.
+    const { client } = await capture((m) => ({
+      type: 'input:error',
+      sessionId: m['sessionId'],
+      requestId: m['requestId'],
+      reason: 'not-booted',
+      message: 'device is not booted',
+    }))
+    await expect(client.tap('s1', 0.5, 0.5)).rejects.toThrow(/tap was refused by the device \(not-booted\): device is not booted/)
+  })
+
+  it('reads an ack with no reason as channel-unavailable, not as fine', async () => {
+    // `reason` is optional on the wire — an agent predating the field omits it — and absence means
+    // *unknown*. protocol/AGENTS.md makes the conservative reading the contract, and the failure still has
+    // to name something rather than an empty parenthesis.
+    const { client } = await capture((m) => ({
+      type: 'input:error', sessionId: m['sessionId'], requestId: m['requestId'], message: 'no channel',
+    }))
+    await expect(client.pressKey('s1', 'Enter'))
+      .rejects.toThrow(/pressKey Enter was refused by the device \(channel-unavailable\): no channel/)
+  })
+
+  it('does not take another input\'s ack', async () => {
+    // The correlator is the point, and it is why #499 exists: a gesture is dozens of frames and a late ack
+    // from the previous input lands in this one's waiter. The stale reply is an **error** so resolving on it
+    // is observable — two indistinguishable successes cannot fail this test.
+    const { client } = await capture((m) => {
+      const ws = [...wss!.clients][0]
+      ws.send(JSON.stringify({
+        type: 'input:error', sessionId: 's1', requestId: 'stale', reason: 'failed', message: 'a previous input',
+      }))
+      return { type: 'input:done', sessionId: m['sessionId'], requestId: m['requestId'] }
+    })
+    await expect(client.tap('s1', 0.5, 0.5)).resolves.toBeUndefined()
   })
 
   it('typeText correlates, so its waiter cannot take the previous typing\'s reply', async () => {
@@ -315,6 +362,40 @@ describe('RelayClient.joinSession — a refusal is addressed', () => {
       type: 'error', sessionId: m['sessionId'], message: 'Session busy', reason: 'session-busy',
     }))
     await expect(client.joinSession('s1')).rejects.toThrow('Session busy')
+  })
+
+  it('carries the machine reason, not just the prose (#512)', async () => {
+    // `reason` is what #506 added the field for — the dashboard was branching on the prose, handled two of
+    // three wordings, and dropped `Session busy` silently. This client was still reading the prose, so the
+    // three outcomes were indistinguishable to a caller: retry works, nothing is ever coming, or the Mac is
+    // over its ceiling.
+    for (const [reason, retryable] of [
+      ['session-busy', true],
+      ['session-not-found', false],
+      ['agent-resources-exhausted', false],
+    ] as const) {
+      const client = await relay((m) => ({ type: 'error', sessionId: m['sessionId'], message: 'refused', reason }))
+      const err = await client.joinSession('s1').catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(SessionJoinError)
+      expect((err as SessionJoinError).reason).toBe(reason)
+      expect((err as SessionJoinError).retryable).toBe(retryable)
+      const s = wss
+      wss = null
+      for (const c of s!.clients) c.terminate()
+      await new Promise<void>((r) => s!.close(() => r()))
+    }
+  })
+
+  it('reads a reason it does not know as unknown, and therefore not retryable', async () => {
+    // `protocol`'s entry erases under `import type`, so the guard's member list is written out here and can
+    // fall behind. It degrades toward "not retryable", which is the safe direction — a caller that retries a
+    // permanent refusal loops, one that does not retry a transient one reports it.
+    const client = await relay((m) => ({
+      type: 'error', sessionId: m['sessionId'], message: 'refused', reason: 'a-reason-from-the-future',
+    }))
+    const err = await client.joinSession('s1').catch((e: unknown) => e) as SessionJoinError
+    expect(err.reason).toBe('unknown')
+    expect(err.retryable).toBe(false)
   })
 
   it('does not take a refusal meant for another session', async () => {

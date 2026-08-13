@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { BrowserToRelay, DeviceSummary } from '@tapflowio/protocol'
+import type { BrowserToRelay, DeviceSummary, SessionStartFailure } from '@tapflowio/protocol'
 import { WebSocket } from 'ws'
 import type { UIElement } from '@tapflowio/agent-core'
 import { PlatformError } from '@tapflowio/agent-core'
@@ -17,6 +17,38 @@ class RelayHttpError extends PlatformError {
 // (a flow always boots first, so mid-flow 409 is a dead device, not a race). Everything else
 // (agent/foreground-race 502, idle-timeout 504, 5xx, network 0) is retryable.
 const PERMANENT_QUERY_STATUSES = new Set([400, 401, 403, 404, 409])
+
+// An input ack is a local round trip — the agent answers from its own dispatch, not from the device, which
+// HID is fire-and-forget about. Generous next to `typeText`'s 15s because that one drives a paste handshake
+// on the device; this one only has to cross the relay.
+const INPUT_ACK_TIMEOUT_MS = 10_000
+
+// Written out rather than derived: `protocol`'s main entry must erase under `import type`, so it holds no
+// runtime value a guard could read. Adding a member there without adding it here degrades that member to
+// `unknown`, which is the conservative direction — a caller sees "not retryable" rather than a wrong retry.
+const SESSION_START_FAILURES = ['session-not-found', 'session-busy', 'agent-resources-exhausted'] as const
+
+function isSessionStartFailure(v: unknown): v is SessionStartFailure {
+  return typeof v === 'string' && (SESSION_START_FAILURES as readonly string[]).includes(v)
+}
+
+/**
+ * A `session:start` the relay refused, carrying the machine-readable `reason` (#512, finding 2).
+ *
+ * The three members want different things from the caller, which is why the prose was never enough:
+ * `session-busy` means someone else holds the device and a retry can work; `session-not-found` means nothing
+ * is ever coming; `agent-resources-exhausted` means the Mac is over its ceiling and the answer is to free
+ * something or pick another device. `retryable` is the only distinction this client can act on, and it is
+ * exposed rather than acted on — a flow runner's retry policy belongs to whoever owns the run, not to a
+ * transport method.
+ */
+export class SessionJoinError extends PlatformError {
+  constructor(message: string, readonly reason: SessionStartFailure | 'unknown', options?: ErrorOptions) {
+    super(message, options)
+  }
+
+  get retryable(): boolean { return this.reason === 'session-busy' }
+}
 
 // Protocol owns the wire shape. The name stays `DeviceInfo` because it is exported from this
 // package's public entry and `@tapflowio/cli` imports it — renaming would be a breaking change.
@@ -177,7 +209,16 @@ export class RelayClient {
       5_000,
       'session join',
     )
-    if (msg['type'] === 'error') throw new PlatformError((msg['message'] as string) ?? 'session join failed')
+    if (msg['type'] !== 'error') return
+    // `reason` is what #506 added this field for: the dashboard was branching on the free prose, handled two
+    // of the three wordings, and dropped `Session busy` silently. This client was still reading the prose.
+    // It is **required** on `GenericError` — single producer, three sites in the relay's `handleSessionStart`
+    // — so `unknown` here means a relay predating it, not a legitimate absence.
+    const reason = msg['reason']
+    throw new SessionJoinError(
+      `session join refused (${typeof reason === 'string' ? reason : 'unknown'}): ${(msg['message'] as string) ?? 'no detail'}`,
+      isSessionStartFailure(reason) ? reason : 'unknown',
+    )
   }
 
   leaveSession(sessionId: string): void {
@@ -228,22 +269,24 @@ export class RelayClient {
     if (msg['type'] === 'app:clear-state-error') throw new PlatformError((msg['message'] as string) ?? 'clear state failed')
   }
 
-  // `tap`, `swipe` and `pressKey` mint a correlator that nothing here reads — they are fire-and-forget,
-  // unlike `typeText` below. The id is not optional slack: the terminal frame declares it required, because
-  // the relay gates on it and every ack echoes it. Minting it at the sender is also what a waiter added
-  // later would need already on the wire; a flow that cannot see a failed tap is a separate gap.
+  // The correlator these mint is now read. It always was on the wire — the terminal frame declares it
+  // required because the relay gates on it and every ack echoes it — and this waiter is what it was minted
+  // for (#512, finding 3).
   //
   // The **opening and move frames carry none**, and that is the contract rather than an omission: nothing
   // acks them, so an id there would name a waiter that does not exist.
-  tap(sessionId: string, x: number, y: number): void {
+  async tap(sessionId: string, x: number, y: number): Promise<void> {
     const payload = { x, y }
+    const requestId = randomUUID()
     this.send({ type: 'input:touch:start', sessionId, payload })
-    this.send({ type: 'input:touch:end', sessionId, requestId: randomUUID(), payload })
+    this.send({ type: 'input:touch:end', sessionId, requestId, payload })
+    await this.awaitInputAck(sessionId, requestId, 'tap')
   }
 
   async swipe(sessionId: string, from: [number, number], to: [number, number], durationMs: number): Promise<void> {
     const STEPS = 8
     const interval = durationMs / STEPS
+    const requestId = randomUUID()
     this.send({ type: 'input:touch:start', sessionId, payload: { x: from[0], y: from[1] } })
     for (let i = 1; i < STEPS; i++) {
       await delay(interval)
@@ -255,7 +298,8 @@ export class RelayClient {
       })
     }
     await delay(interval)
-    this.send({ type: 'input:touch:end', sessionId, requestId: randomUUID(), payload: { x: to[0], y: to[1] } })
+    this.send({ type: 'input:touch:end', sessionId, requestId, payload: { x: to[0], y: to[1] } })
+    await this.awaitInputAck(sessionId, requestId, 'swipe')
   }
 
   async typeText(sessionId: string, text: string): Promise<void> {
@@ -270,8 +314,43 @@ export class RelayClient {
     if (msg['type'] === 'input:type-error') throw new PlatformError((msg['message'] as string) ?? 'type text failed')
   }
 
-  pressKey(sessionId: string, code: string): void {
-    this.send({ type: 'input:key', sessionId, requestId: randomUUID(), payload: { code, modifiers: 0 } })
+  async pressKey(sessionId: string, code: string): Promise<void> {
+    const requestId = randomUUID()
+    this.send({ type: 'input:key', sessionId, requestId, payload: { code, modifiers: 0 } })
+    await this.awaitInputAck(sessionId, requestId, `pressKey ${code}`)
+  }
+
+  /**
+   * Waits for the terminal input's ack and turns a refusal into the step's failure, with the reason on it.
+   *
+   * Without this a refused input was reported as a **UI** problem: the tap landed nowhere, the next
+   * `assertVisible` polled until its own deadline, and the flow failed with "selector not found". For a test
+   * runner that is the worst place to lose a cause — it turns an infrastructure failure into a product one in
+   * the report, and the report is the artefact CI keeps.
+   *
+   * **No automatic retry, deliberately.** `channel-starting` is the reason that would succeed 200ms later, and
+   * retrying it here would be one line — but the retry belongs to whoever owns the step's timeout, not to a
+   * transport method that cannot see it. `RelayDriver` is where a policy would go. Naming the reason is what
+   * makes that decision possible at all; today it is not even visible.
+   *
+   * **A missing ack fails rather than passing.** `mcp-server` treats ack silence as success (#457) because an
+   * LLM re-observes the screen and recovers; a flow replays a fixed script and cannot. Every in-repo agent
+   * answers every terminal input, and the relay answers when it cannot reach one (#492), so silence here means
+   * an agent older than those — which is exactly the case a deterministic runner must not paper over.
+   */
+  private async awaitInputAck(sessionId: string, requestId: string, what: string): Promise<void> {
+    const msg = await this.waitFor(
+      (m) => (m['type'] === 'input:done' || m['type'] === 'input:error')
+        && m['sessionId'] === sessionId && m['requestId'] === requestId,
+      INPUT_ACK_TIMEOUT_MS,
+      what,
+    )
+    if (msg['type'] !== 'input:error') return
+    // `reason` is optional on the wire and absent means *unknown*, never *fine* — an agent predating the
+    // field. Absent, or a member this build does not know, both read as `channel-unavailable`, which is the
+    // conservative one (protocol/AGENTS.md).
+    const reason = typeof msg['reason'] === 'string' ? msg['reason'] : 'channel-unavailable'
+    throw new PlatformError(`${what} was refused by the device (${reason}): ${(msg['message'] as string) ?? 'no detail'}`)
   }
 
   async openUrl(sessionId: string, url: string): Promise<void> {
