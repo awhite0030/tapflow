@@ -25,24 +25,30 @@ status: living
   so `handleDeviceBoot` awaits `SimctlWrapper.waitUntilBooted` before it sends anything (#486). Android has
   always waited (`EmulatorLauncher.waitForBoot`), and a caller that acts on `ready` immediately is the one that
   notices: #440's *No devices are booted* was this half of the race. A boot that never finishes ends at a 90s
-  deadline as `device:boot-error`. Three details of the poll are load-bearing and each closed a hole the first
-  draft shipped:
-  - **`unknown` gets the whole deadline; `shutdown` and "gone from the list" get 3 seconds.** They are not the
-    same reading. `toDeviceStatus` collapses `Booting` into `unknown`, so that is the ordinary one during a
-    boot — but the handler **skips `boot` entirely** when the device was already `booted` when it read the
-    list, and a shutdown landing in that window leaves nobody booting anything. The grace covers CoreSimulator
-    still reporting the pre-boot state; past it, the first reading already had the answer.
+  deadline as `device:boot-error`. Four details are load-bearing, and three of them are holes the first draft
+  of that wait shipped:
+  - **Every status other than `booted` counts as still coming up, `shutdown` included.** `toDeviceStatus`
+    collapses `Booting` into `unknown`, and the wait only ever runs after a `boot` was accepted, so a
+    `shutdown` reading is the transition not yet observed. A draft gave it a 3s grace and failed early on it;
+    that was reverted, because the reading is indistinguishable from a slow machine's healthy boot.
+  - **The boot is issued on every path, including when the list already said `booted`** — which is what makes
+    the sentence above true. The original on-demand boot skipped it there as an obvious economy; that skip
+    became the one route into the wait with *nothing bringing the device up*, so a tester who quit the
+    simulator inside one `xcrun` round trip paid the whole deadline. `SimctlWrapper.boot` swallows
+    `Unable to boot device in current state: Booted`, so the skip bought one no-op subprocess.
   - **A failed reading is not a reading.** This spawns `xcrun simctl list` up to 180 times where the old code
     spawned it once, each one a chance to kill a healthy boot while CoreSimulator is busiest. Failures are
-    swallowed and retried, and the last is reported with the deadline. Android has always done this; the claim
-    of parity with `waitForBoot` was false until it did.
+    swallowed and retried, and the last is reported with the deadline — but only if it is genuinely the last,
+    which is why the success path clears it. Android has always swallowed them; the claim of parity with
+    `waitForBoot` was false until this did too.
   - **`isStale` cancels the poll from inside.** The handler is fire-and-forget and its `bootSeq` check runs
     only once the wait *returns*, so a shutdown mid-wait would otherwise leave a process spawning twice a
     second against a device that is deliberately off. The check after the wait stays as well — it covers the
     microtask-thin case where the wait has resolved and the seq moves before the handler resumes.
-  - **A caller with a shorter deadline still cannot hear the reason.** `mcp-server`'s `boot_device` waits 30s,
-    inside the agent's 90s, so a cold boot past 30s reports a bare timeout to the LLM. That ceiling was
-    unreachable before, because the agent answered on boot acceptance.
+
+  Still open, and **not** fixed by the above: `mcp-server`'s `boot_device` waits 30s, *inside* the agent's 90s,
+  so a cold boot past 30s reports a bare timeout to the LLM rather than the reason the agent is about to send.
+  That ceiling was unreachable while the agent answered on boot acceptance.
 
 ### Input acks carry a reason
 

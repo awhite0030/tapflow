@@ -610,7 +610,14 @@ export class IOSAgent implements DeviceAgent {
           throw err
         }
         await this.simctl.boot(deviceId)
-      } else if (target.status !== 'booted') {
+      } else {
+        // Unconditionally, including when the list above said `booted`. That reading is already
+        // stale by the time we act on it — a tester can ⌘Q the simulator, or run `simctl shutdown`,
+        // in the width of one `xcrun` round trip — and skipping the boot on it is the only way to
+        // reach the wait below with *nothing bringing the device up*, which then costs the full
+        // deadline to discover. `SimctlWrapper.boot` swallows `Unable to boot device in current
+        // state: Booted`, so re-issuing it for a device that really is up costs one no-op
+        // subprocess and makes "the wait only ever runs after a boot was accepted" true.
         await this.bootWithZombieRecovery(deviceId)
       }
 

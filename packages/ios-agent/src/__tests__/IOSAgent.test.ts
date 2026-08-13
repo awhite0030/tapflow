@@ -1858,7 +1858,19 @@ describe('IOSAgent', () => {
       browser.close()
     })
 
-    it('skips boot call for already-booted device', async () => {
+    it('re-issues the boot even for a device the list reported as booted (#486)', async () => {
+      // This used to assert the opposite — the boot was skipped when the list said `booted`. That
+      // skip arrived with the original on-demand boot feature (`42a5ea6`) as an obvious economy,
+      // with no recorded reason, and it became load-bearing in the wrong direction once
+      // `waitUntilBooted` existed: it was the only path reaching the wait with **nothing bringing
+      // the device up**, so a tester who ⌘Q'd the simulator in the width of one `xcrun` round trip
+      // got a 90s deadline instead of a boot.
+      //
+      // A short grace on `shutdown` inside the poll was tried first and rejected in review: that
+      // reading is not distinguishable from a slow machine's healthy boot, so the clock would fail
+      // real boots to shorten a case that can simply be removed. `SimctlWrapper.boot` swallows
+      // `Unable to boot device in current state: Booted`, so the cost for a device that really is
+      // up is one no-op subprocess.
       const simctl = mockSimctl(true)
       const agent = new IOSAgent({ intervalMs: 50 }, simctl)
       await agent.connect(`ws://localhost:${port}`)
@@ -1871,7 +1883,9 @@ describe('IOSAgent', () => {
       const readyPromise = waitForType(browser, 'device:ready')
       browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-19', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await readyPromise
-      expect(simctl.boot).not.toHaveBeenCalled()
+      expect(simctl.boot).toHaveBeenCalledWith('dev-1')
+      // Not the erase path — that one has its own boot call and a very different meaning.
+      expect(simctl.erase).not.toHaveBeenCalled()
 
       agent.disconnect()
       browser.close()

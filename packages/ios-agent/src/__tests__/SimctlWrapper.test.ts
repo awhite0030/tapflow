@@ -192,29 +192,35 @@ describe('SimctlWrapper', () => {
         .rejects.toThrow(/last poll failed: service invalidated/)
     })
 
-    it('stops early when the device is settled rather than coming up', async () => {
-      // `shutdown` and "gone from the list" mean nothing is bringing this device up, and
-      // `handleDeviceBoot` reaches here without calling `boot` when the device was already `booted`
-      // when it read the list — so a shutdown landing in that window leaves nobody booting anything.
-      // The grace covers CoreSimulator still reporting the pre-boot state; past it, waiting out the
-      // full deadline would spend 90s on an answer the first reading already had.
-      const off = transitioningRunner(['Shutdown'])
-      const started = Date.now()
-      await expect(new SimctlWrapper(off).waitUntilBooted('device-1', { timeoutMs: 60_000, pollIntervalMs: 5, settledGraceMs: 30 }))
-        .rejects.toThrow(/is not coming up — it reports shutdown, 30ms after the boot began/)
-      expect(Date.now() - started).toBeLessThan(1_000)
-
-      const gone = transitioningRunner(['Booted'])
-      await expect(new SimctlWrapper(gone).waitUntilBooted('device-404', { timeoutMs: 60_000, pollIntervalMs: 5, settledGraceMs: 0 }))
-        .rejects.toThrow(/is not coming up — it is no longer listed/)
+    it('reports a device that is not in the list at all', async () => {
+      // Reached both by a deleted device and by one `listDevices` filtered out for
+      // `isAvailable: false`. Neither self-heals, and neither gets its own early exit — for the same
+      // reason `shutdown` does not, and it costs the deadline to say so.
+      const runner = transitioningRunner(['Booted'])
+      await expect(new SimctlWrapper(runner).waitUntilBooted('device-404', { timeoutMs: 0, pollIntervalMs: 0 }))
+        .rejects.toThrow(/last seen: no longer listed/)
     })
 
-    it('does not let a settled reading end a boot that then comes up', async () => {
-      // The grace is a window, not a verdict on the first reading. `boot` returning before
-      // CoreSimulator has left `Shutdown` is the ordinary case this exists for.
-      const runner = transitioningRunner(['Shutdown', 'Shutdown', 'Booting', 'Booted'])
-      const device = await new SimctlWrapper(runner).waitUntilBooted('device-1', { timeoutMs: 5_000, pollIntervalMs: 0, settledGraceMs: 5_000 })
+    it('does not blame a recovered-from failure for the timeout', async () => {
+      // The `lastError = null` on the success path. Without it a single failed poll makes every
+      // later deadline report `last poll failed: …` — naming an error the wait recovered from, for a
+      // device that was answering perfectly well and simply never finished booting. Deleting that
+      // line passes every other test here, because none of them follow a `throw` with a
+      // non-`Booted` reading.
+      const runner = transitioningRunner(['throw', 'Booting'])
+      await expect(new SimctlWrapper(runner).waitUntilBooted('device-1', { timeoutMs: 30, pollIntervalMs: 5 }))
+        .rejects.toThrow(/did not finish booting within 30ms \(last seen: unknown\)/)
+    })
+
+    it('keeps waiting on shutdown, which is a transition it has not observed yet', async () => {
+      // `boot` returning before CoreSimulator has left `Shutdown` is ordinary, and the handler
+      // issues a boot on every path that reaches here — so this reading is never "nobody is booting
+      // it". A draft gave `shutdown` a 3s grace and failed early on it; a slow machine's healthy
+      // boot is not distinguishable from a dead one by that clock, so the deadline owns it instead.
+      const runner = transitioningRunner(['Shutdown', 'Shutdown', 'Shutdown', 'Booting', 'Booted'])
+      const device = await new SimctlWrapper(runner).waitUntilBooted('device-1', { timeoutMs: 5_000, pollIntervalMs: 0 })
       expect(device.status).toBe('booted')
+      expect(runner.exec).toHaveBeenCalledTimes(5)
     })
 
     it('abandons the poll as soon as the boot is superseded', async () => {

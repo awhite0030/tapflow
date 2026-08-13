@@ -135,30 +135,27 @@ export class SimctlWrapper {
   // Android has waited since the beginning (`EmulatorLauncher.waitForBoot`); this is the counterpart.
   private static readonly BOOT_READY_TIMEOUT_MS = 90_000
   private static readonly BOOT_POLL_INTERVAL_MS = 500
-  private static readonly BOOT_SETTLED_GRACE_MS = 3_000
 
   /**
    * Polls the device list until `deviceId` reports `booted`, and returns it — so the caller sends
    * on the value it read rather than asserting one.
    *
-   * Three readings, three answers, because they are not the same claim:
+   * **Every status other than `booted` counts as still coming up, `shutdown` included.**
+   * `toDeviceStatus` collapses `Booting` into `unknown`, and this only ever runs after a `boot` was
+   * accepted — `handleDeviceBoot` issues one on every path, deliberately including the one where
+   * the list already said `booted`, precisely so this sentence stays true. So a `shutdown` reading
+   * here is the transition not yet observed, and failing on it would race a boot that was about to
+   * succeed. A draft gave `shutdown` a 3s grace instead; it was removed, because the reading it
+   * would end early is indistinguishable from a slow machine's, the 3s answered no measurement, and
+   * the case it was for is better removed than timed.
    *
-   * - **`unknown`** is a device in motion. `toDeviceStatus` collapses `Booting` into it, so this is
-   *   the ordinary reading during a boot and it gets the whole `timeoutMs`.
-   * - **`shutdown`, or gone from the list**, is what a device looks like when *nothing* is bringing
-   *   it up, so it gets `settledGraceMs` and no more. The grace exists because CoreSimulator can
-   *   still report the pre-boot state for a moment after `boot` returns — but the caller does not
-   *   always reach here via `boot` at all: `handleDeviceBoot` skips it when the device was already
-   *   `booted` when the handler read the list, and a shutdown landing in that window leaves nobody
-   *   booting anything. Spending the full deadline there waits 90s for an answer the first reading
-   *   already had.
-   * - **A failed reading is not a reading.** `listDevices` spawns `xcrun simctl list`, and this now
-   *   does it up to `timeoutMs / pollIntervalMs` times where the old code did it once — every one
-   *   of those an independent chance to kill a healthy boot, during the interval when
-   *   CoreSimulator is busiest. Failures are swallowed and retried, and the last one is reported
-   *   with the deadline so the cause is not lost. Android's poll has always done this
-   *   (`EmulatorLauncher.waitForBoot`); the first draft of this method did not, which made the
-   *   "counterpart" claim false in the one way that matters.
+   * **A failed reading is not a reading.** `listDevices` spawns `xcrun simctl list`, and this does
+   * it up to `timeoutMs / pollIntervalMs` times where the old code did it once — every one an
+   * independent chance to kill a healthy boot, during the interval when CoreSimulator is busiest.
+   * Failures are swallowed and retried, and the last one is reported with the deadline so the cause
+   * is not lost. Android's poll has always done this (`EmulatorLauncher.waitForBoot`); the first
+   * draft of this method did not, which made the "counterpart" claim false in the one way that
+   * matters.
    *
    * `isStale` is checked every iteration. This loop outlives the boot that started it — the handler
    * is fire-and-forget, and its `bootSeq` check runs only once the wait *returns* — so a shutdown
@@ -170,18 +167,15 @@ export class SimctlWrapper {
     opts: {
       timeoutMs?: number
       pollIntervalMs?: number
-      settledGraceMs?: number
       isStale?: () => boolean
     } = {},
   ): Promise<Device> {
     const {
       timeoutMs = SimctlWrapper.BOOT_READY_TIMEOUT_MS,
       pollIntervalMs = SimctlWrapper.BOOT_POLL_INTERVAL_MS,
-      settledGraceMs = SimctlWrapper.BOOT_SETTLED_GRACE_MS,
       isStale,
     } = opts
     const deadline = Date.now() + timeoutMs
-    let settledSince: number | null = null
     let lastError: unknown = null
 
     for (;;) {
@@ -190,23 +184,17 @@ export class SimctlWrapper {
       let device: Device | undefined
       try {
         device = (await this.listDevices()).find((d) => d.id === deviceId)
+        // Cleared on every success, so the deadline blames a failed poll only when the *last* one
+        // failed. Leaving it set would report a recovered-from error as the reason for the timeout.
         lastError = null
       } catch (err) {
         lastError = err
       }
       if (device?.status === 'booted') return device
 
-      const settled = lastError === null && (device === undefined || device.status === 'shutdown')
-      settledSince = settled ? settledSince ?? Date.now() : null
-
-      // Both checks sit after the read, not before it, so a zero timeout still gets one look — a
-      // device that is already up must not need a poll interval to be reported as up.
-      const now = Date.now()
-      if (settledSince !== null && now - settledSince >= settledGraceMs) {
-        const seen = device === undefined ? 'it is no longer listed' : 'it reports shutdown'
-        throw new PlatformError(`Device ${deviceId} is not coming up — ${seen}, ${settledGraceMs}ms after the boot began`)
-      }
-      if (now >= deadline) {
+      // Checked after the read, not before it, so a zero timeout still gets one look — a device that
+      // is already up must not need a poll interval to be reported as up.
+      if (Date.now() >= deadline) {
         const seen = lastError !== null
           ? `last poll failed: ${firstLine(lastError)}`
           : `last seen: ${device?.status ?? 'no longer listed'}`

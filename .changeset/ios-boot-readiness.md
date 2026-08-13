@@ -20,14 +20,22 @@ policy. A human is slower than the gap and rarely notices; `mcp-server` installs
 the session's udid removed one of its two causes and left this one, because the two were indistinguishable at
 the time.
 
-**Three readings get three answers.** `unknown` is a device in motion — `toDeviceStatus` collapses `Booting`
-into it — so it gets the whole deadline. `shutdown`, or gone from the list, is what a device looks like when
-nothing is bringing it up, so it gets a 3s grace and no more: the handler skips `boot` entirely when the device
-was already `booted` when it read the list, and a shutdown landing in that window leaves nobody booting
-anything. A **failed** reading is not a reading at all — this spawns `xcrun simctl list` up to 180 times where
-the old code spawned it once, each an independent chance to kill a healthy boot during the interval when
-CoreSimulator is busiest, so failures are retried and the last one is reported with the deadline. Android's poll
-has always swallowed them.
+**Every status other than `booted` counts as still coming up, `shutdown` included.** `toDeviceStatus` collapses
+`Booting` into `unknown`, and the wait only ever runs after a `boot` was accepted, so a `shutdown` reading is
+the transition not yet observed rather than a failure.
+
+Keeping that sentence true costs one line elsewhere: **the boot is now issued on every path, including the one
+where the device list already said `booted`.** That skip came with the original on-demand boot feature as an
+obvious economy and had no recorded reason; once a wait existed it became the only route into it with nothing
+bringing the device up, so a tester who quit the simulator inside one `xcrun` round trip paid the full
+deadline. `SimctlWrapper.boot` swallows `Unable to boot device in current state: Booted`, so the economy was
+one no-op subprocess. A short grace on `shutdown` inside the poll was tried first and reverted: that reading is
+not distinguishable from a slow machine's healthy boot, so the clock would have failed real boots.
+
+A **failed** reading is not a reading at all — this spawns `xcrun simctl list` up to 180 times where the old
+code spawned it once, each an independent chance to kill a healthy boot during the interval when CoreSimulator
+is busiest, so failures are retried and the last one is reported with the deadline. Android's poll has always
+swallowed them.
 
 The wait also takes an `isStale` signal, checked every iteration. `handleDeviceBoot` is fire-and-forget and its
 `bootSeq` check runs only once the wait returns, so a shutdown arriving mid-wait would otherwise leave a poll
