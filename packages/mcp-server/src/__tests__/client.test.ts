@@ -316,7 +316,7 @@ describe('TapflowClient', () => {
       relay.setInputAck('none') // no ack will arrive
       const p = client.tap('sess-1', 1, 2)
       relay.lastClient().close() // drop the connection while awaiting the ack
-      const err = await p.catch((e: Error) => e)
+      const err = await p.catch((e: unknown) => e) as Error
       expect(err.message).toMatch(/could not confirm/i)
       expect(err.message).toMatch(/may have landed/i)
       expect(err.message).toMatch(/do not repeat/i)
@@ -352,7 +352,7 @@ describe('TapflowClient', () => {
     it('says the input may have landed, and does not call it dropped', async () => {
       await client.tap('sess-1', 1, 2)
       relay.setInputAck('none')
-      const err = await client.tap('sess-1', 3, 4).catch((e: Error) => e)
+      const err = await client.tap('sess-1', 3, 4).catch((e: unknown) => e) as Error
       expect(err.message).toMatch(/may have landed/i)
       expect(err.message).not.toMatch(/dropped/i)
       expect(err.message).toMatch(/do not repeat/i)

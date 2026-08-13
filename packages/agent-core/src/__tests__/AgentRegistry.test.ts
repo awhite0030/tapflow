@@ -2,8 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { PlatformError } from '../index'
 import { AgentRegistry } from '../AgentRegistry'
 import type { DeviceAgent } from '../DeviceAgent'
-import type { Device } from '../types'
+import type { Device, UIElement } from '../types'
 
+// `implements DeviceAgent` was here all along and proved nothing: this tree sat outside every
+// tsconfig, so the clause was a comment. It was missing `openUrl` and `queryUITree` — the same shape
+// as #418's cast over a double short of two members, and the reason #422 turned the checker on.
 class MockAgent implements DeviceAgent {
   listDevices(): Promise<Device[]> { return Promise.resolve([]) }
   boot(_deviceId: string): Promise<void> { return Promise.resolve() }
@@ -15,6 +18,8 @@ class MockAgent implements DeviceAgent {
   touchStart(_x: number, _y: number): void {}
   touchMove(_x: number, _y: number): Promise<void> { return Promise.resolve() }
   touchEnd(): Promise<void> { return Promise.resolve() }
+  openUrl(_url: string): Promise<void> { return Promise.resolve() }
+  queryUITree(): Promise<UIElement[]> { return Promise.resolve([]) }
 }
 
 const mockConnect = async () => ({ disconnect: () => {} })

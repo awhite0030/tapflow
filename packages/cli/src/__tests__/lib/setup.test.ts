@@ -47,7 +47,10 @@ const zshrc = join(homedir(), '.zshrc')
 
 const okSpawn = { status: 0, stdout: '', stderr: '', pid: 1, output: [], signal: null }
 
-function findStep(results: { label: string }[], keyword: string) {
+// Generic, so the caller keeps its own element type. Written as `{ label: string }[]` this widened
+// every result to just that field, and the 36 `Property 'ok' does not exist` errors #422 found here
+// were all one helper narrowing away the thing under test.
+function findStep<T extends { label: string }>(results: T[], keyword: string): T | undefined {
   return results.find((r) => r.label.toLowerCase().includes(keyword.toLowerCase()))
 }
 

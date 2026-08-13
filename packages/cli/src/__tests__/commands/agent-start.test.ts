@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
+import type { AgentConnectOpts } from '@tapflowio/agent-core'
 
 vi.mock('node:child_process')
 vi.mock('@tapflowio/ios-agent', () => ({ requestAudioPermission: vi.fn(), isAudioSupported: vi.fn(() => true) }))
@@ -21,19 +22,20 @@ function testHasAdb(): boolean {
 class DummyAgent {}
 
 describe('cmdAgentStart', () => {
-  let iosConnectSpy: ReturnType<typeof vi.fn>
-  let androidConnectSpy: ReturnType<typeof vi.fn>
-  let iosDisconnectSpy: ReturnType<typeof vi.fn>
-  let androidDisconnectSpy: ReturnType<typeof vi.fn>
+  type ConnectHook = (relayUrl: string, opts?: AgentConnectOpts) => Promise<{ disconnect(): void }>
+  let iosConnectSpy: Mock<ConnectHook>
+  let androidConnectSpy: Mock<ConnectHook>
+  let iosDisconnectSpy: Mock<() => void>
+  let androidDisconnectSpy: Mock<() => void>
 
   beforeEach(() => {
     vi.resetAllMocks()
     AgentRegistry.clear()
 
-    iosDisconnectSpy = vi.fn()
-    androidDisconnectSpy = vi.fn()
-    iosConnectSpy = vi.fn().mockResolvedValue({ disconnect: iosDisconnectSpy })
-    androidConnectSpy = vi.fn().mockResolvedValue({ disconnect: androidDisconnectSpy })
+    iosDisconnectSpy = vi.fn<() => void>()
+    androidDisconnectSpy = vi.fn<() => void>()
+    iosConnectSpy = vi.fn<ConnectHook>().mockResolvedValue({ disconnect: iosDisconnectSpy })
+    androidConnectSpy = vi.fn<ConnectHook>().mockResolvedValue({ disconnect: androidDisconnectSpy })
 
     AgentRegistry.register('ios', DummyAgent as never, {
       canRun: () => process.platform === 'darwin',

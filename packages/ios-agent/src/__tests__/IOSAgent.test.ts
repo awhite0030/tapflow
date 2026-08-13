@@ -405,7 +405,7 @@ describe('IOSAgent', () => {
     // test went through the relay and passed the mutation for exactly that reason.
     it('does not dispatch a frame with no sessionId', async () => {
       const { browser, agent } = await joinBootlessSession()
-      const ws = internals(agent).ws
+      const ws = internals(agent).ws!
       const sent = vi.spyOn(ws, 'send')
 
       for (const frame of [
@@ -552,7 +552,7 @@ describe('IOSAgent', () => {
       }
       const internals = (a: IOSAgent): Internals => a as unknown as Internals
 
-      function inputErrors(spy: ReturnType<typeof vi.spyOn>) {
+      function inputErrors(spy: { mock: { calls: unknown[][] } }) {
         return spy.mock.calls
           .map(([raw]) => JSON.parse(raw as string) as { type: string; sessionId?: string; requestId?: string; message?: string; reason?: string })
           .filter((m) => m.type === 'input:error')
@@ -1548,7 +1548,7 @@ describe('IOSAgent', () => {
           deliver(agent, { type: req, sessionId: agent.sessionId, requestId: 'echo-1', payload })
           expect((await done)['requestId']).toBe('echo-1')
 
-          simctl[call].mockRejectedValueOnce(new Error('nope'))
+          vi.mocked(simctl[call]).mockRejectedValueOnce(new Error('nope'))
           const err = waitForType(browser, `${req}-error`)
           deliver(agent, { type: req, sessionId: agent.sessionId, requestId: 'echo-2', payload })
           const msg = await err
@@ -1565,7 +1565,10 @@ describe('IOSAgent', () => {
           const { simctl, agent, browser } = await bootedAgent()
 
           let release: (() => void) | undefined
-          simctl[call]
+          // `call` is a union of keys, so `simctl[call]` is a union of methods and its
+          // `mockImplementationOnce` parameter becomes their intersection — a signature no single
+          // implementation satisfies. The cast names the one shape this table's entries share.
+          vi.mocked(simctl[call] as () => Promise<void>)
             .mockImplementationOnce(() => new Promise<void>((r) => { release = () => r() }))
             .mockImplementationOnce(() => Promise.resolve())
 
@@ -1633,7 +1636,7 @@ describe('IOSAgent', () => {
         expect((await done)['requestId']).toBe('req-1')
         expect(simctl.openUrl).toHaveBeenCalledWith('dev-1', 'https://example.com')
 
-        simctl.openUrl.mockRejectedValueOnce(new Error('no handler'))
+        vi.mocked(simctl.openUrl).mockRejectedValueOnce(new Error('no handler'))
         const err = waitForType(browser, 'open-url:error')
         deliver(agent, {
           type: 'open-url',
@@ -1656,7 +1659,7 @@ describe('IOSAgent', () => {
         const { simctl, agent, browser } = await bootedAgent()
 
         let release: (() => void) | undefined
-        simctl.openUrl
+        vi.mocked(simctl.openUrl)
           .mockImplementationOnce(() => new Promise<void>((r) => { release = () => r() }))
           .mockImplementationOnce(() => Promise.resolve())
 
@@ -2705,7 +2708,7 @@ describe('IOSAgent', () => {
       const seen: string[] = []
       browser.on('message', (d: Buffer) => {
         try {
-          const m = JSON.parse(d.toString()) as RelayMessage
+          const m = JSON.parse(d.toString()) as { type: string; requestId?: string; payload?: unknown }
           if (m.type === 'clipboard:data') seen.push(`${m.requestId}:${(m.payload as { text: string }).text}`)
           if (m.type === 'clipboard:error') seen.push(`${m.requestId}:ERR`)
         } catch { /* binary frame — ignore */ }
@@ -2916,7 +2919,7 @@ describe('IOSAgent', () => {
       const { agent, browser } = await bootWith(simctl)
 
       let acked = false
-      waitForType(browser, 'clipboard:write-done').then(() => { acked = true })
+      void waitForType(browser, 'clipboard:write-done').then(() => { acked = true })
       browser.send(JSON.stringify({
         type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'r5', payload: { text: 'pasted text' },
       }))

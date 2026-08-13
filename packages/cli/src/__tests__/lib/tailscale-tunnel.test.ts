@@ -59,7 +59,7 @@ describe('TailscaleTunnel', () => {
   it('start() — Tailscale 미설치 → 에러 + 설치 안내', async () => {
     vi.mocked(execSync).mockImplementation(() => { throw new Error('command not found') })
     const tunnel = new TailscaleTunnel({})
-    const error = await tunnel.start(4000).catch((e: Error) => e)
+    const error = await tunnel.start(4000).catch((e: unknown) => e) as Error
     expect(error.message).toMatch(/not installed/)
     expect(error.message).toMatch(/brew install tailscale/)
   })
@@ -109,7 +109,7 @@ describe('TailscaleTunnel', () => {
       .mockReturnValueOnce(Buffer.from('1.0.0') as never)
       .mockReturnValueOnce(Buffer.from(JSON.stringify({ BackendState: 'Stopped', Self: {} })) as never)
     const tunnel = new TailscaleTunnel({})
-    const error = await tunnel.start(4000).catch((e: Error) => e)
+    const error = await tunnel.start(4000).catch((e: unknown) => e) as Error
     expect(error.message).toMatch(/not connected/)
     expect(error.message).toMatch(/tailscale up/)
   })

@@ -20,9 +20,11 @@ function pkt(audio: Buffer, timestamp: string) {
   return { format: { samplingRate: '44100', channels: 'Stereo', format: 'AUD_FMT_S16', mode: 'MODE_REAL_TIME' }, timestamp, audio }
 }
 
-// No `as RawEmulatorController`: the cast used to hide missing members. Note this only helps
-// in an editor — `packages/android-agent/tsconfig.json` excludes `src/__tests__`, so `tsc`
-// never sees this file. Hence the runtime completeness check below as well.
+// No `as RawEmulatorController`: the cast used to hide missing members. That annotation is now
+// checked — #422 gave this tree a `tsconfig.json`, so a double short of a member is a compile error
+// rather than something only an editor mentions. The runtime completeness check below predates that
+// and is kept: it catches a member added to the interface that this file satisfies structurally by
+// accident, which the compiler is happy with.
 function makeRaw(overrides: Partial<RawEmulatorController> = {}): RawEmulatorController {
   const base: RawEmulatorController = {
     streamScreenshot: vi.fn() as unknown as RawEmulatorController['streamScreenshot'],

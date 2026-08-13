@@ -124,6 +124,30 @@ config at all and was tried first. `pnpm deploy` does not apply `publishConfig`
 Covering every consumer uniformly means covering the ones that cannot read TypeScript. Opting in
 per tool is the point, not the cost.
 
+### Tests are type-checked and linted, and the tsconfig lives in the test folder
+
+Every package with a test tree has `src/__tests__/tsconfig.json`, wired into its `typecheck` script
+after `tsc -b`. Tests still must not reach `dist`, so they are not in the build's `include` — the
+same shape as `protocol/tsconfig.assertions.json`.
+
+**The file name and location are load-bearing.** typescript-eslint's `projectService` resolves a
+file's project the way tsserver does, by walking up for a `tsconfig.json`, so a `tsconfig.test.json`
+at the package root is invisible to it and every rule fails as `was not found by the project service`
+rather than reporting. One file serves both gates only in this position.
+
+`moduleResolution: bundler`, not the build's Node16: vitest resolves through vite and does not
+require the `.js` suffix. 166 of the 400 errors #422 first surfaced were nothing but that suffix
+missing — checking tests under a resolution they never run with would mean rewriting every import to
+satisfy a compiler no test obeys.
+
+The two exclusions used to compound: nothing typed the test tree and nothing linted it, so a double
+could drift from the interface it doubled with both gates green. What that hid, measured when the
+gates went on: `AgentRegistry.test.ts` declared `implements DeviceAgent` while missing two members,
+`EmulatorVideo.test.ts` was short three on `RawEmulatorController`, five duplicate object keys sat in
+`SimctlWrapper.test.ts`, a `clearAppData` call passed one argument to a two-argument method, and
+`test-utils`' `waitForType` constraint was one no named message could satisfy — which all 25 call
+sites violated.
+
 ### Test Hygiene
 Tests run through `pnpm --filter <pkg> test`, never `npx vitest` — not even from inside the package directory, and not for a single file. npm rewrites the root `package.json` on its way through and collapses `pnpm.overrides` to `pnpm: {}`, leaving `pnpm-lock.yaml` rewritten beside it, and it reports none of that. Reviewing #474 cost exactly this: one `npx vitest` on one test file, and the entire override block was gone with only `git status` to say so. `git checkout HEAD -- package.json pnpm-lock.yaml` puts both back — check `git diff` on them first if you were editing either on purpose, since that discards everything uncommitted in both.
 

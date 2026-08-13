@@ -51,7 +51,7 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p src/__tests__/tsconfig.json",
     "test": "vitest run",
     "lint": "eslint src"
   },

@@ -128,7 +128,9 @@ describe('relay config validation', () => {
     )
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const { config } = await import('../lib/config.js')
-    expect(config.tunnel?.ssh).toEqual({ host: 'vps.example.com', user: 'ubuntu', keyPath: '~/.ssh/id_rsa' })
+    // `tunnel` is a union and only the rathole arm carries `ssh`; this block configures that arm.
+    const tunnel = config.tunnel as Extract<typeof config.tunnel, { provider: 'rathole' }>
+    expect(tunnel.ssh).toEqual({ host: 'vps.example.com', user: 'ubuntu', keyPath: '~/.ssh/id_rsa' })
   })
 
   it('tunnel.ssh.host 없음 → exit(1)', async () => {

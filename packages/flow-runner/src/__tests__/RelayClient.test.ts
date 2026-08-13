@@ -42,7 +42,7 @@ describe('RelayClient.queryUITree — transient vs permanent classification', ()
   it('network failure (fetch rejects) → TransientQueryError, preserving the original cause', async () => {
     const original = new Error('ECONNREFUSED')
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(original)
-    const err = await client().queryUITree('s1').catch((e: unknown) => e as Error)
+    const err = await client().queryUITree('s1').catch((e: unknown) => e) as Error
     expect(err).toBeInstanceOf(TransientQueryError)
     expect((err.cause as Error).cause).toBe(original) // original fetch error chained through the wrappers
   })
@@ -219,7 +219,7 @@ describe('RelayClient — the input senders mint a correlator and await the ack'
         // The literal, not an imported constant: exporting it would make this tautological, while a
         // number that stops matching fails here and the author has to look.
         await vi.advanceTimersByTimeAsync(10_000)
-        expect((await timedOut).message).toContain('was not confirmed')
+        expect((await timedOut as Error).message).toContain('was not confirmed')
       } finally { vi.useRealTimers() }
       expect(logged.filter((l) => l.includes('went unanswered'))).toHaveLength(1)
     } finally { spy.mockRestore() }

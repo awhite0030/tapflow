@@ -12,7 +12,12 @@ import {
 } from '../utils/stream'
 import type { Logger } from '../logger'
 
-function makeMockWs(props?: { readyState?: number; bufferedAmount?: number }): WsType & EventEmitter {
+// `bufferedAmount` is `readonly` on the real `ws`, and these tests drive backpressure by moving it —
+// which is the point of the double, not a shortcut. Declared writable here so the intent is in the
+// type rather than in a cast at each of the four assignment sites.
+type MockWs = Omit<WsType, 'bufferedAmount'> & { bufferedAmount: number } & EventEmitter
+
+function makeMockWs(props?: { readyState?: number; bufferedAmount?: number }): MockWs {
   const emitter = new EventEmitter()
   const ws = Object.assign(emitter, {
     send: vi.fn(),
@@ -20,7 +25,7 @@ function makeMockWs(props?: { readyState?: number; bufferedAmount?: number }): W
     bufferedAmount: props?.bufferedAmount ?? 0,
     OPEN: 1,
     CLOSED: 3,
-  }) as unknown as WsType & EventEmitter
+  }) as unknown as MockWs
   return ws
 }
 

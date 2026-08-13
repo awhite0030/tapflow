@@ -160,7 +160,7 @@ describe('runFlow', () => {
     }))
     const result = await runFlow(flowOf('steps:\n  - tapOn: "OK"\n'), driver, OPTS)
     expect(result.status).toBe('failed')
-    expect(driver.queryUITree.mock.calls[0][0]).toBeInstanceOf(AbortSignal) // engine passed a bounding signal
+    expect(vi.mocked(driver.queryUITree).mock.calls[0]![0]).toBeInstanceOf(AbortSignal) // engine passed a bounding signal
   })
 
   it('fails with a timeout, captures a screenshot, and skips remaining steps', async () => {

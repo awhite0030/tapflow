@@ -66,7 +66,7 @@ describe('RelayServer', () => {
     const ws = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(ws)
     ws.send(JSON.stringify({ type: 'agent:register', devices }))
-    const msg = await waitForMessage(ws)
+    const msg = await waitForMessage<RelayMessage>(ws)
     expect(msg.type).toBe('agent:registered')
     expect(msg.registeredSessions).toHaveLength(1)
     expect(msg.registeredSessions![0].deviceId).toBe('devA')
@@ -82,7 +82,7 @@ describe('RelayServer', () => {
     const ws = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(ws)
     ws.send(JSON.stringify({ type: 'agent:register', devices }))
-    const msg = await waitForMessage(ws)
+    const msg = await waitForMessage<RelayMessage>(ws)
     expect(msg.registeredSessions).toHaveLength(2)
     const ids = msg.registeredSessions!.map((s) => s.sessionId)
     expect(ids[0]).not.toBe(ids[1])
@@ -95,14 +95,14 @@ describe('RelayServer', () => {
     const agent1 = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent1)
     agent1.send(JSON.stringify({ type: 'agent:register', agentId: 'uuid-1', agentName: 'MyMac', platform: 'ios', devices }))
-    await waitForType(agent1, 'agent:registered')
+    await waitForType<RelayMessage>(agent1, 'agent:registered')
     const agent1Closed = new Promise<void>((resolve) => agent1.on('close', () => resolve()))
 
     // Unclean reconnect: a fresh socket from the same Mac before the old socket's close fires.
     const agent2 = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent2)
     agent2.send(JSON.stringify({ type: 'agent:register', agentId: 'uuid-1', agentName: 'MyMac', platform: 'ios', devices }))
-    await waitForType(agent2, 'agent:registered')
+    await waitForType<RelayMessage>(agent2, 'agent:registered')
 
     // The relay terminates the stale socket.
     await agent1Closed
@@ -110,7 +110,7 @@ describe('RelayServer', () => {
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'agents:list' }))
-    const listed = await waitForType(browser, 'agents:listed')
+    const listed = await waitForType<RelayMessage>(browser, 'agents:listed')
     expect(listed.sessions!.filter((s) => s.agentName === 'MyMac')).toHaveLength(1)
 
     agent2.close()
@@ -121,17 +121,17 @@ describe('RelayServer', () => {
     const iosAgent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(iosAgent)
     iosAgent.send(JSON.stringify({ type: 'agent:register', agentId: 'uuid-mac', agentName: 'MyMac', platform: 'ios', devices: [{ id: 'i1', name: 'iPhone', platform: 'ios', status: 'shutdown' }] }))
-    await waitForType(iosAgent, 'agent:registered')
+    await waitForType<RelayMessage>(iosAgent, 'agent:registered')
 
     const androidAgent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(androidAgent)
     androidAgent.send(JSON.stringify({ type: 'agent:register', agentId: 'uuid-mac', agentName: 'MyMac', platform: 'android', devices: [{ id: 'a1', name: 'Pixel', platform: 'android', status: 'shutdown' }] }))
-    await waitForType(androidAgent, 'agent:registered')
+    await waitForType<RelayMessage>(androidAgent, 'agent:registered')
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'agents:list' }))
-    const listed = await waitForType(browser, 'agents:listed')
+    const listed = await waitForType<RelayMessage>(browser, 'agents:listed')
     expect(listed.sessions!.filter((s) => s.agentName === 'MyMac')).toHaveLength(2)
 
     iosAgent.close()
@@ -145,17 +145,17 @@ describe('RelayServer', () => {
     const macA = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(macA)
     macA.send(JSON.stringify({ type: 'agent:register', agentId: 'uuid-A', agentName: 'DupName', platform: 'ios', devices }))
-    await waitForType(macA, 'agent:registered')
+    await waitForType<RelayMessage>(macA, 'agent:registered')
 
     const macB = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(macB)
     macB.send(JSON.stringify({ type: 'agent:register', agentId: 'uuid-B', agentName: 'DupName', platform: 'ios', devices }))
-    await waitForType(macB, 'agent:registered')
+    await waitForType<RelayMessage>(macB, 'agent:registered')
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'agents:list' }))
-    const listed = await waitForType(browser, 'agents:listed')
+    const listed = await waitForType<RelayMessage>(browser, 'agents:listed')
     expect(listed.sessions!.filter((s) => s.agentName === 'DupName')).toHaveLength(2)
 
     macA.close()
@@ -168,13 +168,13 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    const msg = await waitForMessage(browser)
+    const msg = await waitForMessage<RelayMessage>(browser)
     expect(msg.type).toBe('session:joined')
     // **The address on the success half, and nothing held it.** L5d added four assertions that each
     // *refusal* names the right session and none that the reply does — and the reply is the one both
@@ -201,7 +201,7 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const sessions = (server as unknown as { sessions: { join(id: string, ws: WebSocket): void } }).sessions
@@ -210,7 +210,7 @@ describe('RelayServer', () => {
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
       browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-      const msg = await waitForMessage(browser)
+      const msg = await waitForMessage<RelayMessage>(browser)
 
       expect(msg.type).toBe('error')
       expect(msg.sessionId).toBe(sessionId)
@@ -227,7 +227,7 @@ describe('RelayServer', () => {
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId: 'bad-id' }))
-    const msg = await waitForMessage(browser)
+    const msg = await waitForMessage<RelayMessage>(browser)
     expect(msg.type).toBe('error')
     expect(msg.message).toBe('Session not found')
     // The refusal names the id it could not find — the session does not exist, but the *request* does, and it
@@ -242,18 +242,18 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser1 = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser1)
     browser1.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser1) // session:joined
+    await waitForMessage<RelayMessage>(browser1) // session:joined
 
     const browser2 = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser2)
     browser2.send(JSON.stringify({ type: 'session:start', sessionId }))
-    const msg = await waitForMessage(browser2)
+    const msg = await waitForMessage<RelayMessage>(browser2)
     expect(msg.type).toBe('error')
     expect(msg.message).toBe('Session busy')
     // L5d. Every refusal names the join it refuses, and each of the four exits needs its own assertion:
@@ -277,20 +277,20 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionA = registeredSessions!.find((s) => s.deviceId === 'devA')!.sessionId
     const sessionB = registeredSessions!.find((s) => s.deviceId === 'devB')!.sessionId
 
     const browserA = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browserA)
     browserA.send(JSON.stringify({ type: 'session:start', sessionId: sessionA }))
-    const msgA = await waitForMessage(browserA)
+    const msgA = await waitForMessage<RelayMessage>(browserA)
     expect(msgA.type).toBe('session:joined')
 
     const browserB = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browserB)
     browserB.send(JSON.stringify({ type: 'session:start', sessionId: sessionB }))
-    const msgB = await waitForMessage(browserB)
+    const msgB = await waitForMessage<RelayMessage>(browserB)
     expect(msgB.type).toBe('session:joined')
 
     agent.close()
@@ -310,17 +310,17 @@ describe('RelayServer', () => {
       const agent = new WebSocket(`ws://localhost:${shortPort}`)
       await waitForOpen(agent)
       agent.send(JSON.stringify({ type: 'agent:register', devices }))
-      const { registeredSessions } = await waitForMessage(agent)
+      const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
       const sessionId = registeredSessions![0].sessionId
 
       const browser = new WebSocket(`ws://localhost:${shortPort}`)
       await waitForOpen(browser)
       browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-      await waitForType(browser, 'session:joined')
+      await waitForType<RelayMessage>(browser, 'session:joined')
 
       // Without the notice the browser keeps a live socket addressed to a sessionId the relay has
       // dropped: everything it sends is ignored and nothing streams back, with no way to tell.
-      const endedPromise = waitForType(browser, 'session:terminated')
+      const endedPromise = waitForType<RelayMessage>(browser, 'session:terminated')
       agent.close()
       const ended = await endedPromise
 
@@ -338,7 +338,7 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    await waitForMessage(agent)
+    await waitForMessage<RelayMessage>(agent)
 
     // Arm the close listener before closing: `agent.close()` returns immediately and the relay's
     // eviction runs on its own close handler, so querying straight away can observe the session
@@ -354,7 +354,7 @@ describe('RelayServer', () => {
     const probe = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(probe)
     probe.send(JSON.stringify({ type: 'agents:list' }))
-    const listed = await waitForType(probe, 'agents:listed')
+    const listed = await waitForType<RelayMessage>(probe, 'agents:listed')
     // Not `listed.sessions ?? []` — that would also pass if the field went missing entirely, which
     // is a different bug wearing the same green tick.
     expect(listed.sessions).toBeDefined()
@@ -367,15 +367,15 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser)
+    await waitForMessage<RelayMessage>(browser)
 
-    const touchPromise = waitForMessage(agent)
+    const touchPromise = waitForMessage<RelayMessage>(agent)
     browser.send(JSON.stringify({ type: 'input:touch:start', sessionId, payload: { x: 0.5, y: 0.5 } }))
     const touch = await touchPromise
     expect(touch.type).toBe('input:touch:start')
@@ -393,17 +393,17 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionA = registeredSessions!.find((s) => s.deviceId === 'devA')!.sessionId
     const sessionB = registeredSessions!.find((s) => s.deviceId === 'devB')!.sessionId
 
     const browserA = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browserA)
     browserA.send(JSON.stringify({ type: 'session:start', sessionId: sessionA }))
-    await waitForMessage(browserA)
+    await waitForMessage<RelayMessage>(browserA)
 
     // Agent receives browserA's touch for sessionA
-    const touchPromise = waitForType(agent, 'input:touch:start')
+    const touchPromise = waitForType<RelayMessage>(agent, 'input:touch:start')
     browserA.send(JSON.stringify({ type: 'input:touch:start', sessionId: sessionA, payload: { x: 0.1, y: 0.2 } }))
     const touch = await touchPromise
     expect(touch.sessionId).toBe(sessionA)  // carries sessionA, not sessionB
@@ -412,9 +412,9 @@ describe('RelayServer', () => {
     const browserB = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browserB)
     browserB.send(JSON.stringify({ type: 'session:start', sessionId: sessionB }))
-    await waitForMessage(browserB)
+    await waitForMessage<RelayMessage>(browserB)
 
-    const touch2Promise = waitForType(agent, 'input:touch:start')
+    const touch2Promise = waitForType<RelayMessage>(agent, 'input:touch:start')
     browserB.send(JSON.stringify({ type: 'input:touch:start', sessionId: sessionB, payload: { x: 0.9, y: 0.8 } }))
     const touch2 = await touch2Promise
     expect(touch2.sessionId).toBe(sessionB)
@@ -429,15 +429,15 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser)
+    await waitForMessage<RelayMessage>(browser)
 
-    const bootPromise = waitForMessage(agent)
+    const bootPromise = waitForMessage<RelayMessage>(agent)
     browser.send(JSON.stringify({ type: 'device:boot', sessionId, requestId: 'rq-route', payload: { deviceId: 'devA' } }))
     const boot = await bootPromise
     expect(boot.type).toBe('device:boot')
@@ -452,20 +452,20 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser)
+    await waitForMessage<RelayMessage>(browser)
 
-    const bootingPromise = waitForMessage(browser)
+    const bootingPromise = waitForMessage<RelayMessage>(browser)
     agent.send(JSON.stringify({ type: 'device:booting', sessionId }))
     const booting = await bootingPromise
     expect(booting.type).toBe('device:booting')
 
-    const readyPromise = waitForMessage(browser)
+    const readyPromise = waitForMessage<RelayMessage>(browser)
     agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
     const ready = await readyPromise
     expect(ready.type).toBe('device:ready')
@@ -480,20 +480,20 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     browser.binaryType = 'nodebuffer'
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser) // session:joined
+    await waitForMessage<RelayMessage>(browser) // session:joined
 
     // Stream WS connects and registers
     const streamWs = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(streamWs)
     streamWs.send(JSON.stringify({ type: 'stream:register', sessionId }))
-    const ack = await waitForMessage(streamWs)
+    const ack = await waitForMessage<RelayMessage>(streamWs)
     expect(ack.type).toBe('stream:registered')
 
     // Binary frames sent via stream WS are forwarded to browser
@@ -515,19 +515,19 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     browser.binaryType = 'nodebuffer'
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser) // session:joined
+    await waitForMessage<RelayMessage>(browser) // session:joined
 
     const streamWs = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(streamWs)
     streamWs.send(JSON.stringify({ type: 'stream:register', sessionId }))
-    await waitForMessage(streamWs) // stream:registered
+    await waitForMessage<RelayMessage>(streamWs) // stream:registered
 
     const capturedAt = Date.now() - 10
     const envelopedFrame = writeEnvelopeHeader(Buffer.from([0xFF, 0xD8]), capturedAt)
@@ -557,19 +557,19 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     browser.binaryType = 'nodebuffer'
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser) // session:joined
+    await waitForMessage<RelayMessage>(browser) // session:joined
 
     const streamWs = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(streamWs)
     streamWs.send(JSON.stringify({ type: 'stream:register', sessionId }))
-    await waitForMessage(streamWs) // stream:registered
+    await waitForMessage<RelayMessage>(streamWs) // stream:registered
 
     const pcm = Buffer.from([0x11, 0x22, 0x33, 0x44])
     const audioFrame = writeEnvelopeHeader(pcm, Date.now() - 5, { codec: CODEC_AUDIO })
@@ -599,19 +599,19 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     browser.binaryType = 'nodebuffer'
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser) // session:joined
+    await waitForMessage<RelayMessage>(browser) // session:joined
 
     const streamWs = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(streamWs)
     streamWs.send(JSON.stringify({ type: 'stream:register', sessionId }))
-    await waitForMessage(streamWs) // stream:registered
+    await waitForMessage<RelayMessage>(streamWs) // stream:registered
 
     const framePromise = new Promise<Buffer>((r) =>
       browser.once('message', (d, isBinary) => { if (isBinary) r(d as Buffer) })
@@ -634,7 +634,7 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionA = registeredSessions!.find((s) => s.deviceId === 'devA')!.sessionId
     const sessionB = registeredSessions!.find((s) => s.deviceId === 'devB')!.sessionId
 
@@ -642,19 +642,19 @@ describe('RelayServer', () => {
     browserA.binaryType = 'nodebuffer'
     await waitForOpen(browserA)
     browserA.send(JSON.stringify({ type: 'session:start', sessionId: sessionA }))
-    await waitForMessage(browserA)
+    await waitForMessage<RelayMessage>(browserA)
 
     const browserB = new WebSocket(`ws://localhost:${port}`)
     browserB.binaryType = 'nodebuffer'
     await waitForOpen(browserB)
     browserB.send(JSON.stringify({ type: 'session:start', sessionId: sessionB }))
-    await waitForMessage(browserB)
+    await waitForMessage<RelayMessage>(browserB)
 
     // Stream WS for devA
     const streamA = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(streamA)
     streamA.send(JSON.stringify({ type: 'stream:register', sessionId: sessionA }))
-    await waitForMessage(streamA) // stream:registered
+    await waitForMessage<RelayMessage>(streamA) // stream:registered
 
     // browserB should NOT receive frames from streamA
     let browserBGotBinary = false
@@ -688,19 +688,19 @@ describe('RelayServer', () => {
       const agent = new WebSocket(`ws://localhost:${strictPort}`)
       await waitForOpen(agent)
       agent.send(JSON.stringify({ type: 'agent:register', devices }))
-      const { registeredSessions } = await waitForMessage(agent)
+      const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
       const sessionId = registeredSessions![0].sessionId
 
       const browser = new WebSocket(`ws://localhost:${strictPort}`)
       browser.binaryType = 'nodebuffer'
       await waitForOpen(browser)
       browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-      await waitForMessage(browser) // session:joined
+      await waitForMessage<RelayMessage>(browser) // session:joined
 
       const streamWs = new WebSocket(`ws://localhost:${strictPort}`)
       await waitForOpen(streamWs)
       streamWs.send(JSON.stringify({ type: 'stream:register', sessionId }))
-      await waitForMessage(streamWs) // stream:registered
+      await waitForMessage<RelayMessage>(streamWs) // stream:registered
 
       // Register before send — if drop is broken the frame may arrive before setImmediate fires
       const dropCheck = new Promise<void>((resolve, reject) => {
@@ -728,12 +728,12 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', agentName: 'MyMac', devices }))
-    await waitForMessage(agent)
+    await waitForMessage<RelayMessage>(agent)
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'agents:list' }))
-    const msg = await waitForMessage(browser)
+    const msg = await waitForMessage<RelayMessage>(browser)
 
     expect(msg.type).toBe('agents:listed')
     expect(msg.sessions).toHaveLength(1)
@@ -752,18 +752,18 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser) // session:joined
+    await waitForMessage<RelayMessage>(browser) // session:joined
 
     const observer = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(observer)
     observer.send(JSON.stringify({ type: 'agents:list' }))
-    const listed = await waitForMessage(observer)
+    const listed = await waitForMessage<RelayMessage>(observer)
     expect(listed.sessions![0].devices[0].busy).toBe(true)
 
     agent.close()
@@ -779,14 +779,14 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    await waitForMessage(agent)
+    await waitForMessage<RelayMessage>(agent)
     agent.close()
 
     const observer = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(observer)
     await vi.waitFor(async () => {
       observer.send(JSON.stringify({ type: 'agents:list' }))
-      const listed = await waitForMessage(observer)
+      const listed = await waitForMessage<RelayMessage>(observer)
       expect(listed.sessions).toHaveLength(0)
     }, { timeout: 2000 })
     observer.close()
@@ -796,7 +796,7 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', agentName: 'Mac1', devices: [{ id: 'd1', name: 'iPhone', platform: 'ios', status: 'shutdown' }] }))
-    await waitForMessage(agent)
+    await waitForMessage<RelayMessage>(agent)
 
     agent.send(JSON.stringify({
       type: 'agent:resources',
@@ -807,7 +807,7 @@ describe('RelayServer', () => {
     await waitForOpen(observer)
     await vi.waitFor(async () => {
       observer.send(JSON.stringify({ type: 'agents:list' }))
-      const listed = await waitForMessage(observer)
+      const listed = await waitForMessage<RelayMessage>(observer)
       expect(listed.sessions![0].resources?.cpuPercent).toBe(25)
       expect(listed.sessions![0].resources?.slotsTotal).toBe(3)
     }, { timeout: 500 })
@@ -820,7 +820,7 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', agentName: 'Mac1', devices: [{ id: 'd1', name: 'iPhone', platform: 'ios', status: 'shutdown' }] }))
-    await waitForMessage(agent)
+    await waitForMessage<RelayMessage>(agent)
     agent.send(JSON.stringify({
       type: 'agent:resources',
       resources: { cpuPercent: 50, memUsedMB: 8000, memTotalMB: 16000, slotsAvailable: 3, slotsTotal: 3, reportedAt: 1000 },
@@ -831,7 +831,7 @@ describe('RelayServer', () => {
     await waitForOpen(observer)
     await vi.waitFor(async () => {
       observer.send(JSON.stringify({ type: 'agents:list' }))
-      const listed = await waitForMessage(observer)
+      const listed = await waitForMessage<RelayMessage>(observer)
       expect(listed.sessions).toHaveLength(0)
     }, { timeout: 2000 })
 
@@ -850,7 +850,7 @@ describe('RelayServer', () => {
           { id: 'a2', name: 'iPhone A2', platform: 'ios', status: 'shutdown' },
         ],
       }))
-      await waitForMessage(agentA)
+      await waitForMessage<RelayMessage>(agentA)
 
       const agentB = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(agentB)
@@ -859,12 +859,12 @@ describe('RelayServer', () => {
         agentName: 'Mac-B',
         devices: [{ id: 'b1', name: 'iPhone B1', platform: 'ios', status: 'shutdown' }],
       }))
-      await waitForMessage(agentB)
+      await waitForMessage<RelayMessage>(agentB)
 
       const observer = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(observer)
       observer.send(JSON.stringify({ type: 'agents:list' }))
-      const listed = await waitForMessage(observer)
+      const listed = await waitForMessage<RelayMessage>(observer)
 
       const sessions = listed.sessions!
       expect(sessions).toHaveLength(2)
@@ -882,20 +882,20 @@ describe('RelayServer', () => {
       const agentA = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(agentA)
       agentA.send(JSON.stringify({ type: 'agent:register', agentName: 'Mac-A', devices: [{ id: 'a1', name: 'iPhone', platform: 'ios', status: 'shutdown' }] }))
-      await waitForMessage(agentA)
+      await waitForMessage<RelayMessage>(agentA)
       agentA.send(JSON.stringify({ type: 'agent:resources', resources: { cpuPercent: 30, memUsedMB: 4000, memTotalMB: 16000, slotsAvailable: 1, slotsTotal: 1, reportedAt: 1000 } }))
 
       const agentB = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(agentB)
       agentB.send(JSON.stringify({ type: 'agent:register', agentName: 'Mac-B', devices: [{ id: 'b1', name: 'iPhone', platform: 'ios', status: 'shutdown' }] }))
-      await waitForMessage(agentB)
+      await waitForMessage<RelayMessage>(agentB)
       agentB.send(JSON.stringify({ type: 'agent:resources', resources: { cpuPercent: 70, memUsedMB: 12000, memTotalMB: 16000, slotsAvailable: 1, slotsTotal: 1, reportedAt: 1000 } }))
 
       const observer = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(observer)
       await vi.waitFor(async () => {
         observer.send(JSON.stringify({ type: 'agents:list' }))
-        const listed = await waitForMessage(observer)
+        const listed = await waitForMessage<RelayMessage>(observer)
         const sessions = listed.sessions!
         const macA = sessions.find((s) => s.agentName === 'Mac-A')
         const macB = sessions.find((s) => s.agentName === 'Mac-B')
@@ -912,12 +912,12 @@ describe('RelayServer', () => {
       const agentA = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(agentA)
       agentA.send(JSON.stringify({ type: 'agent:register', agentName: 'Mac-A', devices: [{ id: 'a1', name: 'iPhone', platform: 'ios', status: 'shutdown' }] }))
-      await waitForMessage(agentA)
+      await waitForMessage<RelayMessage>(agentA)
 
       const agentB = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(agentB)
       agentB.send(JSON.stringify({ type: 'agent:register', agentName: 'Mac-B', devices: [{ id: 'b1', name: 'iPhone', platform: 'ios', status: 'shutdown' }] }))
-      await waitForMessage(agentB)
+      await waitForMessage<RelayMessage>(agentB)
 
       agentA.close()
 
@@ -925,7 +925,7 @@ describe('RelayServer', () => {
       await waitForOpen(observer)
       await vi.waitFor(async () => {
         observer.send(JSON.stringify({ type: 'agents:list' }))
-        const listed = await waitForMessage(observer)
+        const listed = await waitForMessage<RelayMessage>(observer)
         const sessions = listed.sessions!
         expect(sessions).toHaveLength(1)
         expect(sessions[0].agentName).toBe('Mac-B')
@@ -945,15 +945,15 @@ describe('RelayServer', () => {
       const agent = new WebSocket(`ws://localhost:${shortPort}`)
       await waitForOpen(agent)
       agent.send(JSON.stringify({ type: 'agent:register', devices: [{ id: 'devA', name: 'A', platform: 'ios', status: 'shutdown' }] }))
-      const { registeredSessions } = await waitForMessage(agent)
+      const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
       const sessionId = registeredSessions![0].sessionId
 
       const browser = new WebSocket(`ws://localhost:${shortPort}`)
       await waitForOpen(browser)
       browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-      await waitForMessage(browser) // session:joined
+      await waitForMessage<RelayMessage>(browser) // session:joined
 
-      const shutdownPromise = waitForType(agent, 'device:shutdown')
+      const shutdownPromise = waitForType<RelayMessage>(agent, 'device:shutdown')
       browser.close()
 
       const shutdown = await shutdownPromise
@@ -975,13 +975,13 @@ describe('RelayServer', () => {
       const agent = new WebSocket(`ws://localhost:${shortPort}`)
       await waitForOpen(agent)
       agent.send(JSON.stringify({ type: 'agent:register', devices: [{ id: 'devA', name: 'A', platform: 'ios', status: 'shutdown' }] }))
-      const { registeredSessions } = await waitForMessage(agent)
+      const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
       const sessionId = registeredSessions![0].sessionId
 
       const browser = new WebSocket(`ws://localhost:${shortPort}`)
       await waitForOpen(browser)
       browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-      await waitForMessage(browser)
+      await waitForMessage<RelayMessage>(browser)
 
       browser.close()
       // yield to event loop so relay receives close event and sets idle timer
@@ -990,7 +990,7 @@ describe('RelayServer', () => {
       const browser2 = new WebSocket(`ws://localhost:${shortPort}`)
       await waitForOpen(browser2)
       browser2.send(JSON.stringify({ type: 'session:start', sessionId }))
-      await waitForMessage(browser2) // session:joined — relay cancels idle timer
+      await waitForMessage<RelayMessage>(browser2) // session:joined — relay cancels idle timer
 
       // If shutdown arrives at any point during the wait, fail immediately
       await new Promise<void>((resolve, reject) => {
@@ -1020,13 +1020,13 @@ describe('RelayServer', () => {
       const agent = new WebSocket(`ws://localhost:${shortPort}`)
       await waitForOpen(agent)
       agent.send(JSON.stringify({ type: 'agent:register', devices: [{ id: 'devA', name: 'A', platform: 'ios', status: 'shutdown' }] }))
-      const { registeredSessions } = await waitForMessage(agent)
+      const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
       const sessionId = registeredSessions![0].sessionId
 
       const browser = new WebSocket(`ws://localhost:${shortPort}`)
       await waitForOpen(browser)
       browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-      await waitForMessage(browser)
+      await waitForMessage<RelayMessage>(browser)
 
       // Agent closes first → all sessions removed. Browser closes → idle timer set on now-removed session.
       agent.close()
@@ -1043,17 +1043,17 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser) // session:joined
+    await waitForMessage<RelayMessage>(browser) // session:joined
 
     // Agent reports device is ready
     agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
-    await waitForType(browser, 'device:ready')
+    await waitForType<RelayMessage>(browser, 'device:ready')
 
     browser.close()
     // Poll until relay has cleared browser from session (busy=false)
@@ -1062,7 +1062,7 @@ describe('RelayServer', () => {
     await waitForOpen(tmpObs)
     await vi.waitFor(async () => {
       tmpObs.send(JSON.stringify({ type: 'agents:list' }))
-      const listed = await waitForMessage(tmpObs)
+      const listed = await waitForMessage<RelayMessage>(tmpObs)
       expect(listed.sessions![0].devices[0].busy).toBe(false)
     }, { timeout: 2000 })
     tmpObs.close()
@@ -1070,8 +1070,8 @@ describe('RelayServer', () => {
     // Browser reconnects — set up both listeners before sending to avoid race
     const browser2 = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser2)
-    const joinedPromise = waitForType(browser2, 'session:joined')
-    const readyPromise = waitForType(browser2, 'device:ready')
+    const joinedPromise = waitForType<RelayMessage>(browser2, 'session:joined')
+    const readyPromise = waitForType<RelayMessage>(browser2, 'device:ready')
     browser2.send(JSON.stringify({ type: 'session:start', sessionId }))
     await joinedPromise
     await readyPromise
@@ -1085,17 +1085,17 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser)
+    await waitForMessage<RelayMessage>(browser)
 
     // session:start on a booted device now also sends the agent a join-IDR (stream:request-idr),
     // so wait specifically for open-url rather than the next message.
-    const msgPromise = waitForType(agent, 'open-url')
+    const msgPromise = waitForType<RelayMessage>(agent, 'open-url')
     browser.send(JSON.stringify({ type: 'open-url', sessionId, requestId: 'req-fwd', payload: { url: 'myapp://home' } }))
     const received = await msgPromise
     expect(received.type).toBe('open-url')
@@ -1116,17 +1116,17 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'devA' } }))
     // Round-trip on the agent socket rather than a sleep: the browser joins on a different
     // connection, so nothing orders its session:start against the device:ready above.
-    const listed = waitForType(agent, 'agents:listed')
+    const listed = waitForType<RelayMessage>(agent, 'agents:listed')
     agent.send(JSON.stringify({ type: 'agents:list' }))
     await listed
 
-    const idrPromise = waitForType(agent, 'stream:request-idr')
+    const idrPromise = waitForType<RelayMessage>(agent, 'stream:request-idr')
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
@@ -1142,15 +1142,15 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser)
+    await waitForMessage<RelayMessage>(browser)
 
-    const msgPromise = waitForMessage(browser)
+    const msgPromise = waitForMessage<RelayMessage>(browser)
     agent.send(JSON.stringify({ type: 'open-url:done', sessionId }))
     const received = await msgPromise
     expect(received.type).toBe('open-url:done')
@@ -1164,15 +1164,15 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser)
+    await waitForMessage<RelayMessage>(browser)
 
-    const msgPromise = waitForMessage(browser)
+    const msgPromise = waitForMessage<RelayMessage>(browser)
     agent.send(JSON.stringify({ type: 'open-url:error', sessionId, message: 'URL handler not found' }))
     const received = await msgPromise
     expect(received.type).toBe('open-url:error')
@@ -1186,7 +1186,7 @@ describe('RelayServer', () => {
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
 
-    const msgPromise = waitForMessage(browser)
+    const msgPromise = waitForMessage<RelayMessage>(browser)
     browser.send(JSON.stringify({ type: 'open-url', sessionId: 'nonexistent-session', requestId: 'req-nos', payload: { url: 'myapp://home' } }))
     const received = await msgPromise
     expect(received.type).toBe('open-url:error')
@@ -1208,13 +1208,13 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser)
+    await waitForMessage<RelayMessage>(browser)
 
     browser.send(JSON.stringify({ type: 'open-url', sessionId, payload: { url: 'myapp://home' } }))
     // Two barriers, on two sockets, and both are load-bearing. Order is preserved **within** a
@@ -1230,7 +1230,7 @@ describe('RelayServer', () => {
     // proves a test *can* fail, not that it always will.
     await barrier(browser)
     await barrier(agent)
-    expect(await waitForTypeOrNull(agent, 'open-url', 0)).toBeNull()
+    expect(await waitForTypeOrNull<RelayMessage>(agent, 'open-url', 0)).toBeNull()
 
     agent.close(); browser.close()
   })
@@ -1245,7 +1245,7 @@ describe('RelayServer', () => {
 
     browser.send(JSON.stringify({ type: 'open-url', sessionId: 'nonexistent-session', payload: { url: 'myapp://home' } }))
     await barrier(browser)
-    expect(await waitForTypeOrNull(browser, 'open-url:error', 0)).toBeNull()
+    expect(await waitForTypeOrNull<RelayMessage>(browser, 'open-url:error', 0)).toBeNull()
 
     browser.close()
   })
@@ -1255,13 +1255,13 @@ describe('RelayServer', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const { registeredSessions } = await waitForMessage(agent)
+    const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
     const sessionId = registeredSessions![0].sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForMessage(browser)
+    await waitForMessage<RelayMessage>(browser)
 
     agent.close()
     await new Promise((resolve) => setTimeout(resolve, 50))
@@ -1269,7 +1269,7 @@ describe('RelayServer', () => {
     // By type, not "the next message": losing the agent also produces a `session:terminated`, and
     // whichever lands first is not this test's subject.
     browser.send(JSON.stringify({ type: 'open-url', sessionId, requestId: 'req-closed', payload: { url: 'myapp://home' } }))
-    const received = await waitForType(browser, 'open-url:error')
+    const received = await waitForType<RelayMessage>(browser, 'open-url:error')
     expect(received.message).toBe('agent offline')
     expect(received.requestId).toBe('req-closed')
 
@@ -1282,7 +1282,7 @@ describe('RelayServer', () => {
       const agent = new WebSocket(`ws://localhost:${p}`)
       await waitForOpen(agent)
       agent.send(JSON.stringify({ type: 'agent:register', devices }))
-      const { registeredSessions } = await waitForMessage(agent)
+      const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
       const sessionId = registeredSessions![0].sessionId
       return { agent, sessionId }
     }
@@ -1295,7 +1295,7 @@ describe('RelayServer', () => {
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
       browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-      const msg = await waitForMessage(browser)
+      const msg = await waitForMessage<RelayMessage>(browser)
       expect(msg.type).toBe('error')
       expect(msg.message).toBe('Agent resources exhausted')
       expect(msg.sessionId).toBe(sessionId)
@@ -1312,7 +1312,7 @@ describe('RelayServer', () => {
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
       browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-      const msg = await waitForMessage(browser)
+      const msg = await waitForMessage<RelayMessage>(browser)
       expect(msg.type).toBe('error')
       expect(msg.message).toBe('Agent resources exhausted')
       expect(msg.sessionId).toBe(sessionId)
@@ -1329,7 +1329,7 @@ describe('RelayServer', () => {
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
       browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-      const msg = await waitForMessage(browser)
+      const msg = await waitForMessage<RelayMessage>(browser)
       expect(msg.type).toBe('session:joined')
 
       agent.close()
@@ -1344,7 +1344,7 @@ describe('RelayServer', () => {
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
       browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-      const msg = await waitForMessage(browser)
+      const msg = await waitForMessage<RelayMessage>(browser)
       expect(msg.type).toBe('session:joined')
 
       agent.close()
@@ -1357,7 +1357,7 @@ describe('RelayServer', () => {
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
       browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-      const msg = await waitForMessage(browser)
+      const msg = await waitForMessage<RelayMessage>(browser)
       expect(msg.type).toBe('session:joined')
 
       agent.close()
@@ -1384,7 +1384,7 @@ describe('RelayServer', () => {
       const ws = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(ws)
       ws.send(JSON.stringify({ type: 'session:start', sessionId: 'nonexistent' }))
-      await waitForMessage(ws) // error: Session not found — browser role assigned
+      await waitForMessage<RelayMessage>(ws) // error: Session not found — browser role assigned
 
       // Agent-only message from a browser-role socket must close the connection
       const closePromise = new Promise<number>((resolve) =>
@@ -1401,14 +1401,14 @@ describe('RelayServer', () => {
       const agent = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(agent)
       agent.send(JSON.stringify({ type: 'agent:register', devices: [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'shutdown' }] }))
-      const { registeredSessions } = await waitForMessage(agent)
+      const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
       const sessionId = registeredSessions![0].sessionId
 
       // browser 역할을 확정시킨 뒤 stream:register 시도
       const ws = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(ws)
       ws.send(JSON.stringify({ type: 'session:start', sessionId: 'nonexistent' }))
-      await waitForMessage(ws) // error → browser role assigned
+      await waitForMessage<RelayMessage>(ws) // error → browser role assigned
 
       const closePromise = new Promise<number>((resolve) =>
         ws.once('close', (code) => resolve(code))
@@ -1466,7 +1466,7 @@ describe('RelayServer', () => {
       const ws = agentWs(token)
       await waitForOpen(ws)
       ws.send(JSON.stringify({ type: 'agent:register', devices: [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'shutdown' }] }))
-      const msg = await waitForMessage(ws)
+      const msg = await waitForMessage<RelayMessage>(ws)
       expect(msg.type).toBe('agent:registered')
       expect(msg.registeredSessions).toHaveLength(1)
       ws.close()
@@ -1496,13 +1496,13 @@ describe('RelayServer', () => {
       const agent = agentWs(token)
       await waitForOpen(agent)
       agent.send(JSON.stringify({ type: 'agent:register', devices: [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'shutdown' }] }))
-      const { registeredSessions } = await waitForMessage(agent)
+      const { registeredSessions } = await waitForMessage<RelayMessage>(agent)
       const sessionId = registeredSessions![0].sessionId
 
       const stream = agentWs(token)
       await waitForOpen(stream)
       stream.send(JSON.stringify({ type: 'stream:register', sessionId }))
-      const msg = await waitForMessage(stream)
+      const msg = await waitForMessage<RelayMessage>(stream)
       expect(msg.type).toBe('stream:registered')
       agent.close()
       stream.close()

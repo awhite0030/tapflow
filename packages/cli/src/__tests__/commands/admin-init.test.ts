@@ -85,7 +85,7 @@ describe('cmdAdminInit', () => {
 
     await cmdAdminInit({})
 
-    const validateFn = mockPassword.mock.calls[0]?.[0]?.validate
+    const validateFn = mockPassword.mock.calls[0]?.[0]?.validate as ((v: string) => string | undefined) | undefined
     expect(validateFn).toBeDefined()
     expect(validateFn!('short')).toMatch(/8 characters/)
     expect(validateFn!('password123')).toBeUndefined()

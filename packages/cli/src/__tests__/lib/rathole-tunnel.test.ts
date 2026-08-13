@@ -59,7 +59,7 @@ describe('RatholeTunnel', () => {
     const tunnel = new RatholeTunnel(BASE_OPTS)
     const startPromise = tunnel.start(4000)
     await Promise.resolve() // downloadBinary microtask 완료 대기
-    proc.stderr.emit('data', Buffer.from('[INFO] Tunnel started\n'))
+    proc.stderr!.emit('data', Buffer.from('[INFO] Tunnel started\n'))
     const result = await startPromise
     expect(spawn).toHaveBeenCalled()
     expect(result.publicUrl).toBe('https://vps.example.com')
@@ -127,7 +127,7 @@ describe('RatholeTunnel', () => {
     const tunnel = new RatholeTunnel(BASE_OPTS)
     const startPromise = tunnel.start(4000)
     await Promise.resolve()
-    proc.stderr.emit('data', Buffer.from('[INFO] Tunnel started\n'))
+    proc.stderr!.emit('data', Buffer.from('[INFO] Tunnel started\n'))
     await startPromise
     await tunnel.stop()
     expect(vi.mocked(proc).kill).toHaveBeenCalled()
@@ -139,7 +139,7 @@ describe('RatholeTunnel', () => {
     await tunnel.setupServer()
     const startPromise = tunnel.start(4000)
     await Promise.resolve()
-    proc.stderr.emit('data', Buffer.from('[INFO] Tunnel started\n'))
+    proc.stderr!.emit('data', Buffer.from('[INFO] Tunnel started\n'))
     await startPromise
     await tunnel.stop()
     expect(sshExec).toHaveBeenCalledWith(SSH, expect.stringContaining('tapflow-rathole.pid'))

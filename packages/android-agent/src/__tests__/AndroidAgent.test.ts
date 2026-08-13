@@ -1084,7 +1084,7 @@ describe('AndroidAgent', () => {
     describe('input acks report the dispatch, not a proxy', () => {
       it('answers channel-down without writing when the channel is not ready', async () => {
         const control = getState().scrcpySession!.control
-        control.isReady.mockReturnValue(false)
+        vi.mocked(control.isReady).mockReturnValue(false)
 
         const errored = waitForType(browser, 'input:error')
         inject({ type: 'input:touch:start', payload: { x: 0.5, y: 0.5 } })
@@ -1504,7 +1504,7 @@ describe('AndroidAgent', () => {
           order.push(String(k)); grpcClipboardText = 'copied'
         })
         const client = getState().grpcClient as unknown as { getClipboard: ReturnType<typeof vi.fn> }
-        const realGet = client.getClipboard.getMockImplementation()!
+        const realGet = client.getClipboard.getMockImplementation()! as () => Promise<string>
         client.getClipboard.mockImplementation(async () => { order.push('read'); return realGet() })
 
         browser.send(JSON.stringify({
@@ -1521,7 +1521,7 @@ describe('AndroidAgent', () => {
         await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
         let reads = 0
         const client = getState().grpcClient as unknown as { getClipboard: ReturnType<typeof vi.fn> }
-        const realGet = client.getClipboard.getMockImplementation()!
+        const realGet = client.getClipboard.getMockImplementation()! as () => Promise<string>
         client.getClipboard.mockImplementation(async () => (++reads <= 3 ? realGet() : 'what the app copied'))
         vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)
 
@@ -1562,7 +1562,7 @@ describe('AndroidAgent', () => {
         await vi.waitFor(() => expect(getState().grpcClient).not.toBeNull(), { timeout: 1000 })
         vi.spyOn(adb, 'sendKeyEvent').mockResolvedValue(undefined)   // the guest never copies
         const client = getState().grpcClient as unknown as { setClipboard: ReturnType<typeof vi.fn> }
-        const realSet = client.setClipboard.getMockImplementation()
+        const realSet = client.setClipboard.getMockImplementation() as ((t: string) => Promise<void>) | undefined
         let restoreDone = false
         // Make the restore slow enough that "reply first" cannot be a scheduling artefact.
         client.setClipboard.mockImplementation(async (text: string) => {
@@ -1660,7 +1660,7 @@ describe('AndroidAgent', () => {
 
         const seen: string[] = []
         browser.on('message', (d) => {
-          const m = JSON.parse(d.toString()) as RelayMessage
+          const m = JSON.parse(d.toString()) as { type: string; requestId?: string; payload?: unknown }
           if (m.type === 'clipboard:data') seen.push(`${m.requestId}:${(m.payload as { text: string }).text}`)
           if (m.type === 'clipboard:error') seen.push(`${m.requestId}:ERR`)
         })
@@ -1712,7 +1712,7 @@ describe('AndroidAgent', () => {
         client.setClipboard.mockReturnValue(gate)
 
         let acked = false
-        waitForType(browser, 'clipboard:write-done').then(() => { acked = true })
+        void waitForType(browser, 'clipboard:write-done').then(() => { acked = true })
         browser.send(JSON.stringify({
           type: 'clipboard:write', sessionId: agent.sessionId, requestId: 'a4', payload: { text: 'pasted' },
         }))
