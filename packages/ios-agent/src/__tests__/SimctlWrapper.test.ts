@@ -95,6 +95,59 @@ describe('SimctlWrapper', () => {
     })
   })
 
+  describe('waitUntilBooted', () => {
+    // One `list` reading per call, walking the states in order and holding on the last — the shape a
+    // real boot has. `mockRunner` answers every `list` identically, which cannot express a transition.
+    function transitioningRunner(states: string[]): SimctlRunner {
+      let i = 0
+      const listing = (state: string) => JSON.stringify({
+        devices: {
+          'com.apple.CoreSimulator.SimRuntime.iOS-17-0': [
+            { udid: 'device-1', name: 'iPhone 15', state, isAvailable: true },
+          ],
+        },
+      })
+      return {
+        exec: vi.fn(async (...args: string[]) =>
+          args[0] === 'list' ? listing(states[Math.min(i++, states.length - 1)]) : ''),
+        execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
+        execWithOpts: vi.fn().mockResolvedValue(''),
+      }
+    }
+
+    it('polls until the device reaches Booted and returns what it read', async () => {
+      // `Shutdown` first on purpose: `simctl boot` has already returned by the time this runs, and the
+      // list can still report the pre-boot state for a moment. The call count is what says neither
+      // that reading nor `Booting` was accepted — three readings for three states.
+      const runner = transitioningRunner(['Shutdown', 'Booting', 'Booted'])
+      const device = await new SimctlWrapper(runner).waitUntilBooted('device-1', 5_000, 0)
+      expect(device.status).toBe('booted')
+      expect(device.name).toBe('iPhone 15')
+      expect(runner.exec).toHaveBeenCalledTimes(3)
+    })
+
+    it('reads once when the device is already up, even at a zero deadline', async () => {
+      // The deadline is checked after the read rather than before it. With the order reversed a device
+      // that is already booted would still have to wait out a poll interval to be reported as up.
+      const runner = transitioningRunner(['Booted'])
+      const device = await new SimctlWrapper(runner).waitUntilBooted('device-1', 0, 0)
+      expect(device.status).toBe('booted')
+      expect(runner.exec).toHaveBeenCalledTimes(1)
+    })
+
+    it('gives up at the deadline and names the last status it saw', async () => {
+      const runner = transitioningRunner(['Booting'])
+      await expect(new SimctlWrapper(runner).waitUntilBooted('device-1', 20, 5))
+        .rejects.toThrow(/did not finish booting within 20ms \(last seen: unknown\)/)
+    })
+
+    it('reports a device that is not in the list at all', async () => {
+      const runner = transitioningRunner(['Booted'])
+      await expect(new SimctlWrapper(runner).waitUntilBooted('device-404', 0, 0))
+        .rejects.toThrow(/last seen: no longer listed/)
+    })
+  })
+
   describe('shutdown', () => {
     it('calls simctl shutdown with the deviceId', async () => {
       const runner = mockRunner()

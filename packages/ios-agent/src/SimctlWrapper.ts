@@ -128,6 +128,43 @@ export class SimctlWrapper {
     }
   }
 
+  // `boot` returns when CoreSimulator has *accepted* the boot, and the device reaches `Booted`
+  // seconds later — measured at 7.6s on an iPhone 17 Pro / iOS 26.5 (#486). A caller that announces
+  // readiness on `boot` resolving is announcing something that is not yet true, which is what
+  // `app install intermittently fails with "No devices are booted"` (#440) was left standing on.
+  // Android has waited since the beginning (`EmulatorLauncher.waitForBoot`); this is the counterpart.
+  private static readonly BOOT_READY_TIMEOUT_MS = 90_000
+  private static readonly BOOT_POLL_INTERVAL_MS = 500
+
+  /**
+   * Polls the device list until `deviceId` reports `booted`, and returns it — so the caller sends
+   * on the value it read rather than asserting one.
+   *
+   * Every status other than `booted` counts as "still coming up", **`shutdown` included**. That is
+   * not laxness: `toDeviceStatus` collapses `Booting` into `unknown`, and this only ever runs after
+   * `boot` has been accepted, so a `shutdown` reading here is the transition not having been
+   * observed yet. Failing on it would race a boot that was about to succeed. The deadline is what
+   * ends a boot that genuinely never happens.
+   */
+  async waitUntilBooted(
+    deviceId: string,
+    timeoutMs = SimctlWrapper.BOOT_READY_TIMEOUT_MS,
+    pollIntervalMs = SimctlWrapper.BOOT_POLL_INTERVAL_MS,
+  ): Promise<Device> {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const device = (await this.listDevices()).find((d) => d.id === deviceId)
+      if (device?.status === 'booted') return device
+      // Checked after the read, not before it, so a zero timeout still gets one look — a device that
+      // is already up must not need a second poll interval to be reported as up.
+      if (Date.now() >= deadline) {
+        const seen = device?.status ?? 'no longer listed'
+        throw new PlatformError(`Device ${deviceId} did not finish booting within ${timeoutMs}ms (last seen: ${seen})`)
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+    }
+  }
+
   async shutdown(deviceId: string): Promise<void> {
     try {
       await this.runner.exec('shutdown', deviceId)

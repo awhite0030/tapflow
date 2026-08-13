@@ -616,17 +616,19 @@ export class IOSAgent implements DeviceAgent {
 
       if (seq !== state.bootSeq) return
 
-      const refreshed = await this.simctl.listDevices()
-      // Another await, and `sendChromeData` below starts a helper process. A shutdown or a newer
-      // boot arriving in this gap would otherwise get a helper installed for the device it is
-      // taking down — and one that revives itself, so the stale reference outlives the boot that
-      // returns just below.
+      // `simctl boot` returns on initiation, so everything below used to run while the device was
+      // still coming up — measured 7.6s early (#486). The status sent with the chrome data was
+      // hardcoded `'booted'` over a value that had just been fetched and discarded, and
+      // `device:ready` went out a few lines later. A human is slower than the gap and rarely
+      // notices; `mcp-server` installs and taps the moment it sees ready, which is what #440's
+      // "No devices are booted" was.
+      const bootedDevice = await this.simctl.waitUntilBooted(deviceId)
+      // Another await — a multi-second one — and `sendChromeData` below starts a helper process. A
+      // shutdown or a newer boot arriving in this gap would otherwise get a helper installed for the
+      // device it is taking down — and one that revives itself, so the stale reference outlives the
+      // boot that returns just below.
       if (seq !== state.bootSeq) return
-      const refreshedDevice = refreshed.find((d) => d.id === deviceId) ?? target
-      this.sendChromeData(state, {
-        ...refreshedDevice,
-        status: 'booted',
-      } as Device)
+      this.sendChromeData(state, bootedDevice)
 
       const streamWs = await this.openStreamWs(state)
       if (seq !== state.bootSeq) {

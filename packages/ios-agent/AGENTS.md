@@ -20,6 +20,14 @@ status: living
 - Wrap all xcrun/simctl calls in dedicated functions so they can be swapped with mocks in tests.
 - Capture frames via SimulatorKit IOSurface and stream H.264 (default) or JPEG frames as WebSocket binary messages (≤30 fps).
 - `connect` only registers devices with the relay — it never boots one. Booting is on-demand via `device:boot` (dashboard / MCP). The `deviceFilter` option (CLI `--device`) narrows which devices are exposed to the relay (parity with android-agent), not a boot target.
+- **`device:ready` means the device is up, not that the boot was accepted.** `simctl boot` returns on
+  *initiation* and the device reaches `Booted` seconds later — measured 7.6s on an iPhone 17 Pro / iOS 26.5 —
+  so `handleDeviceBoot` awaits `SimctlWrapper.waitUntilBooted` before it sends anything (#486). Android has
+  always waited (`EmulatorLauncher.waitForBoot`), and a caller that acts on `ready` immediately is the one that
+  notices: #440's *No devices are booted* was this half of the race. Every status other than `booted` counts as
+  still coming up, **`shutdown` included** — `toDeviceStatus` collapses `Booting` into `unknown`, and the wait
+  only ever runs after `boot` was accepted, so a `shutdown` reading is the transition not yet observed rather
+  than a failure. A boot that never finishes ends at a 90s deadline as `device:boot-error`.
 
 ### Input acks carry a reason
 
