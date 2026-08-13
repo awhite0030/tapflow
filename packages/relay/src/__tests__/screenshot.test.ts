@@ -142,6 +142,38 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     } finally { warn.mockRestore() }
   })
 
+  it('TC1c: 라벨과 바이트가 맞으면 아무 말도 하지 않는다', async () => {
+    // TC1b의 짝. 저 테스트만으로는 조건을 `true`로 바꾼 구현이 통과한다 — 경고가 매 스크린샷마다
+    // 나가면 드리프트 탐지기가 아니라 소음이 되고, 진짜 불일치가 그 안에 묻힌다.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { agent, sessionId } = await setupAgent()
+      agent.on('message', (data) => {
+        const msg = JSON.parse(data.toString()) as RelayMessage
+        if (msg.type === 'screenshot:request') {
+          agent.send(JSON.stringify({
+            type: 'screenshot:done',
+            sessionId: msg.sessionId,
+            requestId: msg.requestId,
+            format: 'png',
+            data: FAKE_PNG.toString('base64'),
+          }))
+        }
+      })
+
+      const res = await httpGet(
+        port,
+        `/api/v1/sessions/${sessionId}/screenshot`,
+        { Cookie: makeAuthCookie() },
+      )
+
+      expect(res.status).toBe(200)
+      expect(warn.mock.calls.flat().join(' ')).not.toMatch(/the agent called it/)
+
+      agent.close()
+    } finally { warn.mockRestore() }
+  })
+
   it('TC2: JPEG 포맷 요청 — agent가 jpeg 응답 시 200 image/jpeg', async () => {
     const { agent, sessionId } = await setupAgent()
 
