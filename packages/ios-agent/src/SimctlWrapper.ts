@@ -94,8 +94,15 @@ export class SimctlWrapper {
 
   constructor(private readonly runner: SimctlRunner = defaultRunner) {}
 
-  async listDevices(): Promise<Device[]> {
-    const output = await this.runner.exec('list', 'devices', '--json')
+  /**
+   * `timeoutMs` bounds the underlying `xcrun simctl list`. Left off everywhere except the boot poll:
+   * a blanket timeout would fail a legitimately slow call, which is the reason `SimctlExecOpts.timeoutMs`
+   * is per-call in the first place.
+   */
+  async listDevices(timeoutMs?: number): Promise<Device[]> {
+    const output = timeoutMs === undefined
+      ? await this.runner.exec('list', 'devices', '--json')
+      : await this.runner.execWithOpts({ timeoutMs }, 'list', 'devices', '--json')
     const parsed: SimctlListOutput = JSON.parse(output)
     const devices: Device[] = []
 
@@ -135,6 +142,12 @@ export class SimctlWrapper {
   // Android has waited since the beginning (`EmulatorLauncher.waitForBoot`); this is the counterpart.
   private static readonly BOOT_READY_TIMEOUT_MS = 90_000
   private static readonly BOOT_POLL_INTERVAL_MS = 500
+  // Bounds one reading, not the wait. `listDevices` is otherwise untimed, so a wedged
+  // CoreSimulatorService makes the deadline below unreachable — the loop would sit inside a single
+  // `xcrun` forever and never look at the clock again. A fixed ceiling rather than "whatever is left of
+  // the deadline": the latter lets the last reading swallow the remaining 89 seconds with no retry, and
+  // a healthy `simctl list` answers in well under a second, so 5s is already several times slack.
+  private static readonly BOOT_POLL_READ_TIMEOUT_MS = 5_000
 
   /**
    * Polls the device list until `deviceId` reports `booted`, and returns it — so the caller sends
@@ -156,6 +169,11 @@ export class SimctlWrapper {
    * is not lost. Android's poll has always done this (`EmulatorLauncher.waitForBoot`); the first
    * draft of this method did not, which made the "counterpart" claim false in the one way that
    * matters.
+   *
+   * **And a reading has to end.** Each one is bounded by `BOOT_POLL_READ_TIMEOUT_MS`, because
+   * `listDevices` is otherwise untimed: a wedged CoreSimulatorService would park the loop inside one
+   * `xcrun` and the deadline below would never be consulted again. Bounding the reading is what makes
+   * the deadline a deadline; swallowing the failure is what stops it ending the boot.
    *
    * `isStale` is checked every iteration. This loop outlives the boot that started it — the handler
    * is fire-and-forget, and its `bootSeq` check runs only once the wait *returns* — so a shutdown
@@ -183,7 +201,7 @@ export class SimctlWrapper {
 
       let device: Device | undefined
       try {
-        device = (await this.listDevices()).find((d) => d.id === deviceId)
+        device = (await this.listDevices(SimctlWrapper.BOOT_POLL_READ_TIMEOUT_MS)).find((d) => d.id === deviceId)
         // Cleared on every success, so the deadline blames a failed poll only when the *last* one
         // failed. Leaving it set would report a recovered-from error as the reason for the timeout.
         lastError = null

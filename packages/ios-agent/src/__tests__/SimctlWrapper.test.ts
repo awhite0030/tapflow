@@ -119,17 +119,27 @@ describe('SimctlWrapper', () => {
           ],
         },
       })
+      // Both entry points walk the same script. The poll reads through `execWithOpts` because it bounds
+      // each reading, and a double that only scripted `exec` would answer it with `''` — `JSON.parse('')`
+      // throwing on every poll, which the retry branch would then swallow into a deadline. Loud, but for
+      // the wrong reason, and it would hide whatever the test was actually about.
+      const next = (...args: string[]) => {
+        if (args[0] !== 'list') return ''
+        const step = script[Math.min(i++, script.length - 1)]
+        if (step === 'throw') throw new Error('Command failed: xcrun simctl list devices --json\nservice invalidated')
+        return listing(step)
+      }
       return {
-        exec: vi.fn(async (...args: string[]) => {
-          if (args[0] !== 'list') return ''
-          const step = script[Math.min(i++, script.length - 1)]
-          if (step === 'throw') throw new Error('Command failed: xcrun simctl list devices --json\nservice invalidated')
-          return listing(step)
-        }),
+        exec: vi.fn(async (...args: string[]) => next(...args)),
         execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
-        execWithOpts: vi.fn().mockResolvedValue(''),
+        execWithOpts: vi.fn(async (_opts: SimctlExecOpts, ...args: string[]) => next(...args)),
       }
     }
+
+    /** Readings taken, whichever entry point took them. */
+    const reads = (runner: SimctlRunner) =>
+      (runner.exec as ReturnType<typeof vi.fn>).mock.calls.filter((c) => c[0] === 'list').length +
+      (runner.execWithOpts as ReturnType<typeof vi.fn>).mock.calls.filter((c) => c[1] === 'list').length
 
     it('polls until the device reaches Booted and returns the whole record it read', async () => {
       // `Shutdown` first on purpose: `simctl boot` has already returned by the time this runs, and the
@@ -145,7 +155,7 @@ describe('SimctlWrapper', () => {
         typeId: 'com.apple.CoreSimulator.SimDeviceType.iPhone-15',
         osVersion: 'iOS 17.0',
       })
-      expect(runner.exec).toHaveBeenCalledTimes(3)
+      expect(reads(runner)).toBe(3)
     })
 
     it('reads once when the device is already up, even at a zero deadline', async () => {
@@ -154,7 +164,19 @@ describe('SimctlWrapper', () => {
       const runner = transitioningRunner(['Booted'])
       const device = await new SimctlWrapper(runner).waitUntilBooted('device-1', { timeoutMs: 0, pollIntervalMs: 0 })
       expect(device.status).toBe('booted')
-      expect(runner.exec).toHaveBeenCalledTimes(1)
+      expect(reads(runner)).toBe(1)
+    })
+
+    it('bounds each reading, so a wedged simctl cannot outlive the deadline', async () => {
+      // `listDevices` is untimed everywhere else on purpose — a blanket timeout would fail a
+      // legitimately slow call — but the poll is the one caller whose whole contract is a deadline, and a
+      // wedged CoreSimulatorService would park it inside one `xcrun` where the clock is never consulted
+      // again. Bounding the reading is what makes the deadline a deadline; swallowing the failure (the
+      // test below) is what stops it ending a healthy boot.
+      const runner = transitioningRunner(['Booted'])
+      await new SimctlWrapper(runner).waitUntilBooted('device-1', { timeoutMs: 0, pollIntervalMs: 0 })
+      expect(runner.execWithOpts).toHaveBeenCalledWith({ timeoutMs: 5_000 }, 'list', 'devices', '--json')
+      expect(runner.exec).not.toHaveBeenCalledWith('list', 'devices', '--json')
     })
 
     it('sleeps between polls, at the default interval', async () => {
@@ -168,7 +190,7 @@ describe('SimctlWrapper', () => {
       await expect(new SimctlWrapper(runner).waitUntilBooted('device-1', { timeoutMs: 1_200 }))
         .rejects.toThrow(/did not finish booting within 1200ms/)
       expect(Date.now() - started).toBeGreaterThanOrEqual(1_000)
-      expect((runner.exec as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(4)
+      expect(reads(runner)).toBeLessThanOrEqual(4)
     })
 
     it('gives up at the deadline and names the last status it saw', async () => {
@@ -185,7 +207,7 @@ describe('SimctlWrapper', () => {
       const recovered = transitioningRunner(['throw', 'throw', 'Booted'])
       const device = await new SimctlWrapper(recovered).waitUntilBooted('device-1', { timeoutMs: 5_000, pollIntervalMs: 0 })
       expect(device.status).toBe('booted')
-      expect(recovered.exec).toHaveBeenCalledTimes(3)
+      expect(reads(recovered)).toBe(3)
 
       const persistent = transitioningRunner(['throw'])
       await expect(new SimctlWrapper(persistent).waitUntilBooted('device-1', { timeoutMs: 20, pollIntervalMs: 5 }))
@@ -220,7 +242,7 @@ describe('SimctlWrapper', () => {
       const runner = transitioningRunner(['Shutdown', 'Shutdown', 'Shutdown', 'Booting', 'Booted'])
       const device = await new SimctlWrapper(runner).waitUntilBooted('device-1', { timeoutMs: 5_000, pollIntervalMs: 0 })
       expect(device.status).toBe('booted')
-      expect(runner.exec).toHaveBeenCalledTimes(5)
+      expect(reads(runner)).toBe(5)
     })
 
     it('abandons the poll as soon as the boot is superseded', async () => {
@@ -237,9 +259,9 @@ describe('SimctlWrapper', () => {
       await new Promise((r) => setTimeout(r, 30))
       stale = true
       await expect(wait).rejects.toThrow(/was superseded while waiting/)
-      const callsAtRejection = (runner.exec as ReturnType<typeof vi.fn>).mock.calls.length
+      const callsAtRejection = reads(runner)
       await new Promise((r) => setTimeout(r, 40))
-      expect(runner.exec).toHaveBeenCalledTimes(callsAtRejection)
+      expect(reads(runner)).toBe(callsAtRejection)
     })
   })
 
