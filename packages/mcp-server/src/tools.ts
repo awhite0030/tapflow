@@ -43,8 +43,15 @@ function makeFlowDriver(client: TapflowClient, sessionId: string, buildId?: numb
  *
  * Duplicated in the relay for the same reason its copy is duplicated here — see that one's note.
  */
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+
 function sniffImageFormat(buf: Buffer): 'png' | 'jpeg' | null {
-  if (buf.length >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png'
+  // All eight signature bytes, not the leading four. The trailing `0d 0a 1a 0a` is the part that
+  // detects a mangled transfer — CRLF translation, a truncated read — and those produce exactly the
+  // buffer this must not call a PNG, because `getImageDimensions` would then read a width and height
+  // out of whatever sits at bytes 16-23.
+  if (buf.length >= PNG_SIGNATURE.length && PNG_SIGNATURE.every((b, i) => buf[i] === b)) return 'png'
+  // JPEG has no counterpart: SOI is two bytes and that is the whole marker.
   if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xd8) return 'jpeg'
   return null
 }

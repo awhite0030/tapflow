@@ -66,8 +66,12 @@ const DEFAULT_AGENT_GRACE_MS = 15_000
  * situation as `correlatesWith` across the two clients, and the same answer — each copy has tests.
  * These two signatures have not changed since 1992 and 1996, so there is little for them to drift to.
  */
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+
 function sniffImageFormat(buf: Buffer): 'png' | 'jpeg' | null {
-  if (buf.length >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png'
+  // All eight signature bytes — see the note on the `mcp-server` copy for why the trailing four earn
+  // their place. Here a false `png` would report a mismatch that is not one.
+  if (buf.length >= PNG_SIGNATURE.length && PNG_SIGNATURE.every((b, i) => buf[i] === b)) return 'png'
   if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xd8) return 'jpeg'
   return null
 }

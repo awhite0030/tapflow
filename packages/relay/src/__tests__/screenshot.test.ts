@@ -105,13 +105,14 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     agent.close()
   })
 
-  it('TC1b: 라벨과 바이트가 어긋나면 경고를 남기되 라벨을 덮어쓰지는 않는다 (#508)', async () => {
-    // 소비자 쪽 sniff는 거짓말하는 agent를 영구히 감춘다. #508은 사람이 눈치채서 발견됐고 아무것도
-    // 보고하지 않았다. relay는 이미 base64를 디코드하므로 4바이트를 더 읽는 비용으로 탐지가 남는다.
+  it('TC1b: warns when the label disagrees with the bytes, without overwriting it (#508)', async () => {
+    // The consumer-side sniff fixes the symptom and hides a lying agent forever. #508 was found by a
+    // person noticing, and nothing reported it — so the detector is worth the eight bytes read off a
+    // buffer the relay had already decoded.
     //
-    // 덮어쓰지 않는 것이 핵심이다. 이 필드는 agent가 자기 생산물에 대해 말한 것이고, relay가 고치면
-    // agent만 알 수 있는 것의 권한을 relay가 가져가는 계약 변경이 된다. 그래서 Content-Type은 여전히
-    // 어긋난 채 나가고, 그 사실이 경고에 적힌다.
+    // Not overwriting is the point. The field is what the agent says it produced, and correcting it
+    // here would make the relay the authority on something only the agent can know. So the
+    // Content-Type still goes out wrong, and the warning is what says so.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       const { agent, sessionId } = await setupAgent()
@@ -142,9 +143,10 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     } finally { warn.mockRestore() }
   })
 
-  it('TC1c: 라벨과 바이트가 맞으면 아무 말도 하지 않는다', async () => {
-    // TC1b의 짝. 저 테스트만으로는 조건을 `true`로 바꾼 구현이 통과한다 — 경고가 매 스크린샷마다
-    // 나가면 드리프트 탐지기가 아니라 소음이 되고, 진짜 불일치가 그 안에 묻힌다.
+  it('TC1c: stays silent when the label and the bytes agree', async () => {
+    // TC1b's twin. On its own that test passes for an implementation whose condition is `true` — a
+    // warning on every screenshot is not a drift detector but noise, and a real mismatch is then
+    // buried in it.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       const { agent, sessionId } = await setupAgent()

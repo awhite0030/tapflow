@@ -87,6 +87,17 @@ describe('screenshot — the bytes decide the format, not the request', () => {
     expect(text(res)).not.toContain('unrecognised')
   })
 
+  it('does not accept a PNG signature that only starts right', async () => {
+    // The four-byte prefix is not the signature. `0d 0a 1a 0a` is there to catch a mangled transfer —
+    // CRLF translation, a truncated read — and that is exactly the buffer that must not be measured as
+    // a PNG, because `getImageDimensions` would read a width and height out of bytes 16-23 regardless.
+    const mangled = pngBytes(1170, 2532)
+    mangled[4] = 0x0a // the `0d` translated away, which is what a text-mode transfer does to it
+    const res = await handler(mangled)({ sessionId: 's1', format: 'jpeg' })
+    expect(text(res)).toContain('unrecognised format')
+    expect(text(res)).not.toContain('1170×2532px')
+  })
+
   it('says so when the bytes match neither signature', async () => {
     // Reachable only from a platform registered through `AgentRegistry` that produces something else
     // — `DeviceAgent.screenshot()` takes no format, so nothing constrains it. Falling back to the
