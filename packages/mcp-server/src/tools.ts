@@ -26,6 +26,29 @@ function makeFlowDriver(client: TapflowClient, sessionId: string, buildId?: numb
   }
 }
 
+/**
+ * What a buffer actually is, from its magic bytes, or `null` for anything else.
+ *
+ * The request's `format` is a **preference** (see `ScreenshotRequest` in protocol) and the reply's is
+ * a claim, so neither can decide how to parse these bytes. Android produces PNG whatever is asked —
+ * `screencap -p` takes no format — and used to echo the request, so a JPEG request arrived as PNG
+ * bytes that `getImageDimensions` then scanned for a JPEG SOF0 marker. In a few hundred KB of IDAT a
+ * stray `ff c0` is close to certain, which yielded a **wrong** width and height, and those numbers go
+ * into the response text the LLM reads and hands back as `tap`'s divisors. The tap lands somewhere
+ * else on the screen (#508).
+ *
+ * Sniffing here rather than trusting the agent's fix is what makes this work against an agent that
+ * has *not* been upgraded: agents are separate processes on separate release lines and this protocol
+ * has no version handshake, so a self-hosted user running an older Mac agent is the ordinary case.
+ *
+ * Duplicated in the relay for the same reason its copy is duplicated here — see that one's note.
+ */
+function sniffImageFormat(buf: Buffer): 'png' | 'jpeg' | null {
+  if (buf.length >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png'
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xd8) return 'jpeg'
+  return null
+}
+
 function getImageDimensions(buf: Buffer, format: string): { width: number; height: number } | null {
   if (format === 'png' && buf.length >= 24) {
     return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
@@ -246,24 +269,39 @@ export function registerTools(server: McpServer, client: TapflowClient): void {
       description: 'Capture the current screen of a device. Returns the image so you can analyze it.',
       inputSchema: {
         sessionId: z.string().describe('Session ID from list_devices'),
-        format: z.enum(['png', 'jpeg']).optional().describe('Image format (default: png)'),
+        format: z.enum(['png', 'jpeg']).optional().describe(
+          'Preferred image format (default: png). Honoured on iOS; Android always returns PNG, and the ' +
+          'response says so when it differs.',
+        ),
       },
     },
     async ({ sessionId, format }) => {
       try {
-        const fmt = format ?? 'png'
-        const buf = await client.screenshot(sessionId, fmt)
-        const mimeType = fmt === 'jpeg' ? 'image/jpeg' : 'image/png'
-        const ext = fmt === 'jpeg' ? 'jpg' : 'png'
+        const requested = format ?? 'png'
+        const buf = await client.screenshot(sessionId, requested)
+        // The bytes decide, not what was asked for and not what the reply claims. Falling back to the
+        // request when nothing matches keeps the old behaviour for a producer neither signature
+        // covers, and says so rather than presenting a guess as a reading.
+        const sniffed = sniffImageFormat(buf)
+        const actual = sniffed ?? requested
+        const mimeType = actual === 'jpeg' ? 'image/jpeg' : 'image/png'
+        const ext = actual === 'jpeg' ? 'jpg' : 'png'
         const filename = `tapflow-${sessionId.slice(0, 8)}-${Date.now()}.${ext}`
         const filePath = path.join(os.tmpdir(), filename)
         fs.writeFileSync(filePath, buf)
-        const dims = getImageDimensions(buf, fmt)
+        const dims = getImageDimensions(buf, actual)
         const dimText = dims ? ` (${dims.width}×${dims.height}px)` : ''
+        // Named only when it differs, so the ordinary case stays quiet — and named at all because the
+        // caller asked for something it did not get, and `tap` takes these dimensions as divisors.
+        const formatNote = sniffed === null
+          ? ` — the image is in an unrecognised format, read as ${requested}`
+          : sniffed !== requested
+            ? ` — ${requested} was requested but the device produced ${sniffed}`
+            : ''
         return {
           content: [
             { type: 'image' as const, data: buf.toString('base64'), mimeType },
-            { type: 'text' as const, text: `Screenshot saved: ${filePath}${dimText}` },
+            { type: 'text' as const, text: `Screenshot saved: ${filePath}${dimText}${formatNote}` },
           ],
         }
       } catch (e) {

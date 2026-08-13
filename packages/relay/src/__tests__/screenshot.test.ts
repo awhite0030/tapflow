@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import http from 'http'
 import fs from 'fs'
 import os from 'os'
@@ -103,6 +103,43 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     expect(res.body).toEqual(FAKE_PNG)
 
     agent.close()
+  })
+
+  it('TC1b: 라벨과 바이트가 어긋나면 경고를 남기되 라벨을 덮어쓰지는 않는다 (#508)', async () => {
+    // 소비자 쪽 sniff는 거짓말하는 agent를 영구히 감춘다. #508은 사람이 눈치채서 발견됐고 아무것도
+    // 보고하지 않았다. relay는 이미 base64를 디코드하므로 4바이트를 더 읽는 비용으로 탐지가 남는다.
+    //
+    // 덮어쓰지 않는 것이 핵심이다. 이 필드는 agent가 자기 생산물에 대해 말한 것이고, relay가 고치면
+    // agent만 알 수 있는 것의 권한을 relay가 가져가는 계약 변경이 된다. 그래서 Content-Type은 여전히
+    // 어긋난 채 나가고, 그 사실이 경고에 적힌다.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { agent, sessionId } = await setupAgent()
+      agent.on('message', (data) => {
+        const msg = JSON.parse(data.toString()) as RelayMessage
+        if (msg.type === 'screenshot:request') {
+          agent.send(JSON.stringify({
+            type: 'screenshot:done',
+            sessionId: msg.sessionId,
+            requestId: msg.requestId,
+            format: 'jpeg',
+            data: FAKE_PNG.toString('base64'),
+          }))
+        }
+      })
+
+      const res = await httpGet(
+        port,
+        `/api/v1/sessions/${sessionId}/screenshot?format=jpeg`,
+        { Cookie: makeAuthCookie() },
+      )
+
+      expect(res.status).toBe(200)
+      expect(res.headers['content-type']).toBe('image/jpeg')
+      expect(warn.mock.calls.flat().join(' ')).toMatch(/is png but the agent called it jpeg/)
+
+      agent.close()
+    } finally { warn.mockRestore() }
   })
 
   it('TC2: JPEG 포맷 요청 — agent가 jpeg 응답 시 200 image/jpeg', async () => {

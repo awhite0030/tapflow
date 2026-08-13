@@ -1305,8 +1305,11 @@ export class AndroidAgent implements DeviceAgent {
         break
       }
       case 'screenshot:request': {
+        // `format` is deliberately destructured and unused — it is on the wire and this platform
+        // cannot honour it, which is the whole of #508. Reading it here and answering with it is
+        // exactly the bug.
         const raw = msg as unknown as { requestId: string; format?: 'png' | 'jpeg'; sessionId?: string }
-        const { requestId, format } = raw
+        const { requestId } = raw
         const sessionId = msg.sessionId
         const state = this.deviceStates.get(sessionId!)
         const serial = state ? this.adb.getSerial(state.deviceId) : undefined
@@ -1319,7 +1322,11 @@ export class AndroidAgent implements DeviceAgent {
             type: 'screenshot:done',
             sessionId,
             requestId,
-            format: format ?? 'png',
+            // `'png'`, never the requested format. `screencap -p` produces PNG and takes no format
+            // argument, and this field means what was produced — the request's is a preference (see
+            // `ScreenshotRequest` in protocol). Echoing it sent PNG bytes out under `image/jpeg`
+            // (#508), which the relay then wrote into the HTTP Content-Type.
+            format: 'png',
             data: buf.toString('base64'),
           }))
           .catch((e: unknown) => {
