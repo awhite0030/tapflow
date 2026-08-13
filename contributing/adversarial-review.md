@@ -71,6 +71,18 @@ and waiting out sleeps.
 - **Some cost is irreducible.** Verifying code that kills processes means starting and killing
   processes, with real waits. Budget for it and say so up front, rather than discovering it at 100
   minutes.
+- **A running review holds the checkout's *branch*, not just its working tree.** The rule above about
+  worktrees is easy to read as "do not run two mutating channels at once" and stop there. It is wider
+  than that: while a review runs, **you** are the other process. One session switched branches
+  mid-review to handle another PR's comments, and from that moment the files under review were not on
+  disk and the tree was dirty with a different slice's work. That reviewer noticed via `git reflog` and
+  built itself a worktree; one that did not check would have reported results from a tree containing
+  none of the change. A separate incident had a reviewer's restore-to-`HEAD` discard six edits made in
+  the checkout while it ran.
+- **So: while a review runs, the checkout is read-only to you.** Concurrent work goes in a worktree
+  that *you* create, not one the reviewer has to discover it needs. This applies to a read-only
+  reviewer too — it is reading files, so editing them mid-run means it may report on text you have
+  already changed.
 
 ## The cleared list ages with the diff
 
@@ -132,6 +144,28 @@ Two habits that would have caught all three:
   above it and a changeset paragraph will usually come back.
 - When a fix reverses a decision, find the sentence that recorded the decision. If a review talked you out of
   something, the write-up saying why you did it is somewhere, and it is now wrong.
+
+### The two habits above are not sufficient, and here is what they miss
+
+Those are both **identifier** searches, and later rounds on the same program found the two classes they cannot
+reach. Frequency first: one slice produced **five** survivors after the author had already swept it, and a
+later one produced two more that the sweep had specifically been looking for.
+
+- **Read the paragraph *above* the hunk, in the file — not in the diff.** Four of those five were the lead-in
+  sentence or the preceding paragraph of a place that *was* edited. The sharpest: a commit whose stated
+  headline was "this ends a contradiction that sat in two files" left the retired argument verbatim on the base
+  interface its rewritten member now `extends`, 140 lines above the rewritten block. The contradiction did not
+  end; it moved inside one file. The grep found every site that *mentioned* the message by name and none of the
+  sentences that *explained* those sites.
+- **A sentence quoting a value is found by the value's word, not by the identifier near it.** Two comments
+  saying a diagnostic fires "once per session" survived the change that made it once per client, because the
+  sweep grepped `addressSkew` and `predates addressed` and neither sentence contains either. Search the
+  vocabulary of quantity: counts, cardinalities, directions, and *once* / *always* / *only* / *every*.
+  Line-number lists are the worst case — one comment carried seven of them onto a `break` and three comments,
+  invalidated silently by a refactor in the same commit.
+- **Do not blanket-replace.** In that same pass the identical phrase "once per session" was **correct** two
+  files away, describing a different record with a genuinely per-session key. A global substitution would have
+  broken the true half while fixing the false one, and the distinction was the whole point of the fix.
 
 ### A prompt skeleton that stays cheap
 

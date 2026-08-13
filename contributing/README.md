@@ -86,6 +86,7 @@ cannot keep true.
 | [awdl-wifi-latency-diagnosis.md](./awdl-wifi-latency-diagnosis.md) | diagnosis | network, latency, relay, wifi |
 | [workshop-lab-fork-observations.md](./workshop-lab-fork-observations.md) | reference | performance, capacity, extensibility, external-fork |
 | [adversarial-review.md](./adversarial-review.md) | rules | process, review, quality |
+| [test-and-guard-coverage.md](./test-and-guard-coverage.md) | rules | testing, static-checks, review, quality |
 
 ## Adding a record
 

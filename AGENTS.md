@@ -71,6 +71,12 @@ Work logs go in `.work/`. Conventions: [.work/CLAUDE.md](./.work/CLAUDE.md).
 3. **Review** — edge cases + real data validation → **adversarial review** (below) → PR (`type: review`).
 4. **Compound** — extract repeating patterns into test + code + prompt bundles (`type: compound`).
 
+**Before writing a static check, or a test that asserts something does *not* happen, read
+[contributing/test-and-guard-coverage.md](./contributing/test-and-guard-coverage.md).** A test asserting
+absence passes when nothing happens — that is its definition — so it cannot tell a working drop from a bug
+that produces the same silence; and a check whose header cites a lesson usually reads as having applied it.
+Four measured shapes, each of which shipped a hole behind a fully green suite.
+
 Custom commands: `/work-plan {topic}` · `/deep-research {problem}` · `/qa {target}` · `/doc-sync` · `/compound` · `/promote-decision {topic}` · `/release {major|minor|patch}`.
 
 ### Adversarial Review (required before every code-change PR)
