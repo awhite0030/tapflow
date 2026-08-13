@@ -24,10 +24,25 @@ status: living
   *initiation* and the device reaches `Booted` seconds later — measured 7.6s on an iPhone 17 Pro / iOS 26.5 —
   so `handleDeviceBoot` awaits `SimctlWrapper.waitUntilBooted` before it sends anything (#486). Android has
   always waited (`EmulatorLauncher.waitForBoot`), and a caller that acts on `ready` immediately is the one that
-  notices: #440's *No devices are booted* was this half of the race. Every status other than `booted` counts as
-  still coming up, **`shutdown` included** — `toDeviceStatus` collapses `Booting` into `unknown`, and the wait
-  only ever runs after `boot` was accepted, so a `shutdown` reading is the transition not yet observed rather
-  than a failure. A boot that never finishes ends at a 90s deadline as `device:boot-error`.
+  notices: #440's *No devices are booted* was this half of the race. A boot that never finishes ends at a 90s
+  deadline as `device:boot-error`. Three details of the poll are load-bearing and each closed a hole the first
+  draft shipped:
+  - **`unknown` gets the whole deadline; `shutdown` and "gone from the list" get 3 seconds.** They are not the
+    same reading. `toDeviceStatus` collapses `Booting` into `unknown`, so that is the ordinary one during a
+    boot — but the handler **skips `boot` entirely** when the device was already `booted` when it read the
+    list, and a shutdown landing in that window leaves nobody booting anything. The grace covers CoreSimulator
+    still reporting the pre-boot state; past it, the first reading already had the answer.
+  - **A failed reading is not a reading.** This spawns `xcrun simctl list` up to 180 times where the old code
+    spawned it once, each one a chance to kill a healthy boot while CoreSimulator is busiest. Failures are
+    swallowed and retried, and the last is reported with the deadline. Android has always done this; the claim
+    of parity with `waitForBoot` was false until it did.
+  - **`isStale` cancels the poll from inside.** The handler is fire-and-forget and its `bootSeq` check runs
+    only once the wait *returns*, so a shutdown mid-wait would otherwise leave a process spawning twice a
+    second against a device that is deliberately off. The check after the wait stays as well — it covers the
+    microtask-thin case where the wait has resolved and the seq moves before the handler resumes.
+  - **A caller with a shorter deadline still cannot hear the reason.** `mcp-server`'s `boot_device` waits 30s,
+    inside the agent's 90s, so a cold boot past 30s reports a bare timeout to the LLM. That ceiling was
+    unreachable before, because the agent answered on boot acceptance.
 
 ### Input acks carry a reason
 

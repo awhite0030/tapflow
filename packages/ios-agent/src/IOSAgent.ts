@@ -622,7 +622,11 @@ export class IOSAgent implements DeviceAgent {
       // `device:ready` went out a few lines later. A human is slower than the gap and rarely
       // notices; `mcp-server` installs and taps the moment it sees ready, which is what #440's
       // "No devices are booted" was.
-      const bootedDevice = await this.simctl.waitUntilBooted(deviceId)
+      // `isStale` rather than a check on the far side alone: this handler is fire-and-forget, so a
+      // shutdown arriving mid-wait bumps `bootSeq` and leaves the poll spawning `xcrun simctl list`
+      // twice a second against a device that is now deliberately off — for the rest of the deadline,
+      // with nothing left that wants the answer.
+      const bootedDevice = await this.simctl.waitUntilBooted(deviceId, { isStale: () => seq !== state.bootSeq })
       // Another await — a multi-second one — and `sendChromeData` below starts a helper process. A
       // shutdown or a newer boot arriving in this gap would otherwise get a helper installed for the
       // device it is taking down — and one that revives itself, so the stale reference outlives the

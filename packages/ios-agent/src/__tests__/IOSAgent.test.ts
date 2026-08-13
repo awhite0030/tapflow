@@ -180,11 +180,20 @@ function mockSimctl(booted: boolean | 'unknown' = false): SimctlWrapper {
   } as unknown as SimctlWrapper
   // `handleDeviceBoot` awaits this before it announces readiness (#486). The real one polls
   // `listDevices` until the device reports `booted`, so the double reads the same list — a test that
-  // rewrites it (`mockSimctlTwoDevices`, and the per-test overrides) then gets the device the agent
-  // actually asked for rather than a fixture pinned here. It answers `booted` because that is the
-  // only status the poll returns on; the polling itself is covered in `SimctlWrapper.test.ts`, which
-  // drives a real Booting→Booted transition through the runner.
-  sw.waitUntilBooted = vi.fn(async (deviceId: string) => {
+  // rewrites it (`mockSimctlTwoDevices`, and the per-test `mockResolvedValue` overrides) then gets
+  // the device the agent actually asked for rather than a fixture pinned here. It answers `booted`
+  // because that is the only status the poll returns on; the polling itself, its deadline, its grace
+  // for a settled device and its `isStale` signal are all covered in `SimctlWrapper.test.ts`, which
+  // drives real transitions through the runner.
+  //
+  // **`opts.isStale` is deliberately ignored here.** This double does not poll, so there is nothing
+  // to cancel — and the agent-side claim worth testing is the other guard: the `bootSeq` re-check on
+  // the far side of the wait, which only runs once the wait returns.
+  //
+  // One caller does not get the shared list: `{ ...mockSimctl(false), listDevices: … }` spreads the
+  // object, and the copy's `waitUntilBooted` still closes over the original `sw`. That test does not
+  // boot, and the failure mode if one did would be a loud `device:boot-error`, not a silent pass.
+  sw.waitUntilBooted = vi.fn(async (deviceId: string, _opts?: { isStale?: () => boolean }) => {
     const device = (await sw.listDevices()).find((d) => d.id === deviceId)
     if (!device) throw new PlatformError(`Device ${deviceId} did not finish booting`)
     return { ...device, status: 'booted' as const }
@@ -930,10 +939,16 @@ describe('IOSAgent', () => {
       }
       expect(joined).not.toBeNull()
 
-      // The abandoned boot returns at the seq check *before* its second `listDevices`, so that
-      // call not happening is the assertion — no sleep, and it fails if the bump is removed
-      // (the boot then runs on to `listDevices` and builds the helper). `setImmediate` drains the
-      // microtask queue, which is all the guarded path needs to reach its early return.
+      // The abandoned boot returns at the seq check that follows `simctl.boot`, before it reaches
+      // `waitUntilBooted` — so no further `listDevices` happening is the assertion. No sleep, and it
+      // fails if the bump is removed (the boot then runs on and builds the helper). `setImmediate`
+      // drains the microtask queue, which is all the guarded path needs to reach its early return.
+      //
+      // The extra reading it would make is now the double's, not the handler's: `mockSimctl`'s
+      // `waitUntilBooted` reads the shared list to answer with the right device. That keeps this
+      // assertion working, but the `MockTouchHelper` check below is the one that does not depend on
+      // how the double is written. The later seq check — the one on the far side of the wait — is a
+      // different guard with its own test in `device:boot handler`.
       const listCallsBeforeRelease = (simctl.listDevices as ReturnType<typeof vi.fn>).mock.calls.length
       releaseBoot()
       await new Promise((r) => setImmediate(r))
@@ -1101,6 +1116,8 @@ describe('IOSAgent', () => {
   })
 
   describe('device:boot handler', () => {
+    beforeEach(() => { MockTouchHelper.mockClear() })
+
     it('sends device:booting then device:ready for a shutdown device', async () => {
       const simctl = mockSimctl(false)
       const agent = new IOSAgent({ intervalMs: 50 }, simctl)
@@ -1156,9 +1173,17 @@ describe('IOSAgent', () => {
 
       browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-486', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
       await waitForType(browser, 'device:booting')
-      await vi.waitFor(() => expect(simctl.waitUntilBooted).toHaveBeenCalledWith('dev-1'), { timeout: 2000 })
+      await vi.waitFor(() => expect(simctl.waitUntilBooted).toHaveBeenCalledWith('dev-1', expect.anything()), { timeout: 2000 })
 
       expect(await waitForTypeOrNull(browser, 'session:deviceInfo', 300)).toBeNull()
+      // `device:ready` too, and not only `session:deviceInfo`. The recording is already running, so
+      // this reads whatever arrived during the 300ms above rather than waiting again — and without
+      // it, moving the `sendMsg({ type: 'device:ready' })` above the wait while leaving
+      // `sendChromeData` below it passes this test, which is #486 itself restored.
+      expect(await waitForTypeOrNull(browser, 'device:ready', 0)).toBeNull()
+      // In-process and hop-free: `sendChromeData` constructs the helper synchronously, before either
+      // message goes out, so this holds even if a socket were slower than the deadline above.
+      expect(MockTouchHelper.mock.results).toHaveLength(0)
 
       const ready = waitForType(browser, 'device:ready')
       releaseWait()
@@ -1193,6 +1218,53 @@ describe('IOSAgent', () => {
       const e = await errored
       expect(e.message).toContain('did not finish booting')
       expect(e.requestId).toBe('rq-486b')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('installs no helper when a shutdown lands while the boot is waiting (#486)', async () => {
+      // The `bootSeq` re-check on the far side of the wait, which nothing reached before. The
+      // existing reconnect test bumps the seq while `simctl.boot` is in flight, so it returns at the
+      // check *before* this one — its own comment says so — and deleting the check after the wait
+      // left all 388 tests green. The gap it guards used to be sub-second and is now the boot itself
+      // (measured 7.6s), so it is the wider of the two.
+      //
+      // `isStale` covers the same window from inside the poll, but only while the poll is running.
+      // This is the microtask-thin case it cannot see: the wait has already resolved and the seq
+      // moves before the handler resumes.
+      const simctl = mockSimctl(false)
+      let releaseWait = (): void => {}
+      ;(simctl.waitUntilBooted as ReturnType<typeof vi.fn>).mockImplementation(
+        () => new Promise((resolve) => {
+          releaseWait = () =>
+            resolve({ id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' })
+        }),
+      )
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-486c', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:booting')
+      await vi.waitFor(() => expect(simctl.waitUntilBooted).toHaveBeenCalled(), { timeout: 2000 })
+      expect(MockTouchHelper.mock.results).toHaveLength(0)
+
+      // `device:shutdown` bumps `bootSeq` on its first line. Its reply is the barrier: the agent has
+      // finished with the shutdown before the wait is released, so this is an answer rather than a
+      // guess about timing.
+      browser.send(JSON.stringify({ type: 'device:shutdown', requestId: 'rq-486d', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:shutdown-done')
+
+      releaseWait()
+      await new Promise((r) => setImmediate(r))
+
+      expect(MockTouchHelper.mock.results).toHaveLength(0)
+      expect(await waitForTypeOrNull(browser, 'device:ready', 0)).toBeNull()
 
       agent.disconnect()
       browser.close()

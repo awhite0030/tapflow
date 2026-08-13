@@ -96,33 +96,55 @@ describe('SimctlWrapper', () => {
   })
 
   describe('waitUntilBooted', () => {
-    // One `list` reading per call, walking the states in order and holding on the last — the shape a
+    // One `list` reading per call, walking the script in order and holding on the last — the shape a
     // real boot has. `mockRunner` answers every `list` identically, which cannot express a transition.
-    function transitioningRunner(states: string[]): SimctlRunner {
+    // A step of `throw` is a failed reading, which is a different thing from a reading of a failure.
+    //
+    // `deviceTypeIdentifier` is in the fixture because it is the field a re-assembled return value
+    // loses most quietly: `sendChromeData` falls back to `chromeLoader.load(device.name)` when
+    // `typeId` is missing, which is the name-based lookup this package's AGENTS.md marks ❌, and the
+    // only symptom is that every boot loses its device chrome.
+    function transitioningRunner(script: Array<string | 'throw'>): SimctlRunner {
       let i = 0
       const listing = (state: string) => JSON.stringify({
         devices: {
           'com.apple.CoreSimulator.SimRuntime.iOS-17-0': [
-            { udid: 'device-1', name: 'iPhone 15', state, isAvailable: true },
+            {
+              udid: 'device-1',
+              name: 'iPhone 15',
+              state,
+              isAvailable: true,
+              deviceTypeIdentifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-15',
+            },
           ],
         },
       })
       return {
-        exec: vi.fn(async (...args: string[]) =>
-          args[0] === 'list' ? listing(states[Math.min(i++, states.length - 1)]) : ''),
+        exec: vi.fn(async (...args: string[]) => {
+          if (args[0] !== 'list') return ''
+          const step = script[Math.min(i++, script.length - 1)]
+          if (step === 'throw') throw new Error('Command failed: xcrun simctl list devices --json\nservice invalidated')
+          return listing(step)
+        }),
         execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
     }
 
-    it('polls until the device reaches Booted and returns what it read', async () => {
+    it('polls until the device reaches Booted and returns the whole record it read', async () => {
       // `Shutdown` first on purpose: `simctl boot` has already returned by the time this runs, and the
       // list can still report the pre-boot state for a moment. The call count is what says neither
       // that reading nor `Booting` was accepted — three readings for three states.
       const runner = transitioningRunner(['Shutdown', 'Booting', 'Booted'])
-      const device = await new SimctlWrapper(runner).waitUntilBooted('device-1', 5_000, 0)
-      expect(device.status).toBe('booted')
-      expect(device.name).toBe('iPhone 15')
+      const device = await new SimctlWrapper(runner).waitUntilBooted('device-1', { timeoutMs: 5_000, pollIntervalMs: 0 })
+      expect(device).toEqual({
+        id: 'device-1',
+        name: 'iPhone 15',
+        platform: 'ios',
+        status: 'booted',
+        typeId: 'com.apple.CoreSimulator.SimDeviceType.iPhone-15',
+        osVersion: 'iOS 17.0',
+      })
       expect(runner.exec).toHaveBeenCalledTimes(3)
     })
 
@@ -130,21 +152,88 @@ describe('SimctlWrapper', () => {
       // The deadline is checked after the read rather than before it. With the order reversed a device
       // that is already booted would still have to wait out a poll interval to be reported as up.
       const runner = transitioningRunner(['Booted'])
-      const device = await new SimctlWrapper(runner).waitUntilBooted('device-1', 0, 0)
+      const device = await new SimctlWrapper(runner).waitUntilBooted('device-1', { timeoutMs: 0, pollIntervalMs: 0 })
       expect(device.status).toBe('booted')
       expect(runner.exec).toHaveBeenCalledTimes(1)
     })
 
+    it('sleeps between polls, at the default interval', async () => {
+      // Both halves matter. Without the sleep this spawns `xcrun simctl list` as fast as the event
+      // loop allows for the whole deadline, and deleting it changes no other assertion here — every
+      // other test passes an interval of 0. And production calls this with no interval at all
+      // (`IOSAgent.handleDeviceBoot`), so the default is the value that actually runs: at 500ms a
+      // 1200ms deadline admits three readings, and a default of 0 would admit hundreds.
+      const runner = transitioningRunner(['Booting'])
+      const started = Date.now()
+      await expect(new SimctlWrapper(runner).waitUntilBooted('device-1', { timeoutMs: 1_200 }))
+        .rejects.toThrow(/did not finish booting within 1200ms/)
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1_000)
+      expect((runner.exec as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(4)
+    })
+
     it('gives up at the deadline and names the last status it saw', async () => {
       const runner = transitioningRunner(['Booting'])
-      await expect(new SimctlWrapper(runner).waitUntilBooted('device-1', 20, 5))
+      await expect(new SimctlWrapper(runner).waitUntilBooted('device-1', { timeoutMs: 20, pollIntervalMs: 5 }))
         .rejects.toThrow(/did not finish booting within 20ms \(last seen: unknown\)/)
     })
 
-    it('reports a device that is not in the list at all', async () => {
-      const runner = transitioningRunner(['Booted'])
-      await expect(new SimctlWrapper(runner).waitUntilBooted('device-404', 0, 0))
-        .rejects.toThrow(/last seen: no longer listed/)
+    it('keeps polling when a reading fails, and reports the failure if it runs out', async () => {
+      // A failed `list` is not evidence about the device. This spawns a subprocess up to
+      // `timeoutMs / pollIntervalMs` times during the window when CoreSimulator is busiest, and the
+      // old code read the list once — so without this, one unlucky spawn kills a healthy boot and
+      // reports a `Command failed: xcrun simctl …` line that says nothing about booting.
+      const recovered = transitioningRunner(['throw', 'throw', 'Booted'])
+      const device = await new SimctlWrapper(recovered).waitUntilBooted('device-1', { timeoutMs: 5_000, pollIntervalMs: 0 })
+      expect(device.status).toBe('booted')
+      expect(recovered.exec).toHaveBeenCalledTimes(3)
+
+      const persistent = transitioningRunner(['throw'])
+      await expect(new SimctlWrapper(persistent).waitUntilBooted('device-1', { timeoutMs: 20, pollIntervalMs: 5 }))
+        .rejects.toThrow(/last poll failed: service invalidated/)
+    })
+
+    it('stops early when the device is settled rather than coming up', async () => {
+      // `shutdown` and "gone from the list" mean nothing is bringing this device up, and
+      // `handleDeviceBoot` reaches here without calling `boot` when the device was already `booted`
+      // when it read the list — so a shutdown landing in that window leaves nobody booting anything.
+      // The grace covers CoreSimulator still reporting the pre-boot state; past it, waiting out the
+      // full deadline would spend 90s on an answer the first reading already had.
+      const off = transitioningRunner(['Shutdown'])
+      const started = Date.now()
+      await expect(new SimctlWrapper(off).waitUntilBooted('device-1', { timeoutMs: 60_000, pollIntervalMs: 5, settledGraceMs: 30 }))
+        .rejects.toThrow(/is not coming up — it reports shutdown, 30ms after the boot began/)
+      expect(Date.now() - started).toBeLessThan(1_000)
+
+      const gone = transitioningRunner(['Booted'])
+      await expect(new SimctlWrapper(gone).waitUntilBooted('device-404', { timeoutMs: 60_000, pollIntervalMs: 5, settledGraceMs: 0 }))
+        .rejects.toThrow(/is not coming up — it is no longer listed/)
+    })
+
+    it('does not let a settled reading end a boot that then comes up', async () => {
+      // The grace is a window, not a verdict on the first reading. `boot` returning before
+      // CoreSimulator has left `Shutdown` is the ordinary case this exists for.
+      const runner = transitioningRunner(['Shutdown', 'Shutdown', 'Booting', 'Booted'])
+      const device = await new SimctlWrapper(runner).waitUntilBooted('device-1', { timeoutMs: 5_000, pollIntervalMs: 0, settledGraceMs: 5_000 })
+      expect(device.status).toBe('booted')
+    })
+
+    it('abandons the poll as soon as the boot is superseded', async () => {
+      // The handler is fire-and-forget and its `bootSeq` check runs only once this returns, so
+      // without the signal a shutdown mid-wait leaves this spawning a process twice a second
+      // against a device that is deliberately off and will never converge.
+      const runner = transitioningRunner(['Booting'])
+      let stale = false
+      const wait = new SimctlWrapper(runner).waitUntilBooted('device-1', {
+        timeoutMs: 60_000,
+        pollIntervalMs: 5,
+        isStale: () => stale,
+      })
+      await new Promise((r) => setTimeout(r, 30))
+      stale = true
+      await expect(wait).rejects.toThrow(/was superseded while waiting/)
+      const callsAtRejection = (runner.exec as ReturnType<typeof vi.fn>).mock.calls.length
+      await new Promise((r) => setTimeout(r, 40))
+      expect(runner.exec).toHaveBeenCalledTimes(callsAtRejection)
     })
   })
 
