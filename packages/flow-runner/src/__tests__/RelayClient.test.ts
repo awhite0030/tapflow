@@ -177,15 +177,16 @@ describe('RelayClient — the input senders mint a correlator and await the ack'
       .rejects.toThrow(/pressKey Enter was refused by the device \(channel-unavailable\): no channel/)
   })
 
-  it('reports an unanswered input as unconfirmed, not as dropped, and says so once', async () => {
+  it('reports a lost relay as unconfirmed, and does not blame the agent for it', async () => {
     // `IOSAgent.ackInput` awaits an untimed `simctl list` on the first input after a boot, on the same Mac
     // the relay gates at 80% CPU — so an ack that never reaches this waiter can still belong to an input
     // that landed. "tap timed out" reads as *the tap did not happen*, which is the false certainty this
-    // change removes, sign flipped. And the run needs to hear that the agent may simply be too old to
-    // correlate, since the step's own failure says neither.
+    // change removes, sign flipped.
     //
-    // Driven by closing the socket rather than by waiting out `INPUT_ACK_TIMEOUT_MS`: both reject the same
-    // waiter and take the same branch, and one of them costs 10 seconds per run of the suite.
+    // The step fails the same way a deadline would, but the **diagnosis** must not be the same: every
+    // caller sends before awaiting, so the input has already left this process and the relay may have
+    // forwarded it. A close says only that we stopped being able to hear — nothing about whether the
+    // agent acks, and nothing about its version.
     const logged: string[] = []
     const spy = vi.spyOn(console, 'error').mockImplementation((m: unknown) => { logged.push(String(m)) })
     try {
@@ -197,7 +198,31 @@ describe('RelayClient — the input senders mint a correlator and await the ack'
       expect(err.message).toContain('may have reached the device')
       expect(err.message).not.toContain('refused')
     } finally { spy.mockRestore() }
-    expect(logged.filter((l) => l.includes('went unanswered'))).toHaveLength(1)
+    expect(logged.filter((l) => l.includes('went unanswered'))).toHaveLength(0)
+  })
+
+  it('names the version-skew possibility when the deadline is what expired', async () => {
+    // The half that *is* evidence about the agent: an agent predating input correlation acks with no
+    // `requestId`, so its acks match nothing here and every input in the run burns the deadline. The
+    // step's own failure says neither that nor "or it is slow", and this client cannot tell them apart,
+    // so the log names both.
+    //
+    // Driven by the clock rather than ten real seconds. The socket stays up — only the timer `waitFor`
+    // armed is advanced — so this exercises the deadline rather than a disconnect.
+    const logged: string[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((m: unknown) => { logged.push(String(m)) })
+    try {
+      const { client } = await capture(() => null)
+      vi.useFakeTimers()
+      try {
+        const timedOut = client.tap('s1', 0.5, 0.5).catch((e: unknown) => e as Error)
+        // The literal, not an imported constant: exporting it would make this tautological, while a
+        // number that stops matching fails here and the author has to look.
+        await vi.advanceTimersByTimeAsync(10_000)
+        expect((await timedOut).message).toContain('was not confirmed')
+      } finally { vi.useRealTimers() }
+      expect(logged.filter((l) => l.includes('went unanswered'))).toHaveLength(1)
+    } finally { spy.mockRestore() }
   })
 
   it('does not take another input\'s ack', async () => {

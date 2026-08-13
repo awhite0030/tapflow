@@ -24,6 +24,17 @@ const PERMANENT_QUERY_STATUSES = new Set([400, 401, 403, 404, 409])
 const INPUT_ACK_TIMEOUT_MS = 10_000
 
 /**
+ * The relay connection went away while a waiter was pending.
+ *
+ * A distinct class because it and a timeout mean the same thing to the *caller* — the reply is
+ * unconfirmed either way — and different things to whoever has to fix it. Silence past a deadline
+ * says something about the agent; a closed socket says nothing about the agent at all, only that we
+ * stopped being able to hear it, so the version-skew diagnosis `warnInputAckSilence` prints would be
+ * a false accusation.
+ */
+class RelayClosedError extends PlatformError {}
+
+/**
  * A runtime mirror of `SessionStartFailure`, which `protocol` cannot export as a value — its main entry has
  * to erase under `import type`.
  *
@@ -146,7 +157,7 @@ export class RelayClient {
         this.ws = null
         for (const w of this.waiters.splice(0)) {
           clearTimeout(w.timer)
-          w.reject(new PlatformError('relay connection closed'))
+          w.reject(new RelayClosedError('relay connection closed'))
         }
       })
     })
@@ -395,7 +406,11 @@ export class RelayClient {
         what,
       )
     } catch (e) {
-      this.warnInputAckSilence(sessionId)
+      // The step fails either way and for the same reason — the reply is unconfirmed — but only a
+      // deadline is evidence about the *agent*. A closed relay says nothing about whether it acks,
+      // so accusing it of being old or slow there would be a false diagnosis in the one place an
+      // operator goes looking.
+      if (!(e instanceof RelayClosedError)) this.warnInputAckSilence(sessionId)
       throw new PlatformError(
         `${what} was not confirmed (${(e as Error).message}) — it may have reached the device, so do not ` +
         'repeat it blindly',

@@ -38,8 +38,14 @@ success (#457) because an LLM re-observes the screen and recovers; a flow replay
 cannot, so it fails. It does not, however, claim the input was dropped: `IOSAgent.ackInput` awaits an
 untimed `simctl list` on the first input after a boot, on the same Mac the relay gates at 80% CPU, so a
 late ack can belong to an input that landed. The failure says "not confirmed — may have reached the
-device", and a `console.error` names the two causes the client cannot tell apart (an agent predating
-input correlation, whose acks carry no `requestId` and will never match, or a slow one) once per session.
+device".
+
+A `console.error` names the two causes the client cannot tell apart — an agent predating input
+correlation, whose acks carry no `requestId` and will never match, or a slow one — once per session.
+**Only for a deadline.** A closed relay reaches the same failure and is not evidence about the agent at
+all: every caller sends before awaiting, so the input has already left this process, and a close says
+only that we stopped being able to hear. Printing the version-skew diagnosis there would accuse an
+agent that may be perfectly current, in the one place an operator goes looking.
 
 ## The join read the prose and discarded the reason
 
