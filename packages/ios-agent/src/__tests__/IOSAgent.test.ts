@@ -912,7 +912,21 @@ describe('IOSAgent', () => {
       )
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
-      const agent = new IOSAgent({ intervalMs: 50, reconnectDelays: [20] }, simctl)
+      // `handshakeTimeoutMs` alongside `reconnectDelays`, and it is the one that made this flake.
+      //
+      // This test stops the relay and starts a new one on the same port, then waits ~3s for the agent's
+      // own reconnect to re-register. The retry interval was already shortened to 20ms — but a reconnect
+      // that opens a socket and then does not receive `agent:registered` waits out
+      // `handshakeTimeoutMs`, which defaults to **10 seconds**. One attempt landing in that window is
+      // longer than the whole budget, so no further retry happens and the join below sees no session.
+      // The interval alone was never enough: it only decides how soon the *next* attempt starts, and the
+      // failing attempt is the one that never ends.
+      //
+      // Reachable whenever the agent connects to a relay that is not yet answering — the socket is
+      // accepted before the handler is ready, or the event loop is busy enough that the register round
+      // trip misses the window. Both are ordinary on a loaded CI runner and neither reproduces locally:
+      // this passed 8/8 in isolation while failing twice on CI.
+      const agent = new IOSAgent({ intervalMs: 50, reconnectDelays: [20], handshakeTimeoutMs: 200 }, simctl)
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
