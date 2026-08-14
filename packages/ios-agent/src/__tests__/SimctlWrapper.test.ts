@@ -445,6 +445,22 @@ describe('SimctlWrapper', () => {
       )
       expect(buf).toEqual(pngMagic)
     })
+
+    it('passes jpeg through to --type and names the temp file to match', async () => {
+      // The default was the only branch covered, and `IOSAgent`'s note beside this pair says "the test
+      // that scans exec arguments is what does" — true of `png`, and not of the branch that carries a
+      // caller's choice. Everything that asks for JPEG (the MCP tool, and `MjpegStreamer` since it
+      // stopped mislabelling its frames) goes through here, and asserting the *request* one layer up
+      // proves nothing about what `simctl` was told.
+      const runner = mockRunner()
+      const wrapper = new SimctlWrapper(runner)
+      await wrapper.screenshot('dev-1', 'jpeg')
+
+      expect(runner.exec).toHaveBeenCalledWith(
+        'io', 'dev-1', 'screenshot', '--type', 'jpeg',
+        expect.stringMatching(/tapflow-.+\.jpg$/)
+      )
+    })
   })
 
   describe('isDeviceMissingError', () => {

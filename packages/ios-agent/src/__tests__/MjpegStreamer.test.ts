@@ -24,6 +24,21 @@ describe('MjpegStreamer', () => {
     await reader.cancel()
   })
 
+  it('asks simctl for JPEG, which is what the frames are stamped as', async () => {
+    // The default is PNG, so omitting the argument made this streamer produce PNG bytes under
+    // `CODEC_JPEG` — the class names its codec and was the one place still getting it wrong after
+    // #508. Asserted on the call because the bytes here are a fixture: what is checkable is which
+    // format was requested.
+    const simctl = mockSimctl()
+    const streamer = new MjpegStreamer(simctl, 'dev-1', 1000)
+
+    const reader = streamer.start().getReader()
+    await reader.read()
+
+    expect(simctl.screenshot).toHaveBeenCalledWith('dev-1', 'jpeg')
+    await reader.cancel()
+  })
+
   it('emits multiple frames at the given interval', async () => {
     vi.useFakeTimers()
     const simctl = mockSimctl()
