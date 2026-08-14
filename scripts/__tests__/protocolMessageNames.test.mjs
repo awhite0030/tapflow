@@ -32,6 +32,40 @@ const assertionsRaw = readFileSync(join(root, 'packages/protocol/src/typeAsserti
 // was counted as an eleventh union member.
 const assertions = assertionsRaw.replace(/^\s*\/\/.*$/gm, '')
 
+/** `index.ts` with comments **removed**, for the union parser below.
+ *
+ *  Removed rather than blanked, and the difference is not cosmetic: blanking leaves an empty line and
+ *  the parser stops at one, so `RelayOrAgentToBrowser` was truncated at the comment sitting between
+ *  `InputError` and `InputTypeError` — and its last two members were reported as belonging to no
+ *  direction at all. A parser that loses a declaration reports a hole that is not there, which is the
+ *  same class of failure as one that reports full coverage of nothing. */
+const srcNoComments = src
+  .replace(/\/\*\*[\s\S]*?\*\//g, '')
+  .split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n')
+
+/** Every `export type X = A | B | …` whose right-hand side is a union of names. */
+function unionMembers(text) {
+  const out = new Map()
+  for (const m of text.matchAll(/export type (\w+)\s*=([\s\S]*?)(?=\n\s*\n|\nexport |\n\/\*)/g)) {
+    // Skip object and string-literal types (`SessionTerminatedReason`, `ChromePayload`): only unions
+    // of interface names can carry a message into a direction.
+    if (/[{'"]/.test(m[2])) continue
+    const names = [...m[2].matchAll(/\b([A-Z]\w+)\b/g)].map((x) => x[1])
+    if (names.length) out.set(m[1], names)
+  }
+  return out
+}
+
+/** The seven directions a message can travel. Every declared message must be reachable from one.
+ *
+ *  This list is the one thing here that is restated rather than derived, and it is the small stable
+ *  half: directions are added once a year, messages weekly. A renamed or deleted root is caught by the
+ *  assertion that every name in it parses. */
+const DIRECTIONS = [
+  'BrowserToRelay', 'RelayToBrowser', 'AgentToRelay', 'AgentToBrowser',
+  'RelayToAgent', 'StreamToRelay', 'RelayToStream',
+]
+
 /** Every `export interface` that declares a `type: '<literal>'` — i.e. every wire message.
  *
  *  Bodies are found by counting braces, not by matching a run of two-space lines. The regex version
@@ -95,6 +129,39 @@ describe('protocol message interfaces', () => {
     expect(messages.size).toBe(65)
     // `InputKey` predates L1 and has always been named; it must be in here too.
     expect(messages.has('InputKey')).toBe(true)
+  })
+
+  // **The half `AnyWireMessage` cannot state about itself.** `relay/src/types.ts` asserts its literal
+  // list against `AnyWireMessage`, which is the seven directions unioned — so a message added to a
+  // direction reaches the relay's check for free. A message added to **no** direction reaches nothing:
+  // it is absent from `AnyWireMessage`, so the relay is never obliged to know it, and every type-level
+  // assertion stays green while a declared message travels on no declared path.
+  //
+  // Types cannot enumerate their own declarations, which is why this is here and not there — the same
+  // reason the two facts at the top of this file are checked as source text.
+  it('every message interface belongs to a direction', () => {
+    const unions = unionMembers(srcNoComments)
+
+    // Anti-vacuity first, and in the specific way this check can go quiet: if a direction is renamed
+    // and this list is not, its members vanish from `reachable` and every message in it is reported as
+    // an orphan — loud. If the *parser* stops matching, `reachable` is empty and the orphan list is
+    // everything — also loud. The dangerous direction is a root silently resolving to nothing, so each
+    // one is required to have parsed.
+    for (const d of DIRECTIONS) {
+      expect(unions.get(d), `direction ${d} did not parse — renamed, or the parser stopped matching`).toBeDefined()
+    }
+
+    const seen = new Set()
+    const stack = [...DIRECTIONS]
+    while (stack.length) {
+      const name = stack.pop()
+      if (seen.has(name)) continue
+      seen.add(name)
+      for (const member of unions.get(name) ?? []) stack.push(member)
+    }
+
+    const orphans = [...messages.keys()].filter((n) => !seen.has(n))
+    expect(orphans, `declared but in no direction: ${orphans.join(', ')}`).toEqual([])
   })
 
   it('every message interface has a name↔literal binding', () => {

@@ -7,8 +7,10 @@ import { randomUUID } from 'crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import { SessionManager } from './SessionManager.js'
 import type { Session } from './SessionManager.js'
-import type { DeviceDetails, RelayMessage, UIElement } from './types.js'
-import type { ChromePayload, InputErrorReason, RelayOutbound } from '@tapflowio/protocol'
+import type { Assert, DeviceDetails, IsEmpty, RelayMessage, UIElement } from './types.js'
+import type {
+  AgentControlOutbound, BrowserToRelay, ChromePayload, InputErrorReason, RelayOutbound, StreamToRelay,
+} from '@tapflowio/protocol'
 import { Router, json } from './router.js'
 import { requireViewAuth, requireAuth, getAuth, verifyPat } from './middleware/auth.js'
 import { classifyConnection } from './lib/connectionAuth.js'
@@ -168,7 +170,7 @@ function isCorrelated(msg: RelayMessage): msg is RelayMessage & { requestId: str
   return false
 }
 
-const AGENT_MSG_TYPES = new Set([
+const AGENT_MSG_TYPE_LIST = [
   'agent:register', 'agent:resources', 'screenshot:done', 'screenshot:error',
   'ui:tree:response', 'ui:tree:error',
   'app:clear-state-done', 'app:clear-state-error',
@@ -183,7 +185,44 @@ const AGENT_MSG_TYPES = new Set([
   // stream:register binds a session's stream socket — agent-only, or a browser
   // (view PAT / cookie) could hijack an existing session's video feed.
   'stream:register',
-])
+] as const
+
+/** Typed `ReadonlySet<string>`, deliberately: the door below tests a `MessageType`, which is wider
+ *  than the literals above, and `Set<T>.has` takes a `T`. The literal union stays reachable through
+ *  the array, which is where the assertions read it from. */
+const AGENT_MSG_TYPES: ReadonlySet<string> = new Set(AGENT_MSG_TYPE_LIST)
+
+// ── the list above is checked against the protocol, both ways (#532) ─────────────────────────────
+//
+// It is a hand-maintained second copy of "what an agent produces", and it is the copy with the
+// security consequence: the door below closes a `browser`-role socket with 1008 for any member. The
+// forwards it guards mostly resolve a session from the message and send to *that session's* browser
+// with no check that the sender is that session's agent — `clipboard:*` is the deliberate exception.
+// So an agent→browser message added to the protocol and forgotten here makes a viewer drivable by
+// anyone who knows a session id, with the type union claiming otherwise.
+//
+// Measured before this change: dropping `keyboard:toggled` from the set left the static suite and
+// the relay suite green. `clipboard:data` was held only because somebody wrote that one test by
+// hand. The other 28 entries were held by nothing.
+//
+// Derivation is not available — types erase, so no runtime array can come out of a union. What is
+// available is the compiler checking two lists against each other, which is what these two lines do.
+type AgentProduced = (AgentControlOutbound | StreamToRelay)['type']
+type Listed = (typeof AGENT_MSG_TYPE_LIST)[number]
+type _AgentSetCoversProtocol = Assert<IsEmpty<Exclude<AgentProduced, Listed>>>
+type _AgentSetInventsNothing = Assert<IsEmpty<Exclude<Listed, AgentProduced>>>
+
+/**
+ * And the invariant the door actually enforces: **nothing a browser may send is something an agent
+ * produces.** This is the one that catches the widening mutation without restating 63 literals — if
+ * `DeviceBooting` is added to `BrowserToRelay`, `device:booting` appears on both sides and this
+ * fails, naming it.
+ *
+ * Not blanket disjointness between every pair of directions: `device:shutdown` is deliberately a
+ * member of both `RelayToAgent` and `BrowserToRelay`, being identical in both. It is not
+ * agent-produced, so it does not appear here.
+ */
+type _BrowserSendsNothingAgentProduced = Assert<IsEmpty<Extract<BrowserToRelay['type'], AgentProduced>>>
 
 export class RelayServer {
   private httpServer: http.Server | https.Server
