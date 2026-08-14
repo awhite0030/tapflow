@@ -16,10 +16,13 @@ Claude Code project configuration directory.
 │   ├── compound.md         # /compound
 │   ├── deep-research.md    # /deep-research
 │   ├── doc-sync.md         # /doc-sync
+│   ├── promote-decision.md # /promote-decision
 │   ├── qa.md               # /qa
+│   ├── release.md          # /release
 │   ├── work-plan.md        # /work-plan
 │   └── write-docs.md       # /write-docs
 ├── ai-tells/               # /ai-tells rule data (ko/en taxonomy + MIT NOTICE)
+├── hooks/                  # PreToolUse/PostToolUse/Stop gate scripts
 ├── settings.json           # Team settings (hooks, statusLine, etc.)
 ├── settings.local.json     # Personal settings — gitignored (permissions, etc.)
 └── README.md               # This file
@@ -39,6 +42,8 @@ Invoke with `/` in Claude Code.
 | `/qa {target}` | Plan and write tests for the target code. Potemkin and flaky tests prohibited. |
 | `/doc-sync` | Audit and fix consistency between AGENTS.md / INDEX.md / `.work/` and the codebase. |
 | `/compound` | Extract reusable patterns from the current session and update AGENTS.md. |
+| `/promote-decision {topic}` | Promote a design decision from the private `.work/archive/` into public `contributing/`, without duplicating what is already there. |
+| `/release {major\|minor\|patch}` | Run the release procedure — version recommendation through release PR, via changesets. |
 | `/write-docs {topic}` | Write a VitePress docs page — EN/KO simultaneously, sidebar registration, build verification. |
 
 ---
