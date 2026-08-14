@@ -31,7 +31,9 @@ const NOT_SHIPPED_PACKAGES = ['docs', 'playground']
 // reads from the manifest rather than from a list — the list this replaced still named `docs`
 // and `playground`, which have not been under `packages/` for some time, while
 // `@tapflowio/test-utils`, added later, was absent and so counted as shipped.
-const SHIPS_DESPITE_PRIVATE = ['@tapflowio/dashboard']
+// Exported so `changesetIgnoresPrivate.test.mjs` can check this list against the manifests rather
+// than keeping a second copy of the answer. That test is the one that would notice this going stale.
+export const SHIPS_DESPITE_PRIVATE = ['@tapflowio/dashboard']
 
 /**
  * Whether `packages/<dir>` published anything, judged by its manifest **at `rev`**.
