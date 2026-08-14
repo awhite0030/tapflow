@@ -193,7 +193,7 @@ Five things about it are easy to undo by accident:
   readiness exists: during the start-up window the open is refused while the process is alive and
   about to become ready, so identity would then pass and the continuation would reach a process
   that never saw the down. This was removed once as untestable and put back after a review found
-  the case; see `.work/reviews/fix__touch-helper-death-recovery.md`.
+  the case.
 - **Replacing is bounded by a rolling window** — at most 3 spawns in any 30s. Deliberately not a
   count of consecutive fast failures: the helper's start-up is expensive, so "died too fast" cannot
   be separated from "died slowly" without guessing how long start-up takes, and a helper that

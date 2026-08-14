@@ -10,8 +10,10 @@ out/
 # dashboard build bundled into relay
 packages/relay/public/
 
-# local work logs (not for contributors)
-.work/
+# local work logs (not for contributors) — the conventions file is committed,
+# because AGENTS.md and INDEX.md link to it and the logs themselves stay private
+.work/*
+!.work/CLAUDE.md
 
 # env
 .env
