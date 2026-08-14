@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { packagesNamedIn, mixedChangesets, manifestChangeShips, shipsToUsers, packagePublishesAt } from '../check-changeset.mjs'
+import { packagesNamedIn, mixedChangesets, ignoredOnlyChangesets, manifestChangeShips, shipsToUsers, packagePublishesAt } from '../check-changeset.mjs'
 
 const IGNORED = new Set(['@tapflowio/dashboard', '@tapflowio/playground'])
 const cs = (body) => `---\n${body}\n---\n\nsome note.\n`
@@ -32,8 +32,44 @@ describe('mixing an ignored package with a published one', () => {
   it('leaves a published-only changeset alone', () => {
     expect(mixedChangesets(['clean.md'], IGNORED, read)).toEqual([])
   })
-  it('leaves an ignored-only changeset alone — changesets accepts it', () => {
+  // Not this check's business — the file is not *mixed*. It is still a defect, and a silent one, which
+  // is why `ignoredOnlyChangesets` below exists. This assertion used to read as though the case were
+  // fine; it only means `mixedChangesets` is right to pass it on.
+  it('leaves an ignored-only changeset to the check below', () => {
     expect(mixedChangesets(['only-ignored.md'], IGNORED, read)).toEqual([])
+  })
+})
+
+describe('a changeset that names only ignored packages', () => {
+  // The quiet half. `changeset version` produces no release for it and deletes the file, so published
+  // source ships with nothing written about it — and every gate was green. It is the mistake the root
+  // AGENTS.md warns about by name: a dashboard change must name `@tapflowio/relay`.
+  const read = (f) => ({
+    'only-ignored.md': cs('"@tapflowio/dashboard": patch'),
+    'both-ignored.md': cs('"@tapflowio/dashboard": patch\n"@tapflowio/playground": patch'),
+    'clean.md': cs('"@tapflowio/relay": patch'),
+    'mixed.md': cs('"@tapflowio/relay": patch\n"@tapflowio/dashboard": patch'),
+    'no-frontmatter.md': 'just prose\n',
+  })[f]
+
+  it('flags a changeset whose only package is ignored', () => {
+    expect(ignoredOnlyChangesets(['only-ignored.md'], IGNORED, read)).toEqual(['only-ignored.md'])
+  })
+  it('flags one that names several, all ignored', () => {
+    expect(ignoredOnlyChangesets(['both-ignored.md'], IGNORED, read)).toEqual(['both-ignored.md'])
+  })
+  it('leaves a published changeset alone', () => {
+    expect(ignoredOnlyChangesets(['clean.md'], IGNORED, read)).toEqual([])
+  })
+  // A mixed file is already rejected, louder and with both sides named. Flagging it here too would
+  // report one defect twice and send the author to the wrong instruction.
+  it('leaves a mixed changeset to the check above', () => {
+    expect(ignoredOnlyChangesets(['mixed.md'], IGNORED, read)).toEqual([])
+  })
+  // Names nothing at all, so it cannot be *only* ignored. `packagesNamedIn` returns `[]` and
+  // `[].every(...)` is true, which would make this the one input that fails for being empty.
+  it('leaves a changeset with no frontmatter alone', () => {
+    expect(ignoredOnlyChangesets(['no-frontmatter.md'], IGNORED, read)).toEqual([])
   })
 })
 

@@ -31,7 +31,9 @@ const NOT_SHIPPED_PACKAGES = ['docs', 'playground']
 // reads from the manifest rather than from a list — the list this replaced still named `docs`
 // and `playground`, which have not been under `packages/` for some time, while
 // `@tapflowio/test-utils`, added later, was absent and so counted as shipped.
-const SHIPS_DESPITE_PRIVATE = ['@tapflowio/dashboard']
+// Exported so `changesetIgnoresPrivate.test.mjs` can check this list against the manifests rather
+// than keeping a second copy of the answer. That test is the one that would notice this going stale.
+export const SHIPS_DESPITE_PRIVATE = ['@tapflowio/dashboard']
 
 /**
  * Whether `packages/<dir>` published anything, judged by its manifest **at `rev`**.
@@ -313,10 +315,14 @@ export function extractReason(body) {
  * below only asks whether a changeset exists and never opens one. Four such changesets stopped
  * the v0.18.0 release, written across four different PRs that all went green.
  */
-function ignoredPackages() {
-  try {
-    return new Set(JSON.parse(readFileSync('.changeset/config.json', 'utf8')).ignore ?? [])
-  } catch { return new Set() }
+export function ignoredPackages() {
+  // **Rooted at this file, and no longer failing open.** A bare `catch` returning an empty set meant
+  // "nothing is ignored", which switches `mixedChangesets` off entirely — the check that exists
+  // because four mixed changesets stopped the v0.18.0 release. Combined with the relative path, any
+  // invocation whose cwd was not the repo root disabled it silently. A gate that cannot read its own
+  // configuration has to say so rather than wave everything through.
+  const config = new URL('../.changeset/config.json', import.meta.url)
+  return new Set(JSON.parse(readFileSync(config, 'utf8')).ignore ?? [])
 }
 
 /** The package names a changeset's frontmatter bumps. */
@@ -333,6 +339,29 @@ export function mixedChangesets(files, ignored, read) {
     const inIgnore = named.filter((n) => ignored.has(n))
     const rest = named.filter((n) => !ignored.has(n))
     return inIgnore.length && rest.length ? [{ file: f, ignored: inIgnore, published: rest }] : []
+  })
+}
+
+/**
+ * Whether the added changesets name a package that will actually get a release note.
+ *
+ * The mixed case above throws at `changeset version` and is loud on release day. This one is
+ * **silent**: `assemble-release-plan` produces no release for an ignored-only changeset and
+ * `changeset version` deletes the file, so published source ships with nothing written about it and
+ * every gate stayed green. It is the exact mistake the root AGENTS.md warns about — a dashboard
+ * change must name `@tapflowio/relay`, because the dashboard is built into that package's `public/`
+ * and cannot be versioned itself.
+ *
+ * Adding the private packages to `ignore` made this quieter rather than louder: before, an
+ * ignored-only changeset at least bumped an unpublished package and wrote it a CHANGELOG, which is
+ * visible in the release PR's diff. Now it emits nothing at all.
+ *
+ * Returns the offending files, so the caller can name them.
+ */
+export function ignoredOnlyChangesets(files, ignored, read) {
+  return files.filter((f) => {
+    const named = packagesNamedIn(read(f))
+    return named.length > 0 && named.every((n) => ignored.has(n))
   })
 }
 
@@ -526,6 +555,16 @@ function main() {
     console.error('\n`changeset version` rejects this outright, and it is not discovered until')
     console.error('release day. Name the package that actually ships the change — for a dashboard')
     console.error('change that is `@tapflowio/relay`, which builds it into its `public/`.')
+    process.exit(1)
+  }
+
+  const ignoredOnly = ignoredOnlyChangesets(added, ignoredPackages(), (f) => readFileSync(f, 'utf8'))
+  if (ignoredOnly.length === added.length && added.length > 0) {
+    console.error('Every added changeset names only ignored packages:\n')
+    for (const f of ignoredOnly) console.error(`  ${f}`)
+    console.error('\n`changeset version` produces no release for these and deletes the file, so this')
+    console.error('branch would ship with no release note at all. Name the package that actually ships')
+    console.error('the change — for a dashboard change that is `@tapflowio/relay`.')
     process.exit(1)
   }
 
