@@ -75,14 +75,14 @@ function interfaceBodies(src) {
 
 const IFACES = interfaceBodies(protocolSrc)
 
-/** The `type` literal an interface declares. A base like `SessionError` carries none. */
+/** The `type` literal an interface declares. A base like `SessionScoped` carries none. */
 function literalOf(name) {
   const m = IFACES.get(name)?.body.match(/^ {2}type: '([^']+)';?$/m)
   return m ? m[1] : null
 }
 
 /** Fields of an interface with `extends` resolved, each suffixed `?` when optional, **sorted**.
- *  Declaration order carries no meaning, and `extends SessionError` puts the inherited pair first —
+ *  Declaration order carries no meaning, and `extends SessionScoped` puts the inherited field first —
  *  which reordered three signatures that had not otherwise changed. Sorting keeps the check aimed at
  *  what a consumer can observe: which fields exist and which are optional. */
 function fieldsOf(name) {
@@ -211,7 +211,11 @@ describe('browser-inbound routing matches the protocol union', () => {
       'device:boot-error': 'message requestId? sessionId',
       'open-url:error': 'message requestId sessionId',
       'app:clear-state-error': 'message requestId sessionId',
-      'input:error': 'message reason? requestId sessionId',
+      // #491 inverted this pair: `reason` is the closed union a consumer branches on and is now
+      // required, `message` is producer prose and is now optional. The sibling below keeps `reason?`
+      // because its agent-side producers answer with a rejected `adb` or pasteboard write and have no
+      // reason to give — only the relay sets one there.
+      'input:error': 'message? reason requestId sessionId',
       // Moved here from AgentToBrowser in L5c: the relay refuses an `input:type` whose session the sender
       // does not hold, and the waiters key on this pair rather than on `input:error`.
       'input:type-error': 'message reason? requestId sessionId',

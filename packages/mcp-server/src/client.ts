@@ -178,6 +178,12 @@ export const REASON_ADVICE: Record<InputErrorReason, string> = {
   'not-session-owner': 'You do not hold this session, so the input was refused and nothing reached the device. Call connect_device for it first, then send the input again — the accompanying message says whether the session is idle or held by someone else. If the join is refused it is in use; pick another device.',
 }
 
+/** Advice for a reason, including the one this build cannot name.
+ *
+ *  **`undefined` stays in the signature although `reason` is required on the wire as of #491.** This client
+ *  reads inbound as `Record<string, unknown>`, so the declaration obliges producers and proves nothing here;
+ *  an agent outside this repo predating the field still sends none, and that population is what the required
+ *  declaration exists to correct rather than something it can retroactively fix. */
 export function reasonAdvice(reason: string | undefined): string {
   // Absent or unrecognised resolves to `channel-unavailable`, per the protocol's conservative rule.
   // `Object.hasOwn`, not `in`: a reason of `toString` would otherwise return a function.

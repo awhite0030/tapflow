@@ -646,9 +646,12 @@ export class RelayClient {
       )
     }
     if (msg['type'] !== 'input:error') return
-    // `reason` is optional on the wire and absent means *unknown*, never *fine* — an agent predating the
-    // field. Absent, or a member this build does not know, both read as `channel-unavailable`, which is the
-    // conservative one (protocol/AGENTS.md).
+    // **`reason` is required on the wire as of #491, and this branch stays.** That is not an oversight: this
+    // client reads inbound as `Record<string, unknown>` on purpose (see `RelayMsg` above), so the declaration
+    // obliges producers and buys this call site nothing. What can still arrive without one is an agent
+    // outside this repo that predates the field — the population the required declaration exists to correct
+    // and cannot retroactively fix. Absent, or a member this build does not know, both read as
+    // `channel-unavailable`, which is the conservative one (protocol/AGENTS.md).
     const reason = typeof msg['reason'] === 'string' ? msg['reason'] : 'channel-unavailable'
     throw this.failed(sessionId, `${what} was refused by the device (${reason}): ${(msg['message'] as string) ?? 'no detail'}`)
   }

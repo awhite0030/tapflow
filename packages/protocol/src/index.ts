@@ -441,18 +441,19 @@ export interface DeviceReady {
  * L5d, and the door predicates drop such a request rather than answering it, because a reply carrying no
  * `requestId` cannot be attributed and costs the caller the same deadline silence would.
  */
-export interface SessionError {
+export interface SessionScoped {
   sessionId: string
-  message: string
 }
 
-export interface AppInstallError extends SessionError {
+export interface AppInstallError extends SessionScoped {
   type: 'app:install-error'
+  message: string
   requestId: string
 }
 
-export interface AppLaunchError extends SessionError {
+export interface AppLaunchError extends SessionScoped {
   type: 'app:launch-error'
+  message: string
   requestId: string
 }
 
@@ -461,27 +462,61 @@ export interface AppLaunchError extends SessionError {
 // that died mid-session and failed to come back, reported through the one field the dashboard renders.
 // So an unsolicited producer is not a possibility here, it is in the repo with a test on it, and a
 // consumer that correlates this message drops the only report of a dead stream. See AGENTS.md.
-export interface DeviceBootError extends SessionError {
+export interface DeviceBootError extends SessionScoped {
   type: 'device:boot-error'
+  message: string
   requestId?: string
 }
 
-export interface OpenUrlError extends SessionError {
+export interface OpenUrlError extends SessionScoped {
   type: 'open-url:error'
+  message: string
   requestId: string
 }
 
-export interface AppClearStateError extends SessionError {
+export interface AppClearStateError extends SessionScoped {
   type: 'app:clear-state-error'
+  message: string
   requestId: string
 }
 
-export interface InputError extends SessionError {
+/**
+ * **The guaranteed half is now the half that is a contract** (#491).
+ *
+ * `message` used to be required and `reason` optional, which is the inversion this message could least
+ * afford: `packages/protocol/AGENTS.md` states the split on purpose — `message` is free prose each agent
+ * owns, `reason` is the closed union consumers branch on — so the field a consumer was guaranteed to
+ * receive was the one it must not depend on, and the one it should depend on could be absent.
+ *
+ * That was the correct way to *ship* it (#490): an agent predating the field omitted it and nothing broke.
+ * It is not a correct end state, because every consumer carries an unknown-reason branch for as long as it
+ * holds, and "absence means unknown" has to be re-derived by each new one.
+ *
+ * **Measured before flipping it: all six in-repo producers already send a reason**, two of them with
+ * `satisfies InputErrorReason` on the literal — `IOSAgent.ts` (three sites), `AndroidAgent.ts` (two) and
+ * `RelayServer.refuseInput`. The prerequisite was the relay, which used to send prose alone (#492, closed).
+ * So this costs no in-repo change; what it buys is that an agent outside this repo cannot omit it, and that
+ * a consumer written tomorrow cannot be handed an unanswerable failure.
+ *
+ * **`message` is optional rather than removed.** It still carries parameterised detail a closed union
+ * cannot — `unknown key code: KeyFoo` — which is a debug and forward-compatibility field, and a debug field
+ * should not be required. Display copy belongs to the presentation layer: agent-authored English cannot be
+ * localised, and this product's audience is PO, PM, designers and QA. A structured `params` field is the
+ * honest way to keep `KeyFoo` once prose is demoted, and it is deliberately **not** added here — #485 is
+ * what will say whether a rendered UI misses the variable, and adding it now means guessing a schema from
+ * no requirement.
+ *
+ * `InputTypeError` keeps `reason?` and that asymmetry is deliberate, not an oversight: its agent-side
+ * producers answer with prose from a rejected `adb` or pasteboard write and have no reason to give. Only
+ * the relay sets one. The field's own doc there records it.
+ */
+export interface InputError extends SessionScoped {
   type: 'input:error'
   /** Required — see `InputDone`. The relay produces this message too, so omission is a compile error there
    *  rather than something only a test could hold. */
   requestId: string
-  reason?: InputErrorReason
+  reason: InputErrorReason
+  message?: string
 }
 
 // `requestId` is required on the same terms, and with a narrower guarantee behind it: the forward
@@ -492,8 +527,9 @@ export interface InputError extends SessionError {
 // them gains a clipboard tool, this required field is what turns a missing id into a compile error
 // instead of a reply the bridge drops on `if (!msg.requestId) return`. Holding the untyped senders
 // to it is L4.
-export interface ClipboardError extends SessionError {
+export interface ClipboardError extends SessionScoped {
   type: 'clipboard:error'
+  message: string
   requestId: string
   payload?: ClipboardErrorPayload
 }
@@ -588,10 +624,12 @@ export type SessionStartFailure =
  * attribute the answer and would wait out the same deadline silence costs. With nothing left needing an
  * unaddressed failure, every producer of this message answers one specific join.
  *
- * **So it extends `SessionError`**, and that is the honest form rather than a field bolted on: the shape is
- * the base verbatim, and the base's own definition — a failure a *session* is waiting on — is now exactly
- * what this is. `protocolMessageNames.test.mjs` enforces that membership, and its note saying `error`
- * "cannot be a `SessionError`" described a nature this change replaced.
+ * **So it extends `SessionScoped`**, and that is the honest form rather than a field bolted on: the base's
+ * own definition — a failure a *session* is waiting on — is now exactly what this is.
+ * `protocolMessageNames.test.mjs` enforces that membership, and its note saying `error` "cannot be a
+ * `SessionError`" described a nature that argument replaced. The base was called `SessionError` and carried
+ * `message` until #491 demoted prose on `input:error`; `message` now sits on each member that requires it,
+ * and what the base states is the one thing all nine share — the failure is addressed to a session.
  *
  * What the address buys: the join waiters in `mcp-server` and `flow-runner` matched
  * `sessionId === undefined || sessionId === mine`, and with no such key the left half was **always true**, so
@@ -603,8 +641,9 @@ export type SessionStartFailure =
  * shadows the global, so the exception exists for the literal rather than the role — renaming to
  * `SessionStartError` needs an exception entry just the same, and removing it needs a new wire literal.
  */
-export interface GenericError extends SessionError {
+export interface GenericError extends SessionScoped {
   type: 'error'
+  message: string
   reason: SessionStartFailure
 }
 
@@ -676,8 +715,9 @@ export interface InputTypeDone {
   requestId: string
 }
 
-export interface InputTypeError extends SessionError {
+export interface InputTypeError extends SessionScoped {
   type: 'input:type-error'
+  message: string
   requestId: string
   /**
    * Optional because the agents' own failures carry none — they answer with prose from a rejected `adb` or
@@ -817,9 +857,9 @@ export interface ScreenshotDone {
 
 /** A screenshot that failed.
  *
- *  **Does not extend `SessionError`**, unlike every other `*-error`, because it is not addressed to a
- *  session: the relay resolves the pending promise by `requestId` alone. `SessionError` is for a failure
- *  a *session* is waiting on, and drawing that line is what keeps the base meaningful.
+ *  **Does not extend `SessionScoped`**, unlike every other `*-error`, because it is not addressed to a
+ *  session: the relay resolves the pending promise by `requestId` alone. The base is for a failure a
+ *  *session* is waiting on, and drawing that line is what keeps it meaningful.
  *
  *  `sessionId` is still **required**, because every producer has one. An earlier draft made it optional
  *  on the grounds that the agents pass through an optional id — true when written, and false by the end
