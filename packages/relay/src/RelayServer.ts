@@ -9,7 +9,7 @@ import { SessionManager } from './SessionManager.js'
 import type { Session } from './SessionManager.js'
 import type { Assert, DeviceDetails, IsEmpty, RelayMessage, UIElement } from './types.js'
 import type {
-  AgentControlOutbound, BrowserToRelay, ChromePayload, InputErrorReason, RelayOutbound, StreamToRelay,
+  AgentControlOutbound, ChromePayload, InputErrorReason, RelayOutbound, StreamToRelay,
 } from '@tapflowio/protocol'
 import { Router, json } from './router.js'
 import { requireViewAuth, requireAuth, getAuth, verifyPat } from './middleware/auth.js'
@@ -209,20 +209,20 @@ const AGENT_MSG_TYPES: ReadonlySet<string> = new Set(AGENT_MSG_TYPE_LIST)
 // available is the compiler checking two lists against each other, which is what these two lines do.
 type AgentProduced = (AgentControlOutbound | StreamToRelay)['type']
 type Listed = (typeof AGENT_MSG_TYPE_LIST)[number]
+// **`satisfies` first, and it is the security direction's real floor.** `Exclude<AgentProduced, string>`
+// is `never`, so if the list ever widens past its literals — dropping `as const`, or one non-literal
+// element — the covering assertion below passes while checking nothing. Only its sibling would fail,
+// and that sibling's own comment calls its direction the one that "gates nothing", so an author
+// trusting the comment could delete the wrong one. This line fails first and names the list.
+AGENT_MSG_TYPE_LIST satisfies readonly AgentProduced[]
 type _AgentSetCoversProtocol = Assert<IsEmpty<Exclude<AgentProduced, Listed>>>
 type _AgentSetInventsNothing = Assert<IsEmpty<Exclude<Listed, AgentProduced>>>
 
-/**
- * And the invariant the door actually enforces: **nothing a browser may send is something an agent
- * produces.** This is the one that catches the widening mutation without restating 63 literals — if
- * `DeviceBooting` is added to `BrowserToRelay`, `device:booting` appears on both sides and this
- * fails, naming it.
- *
- * Not blanket disjointness between every pair of directions: `device:shutdown` is deliberately a
- * member of both `RelayToAgent` and `BrowserToRelay`, being identical in both. It is not
- * agent-produced, so it does not appear here.
- */
-type _BrowserSendsNothingAgentProduced = Assert<IsEmpty<Extract<BrowserToRelay['type'], AgentProduced>>>
+// The invariant the door *enforces* — that nothing a browser may send is something an agent produces
+// — is asserted in `protocol/src/typeAssertions.ts` instead. It is a claim about the protocol's own
+// directions, not about this file, and naming `BrowserToRelay` here made `clientOutboundTyped` read
+// the relay as a browser-role sender. That guard was right to say so.
+
 
 export class RelayServer {
   private httpServer: http.Server | https.Server
