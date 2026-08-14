@@ -72,7 +72,8 @@ PR 단위로 쪼개면 리뷰 안전성은 확보되지만 **전체 그림을 �
 ## 아카이브
 
 `status: done`이 된 파일은 `archive/` 서브디렉토리로 이동한다.
-`.work/`에는 진행 중(`draft` · `in-progress` · `blocked`) 파일만 유지한다.
+`.work/` 최상위에는 진행 중(`draft` · `in-progress` · `blocked`) 파일만 유지한다. `archive/`와
+`reviews/`는 그 아래에 있으므로 이 규칙의 대상이 아니다.
 
 ---
 
