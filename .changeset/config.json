@@ -21,6 +21,7 @@
   "ignore": [
     "@tapflowio/dashboard",
     "@tapflowio/playground",
-    "@tapflowio/test-utils"
+    "@tapflowio/test-utils",
+    "@tapflowio/docs"
   ]
 }

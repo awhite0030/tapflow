@@ -9,9 +9,13 @@ so the fallback streamer emitted PNG bytes while `IOSAgent` stamped `CODEC_JPEG`
 it. The class names its codec, and it was the last place still getting this wrong after #508 fixed
 the same lie on the screenshot path.
 
-Unreachable in production today: only tests pass `intervalMs`, which is what selects this streamer
-over the IOSurface path. That is why nobody saw it, and it is also why the fix is one argument rather
-than a migration — the browser would have been sniffing magic bytes to decode these frames if the
-path were live.
+No in-repo entrypoint reaches it: `intervalMs` is what selects this streamer over the IOSurface path,
+and nothing but tests passes one. That is why nobody saw it.
+
+**It is not unreachable, and this is a behaviour change for one caller.** `IOSAgent`,
+`IOSAgentOptions` and `MjpegStreamer` are all public exports of this package, so a consumer that sets
+`intervalMs` has been receiving PNG bytes under a JPEG stamp and will now receive JPEG. Nothing in the
+browser path breaks either way — `createImageBitmap` sniffs magic bytes and decoded the PNG regardless
+— which is why the fix is one argument rather than a migration.
 
 Two sentences that described the old behaviour as correct are updated with it.
