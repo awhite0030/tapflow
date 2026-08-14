@@ -381,7 +381,15 @@ export function ignoredOnlyChangesets(files, ignored, read) {
  *     <!-- changelog: internal — protocol typing, nothing a user can observe -->
  *
  * The reason is required for the same purpose it is required on `no-changeset`: skipping is a decision
- * somebody wrote down, not something that happens by forgetting. The marker lives in the changeset
+ * somebody wrote down, not something that happens by forgetting.
+ *
+ * **What this covers, stated rather than implied:** a branch that touches a changeset — added, amended or
+ * renamed — and ships published source. It does **not** cover a branch with no changeset (its
+ * `no-changeset` reason answers the same question one layer up), a bot PR (the CI job is skipped for
+ * those, and a skipped required check passes), or a release branch (exempt by design). Nor does it read
+ * the entry: touching the file is what it checks, because no check can tell whether prose corresponds to
+ * a diff. The measured incident it ends — 22 merged PRs against a four-day-stale file — was 22 PRs that
+ * all carried changesets. The marker lives in the changeset
  * rather than the PR body because it classifies *that change*, and because a PR carrying two changesets
  * can need it for one of them.
  */
@@ -592,7 +600,15 @@ function main() {
     process.exit(1)
   }
 
-  const owed = changelogEntryOwed(added, (f) => readFileSync(f, 'utf8'))
+  // **`AMR`, not the `added` list above.** A PR that extends an existing unconsumed changeset with new
+  // behaviour shows up as `M` and never as `A`, and a rename is `R` — so keying this on `added` let the
+  // two most ordinary shapes of follow-up work escape. The audit half already counts `AMR` for exactly
+  // that reason. What this still cannot see is a branch with no changeset at all: a `no-changeset`
+  // reason answers the same question one layer up, and a bot PR skips the CI job entirely.
+  const touchedChangesets = git('diff', '--name-only', '--diff-filter=AMR', `${mergeBase}...HEAD`)
+    .split('\n')
+    .filter((f) => /^\.changeset\/.+\.md$/.test(f) && !/^\.changeset\/README\.md$/i.test(f))
+  const owed = changelogEntryOwed(touchedChangesets, (f) => readFileSync(f, 'utf8'))
   if (owed.length > 0 && !changed.includes('CHANGELOG.md')) {
     console.error('Changeset added with no entry in the root CHANGELOG.md:\n')
     for (const f of owed) console.error(`  ${f}`)

@@ -120,12 +120,31 @@ describe('the PR gate asks for a root CHANGELOG entry', () => {
     expect(gate().code).toBe(0)
   })
 
-  // The gate ahead of this one owns that case; reaching this branch would report the wrong instruction.
-  it('leaves a branch with no changeset to the check before it', () => {
+  // **Not an ordering claim, and a first draft said it was.** There is no gate "ahead of" this one — the
+  // changelog block runs *before* the missing-changeset error, and this passes because a branch with no
+  // changeset has nothing to owe an entry for. Stating the wrong mechanism is worse than stating none: it
+  // reads as covering an ordering that a later edit could break silently. The assertion that matters is
+  // that this branch prints the *changeset* instruction and not the changelog one, since a contributor
+  // told to write a CHANGELOG entry when what they are missing is a changeset goes to the wrong file.
+  it('tells a branch with no changeset to add one, not to write a changelog entry', () => {
     branchWith({ [SHIPPED]: 'export const a = 1\n' })
     const r = gate()
     expect(r.code).toBe(1)
+    expect(r.out).toMatch(/adds no changeset/i)
     expect(r.out).not.toMatch(/no entry in the root CHANGELOG/i)
+  })
+
+  // The amended and renamed cases, which keying on `--diff-filter=A` let through. A follow-up that
+  // extends an existing unconsumed changeset with new behaviour is the ordinary shape of a second PR on
+  // one subject, and it was invisible.
+  it('demands an entry for an amended changeset, not only a new one', () => {
+    writeFileSync(join(repo, '.changeset', 'existing.md'), CHANGESET('first pass'))
+    git('add', '-A')
+    git('commit', '-q', '-m', 'earlier changeset')
+    branchWith({ [SHIPPED]: 'export const a = 1\n', '.changeset/existing.md': CHANGESET('first pass, now also this') })
+    const r = gate()
+    expect(r.code).toBe(1)
+    expect(r.out).toMatch(/no entry in the root CHANGELOG/i)
   })
 })
 
