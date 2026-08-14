@@ -167,7 +167,7 @@ describe('RelayClient — the input senders mint a correlator and await the ack'
   })
 
   it('reads an ack with no reason as channel-unavailable, not as fine', async () => {
-    // `reason` is optional on the wire — an agent predating the field omits it — and absence means
+    // `reason` is required on the wire as of #491; what still omits it is an agent outside this repo predating that — and absence means
     // *unknown*. protocol/AGENTS.md makes the conservative reading the contract, and the failure still has
     // to name something rather than an empty parenthesis.
     const { client } = await capture((m) => ({

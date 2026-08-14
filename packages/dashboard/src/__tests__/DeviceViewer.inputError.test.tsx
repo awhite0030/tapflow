@@ -51,6 +51,15 @@ function inputError(reason?: string, message = 'input channel not ready') {
   })
 }
 
+/** The same message with no prose at all. Legal since #491 demoted `message` to optional, and this
+ *  fixture is the only thing between that and a toast reading "(undefined)" to a PO or a designer —
+ *  a template literal takes `string | undefined` without complaint and no lint rule here forbids it. */
+function inputErrorWithoutMessage(reason: string) {
+  act(() => {
+    deliver!({ type: 'input:error', sessionId: 's1', reason } as unknown as BrowserInbound)
+  })
+}
+
 const opts = () => toastError.mock.calls.map(([, o]) => o as { id: string; description: string; duration: number })
 
 describe('DeviceViewer — input:error (#485)', () => {
@@ -67,6 +76,26 @@ describe('DeviceViewer — input:error (#485)', () => {
     // is the opposite of the design, so this is pinned rather than left to a default.
     expect(opts()[0]!.duration).toBe(6000)
     expect(opts()[0]!.duration).toBeGreaterThan(4000) // sonner's default, short enough to lapse between two unhurried taps
+  })
+
+  // **#491 made `message` optional, and this is where its absence reaches a person.** A producer that
+  // sends only a reason is legal now, and the description used to interpolate the field unguarded —
+  // so the tester would read "Start it again to continue testing. (undefined)". Nothing else could
+  // catch it: a template literal accepts `string | undefined`, `restrict-template-expressions` is
+  // configured nowhere in this repo, and every other fixture here defaults `message` to a string.
+  it('drops the parenthetical when the producer sent no prose', () => {
+    mounted()
+    inputErrorWithoutMessage('not-booted')
+    expect(toastError).toHaveBeenCalledTimes(1)
+    expect(opts()[0]!.description).toBe(INPUT_ERROR_NOTICE['not-booted']!.action)
+    expect(opts()[0]!.description).not.toMatch(/undefined|\(\s*\)/)
+  })
+
+  // And the prose is still shown when there is some — the guard must not have turned it off.
+  it('still shows the prose when the producer sent it', () => {
+    mounted()
+    inputError('not-booted', 'simulator is shutting down')
+    expect(opts()[0]!.description).toContain('simulator is shutting down')
   })
 
   // A dead channel produces one error per tap, at whatever rate the tester taps. Nothing dedupes

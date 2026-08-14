@@ -136,7 +136,7 @@ function ownershipRefusal(session: Session): string {
  *  these doors produce declares `sessionId` **required**, so answering means putting a frame on the wire
  *  whose required field `JSON.stringify` erases, which every consumer's session gate then discards.
  *
- *  **So the request is dropped, not answered.** `SessionError`'s doc argued the opposite until L5d — "the
+ *  **So the request is dropped, not answered.** The base's doc argued the opposite until L5d — "the
  *  only correct thing for it to send with no sessionId is `{ type: 'error' }`" — and its own premise refutes
  *  it: `GenericError` has no `requestId`, so a caller that receives one cannot attribute it and waits out the
  *  same deadline it would have waited out on silence. Answering buys nothing it did not already have; not

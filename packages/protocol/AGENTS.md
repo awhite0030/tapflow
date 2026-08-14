@@ -43,10 +43,10 @@ The cost of a broad name is ambiguity about what belongs — answered by the two
 
 A message is `export interface AppInstallDone { type: 'app:install-done'; … }`, and the unions are
 unions of those names. That is what lets a consumer refer to one message, and what gives shared
-structure (`SessionError`) and per-message documentation somewhere to live.
+structure (`SessionScoped`) and per-message documentation somewhere to live.
 
 **`interface`, not `type X = { … }`** — the alias form cannot be `extends`ed, and the intersection
-workaround (`type X = SessionError & { … }`) stops `Extract<Union, { type: 'x' }>` resolving to a single
+workaround (`type X = SessionScoped & { … }`) stops `Extract<Union, { type: 'x' }>` resolving to a single
 member, which `useClipboardBridge` depends on to read a reply without a cast.
 
 Two properties were given up for that, neither visible to the type-equivalence check that proved the
@@ -300,7 +300,7 @@ L5c settled it by removing the general role rather than the specific one. A requ
 dropped at the relay's door (`isAddressed`), because answering it would ship a frame whose own required
 `sessionId` `JSON.stringify` erases — and `error` has no `requestId` either, so a caller could not attribute
 the answer and would wait out the same deadline silence costs. With nothing left needing an unaddressed
-failure, all four producers answer one specific join, and `error` **extends `SessionError`**: the shape is the
+failure, all four producers answer one specific join, and `error` **extends `SessionScoped`**: the shape is the
 base verbatim, and the base's own definition — a failure a *session* is waiting on — is now exactly what it is.
 
 **What the address buys.** The join waiters in `mcp-server` and `flow-runner` matched
@@ -356,8 +356,8 @@ Both checks read a union's *name* at the sink. Neither read its contents, and ap
 `| Record<string, unknown>` to `BrowserToRelay` passed every static check while making all three clients accept
 anything. Guards that name a type also have to assert the type is still a union of named messages.
 
-**`screenshot:error` and `ui:tree:error` do not extend `SessionError`, and that is the boundary of the
-family.** `SessionError` is for a failure a *session* is waiting on. Those two are request-scoped: the relay
+**`screenshot:error` and `ui:tree:error` do not extend `SessionScoped`, and that is the boundary of the
+family.** The base is for a failure a *session* is waiting on. Those two are request-scoped: the relay
 resolves the pending promise by `requestId` alone and never reads their `sessionId`.
 
 Their `sessionId` is nevertheless **required**, like every other producer field. A draft made it optional because
@@ -406,7 +406,7 @@ settled — and `device:shutdown` is on the request side with no ownership gate 
 - `'Session not found'` answers a sessionId that did not **match** — a stale tab, a terminated
   session — not one that was absent.
 - `{ type: 'error' }` **is not** an escape hatch, as of L5d — it is the answer to a `session:start` the relay
-  refused, it extends `SessionError`, and it names the session it refuses. The paragraph that stood here said
+  refused, it extends `SessionScoped`, and it names the session it refuses. The paragraph that stood here said
   the right move with no sessionId was to send *that*; L5c settled it the other way, by dropping a request
   that names no session at the door. Both halves of the old advice are gone: there is no unaddressed failure
   left to send, and nothing left that would need one.
@@ -436,18 +436,20 @@ a message that never arrives could inform it. #457 is that one.)
   consumer's move is identical for them.
 - **`message` stays free prose and `reason` is closed.** That is what lets iOS keep
   `` `unknown key code: ${code}` `` — the parameterised wording survives because the machine field is
-  separate. Consumers switch on `reason` and display `message`.
+  separate. Consumers switch on `reason`; they may show `message`, and since #491 made it optional a
+  consumer that renders it needs a path for its absence — the dashboard drops the parenthetical rather
+  than printing a placeholder.
 
-The field is **optional**, so an agent that predates it omits it and nothing breaks. Absence
-therefore means *unknown*, never *fine*, and **a consumer meeting a reason it does not know must
-treat it as `channel-unavailable`** — the conservative reading. Making the field required is the
-breaking step and has not been taken.
+The field is **required** as of #491, and `message` is the optional one. It shipped the other way
+round on purpose — an agent predating `reason` omitted it and nothing broke — but that left the field
+a consumer was guaranteed the one it must not depend on. The relay was the last in-repo producer
+sending prose alone (#492); once it stopped, all six sent a reason and the flip cost no call site.
 
-Every in-repo producer now sends one. The relay was the last that did not (#492) — it answers a
-terminal input it cannot dispatch, and being the only producer that reads a socket rather than
-inferring from its own state, it was the one whose reason was least in doubt. So absence today means
-an agent older than this field and nothing else, which is what #491 needs before the field can become
-required.
+**Absence still means *unknown*, never *fine*, and a consumer meeting a reason it does not know must
+treat it as `channel-unavailable`** — the conservative reading. Both clients keep that branch
+deliberately: they read inbound as `Record<string, unknown>`, so the declaration obliges producers and
+proves nothing at the call site, and an agent outside this repo predating the field is exactly the
+producer a required declaration corrects going forward and cannot retroactively fix.
 
 There is deliberately **no shared message table**. One would be a runtime value, and this entry point
 must erase under `import type` (see HOW NOT) — so each agent owns its own wording. A static check in

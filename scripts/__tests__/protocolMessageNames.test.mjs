@@ -17,7 +17,8 @@ import { join } from 'node:path'
 // entry of is a guard with 57-of-58 coverage, and the missing one is invisible.
 //
 // **2. That a session-scoped failure declares `extends SessionScoped`.** This cannot be asserted with a
-// type: every object with `{ sessionId, message }` is assignable to `SessionError`, so the assignment
+// type: every object with `{ sessionId }` is assignable to `SessionScoped` — a weaker bar than the
+// `{ sessionId, message }` pair this argued from before #491, so the assignment
 // succeeds whether or not the interface declares the inheritance. And `extends` is transparent to
 // `Equals` — inherited members arrive in the resolved member set, so an error written inline instead
 // passes every type-level check. The inheritance exists for the family relation, which is source text,
@@ -129,7 +130,7 @@ describe('protocol message interfaces', () => {
   })
 
   // Failures addressed to a *request*, not to a session: the relay resolves both by `requestId` alone
-  // (`RelayServer.ts:1293-1312`). Listing them draws the boundary of `SessionError` rather than widening it —
+  // (`RelayServer.ts:1293-1312`). Listing them draws the boundary of the family rather than widening it —
   // the base is for a failure a session is waiting on.
   const REQUEST_SCOPED = new Set(['screenshot:error', 'ui:tree:error'])
 

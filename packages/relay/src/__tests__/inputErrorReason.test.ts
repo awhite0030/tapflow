@@ -306,7 +306,7 @@ describe('input:error from the relay carries a reason (#492)', () => {
   // hand and no way to attribute it.
   //
   // Dropped rather than answered, the same policy as an uncorrelatable request, and for a reason the note on
-  // `SessionError` used to contradict: `GenericError` carries no `requestId`, so answering an unaddressed
+  // The message base used to contradict: `GenericError` carries no `requestId`, so answering an unaddressed
   // request is *also* unattributable — it buys the caller nothing that silence did not, while widening what
   // `error` means. See `isAddressed`.
   for (const bad of [undefined, ''] as Array<string | undefined>) {
