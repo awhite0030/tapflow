@@ -26,6 +26,15 @@
 input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""') || exit 0
 
+# Join backslash-newline continuations before matching. grep decides line by
+# line, so `gh \` / `pr \` / `merge` on three physical lines reads as three
+# non-matching lines while bash executes it as one `gh pr merge`. Verified: the
+# unjoined form passed the matcher at exit 0.
+# A backslash-newline inside single quotes is literal, not a continuation, so
+# joining can in principle over-match quoted prose. That direction is the safe
+# one, and the block message says to split such text into its own command.
+cmd=$(printf '%s' "$cmd" | perl -0777 -pe 's/\\\r?\n[ \t]*/ /g') || exit 0
+
 printf '%s' "$cmd" | grep -qE '(^[[:space:]]*|(;|&&|\||\$\()[[:space:]]*|(^|[[:space:]])(then|do)[[:space:]]+)gh[[:space:]]+pr[[:space:]]+(merge|review)' || exit 0
 
 echo "Blocked: PR merge/approve는 직접 수행해주세요. Creating the PR is yours to do; merging and approving are the user's — leave them, even with --admin (AGENTS.md > Core Principles). If this command is not actually merging or approving (the text merely mentions the command), split that text into a separate command." >&2

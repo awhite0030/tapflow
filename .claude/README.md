@@ -42,8 +42,8 @@ Invoke with `/` in Claude Code.
 | `/qa {target}` | Plan and write tests for the target code. Potemkin and flaky tests prohibited. |
 | `/doc-sync` | Audit and fix consistency between AGENTS.md / INDEX.md / `.work/` and the codebase. |
 | `/compound` | Extract reusable patterns from the current session and update AGENTS.md. |
-| `/promote-decision {topic}` | Promote a design decision from the private `.work/archive/` into public `contributing/`, without duplicating what is already there. |
-| `/release {major\|minor\|patch}` | Run the release procedure — version recommendation through release PR, via changesets. |
+| `/promote-decision [topic]` | Promote a design decision from the private `.work/archive/` into public `contributing/`, without duplicating what is already there. Scans the whole archive when no topic is given. |
+| `/release [major\|minor\|patch]` | Run the release procedure — version recommendation through release PR, via changesets. Recommends the bump itself when none is given. |
 | `/write-docs {topic}` | Write a VitePress docs page — EN/KO simultaneously, sidebar registration, build verification. |
 
 ---
