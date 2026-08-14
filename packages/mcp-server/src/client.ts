@@ -655,14 +655,19 @@ export class TapflowClient {
       // an input at all is an agent that does not answer them.
       if (timedOut && !strict && !away) return
       if (!timedOut && !disconnected) throw e
-      const cause = away
-        ? "the relay reported this session's agent gone before the acknowledgement could arrive"
-        : timedOut
-          ? 'this session has acknowledged input before, and this one went unanswered'
-          : 'the relay connection dropped before the acknowledgement arrived'
+      // The note first, when there is one. This branch rebuilds its own prose rather than wrapping
+      // `e.message`, so it was the one path in either client where what the relay said about the session
+      // did not reach the caller — a model whose input timed out on a rebound session was told the ack
+      // went unanswered and not that the session needs booting again.
+      const note = this.sessionNote(sessionId)
+      const cause = note ?? (timedOut
+        ? 'this session has acknowledged input before, and this one went unanswered'
+        : 'the relay connection dropped before the acknowledgement arrived')
       throw new Error(
         `Could not confirm the input reached the device: ${cause}. Do not repeat the input — it may ` +
         'have landed. Check the device state (screenshot or ui_tree) before deciding what to do next.',
+        // The prose is rebuilt, so this is the only thing carrying the original rejection's stack.
+        { cause: e },
       )
     }
     if (msg['type'] === 'input:error') {

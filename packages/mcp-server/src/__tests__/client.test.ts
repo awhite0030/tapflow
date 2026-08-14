@@ -80,6 +80,19 @@ function echoReply(relay: { lastClient: () => WebSocket }, type: string, reply: 
   ws.on('message', onMessage)
 }
 
+/** Waits until everything sent so far has been **dispatched by the client**.
+ *
+ *  A round trip the client completes itself, not a sleep: `agents:list` carries no session, so no lifecycle
+ *  frame can settle its waiter, and frames on one socket stay ordered — so once this resolves, everything
+ *  sent ahead of it has been through `dispatch`. A 20ms sleep in this position is a guess about scheduling,
+ *  and the sibling suite rejected it for the same job.
+ */
+async function settle(relay: ReturnType<typeof createMockRelay>, client: TapflowClient): Promise<void> {
+  const listing = client.listDevices()
+  relay.send({ type: 'agents:listed', sessions: [] })
+  await listing
+}
+
 describe('TapflowClient', () => {
   let relay: ReturnType<typeof createMockRelay>
   let client: TapflowClient
@@ -990,11 +1003,11 @@ describe('TapflowClient', () => {
     it('does not report an input as landed while the relay says the agent is away', async () => {
       relay.setInputAck('none')
       relay.send({ type: 'session:agent-away', sessionId: 'sess-1' })
-      await new Promise((r) => setTimeout(r, 20))
+      await settle(relay, client)
       const err = await client.tap('sess-1', 1, 2).catch((e: unknown) => e) as Error
       expect(err).toBeInstanceOf(Error)
       expect(err.message).toMatch(/could not confirm/i)
-      expect(err.message).toMatch(/agent gone/i)
+      expect(err.message).toMatch(/went away/i)
       expect(err.message).toMatch(/may have landed/i)
     }, 15_000)
 
@@ -1003,7 +1016,7 @@ describe('TapflowClient', () => {
     // an app that is running.
     it('explains a later failure on a rebound session as a reconnect, not as a device reset', async () => {
       relay.send({ type: 'session:rebound', sessionId: 'sess-1', capabilities: [] })
-      await new Promise((r) => setTimeout(r, 20))
+      await settle(relay, client)
       echoReply(relay, 'app:launch', { type: 'app:launch-error', sessionId: 'sess-1', message: 'No booted device' })
       const err = await client.launchApp('sess-1', 42).catch((e: unknown) => e) as Error
       expect(err.message).toMatch(/No booted device/)
@@ -1017,7 +1030,7 @@ describe('TapflowClient', () => {
     // explains, and a terminated session is the case that can be ruled out from here.
     it('refuses a shutdown on a terminated session instead of waiting out 30s of silence', async () => {
       relay.send(terminated('sess-1'))
-      await new Promise((r) => setTimeout(r, 20))
+      await settle(relay, client)
       await expect(client.shutdownDevice('sess-1', 'dev-1')).rejects.toBeInstanceOf(SessionEndedError)
       expect(relay.sentMessages().find((m) => m['type'] === 'device:shutdown')).toBeUndefined()
     })
@@ -1049,7 +1062,7 @@ describe('TapflowClient', () => {
     // socket re-join the session it already holds. The reason for every later failure went with it.
     it('keeps the reboot note across a re-join', async () => {
       relay.send({ type: 'session:rebound', sessionId: 'sess-1', capabilities: [] })
-      await new Promise((r) => setTimeout(r, 20))
+      await settle(relay, client)
       echoReply(relay, 'session:start', { type: 'session:joined', sessionId: 'sess-1', capabilities: [] })
       await client.connectDevice('sess-1')
 
@@ -1062,7 +1075,7 @@ describe('TapflowClient', () => {
     // outcome arrived while it was gone, so it starts from "not away" and lets the relay restate it.
     it('starts a re-join from not-away', async () => {
       relay.send({ type: 'session:agent-away', sessionId: 'sess-1' })
-      await new Promise((r) => setTimeout(r, 20))
+      await settle(relay, client)
       echoReply(relay, 'session:start', { type: 'session:joined', sessionId: 'sess-1', capabilities: [] })
       await client.connectDevice('sess-1')
 
@@ -1077,7 +1090,7 @@ describe('TapflowClient', () => {
       relay.send({ type: 'session:agent-away', sessionId: 'sess-1' })
       relay.send({ type: 'session:rebound', sessionId: 'sess-1', capabilities: [] })
       relay.send({ type: 'session:agent-away', sessionId: 'sess-1' })
-      await new Promise((r) => setTimeout(r, 20))
+      await settle(relay, client)
       echoReply(relay, 'app:launch', { type: 'app:launch-error', sessionId: 'sess-1', message: 'nope' })
       const err = await client.launchApp('sess-1', 42).catch((e: unknown) => e) as Error
       expect(err.message).toMatch(/went away/i)
@@ -1089,7 +1102,7 @@ describe('TapflowClient', () => {
     // already booted — a loop the note itself invites. `flow-runner` had this test and this package did not.
     it('stops asking for a reboot once one has happened', async () => {
       relay.send({ type: 'session:rebound', sessionId: 'sess-1', capabilities: [] })
-      await new Promise((r) => setTimeout(r, 20))
+      await settle(relay, client)
       echoReply(relay, 'device:boot', { type: 'device:ready', sessionId: 'sess-1' })
       await client.bootDevice('sess-1', 'dev-1')
 
@@ -1104,11 +1117,26 @@ describe('TapflowClient', () => {
     it('explains a refused input on a rebound session too', async () => {
       relay.setInputAck('error')
       relay.send({ type: 'session:rebound', sessionId: 'sess-1', capabilities: [] })
-      await new Promise((r) => setTimeout(r, 20))
+      await settle(relay, client)
       const err = await client.tap('sess-1', 1, 2).catch((e: unknown) => e) as Error
       expect(err.message).toMatch(/device not booted/)
       expect(err.message).toMatch(/boot_device again/i)
     })
+
+    // The one path in either client that rebuilds its own prose instead of wrapping the rejection, so the
+    // one path where what the relay said about the session used to be dropped. A model whose input timed
+    // out on a rebound session was told the ack went unanswered — true, and not the thing it can act on.
+    it('names the rebound as the cause when an input times out on a rebound session', async () => {
+      await client.tap('sess-1', 1, 2)          // acks, so the session is judged strictly from here
+      relay.setInputAck('none')
+      relay.send({ type: 'session:rebound', sessionId: 'sess-1', capabilities: [] })
+      await settle(relay, client)
+      const err = await client.tap('sess-1', 3, 4).catch((e: unknown) => e) as Error
+      expect(err.message).toMatch(/could not confirm/i)
+      expect(err.message).toMatch(/boot_device again/i)
+      // The prose is rebuilt here, so nothing else carries the original rejection's stack.
+      expect(err.cause).toBeInstanceOf(Error)
+    }, 15_000)
 
     // `sessionNote`'s three branches are ordered and the terminated one sits on top, but nothing read it:
     // the rejection builds its own prose and `shutdownDevice` reads the field directly. The branch is
@@ -1116,7 +1144,7 @@ describe('TapflowClient', () => {
     // rejection does next.
     it('explains a command issued after the session ended', async () => {
       relay.send({ type: 'session:terminated', sessionId: 'sess-1', reason: 'agent-disconnected' })
-      await new Promise((r) => setTimeout(r, 20))
+      await settle(relay, client)
       echoReply(relay, 'app:launch', { type: 'app:launch-error', sessionId: 'sess-1', message: 'Session not found' })
       const err = await client.launchApp('sess-1', 42).catch((e: unknown) => e) as Error
       expect(err.message).toMatch(/Session not found/)
@@ -1132,7 +1160,7 @@ describe('TapflowClient', () => {
     it('still reports optimistically on a rebound session that has never acked', async () => {
       relay.setInputAck('none')
       relay.send({ type: 'session:rebound', sessionId: 'sess-1', capabilities: [] })
-      await new Promise((r) => setTimeout(r, 20))
+      await settle(relay, client)
       await expect(client.tap('sess-1', 1, 2)).resolves.toBeUndefined()
     }, 15_000)
 
@@ -1141,7 +1169,7 @@ describe('TapflowClient', () => {
     // `session:start` in this fixture, so the join runs its full 5s.
     it('carries the note on a deadline, not only on a refusal', async () => {
       relay.send({ type: 'session:agent-away', sessionId: 'sess-2' })
-      await new Promise((r) => setTimeout(r, 20))
+      await settle(relay, client)
       const err = await client.connectDevice('sess-2').catch((e: unknown) => e) as Error
       expect(err.message).toMatch(/Request timed out/)
       expect(err.message).toMatch(/went away/i)

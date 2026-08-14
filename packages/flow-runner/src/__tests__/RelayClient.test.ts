@@ -507,6 +507,9 @@ describe('RelayClient — session lifecycle (#512, finding 4)', () => {
   let wss: WebSocketServer | null = null
 
   afterEach(async () => {
+    // Two tests here spy on `console.error`, and the second one silences it. Without this the silence
+    // outlives the test and any later assertion about what was logged would pass for the wrong reason.
+    vi.restoreAllMocks()
     const s = wss
     wss = null
     if (!s) return

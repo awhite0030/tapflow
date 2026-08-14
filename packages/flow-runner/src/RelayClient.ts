@@ -35,6 +35,16 @@ const INPUT_ACK_TIMEOUT_MS = 10_000
 class RelayClosedError extends PlatformError {}
 
 /**
+ * A waiter that reached its deadline.
+ *
+ * `awaitInputAck` used to read this as "not a `RelayClosedError`", which is an inverse test: it stands for
+ * "timed out" only while the set of rejection sources stays closed, and it silently starts meaning
+ * something else the day one is added. The twin in `mcp-server` had the same shape spelled as a message
+ * comparison and this change replaced it there; leaving the inverse here would keep the weaker half.
+ */
+class RequestTimeoutError extends PlatformError {}
+
+/**
  * The relay said this session ended while a request was still in flight (#512, finding 4).
  *
  * Distinct from a timeout because the two carry different certainty. A deadline says only that no reply
@@ -422,7 +432,7 @@ export class RelayClient {
         // lifecycle as state at all: the waiters that cannot outlive the relay's 15s grace never hear the
         // outcome message, so this is the only moment anything can say why the wait ended.
         const note = sessionId ? this.sessionNote(sessionId) : undefined
-        reject(new PlatformError(note ? `${what} timed out — ${note}` : `${what} timed out`))
+        reject(new RequestTimeoutError(note ? `${what} timed out — ${note}` : `${what} timed out`))
       }, timeoutMs)
       this.waiters.push({ predicate, resolve, reject, timer, sessionId, what })
     })
@@ -623,7 +633,7 @@ export class RelayClient {
       // ack cannot arrive because the agent is not there, and this warning would send whoever reads it to
       // check agent versions. Narrowed to `away` rather than to any note — a rebound session is answering
       // again, so silence on it is once more the agent's to explain.
-      if (!(e instanceof RelayClosedError) && !this.lifecycle.get(sessionId)?.away) {
+      if (e instanceof RequestTimeoutError && !this.lifecycle.get(sessionId)?.away) {
         this.warnInputAckSilence(sessionId)
       }
       // **No note appended here.** Both rejection sources already carry it — `waitFor` at the deadline and
