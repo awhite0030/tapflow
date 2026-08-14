@@ -96,8 +96,6 @@ absence passes when nothing happens — that is its definition — so it cannot 
 that produces the same silence; and a check whose header cites a lesson usually reads as having applied it.
 Four measured shapes, each of which shipped a hole behind a fully green suite.
 
-Custom commands: `/work-plan {topic}` · `/deep-research {problem}` · `/qa {target}` · `/doc-sync` · `/compound` · `/promote-decision {topic}` · `/release {major|minor|patch}`.
-
 ### Adversarial Review (required before every code-change PR)
 
 The authoring session inherits its own assumptions, so before creating a PR the diff must be refuted by an **independent context** that has NOT seen the working conversation. Docs-only PRs may skip the review itself, but still write the record (with the skip reason) — the gate always requires it.
@@ -232,35 +230,17 @@ A dashboard change names **`@tapflowio/relay`**, never `@tapflowio/dashboard`. T
 
 ### A security bump is `pnpm update` first, and an override only if that fails
 
-Reach for `pnpm.overrides` last. The usual situation is not that the declared range forbids the
-patch — it is that the **lockfile does not re-evaluate ranges**. The patch nearly always lands
-inside the same major, the declaring range is a caret, and `pnpm update <pkg>` takes it with no
-permanent entry to maintain. An override is a workaround for a stale lockfile, and it outlives the
-problem: measured on 2026-08-06, all fourteen entries in the block were inert — removing the whole
-thing and resolving cold produced a byte-identical tree.
+Reach for `pnpm.overrides` last: try `pnpm update <pkg>` first, which usually takes the patch with no
+permanent entry to maintain, because the problem is normally a stale lockfile rather than a
+forbidding range — measured on 2026-08-06, all fourteen entries in the block were inert.
+`pnpm overrides:audit` judges the entries that are already there — still needed, correct, reaching
+production — so run it before adding a fifteenth, and when one is added, plan to remove it. **Derive the
+override key from the GHSA advisory, never from the Dependabot alert**, and scope both the key and
+its replacement to one major line.
 
-`pnpm overrides:audit` judges each entry: still needed, correct, and whether it reaches a published
-package's production tree. Run it before adding an entry, and when one is added, plan to remove it.
-
-**Derive an override key from the GHSA advisory, never from the Dependabot alert.** An alert reports
-only the affected range matching the version you happen to have installed. `fast-uri` patched three
-lines within fourteen minutes of each other; the alert showed one, and #471 shipped a key that left
-the current major line unguarded. The same mistake in #469 inherited a lower bound from an earlier
-advisory. Read the whole affected set:
-
-```bash
-gh api graphql -f query='{securityVulnerabilities(ecosystem:NPM, package:"NAME", first:100){
-  pageInfo{hasNextPage endCursor}
-  nodes{advisory{ghsaId severity} vulnerableVersionRange firstPatchedVersion{identifier}}}}'
-```
-
-Page it. `axios` has 73 advisories and `undici` 67, and a page that stops short reads exactly like
-"no such advisory" — the direction that hides a floor you needed. Repeat with `after:"<endCursor>"`
-until `hasNextPage` is false. `pnpm overrides:audit` does this for you.
-
-Scope the key to the major line its replacement targets — pnpm matches by range **intersection**,
-not containment, so a bare `<X` reaches every major below it and would force a cross-major jump on
-a consumer that declared one. Cap the replacement for the same reason.
+**Read [contributing/security-bumps.md](./contributing/security-bumps.md) before adding an entry.**
+It has the why behind each of those — how to page the full advisory set, and the two PRs (#469, #471)
+that shipped a key leaving the current major unguarded.
 
 ---
 

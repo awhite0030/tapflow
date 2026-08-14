@@ -87,6 +87,7 @@ cannot keep true.
 | [workshop-lab-fork-observations.md](./workshop-lab-fork-observations.md) | reference | performance, capacity, extensibility, external-fork |
 | [adversarial-review.md](./adversarial-review.md) | rules | process, review, quality |
 | [test-and-guard-coverage.md](./test-and-guard-coverage.md) | rules | testing, static-checks, review, quality |
+| [security-bumps.md](./security-bumps.md) | rules | dependencies, security, tooling |
 
 ## Adding a record
 
