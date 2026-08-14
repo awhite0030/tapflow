@@ -1,0 +1,38 @@
+// Type-checks this package's test tree, which the build tsconfig excludes.
+//
+// Tests must not reach `dist`, so they cannot simply join the build's `include` — the same shape as
+// `protocol/tsconfig.assertions.json`, and for the same reason. Wired into the package's `typecheck`
+// script.
+//
+// This package's script is `tsc --noEmit`, which builds no project references, so running it alone
+// checks these tests against whatever sibling `dist` happens to be on disk. The root `pnpm typecheck`
+// leads with `tsc -b`, which is what makes that current — the seven packages whose own script is
+// `tsc -b` do not depend on the order.
+//
+// **Named `tsconfig.json` and placed here on purpose.** typescript-eslint's `projectService` finds a
+// file's project the way tsserver does — by walking up for a `tsconfig.json` — so a
+// `tsconfig.test.json` at the package root is invisible to it, and every rule then fails as
+// `was not found by the project service` rather than reporting. #422 needs both gates, and this is
+// the one file that serves both.
+//
+// `moduleResolution: bundler` rather than the build's Node16: vitest resolves through vite, which
+// does not require the `.js` suffix. 166 of the errors this first surfaced were nothing but that
+// suffix missing — checking tests under a resolution they never run with would have meant rewriting
+// every import to satisfy a compiler no test obeys.
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false,
+    "emitDeclarationOnly": false,
+    "rootDir": "../..",
+    "module": "ESNext",
+    "moduleResolution": "bundler"
+  },
+  "include": ["../**/*.ts", "../**/*.tsx"],
+  "exclude": ["../../dist", "../../node_modules"],
+  "references": []
+}

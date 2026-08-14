@@ -25,6 +25,9 @@ function fakeClient(frames: Array<{ image: Buffer; width: number; height: number
       return call as never
     },
     sendTouch: vi.fn(), sendKey: vi.fn(), sendMouse: vi.fn(), sendWheel: vi.fn(), close: vi.fn(),
+    // Video tests never reach these, but `RawEmulatorController` declares them and a double short
+    // of a member is what #418 shipped behind a cast. Present so the annotation means something.
+    streamAudio: vi.fn(), getClipboard: vi.fn(), setClipboard: vi.fn(),
   }
   return new EmulatorGrpcClient('x', raw)
 }
@@ -172,6 +175,7 @@ describe('EmulatorVideo', () => {
         return { cancel() {}, async *[Symbol.asyncIterator]() { throw new Error('16 UNAUTHENTICATED') } } as never
       },
       sendTouch: vi.fn(), sendKey: vi.fn(), sendMouse: vi.fn(), sendWheel: vi.fn(), close: vi.fn(),
+      streamAudio: vi.fn(), getClipboard: vi.fn(), setClipboard: vi.fn(),
     }
     const fe = fakeEncoder()
     const video = new EmulatorVideo(new EmulatorGrpcClient('x', raw), { spawnEncoder: () => fe.enc })

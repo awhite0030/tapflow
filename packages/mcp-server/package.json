@@ -37,7 +37,7 @@
   },
   "scripts": {
     "build": "tsc && chmod +x dist/index.js",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p src/__tests__/tsconfig.json",
     "test": "vitest run",
     "lint": "eslint src"
   },

@@ -57,11 +57,13 @@ conversion, so they are written down here instead:
   `Record<string, unknown>` sinks then in this repo were only ever handed fresh object literals — and
   **the fix when one of them needs a typed value is to type the sink**, not to widen the message. Two
   have been: both clients' `send` takes `BrowserToRelay` (`7637be3`, L4c), and their `RelayMsg` is now
-  inbound-only. The third, `test-utils/src/socket.ts`, is the case where this constraint bites in the
-  other direction: its comment claimed the looseness accommodated each importer's richer view via
+  inbound-only. The third, `test-utils/src/socket.ts`, is where this constraint bit in the other
+  direction: its comment claimed the looseness accommodated each importer's richer view via
   `waitForType<T extends SocketMessage>`, and that extension point is what an interface having no index
-  signature **broke** — no protocol type satisfies the constraint. All 25 call sites violate it
-  invisibly, because `src/__tests__` is outside that package's tsconfig.
+  signature **broke** — no protocol type satisfies the constraint, so every call site that named a type
+  (49 of them, measured) violated it invisibly while `src/__tests__` sat outside every tsconfig. #422 fixed both halves: the tree is
+  type-checked now, and the constraint is `{ type: string }` while `SocketMessage` stays the *default*
+  — a constraint only an anonymous literal can satisfy admits no named message at all.
 - **An `interface` can be reopened by a consumer.** `declare module '@tapflowio/protocol'` can add a
   field to any message, which an anonymous union member could not. Measured: a consumer can give
   `session:joined` a `deviceId` and defeat the `typeAssertions.ts` assertion that says it has none —

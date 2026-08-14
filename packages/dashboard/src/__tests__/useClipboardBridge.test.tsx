@@ -289,7 +289,7 @@ describe('useClipboardBridge', () => {
   // Regression: with an image/file on the OS clipboard there is no text to send, but the
   // device must still paste its own clipboard — that worked before the bridge existed.
   it('falls back to the plain chord when the OS clipboard holds no text', async () => {
-    const { sent, chords, errors } = setup()
+    const { sent, chords } = setup()
     pastes('')
     expect(sent).toEqual([])
     expect(chords).toEqual([['KeyV', 0x08]])

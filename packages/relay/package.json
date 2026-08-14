@@ -46,7 +46,7 @@
   },
   "scripts": {
     "build": "tsc -b && rm -rf dist/migrations && cp -r src/migrations dist/migrations",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p src/__tests__/tsconfig.json",
     "start": "node dist/server.js",
     "test": "vitest run",
     "lint": "eslint src"

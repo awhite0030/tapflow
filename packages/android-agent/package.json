@@ -48,7 +48,7 @@
   "scripts": {
     "postinstall": "node -e \"if (process.platform === 'darwin') { try { require('fs').chmodSync('bin/emulator-encoder', 0o755) } catch {} }\"",
     "build": "tsc -b",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p src/__tests__/tsconfig.json",
     "test": "vitest run",
     "lint": "eslint src",
     "download-scrcpy-server": "node scripts/download-scrcpy-server.mjs"

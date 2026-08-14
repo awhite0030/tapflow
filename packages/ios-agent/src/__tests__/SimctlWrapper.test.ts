@@ -365,7 +365,6 @@ describe('SimctlWrapper', () => {
         exec: vi.fn()
           .mockResolvedValueOnce('(\n    "ko-KR",\n    "en-US"\n)')  // defaults read
           .mockResolvedValue(''),                                       // write + kickstart
-        execBinary: vi.fn(),
         execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
@@ -385,7 +384,6 @@ describe('SimctlWrapper', () => {
         exec: vi.fn()
           .mockResolvedValueOnce('(\n    "ko-KR"\n)')
           .mockResolvedValue(''),
-        execBinary: vi.fn(),
         execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
@@ -401,7 +399,6 @@ describe('SimctlWrapper', () => {
     it('does nothing when AppleLanguages is empty or unset', async () => {
       const runner: SimctlRunner = {
         exec: vi.fn().mockRejectedValue(new Error('Domain does not exist')),
-        execBinary: vi.fn(),
         execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
@@ -418,7 +415,6 @@ describe('SimctlWrapper', () => {
           .mockResolvedValueOnce('(\n    "en-US"\n)')  // read
           .mockResolvedValueOnce('')                    // write
           .mockRejectedValueOnce(new Error('kbd not found')), // kickstart fails
-        execBinary: vi.fn(),
         execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
@@ -437,7 +433,6 @@ describe('SimctlWrapper', () => {
 
       const runner: SimctlRunner = {
         exec: vi.fn().mockResolvedValue(''),
-        execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execBinary: vi.fn().mockResolvedValue(Buffer.alloc(0)),
         execWithOpts: vi.fn().mockResolvedValue(''),
       }
@@ -518,7 +513,13 @@ describe('SimctlWrapper', () => {
     it('throws PlatformError when the data container cannot be resolved', async () => {
       const runner = mockRunner({ get_app_container: 'No such file or directory\n' })
       const wrapper = new SimctlWrapper(runner)
-      await expect(wrapper.clearAppData('com.unknown')).rejects.toThrow(/data container/)
+      // Two arguments: this passed a single one, which silently became the *udid* while `bundleId`
+      // went undefined.
+      await expect(wrapper.clearAppData('dev-1', 'com.unknown')).rejects.toThrow(/data container/)
+      // And the call, not only its outcome. `mockRunner` selects its answer from `args[0]`, so the
+      // rejection above holds whatever the later arguments are — noting that in a comment while
+      // asserting nothing about them is how the single-argument call survived in the first place.
+      expect(runner.exec).toHaveBeenCalledWith('get_app_container', 'dev-1', 'com.unknown', 'data')
     })
   })
 

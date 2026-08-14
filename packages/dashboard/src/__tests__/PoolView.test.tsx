@@ -34,7 +34,9 @@ interface SessionInfo {
 
 function MacCard({ session, onClick }: { session: SessionInfo; onClick?: () => void }) {
   const res = session.resources
-  const isStale = res ? Date.now() - res.reportedAt > 30_000 : false
+  // Mirrors `QASession.tsx`, which suppresses the same rule on the same line: staleness is a
+  // wall-clock question and re-reading it on a re-render is the intent, not a bug.
+  const isStale = res ? Date.now() - res.reportedAt > 30_000 : false // eslint-disable-line react-hooks/purity
   const cpuPercent = res?.cpuPercent ?? 0
   const memPercent = res ? (res.memUsedMB / res.memTotalMB) * 100 : 0
   const deviceCount = session.devices.length

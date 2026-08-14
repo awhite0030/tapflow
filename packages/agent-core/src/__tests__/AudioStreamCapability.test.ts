@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { hasAudioCapability } from '../AudioStreamCapability'
 import type { AudioStreamCapability, AudioFormat, AudioFrame } from '../AudioStreamCapability'
 import type { DeviceAgent } from '../DeviceAgent'
-import type { Device } from '../types'
+import type { Device, UIElement } from '../types'
 
 // A minimal video-only agent: implements DeviceAgent but NOT AudioStreamCapability.
+//
+// `implements DeviceAgent` proved nothing until #422 brought this tree into a tsconfig — it was short
+// of `queryUITree`, so the clause it was checked against was never checked.
 class VideoOnlyAgent implements DeviceAgent {
   listDevices(): Promise<Device[]> { return Promise.resolve([]) }
   boot(_deviceId: string): Promise<void> { return Promise.resolve() }
@@ -17,6 +20,7 @@ class VideoOnlyAgent implements DeviceAgent {
   touchMove(_x: number, _y: number): Promise<void> { return Promise.resolve() }
   touchEnd(): Promise<void> { return Promise.resolve() }
   openUrl(_url: string): Promise<void> { return Promise.resolve() }
+  queryUITree(): Promise<UIElement[]> { return Promise.resolve([]) }
 }
 
 // An audio-capable agent: DeviceAgent + AudioStreamCapability.

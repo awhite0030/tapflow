@@ -5,4 +5,5 @@ export {
   waitForTypeOrNull,
   barrier,
   type SocketMessage,
+  type SocketMessageLike,
 } from './socket.js'

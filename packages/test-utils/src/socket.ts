@@ -1,17 +1,23 @@
 import type { WebSocket } from 'ws'
 
-/** The shape every tapflow socket message shares.
+/** What a caller gets back when it does not name a richer type: loose enough to index.
  *
- *  It stays loose, but **not for the reason this comment used to give.** The old one said each importer has its
- *  own richer view of the wire and `waitForType<T extends SocketMessage>` is where that view goes — and #505
- *  broke that: messages became named interfaces, which have no implicit index signature, so no protocol type
- *  satisfies the constraint (`TS2344`). All 25 call sites pass `RelayMessage`, which is also a named interface,
- *  so all 25 already violate it — invisibly, because `src/__tests__` is outside this package's tsconfig.
+ *  Kept as the **default**, and no longer as the **constraint** — those are different jobs and conflating them
+ *  is what #505 broke. Messages became named interfaces, which have no implicit index signature, so no protocol
+ *  type satisfies `Record<string, unknown>`. Every call site that named a type passed `RelayMessage`, itself a
+ *  named interface, so every one of them violated the constraint — invisibly, because `src/__tests__` sat
+ *  outside every tsconfig. Measured at the time #422 turned the checker on: 49. The looseness had stopped
+ *  accommodating the richer views and started blocking them.
  *
- *  So the looseness is now *blocking* the richer views rather than accommodating them. It is left alone because
- *  a narrowing nothing type-checks is decoration; fixing it means bringing the test tree into a tsconfig first,
- *  which is a separate job. */
+ *  This file's own note said fixing it meant bringing the test tree into a tsconfig first, "which is a separate
+ *  job" — #422 is that job, and this is the first thing it found. */
 export type SocketMessage = Record<string, unknown> & { type: string }
+
+/** What a caller may narrow to. Every wire message has a `type`; nothing else is required of it.
+ *
+ *  Deliberately not `SocketMessage`: a constraint that only an anonymous object literal can satisfy admits no
+ *  named interface, which is every message in `@tapflowio/protocol` and the relay's own `RelayMessage`. */
+export type SocketMessageLike = { type: string }
 
 /**
  * Order-proof socket helpers for tapflow tests.
@@ -104,11 +110,12 @@ export const waitForOpen = (ws: WebSocket): Promise<void> => {
  * The next message of `type`, taken from the recording if it has already arrived.
  *
  * The type parameter lets a caller narrow to its own wire type — `waitForType<RelayMessage>(…)`.
- * Most call sites do not, because test files are outside `tsc` (every package excludes
- * `src/__tests__`), so the narrowing would be decorative today. It is here so that stops being
- * true without a rewrite.
+ * That narrowing is now checked: #422 gave every test tree a `src/__tests__/tsconfig.json`, so a
+ * mismatch between the type named here and the message actually asserted on is a compile error
+ * rather than a comment. It was decorative for as long as `src/__tests__` sat outside every
+ * tsconfig, which is how the old constraint came to be violated by every call site that named a type.
  */
-export function waitForType<T extends SocketMessage = SocketMessage>(ws: WebSocket, type: string): Promise<T> {
+export function waitForType<T extends SocketMessageLike = SocketMessage>(ws: WebSocket, type: string): Promise<T> {
   const rec = record(ws)
   const i = rec.queued.findIndex((m) => m.type === type)
   if (i >= 0) return Promise.resolve(rec.queued.splice(i, 1)[0]! as T)
@@ -116,7 +123,7 @@ export function waitForType<T extends SocketMessage = SocketMessage>(ws: WebSock
 }
 
 /** The next message of any type. Same recording, same ordering guarantee. */
-export function waitForMessage<T extends SocketMessage = SocketMessage>(ws: WebSocket): Promise<T> {
+export function waitForMessage<T extends SocketMessageLike = SocketMessage>(ws: WebSocket): Promise<T> {
   const rec = record(ws)
   if (rec.queued.length > 0) return Promise.resolve(rec.queued.shift()! as T)
   return new Promise((resolve) => rec.waiters.push({ type: null, resolve: (m) => resolve(m as T) }))
@@ -129,7 +136,7 @@ export function waitForMessage<T extends SocketMessage = SocketMessage>(ws: WebS
  * proves the relay has finished with everything sent before it, which is an answer rather than a
  * guess, and it costs milliseconds instead of the timeout.
  */
-export function waitForTypeOrNull<T extends SocketMessage = SocketMessage>(
+export function waitForTypeOrNull<T extends SocketMessageLike = SocketMessage>(
   ws: WebSocket,
   type: string,
   ms = 1000,

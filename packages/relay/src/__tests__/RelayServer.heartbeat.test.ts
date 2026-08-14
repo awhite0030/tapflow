@@ -4,6 +4,7 @@ import os from 'os'
 import path from 'path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { RelayServer } from '../RelayServer'
+import type { RelayMessage } from '../types'
 import { initDb, closeDb } from '../db'
 import { waitForMessage, waitForOpen } from '@tapflowio/test-utils'
 
@@ -135,7 +136,7 @@ describe('RelayServer — WebSocket heartbeat (#313)', () => {
       const agent = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(agent)
       agent.send(JSON.stringify({ type: 'agent:register', agentName: 'DeadMac', devices: [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'shutdown' }] }))
-      await waitForMessage(agent) // agent:registered
+      await waitForMessage<RelayMessage>(agent) // agent:registered
 
       const closed = new Promise<void>((resolve) => agent.on('close', () => resolve()))
 
@@ -150,7 +151,7 @@ describe('RelayServer — WebSocket heartbeat (#313)', () => {
       await waitForOpen(observer)
       await vi.waitFor(async () => {
         observer.send(JSON.stringify({ type: 'agents:list' }))
-        const listed = await waitForMessage(observer)
+        const listed = await waitForMessage<RelayMessage>(observer)
         expect(listed.sessions).toHaveLength(0)
       }, { timeout: 2000 })
       observer.close()
@@ -160,7 +161,7 @@ describe('RelayServer — WebSocket heartbeat (#313)', () => {
       const agent = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(agent)
       agent.send(JSON.stringify({ type: 'agent:register', agentName: 'LiveMac', devices: [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'shutdown' }] }))
-      await waitForMessage(agent)
+      await waitForMessage<RelayMessage>(agent)
 
       let closedUnexpectedly = false
       agent.on('close', () => { closedUnexpectedly = true })
@@ -175,7 +176,7 @@ describe('RelayServer — WebSocket heartbeat (#313)', () => {
       const observer = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(observer)
       observer.send(JSON.stringify({ type: 'agents:list' }))
-      const listed = await waitForMessage(observer)
+      const listed = await waitForMessage<RelayMessage>(observer)
       expect(listed.sessions!.filter((s) => s.agentName === 'LiveMac')).toHaveLength(1)
 
       agent.close()

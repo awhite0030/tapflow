@@ -40,6 +40,9 @@ describe('CLI smoke tests', () => {
       let stderr = ''
       let listening = false
       let settled = false
+      // Assigned exactly once, but 30 lines below `finish` closes over it, so the declaration cannot
+      // move down to the assignment without putting that closure in its TDZ.
+      // eslint-disable-next-line prefer-const
       let deadline: ReturnType<typeof setTimeout>
       let grace: ReturnType<typeof setTimeout>
 

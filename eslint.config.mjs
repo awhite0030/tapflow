@@ -14,7 +14,12 @@ export default tseslint.config(
   // `typeAssertions.ts` is deliberately outside the protocol package's build tsconfig (it declares
   // values and must not reach `dist`), which puts it outside the typed-lint project service too.
   // It is type-checked by `tsconfig.assertions.json`, which is the only check that file needs.
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/*.js', '**/*.mjs', '**/*.cjs', '**/__tests__/**', 'packages/protocol/src/typeAssertions.ts', '!scripts/**'] },
+  // `__tests__` is no longer ignored (#422). It was, and the two exclusions compounded: nothing typed
+  // the test tree and nothing linted it, so a double could drift from the interface it doubled with
+  // both gates green. Typed lint needs the files in a tsconfig to say anything at all, which is why
+  // `src/__tests__/tsconfig.json` had to land first — with the tree outside every project, every rule here
+  // failed as a parse error rather than reporting.
+  { ignores: ['**/dist/**', '**/node_modules/**', '**/*.js', '**/*.mjs', '**/*.cjs', 'packages/protocol/src/typeAssertions.ts', '!scripts/**'] },
 
   // Repo tooling under scripts/ is .mjs, which the blanket ignore above covers. It is opted back
   // in because `dev-down` sends SIGKILL to processes it selects — the most destructive code in
