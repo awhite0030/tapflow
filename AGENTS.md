@@ -64,6 +64,23 @@ When starting a **new** task that requires code changes (not when continuing wor
 1. `git checkout main && git pull origin main` — start from the latest main.
 2. `git checkout -b <branch-name>` — work on a new branch, never directly on main.
 
+### The PR body follows the repo's template, and `--body` bypasses it
+
+**Read `.github/pull_request_template.md` before opening one.** It exists, and 212 of the last 220 PRs did
+not follow it because nobody went looking — not because anything stopped them. That is the whole cause, and
+it is worth stating plainly, because the mechanism below reads like an excuse and is not one.
+
+The mechanism explains only why nothing said so: the template is applied when a PR is opened in the browser,
+and `gh pr create --body` replaces it wholesale. A PR opened from a terminal carries whatever the author
+typed, and no gate looks at it. So write the body into a file that starts from the template, and pass
+`--body-file`.
+
+**The body is a pointer, not a copy.** Depth already lives in three places that outlast it — the reasoning
+beside the code, the release note in the changeset, and the findings in `.work/reviews/`, which the template
+has a slot for. A body that reproduces all three is noise to the reviewer who has the diff open, and it
+tells a first-time contributor that *this* is the bar for opening a PR. Keep `## Summary` to a few sentences
+and link the rest.
+
 ### Workflow (Plan → Work → Review → Compound)
 
 Work logs go in `.work/`. Conventions: [.work/CLAUDE.md](./.work/CLAUDE.md).
