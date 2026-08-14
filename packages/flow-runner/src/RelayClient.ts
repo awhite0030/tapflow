@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { BrowserToRelay, DeviceSummary, SessionStartFailure } from '@tapflowio/protocol'
+import type { BrowserToRelay, DeviceSummary, SessionStartFailure, SessionTerminatedReason } from '@tapflowio/protocol'
 import { WebSocket } from 'ws'
 import type { UIElement } from '@tapflowio/agent-core'
 import { PlatformError } from '@tapflowio/agent-core'
@@ -33,6 +33,51 @@ const INPUT_ACK_TIMEOUT_MS = 10_000
  * a false accusation.
  */
 class RelayClosedError extends PlatformError {}
+
+/**
+ * The relay said this session ended while a request was still in flight (#512, finding 4).
+ *
+ * Distinct from a timeout because the two carry different certainty. A deadline says only that no reply
+ * arrived in time; this says the session the reply would have been addressed to **no longer exists** —
+ * `RelayServer` removes it in the same breath as sending the message. What stays unknown is the same
+ * thing every unconfirmed reply leaves unknown: whether the request reached the device before the agent
+ * went, which is why the prose keeps the two apart rather than reporting a clean failure.
+ */
+export class SessionEndedError extends PlatformError {
+  constructor(message: string, readonly reason: SessionTerminatedReason | 'unknown', options?: ErrorOptions) {
+    super(message, options)
+  }
+}
+
+/**
+ * What the relay has told us about a session, for the three messages this client used to drop.
+ *
+ * **Only `terminated` licenses a rejection**, and the other two are the whole reason this is state rather
+ * than a handler that settles waiters:
+ *
+ * - `agent-away` means the relay is *holding* the session for `TAPFLOW_AGENT_GRACE_MS` (15s by default),
+ *   precisely so a reconnecting agent keeps it. Rejecting here would kill the case the grace exists for.
+ * - `rebound` is **ambiguous about the request in flight**, which is easy to get backwards. Both agents
+ *   reconnect without restarting the process, so the request is still executing and its reply closure
+ *   goes out through `sendMsg`, which reads `this.ws` at *completion* time. Finish after the reconnect
+ *   and the reply lands on the new socket, the relay forwards it to the same session, and the waiter
+ *   below matches it on `requestId` and resolves. Finish during the backoff and `this.ws` is null, so
+ *   `?.` swallows it. So a rebound is not evidence that no answer can come, and rejecting on it would
+ *   fail requests that succeed today.
+ *
+ * What both of them *are* good for is the **timeout** branch: when a waiter does give up, this is what
+ * turns "timed out" into a cause. That is the half `agent-away` was costing us — see `awaitInputAck`.
+ */
+interface SessionLifecycle {
+  /** `session:agent-away` seen with no outcome yet. Cleared by either outcome. */
+  away: boolean
+  /** `session:rebound` seen. The agent is back but `_scheduleReconnect` cleared its `deviceStates`, so the
+   *  session's device binding is gone until something boots it again. The simulator and the app are not —
+   *  saying "the device reset" here would be false and would invite a reinstall nothing needs. */
+  needsReboot: boolean
+  /** `session:terminated`'s reason, or `null` while the session is alive. Terminal: ids are not reused. */
+  terminated: SessionTerminatedReason | 'unknown' | null
+}
 
 /**
  * A runtime mirror of `SessionStartFailure`, which `protocol` cannot export as a value — its main entry has
@@ -122,6 +167,14 @@ interface Waiter {
   resolve: (msg: RelayMsg) => void
   reject: (err: Error) => void
   timer: ReturnType<typeof setTimeout>
+  /** Which session this waiter belongs to, so a `session:terminated` can settle **that** session's waiters
+   *  and no others. The session id lives inside `predicate` as a closure variable and cannot be read back
+   *  out — `mcp-server`'s twin records the same constraint where it hit it from the other direction. Absent
+   *  on `agents:list`, which carries no session on the wire and is unaffected by one ending. */
+  sessionId?: string
+  /** The operation's name, for the rejection's prose. `waitFor` already took it for the timeout message;
+   *  keeping it on the record is what lets a message the *dispatcher* builds name the request too. */
+  what: string
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -181,6 +234,11 @@ export class RelayClient {
    * (`addressSkewLogged`) and for id-less lifecycle replies — the input path was the only one failing hard
    * and silently.
    *
+   * **Two causes it does not cover**, and the caller withholds it for both. A closed socket says nothing
+   * about whether the agent acks, and a session the relay has reported `session:agent-away` for has an agent
+   * that is not there to ack. Naming either of those an agent-version problem would send an operator to
+   * check installs while the actual cause is on the wire.
+   *
    * Per **session**, unlike the join's per-client flag: one flow can address several, and a slow first input
    * after a boot is a per-session event.
    */
@@ -194,7 +252,114 @@ export class RelayClient {
     )
   }
 
+  /** The relay's word on a session, keyed by id. Grows one entry per session this client joins, which is
+   *  one per device per agent registration — slow enough that a run cannot outlive its usefulness, unlike
+   *  a ledger keyed on request ids. A flow run holds one client for one run. */
+  private readonly lifecycle = new Map<string, SessionLifecycle>()
+
+  private lifecycleOf(sessionId: string): SessionLifecycle {
+    let s = this.lifecycle.get(sessionId)
+    if (!s) {
+      s = { away: false, needsReboot: false, terminated: null }
+      this.lifecycle.set(sessionId, s)
+    }
+    return s
+  }
+
+  /**
+   * What is currently wrong with this session, as a clause to append to a failure — or `undefined` when
+   * the answer is "nothing we were told about".
+   *
+   * The order is by certainty, not by recency: a terminated session is terminated whatever came before it.
+   */
+  private sessionNote(sessionId: string): string | undefined {
+    const s = this.lifecycle.get(sessionId)
+    if (!s) return undefined
+    if (s.terminated) return `the relay ended this session (${s.terminated})`
+    if (s.needsReboot) {
+      // Deliberately not "the device reset". `_scheduleReconnect` clears the agent's `deviceStates`, so the
+      // session's binding is gone — but the simulator stays booted and the app stays on screen, which the
+      // agent keeps `lastBundleIds` outside that map to preserve. Telling a runner the device reset would
+      // point it at a reinstall it does not need.
+      return 'the agent reconnected and cleared its device binding, so this session needs booting again ' +
+        '(the app itself is still running)'
+    }
+    if (s.away) return "the agent's connection to the relay went away, so nothing is reaching the device"
+    return undefined
+  }
+
+  /**
+   * A step failure carrying whatever the relay has said about this session.
+   *
+   * The refusals these decorate already say *what* went wrong — an agent answers a command on a rebound
+   * session with `No booted device`, which is true and gives a runner nowhere to go. The note is what
+   * turns it into a cause: the device is not booted **because** the agent reconnected.
+   */
+  private failed(sessionId: string, message: string): PlatformError {
+    const note = this.sessionNote(sessionId)
+    return new PlatformError(note ? `${message} — ${note}` : message)
+  }
+
+  /** Settle the waiters of a session the relay has just removed. Reverse order because it splices. */
+  private rejectSession(sessionId: string, reason: SessionTerminatedReason | 'unknown'): void {
+    for (let i = this.waiters.length - 1; i >= 0; i--) {
+      const w = this.waiters[i]
+      if (w.sessionId !== sessionId) continue
+      this.waiters.splice(i, 1)
+      clearTimeout(w.timer)
+      w.reject(new SessionEndedError(
+        `${w.what} failed: the relay ended session ${sessionId} (${reason}) while it was in flight. That the ` +
+        'session is gone is certain; whether the request reached the device is not, so do not repeat it blindly',
+        reason,
+      ))
+    }
+  }
+
   private dispatch(msg: RelayMsg): void {
+    // Read before the waiter loop, and read whether or not anything is waiting. The three of these settle
+    // no request by themselves — they are the relay telling us something about the session, and the frame
+    // that arrives with nothing pending is exactly the one that has to be remembered, because it is the
+    // next request that will be confused without it.
+    const sessionId = msg['sessionId']
+    if (typeof sessionId === 'string') {
+      switch (msg['type']) {
+        case 'session:agent-away':
+          this.lifecycleOf(sessionId).away = true
+          console.error(
+            `[tapflow] the agent behind session ${sessionId} went away. The relay holds the session briefly ` +
+            'for it to come back; requests already in flight are not cancelled, because one that finishes ' +
+            'after the reconnect still answers.',
+          )
+          break
+        case 'session:rebound': {
+          const s = this.lifecycleOf(sessionId)
+          s.away = false
+          s.needsReboot = true
+          break
+        }
+        case 'session:terminated': {
+          const reason = msg['reason']
+          // `SessionTerminatedReason` is a one-member union today, so an unrecognised value means a relay
+          // newer than this client rather than a malformed frame. Recorded as `unknown` instead of being
+          // coerced: the caller reads this to explain a failure, and inventing `agent-disconnected` for a
+          // reason we cannot name would be a specific claim on an unknown cause.
+          const named: SessionTerminatedReason | 'unknown' = reason === 'agent-disconnected' ? reason : 'unknown'
+          const s = this.lifecycleOf(sessionId)
+          s.away = false
+          s.terminated = named
+          this.rejectSession(sessionId, named)
+          break
+        }
+        case 'session:joined':
+          // A fresh join starts the session's story over. It matters for the *re*-join: the relay replies
+          // `session:joined` and then `session:agent-away` when the session is being held, so clearing here
+          // and setting there is the order that leaves the flag on.
+          this.lifecycle.delete(sessionId)
+          break
+        default:
+          break
+      }
+    }
     if (msg['type'] === 'error' && typeof msg['sessionId'] !== 'string' && !this.addressSkewLogged) {
       // A relay older than L5d. The refusal matches no waiter, so the join times out with no reason — this is
       // the only trace. One flow run holds one client, so once is once.
@@ -224,14 +389,24 @@ export class RelayClient {
     this.ws.send(JSON.stringify(msg))
   }
 
-  private waitFor(predicate: (msg: RelayMsg) => boolean, timeoutMs: number, what: string): Promise<RelayMsg> {
+  private waitFor(
+    predicate: (msg: RelayMsg) => boolean,
+    timeoutMs: number,
+    what: string,
+    sessionId?: string,
+  ): Promise<RelayMsg> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const idx = this.waiters.findIndex((w) => w.resolve === resolve)
         if (idx !== -1) this.waiters.splice(idx, 1)
-        reject(new PlatformError(`${what} timed out`))
+        // Read **at the deadline**, not when the waiter was created. That is the entire value of holding the
+        // lifecycle as state: half the deadlines in this file are shorter than the relay's 15s grace, so for
+        // those the outcome message never arrives before the waiter gives up, and this is the only moment
+        // anything can say why it gave up.
+        const note = sessionId ? this.sessionNote(sessionId) : undefined
+        reject(new PlatformError(note ? `${what} timed out — ${note}` : `${what} timed out`))
       }, timeoutMs)
-      this.waiters.push({ predicate, resolve, reject, timer })
+      this.waiters.push({ predicate, resolve, reject, timer, sessionId, what })
     })
   }
 
@@ -256,6 +431,7 @@ export class RelayClient {
         (m['type'] === 'error' && m['sessionId'] === sessionId),
       5_000,
       'session join',
+      sessionId,
     )
     if (msg['type'] !== 'error') return
     // `reason` is what #506 added this field for: the dashboard was branching on the free prose, handled two
@@ -280,8 +456,14 @@ export class RelayClient {
       (m) => (m['type'] === 'device:ready' || m['type'] === 'device:boot-error') && m['sessionId'] === sessionId && correlatesWith(m, requestId),
       120_000,
       'device boot',
+      sessionId,
     )
-    if (msg['type'] === 'device:boot-error') throw new PlatformError((msg['message'] as string) ?? 'boot failed')
+    if (msg['type'] === 'device:boot-error') throw this.failed(sessionId, (msg['message'] as string) ?? 'boot failed')
+    // The one thing that clears `needsReboot`, because it is the one thing that answers it: a rebound session
+    // is missing the agent-side binding a boot creates. Clearing it anywhere else would let the note go quiet
+    // while the condition it describes is still true.
+    const s = this.lifecycle.get(sessionId)
+    if (s) s.needsReboot = false
   }
 
   async installApp(sessionId: string, buildId: number): Promise<void> {
@@ -291,8 +473,9 @@ export class RelayClient {
       (m) => (m['type'] === 'app:install-done' || m['type'] === 'app:install-error') && m['requestId'] === requestId,
       120_000,
       'app install',
+      sessionId,
     )
-    if (msg['type'] === 'app:install-error') throw new PlatformError((msg['message'] as string) ?? 'install failed')
+    if (msg['type'] === 'app:install-error') throw this.failed(sessionId, (msg['message'] as string) ?? 'install failed')
   }
 
   async launchApp(sessionId: string, buildId: number): Promise<void> {
@@ -302,8 +485,9 @@ export class RelayClient {
       (m) => (m['type'] === 'app:launch-done' || m['type'] === 'app:launch-error') && m['requestId'] === requestId,
       30_000,
       'app launch',
+      sessionId,
     )
-    if (msg['type'] === 'app:launch-error') throw new PlatformError((msg['message'] as string) ?? 'launch failed')
+    if (msg['type'] === 'app:launch-error') throw this.failed(sessionId, (msg['message'] as string) ?? 'launch failed')
   }
 
   async clearState(sessionId: string, bundleId: string): Promise<void> {
@@ -313,8 +497,9 @@ export class RelayClient {
       (m) => (m['type'] === 'app:clear-state-done' || m['type'] === 'app:clear-state-error') && m['requestId'] === requestId,
       30_000,
       'clear state',
+      sessionId,
     )
-    if (msg['type'] === 'app:clear-state-error') throw new PlatformError((msg['message'] as string) ?? 'clear state failed')
+    if (msg['type'] === 'app:clear-state-error') throw this.failed(sessionId, (msg['message'] as string) ?? 'clear state failed')
   }
 
   // The correlator these mint is now read. It always was on the wire — the terminal frame declares it
@@ -358,8 +543,9 @@ export class RelayClient {
         && m['sessionId'] === sessionId && m['requestId'] === requestId,
       15_000,
       'type text',
+      sessionId,
     )
-    if (msg['type'] === 'input:type-error') throw new PlatformError((msg['message'] as string) ?? 'type text failed')
+    if (msg['type'] === 'input:type-error') throw this.failed(sessionId, (msg['message'] as string) ?? 'type text failed')
   }
 
   async pressKey(sessionId: string, code: string): Promise<void> {
@@ -404,16 +590,28 @@ export class RelayClient {
           && m['sessionId'] === sessionId && m['requestId'] === requestId,
         INPUT_ACK_TIMEOUT_MS,
         what,
+        sessionId,
       )
     } catch (e) {
+      // Already the most specific thing anyone can say about this input: the session it was addressed to is
+      // gone, and by name. Re-wrapping would bury that a `cause` deeper and add nothing.
+      if (e instanceof SessionEndedError) throw e
       // The step fails either way and for the same reason — the reply is unconfirmed — but only a
       // deadline is evidence about the *agent*. A closed relay says nothing about whether it acks,
       // so accusing it of being old or slow there would be a false diagnosis in the one place an
       // operator goes looking.
-      if (!(e instanceof RelayClosedError)) this.warnInputAckSilence(sessionId)
+      //
+      // An agent the relay has told us is **away** is the same false accusation with a second source: the
+      // ack cannot arrive because the agent is not there, and this warning would send whoever reads it to
+      // check agent versions. Narrowed to `away` rather than to any note — a rebound session is answering
+      // again, so silence on it is once more the agent's to explain.
+      if (!(e instanceof RelayClosedError) && !this.lifecycle.get(sessionId)?.away) {
+        this.warnInputAckSilence(sessionId)
+      }
+      const note = this.sessionNote(sessionId)
       throw new PlatformError(
-        `${what} was not confirmed (${(e as Error).message}) — it may have reached the device, so do not ` +
-        'repeat it blindly',
+        `${what} was not confirmed (${(e as Error).message})${note ? ` — ${note}` : ''} — it may have reached ` +
+        'the device, so do not repeat it blindly',
         { cause: e },
       )
     }
@@ -422,7 +620,7 @@ export class RelayClient {
     // field. Absent, or a member this build does not know, both read as `channel-unavailable`, which is the
     // conservative one (protocol/AGENTS.md).
     const reason = typeof msg['reason'] === 'string' ? msg['reason'] : 'channel-unavailable'
-    throw new PlatformError(`${what} was refused by the device (${reason}): ${(msg['message'] as string) ?? 'no detail'}`)
+    throw this.failed(sessionId, `${what} was refused by the device (${reason}): ${(msg['message'] as string) ?? 'no detail'}`)
   }
 
   async openUrl(sessionId: string, url: string): Promise<void> {
@@ -435,8 +633,9 @@ export class RelayClient {
       (m) => (m['type'] === 'open-url:done' || m['type'] === 'open-url:error') && m['requestId'] === requestId,
       15_000,
       'open url',
+      sessionId,
     )
-    if (msg['type'] === 'open-url:error') throw new PlatformError((msg['message'] as string) ?? 'open url failed')
+    if (msg['type'] === 'open-url:error') throw this.failed(sessionId, (msg['message'] as string) ?? 'open url failed')
   }
 
   private httpBase(): string {
