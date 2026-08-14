@@ -179,6 +179,12 @@ What made the 4m30s pair cheap was structural, not stylistic. Each prompt carrie
 4. **The commands not to run**, by name.
 5. **A findings cap and a time budget.**
 6. **A required "checked and cleared" list**, so coverage is visible when nothing is found.
+7. **A now/later column on every finding, with the reason for later.** Without it the split falls to
+   whoever holds the diff, who is the person least able to see what deferring costs — and the answer
+   defaults to "later" because that is what keeps the diff small. The root
+   [AGENTS.md](../AGENTS.md#an-adjacent-defect-is-fixed-here-unless-it-needs-its-own-decision) has
+   the line: roughly ten lines under the lens already running is fixed here, a design decision is
+   not. Measured once: six deferrals from a four-issue session, three of them a single line each.
 
 ## Cross-cutting changes — review the design before the code
 

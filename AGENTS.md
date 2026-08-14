@@ -39,7 +39,9 @@ For the product direction and philosophy behind these — Manual First, Flow Cap
 ## Core Principles
 
 - **Evidence-based**: verify a root cause with code, logs, or tests before fixing — no guess-driven changes.
-- **Minimal changes**: stay within the requested scope; follow the file's existing conventions.
+- **Minimal changes**: stay within the requested scope; follow the file's existing conventions. Scope
+  is decided by [what a reviewer has to hold in their head](#an-adjacent-defect-is-fixed-here-unless-it-needs-its-own-decision),
+  not by which file a line sits in.
 - **Verifiable goal**: know how success will be measured before starting (a reproducing test, same tests passing after a refactor, etc.).
 - **Stop before risky actions** — get user confirmation before any hard-to-reverse operation (`git push --force`, `git reset --hard`, sending messages to external systems, DB drops, etc.). Specifically:
   - Only create commits or PRs when the user explicitly requests it.
@@ -88,6 +90,34 @@ The authoring session inherits its own assumptions, so before creating a PR the 
 - **A change spanning two or more packages, or both platforms, needs a second, earlier review — of the design, before the code.** One adversarial pass over the plan, in addition to the pre-PR one.
 
 **Read [contributing/adversarial-review.md](./contributing/adversarial-review.md) before launching a reviewer.** It covers how to design the channels, how to run the cross-cutting design pass, why a reviewer's "checked and cleared" list expires as soon as you fix the findings, why the reason written beside the code is part of the fix rather than documentation of it, and how to keep the cost in minutes rather than hours — the same review can take 4 minutes or 106 depending only on what its prompt makes it execute.
+
+### An adjacent defect is fixed here unless it needs its own decision
+
+A good review produces findings next to the one you came for. Deferring each of them is the default
+that feels safe and is not: **one four-issue session deferred six, and three of those were a single
+line each** — a `format?` that should have been required, a package missing from `changeset`'s
+`ignore`, one sentence in an AGENTS.md. Each cost a branch, a review, a PR and a CI run to land
+later. The overhead was an order of magnitude larger than the fix.
+
+The line is what a reviewer has to hold in their head, not which file a line sits in:
+
+| Fix it in this PR | Split it out |
+|---|---|
+| Under ~10 lines and judged by the lens already running | It needs a design decision |
+| The other half of the same defect, even in another package | It needs a different lens (perf, security, a11y) |
+| Prose the change just made false | It is hard to reverse, or breaking |
+
+Two habits keep this honest:
+
+- **Ask the reviewer to classify.** A findings list with no now/later column leaves the split to
+  whoever is holding the diff, which is the person least able to see the cost of deferring.
+- **What is split out becomes an issue in the same session, not a line in `.work/reviews/`.** That
+  directory is gitignored and nobody reads it looking for work. Six deferrals lived only in one
+  conversation until someone asked what was left.
+
+Splitting is still right when it is right — `#508`'s relay type drift genuinely belongs elsewhere.
+The rule is that it must be a decision with a reason, and the reason may not be "it was in a
+different file".
 
 ### Design Principles (SOLID — priority subset)
 
