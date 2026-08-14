@@ -30,10 +30,20 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""') || exit 0
 # line, so `gh \` / `pr \` / `merge` on three physical lines reads as three
 # non-matching lines while bash executes it as one `gh pr merge`. Verified: the
 # unjoined form passed the matcher at exit 0.
+#
+# Delete the pair, substituting NOTHING — bash inserts no space, and the pair
+# can split a word. Substituting a space was wrong in both directions, measured:
+#   g\<nl>h pr merge  -> bash runs `gh pr merge`; a space gives `g h pr merge`,
+#                        which does not match — a live bypass.
+#   gh\<nl>pr merge   -> bash runs `ghpr merge`, not gh at all; a space gives
+#                        `gh pr merge`, which blocks a command that is not one.
+# Indentation after the newline is likewise kept, because bash keeps it: it
+# stays as the whitespace separating the next word, which `[[:space:]]+` covers.
+#
 # A backslash-newline inside single quotes is literal, not a continuation, so
 # joining can in principle over-match quoted prose. That direction is the safe
 # one, and the block message says to split such text into its own command.
-cmd=$(printf '%s' "$cmd" | perl -0777 -pe 's/\\\r?\n[ \t]*/ /g') || exit 0
+cmd=$(printf '%s' "$cmd" | perl -0777 -pe 's/\\\r?\n//g') || exit 0
 
 printf '%s' "$cmd" | grep -qE '(^[[:space:]]*|(;|&&|\||\$\()[[:space:]]*|(^|[[:space:]])(then|do)[[:space:]]+)gh[[:space:]]+pr[[:space:]]+(merge|review)' || exit 0
 
