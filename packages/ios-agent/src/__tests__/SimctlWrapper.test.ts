@@ -514,8 +514,12 @@ describe('SimctlWrapper', () => {
       const runner = mockRunner({ get_app_container: 'No such file or directory\n' })
       const wrapper = new SimctlWrapper(runner)
       // Two arguments: this passed a single one, which silently became the *udid* while `bundleId`
-      // went undefined. The double keys off `args[0]` only, so the assertion held either way.
+      // went undefined.
       await expect(wrapper.clearAppData('dev-1', 'com.unknown')).rejects.toThrow(/data container/)
+      // And the call, not only its outcome. `mockRunner` selects its answer from `args[0]`, so the
+      // rejection above holds whatever the later arguments are — noting that in a comment while
+      // asserting nothing about them is how the single-argument call survived in the first place.
+      expect(runner.exec).toHaveBeenCalledWith('get_app_container', 'dev-1', 'com.unknown', 'data')
     })
   })
 

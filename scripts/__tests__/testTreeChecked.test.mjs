@@ -11,11 +11,14 @@ import path from 'node:path'
 // a hardcoded list is satisfied by not being edited.
 const PACKAGES_DIR = path.resolve(import.meta.dirname, '../../packages')
 
+// Recursive, and both suffixes. A flat `readdirSync` misses `__tests__/commands/foo.test.ts` — which
+// `cli` already has — and matching only `.test.` misses the `.spec.` half of the vitest pattern. A
+// guard that cannot see a test tree reports nothing about it, which is indistinguishable from a pass.
 function packagesWithTests() {
   return fs.readdirSync(PACKAGES_DIR)
     .filter((d) => fs.existsSync(path.join(PACKAGES_DIR, d, 'src/__tests__')))
-    .filter((d) => fs.readdirSync(path.join(PACKAGES_DIR, d, 'src/__tests__'))
-      .some((f) => f.endsWith('.test.ts') || f.endsWith('.test.tsx')))
+    .filter((d) => fs.readdirSync(path.join(PACKAGES_DIR, d, 'src/__tests__'), { recursive: true, withFileTypes: true })
+      .some((e) => e.isFile() && /\.(test|spec)\.tsx?$/.test(e.name)))
 }
 
 /** Comments are legal in these files (tsc reads JSONC), so strip them before parsing. */
@@ -36,7 +39,12 @@ describe('every test tree is inside a tsconfig', () => {
   it.each(pkgs)('%s: its tests are type-checked', (pkg) => {
     const dir = path.join(PACKAGES_DIR, pkg)
     const build = readJsonc(path.join(dir, 'tsconfig.json'))
-    const excluded = (build.exclude ?? []).some((e) => e.replace(/\/$/, '') === 'src/__tests__')
+    // `src/__tests__/**` and `src/__tests__/` exclude the same tree as the bare path, so matching the
+    // exact string only would let a package opt out of this guard by writing the glob form.
+    const excluded = (build.exclude ?? []).some((e) => {
+      const pattern = e.replaceAll('\\', '/').replace(/\/(\*\*)?$/, '')
+      return pattern === 'src/__tests__' || pattern.startsWith('src/__tests__/')
+    })
 
     // Two shapes are valid. Either the build config already includes the tests (dashboard), or the
     // tests have their own config — which must be named `tsconfig.json` and sit in `src/__tests__`,

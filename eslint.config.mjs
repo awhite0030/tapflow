@@ -17,7 +17,7 @@ export default tseslint.config(
   // `__tests__` is no longer ignored (#422). It was, and the two exclusions compounded: nothing typed
   // the test tree and nothing linted it, so a double could drift from the interface it doubled with
   // both gates green. Typed lint needs the files in a tsconfig to say anything at all, which is why
-  // `tsconfig.test.json` had to land first — with the tree outside every project, every rule here
+  // `src/__tests__/tsconfig.json` had to land first — with the tree outside every project, every rule here
   // failed as a parse error rather than reporting.
   { ignores: ['**/dist/**', '**/node_modules/**', '**/*.js', '**/*.mjs', '**/*.cjs', 'packages/protocol/src/typeAssertions.ts', '!scripts/**'] },
 
