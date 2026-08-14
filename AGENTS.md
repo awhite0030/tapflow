@@ -104,7 +104,7 @@ The line is what a reviewer has to hold in their head, not which file a line sit
 | Fix it in this PR | Split it out |
 |---|---|
 | Under ~10 lines and judged by the lens already running | It needs a design decision |
-| The other half of the same defect, even in another package | It needs a different lens (perf, security, a11y) |
+| The other half of the same defect in another package, **when the running lens can judge both sides** | It needs a different lens (perf, security, a11y) |
 | Prose the change just made false | It is hard to reverse, or breaking |
 
 Two habits keep this honest:
@@ -113,7 +113,8 @@ Two habits keep this honest:
   whoever is holding the diff, which is the person least able to see the cost of deferring.
 - **What is split out becomes an issue in the same session, not a line in `.work/reviews/`.** That
   directory is gitignored and nobody reads it looking for work. Six deferrals lived only in one
-  conversation until someone asked what was left.
+  conversation until someone asked what was left. The reviewer prompt asks for the issue title and
+  body alongside the reason, so writing "later" costs the same as filing it.
 
 Splitting is still right when it is right — `#508`'s relay type drift genuinely belongs elsewhere.
 The rule is that it must be a decision with a reason, and the reason may not be "it was in a
