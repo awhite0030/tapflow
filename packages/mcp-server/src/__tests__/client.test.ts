@@ -1030,6 +1030,122 @@ describe('TapflowClient', () => {
       relay.send({ type: 'agents:listed', sessions: [] })
       await expect(listing).resolves.toEqual([])
     })
+
+    // `SessionTerminatedReason` has one member, so anything else means a relay newer than this client. The
+    // comment on that branch says inventing `agent-disconnected` for a cause we cannot name is what
+    // `reason` exists to stop — and with every test sending `agent-disconnected`, collapsing the ternary to
+    // that constant was green.
+    it('reads a reason it does not know as unknown rather than inventing one', async () => {
+      const install = client.installApp('sess-1', 42)
+      await waitForMessage(relay, 'app:install')
+      relay.send({ type: 'session:terminated', sessionId: 'sess-1', reason: 'evicted-by-something-newer' })
+      const err = await install.catch((e: unknown) => e) as SessionEndedError
+      expect(err.reason).toBe('unknown')
+      expect(err.message).not.toMatch(/agent-disconnected/)
+    })
+
+    // **A join is not a boot.** A draft deleted the whole lifecycle entry on `session:joined`, which undid
+    // `needsReboot` silently — and `connect_device` is a tool a model calls freely, with the relay letting a
+    // socket re-join the session it already holds. The reason for every later failure went with it.
+    it('keeps the reboot note across a re-join', async () => {
+      relay.send({ type: 'session:rebound', sessionId: 'sess-1', capabilities: [] })
+      await new Promise((r) => setTimeout(r, 20))
+      echoReply(relay, 'session:start', { type: 'session:joined', sessionId: 'sess-1', capabilities: [] })
+      await client.connectDevice('sess-1')
+
+      echoReply(relay, 'app:launch', { type: 'app:launch-error', sessionId: 'sess-1', message: 'No booted device' })
+      const err = await client.launchApp('sess-1', 42).catch((e: unknown) => e) as Error
+      expect(err.message).toMatch(/boot_device again/i)
+    })
+
+    // The half of a re-join that *does* reset: a socket that dropped inside the hold window missed whichever
+    // outcome arrived while it was gone, so it starts from "not away" and lets the relay restate it.
+    it('starts a re-join from not-away', async () => {
+      relay.send({ type: 'session:agent-away', sessionId: 'sess-1' })
+      await new Promise((r) => setTimeout(r, 20))
+      echoReply(relay, 'session:start', { type: 'session:joined', sessionId: 'sess-1', capabilities: [] })
+      await client.connectDevice('sess-1')
+
+      echoReply(relay, 'app:launch', { type: 'app:launch-error', sessionId: 'sess-1', message: 'nope' })
+      const err = await client.launchApp('sess-1', 42).catch((e: unknown) => e) as Error
+      expect(err.message).toBe('nope')
+    })
+
+    // `needsReboot` is cleared only by a boot, so a flapping agent has it and `away` set at once. Only
+    // `away` is current, and advising `boot_device` there names a call the relay refuses with `agent offline`.
+    it('reports a live agent-away over a stale rebound', async () => {
+      relay.send({ type: 'session:agent-away', sessionId: 'sess-1' })
+      relay.send({ type: 'session:rebound', sessionId: 'sess-1', capabilities: [] })
+      relay.send({ type: 'session:agent-away', sessionId: 'sess-1' })
+      await new Promise((r) => setTimeout(r, 20))
+      echoReply(relay, 'app:launch', { type: 'app:launch-error', sessionId: 'sess-1', message: 'nope' })
+      const err = await client.launchApp('sess-1', 42).catch((e: unknown) => e) as Error
+      expect(err.message).toMatch(/went away/i)
+      expect(err.message).not.toMatch(/boot_device again/i)
+    })
+
+    // A boot is the one thing that answers what a rebound cost the session, so it is the one thing that
+    // clears the note. Without this the model is told to boot again after every failure on a session it has
+    // already booted — a loop the note itself invites. `flow-runner` had this test and this package did not.
+    it('stops asking for a reboot once one has happened', async () => {
+      relay.send({ type: 'session:rebound', sessionId: 'sess-1', capabilities: [] })
+      await new Promise((r) => setTimeout(r, 20))
+      echoReply(relay, 'device:boot', { type: 'device:ready', sessionId: 'sess-1' })
+      await client.bootDevice('sess-1', 'dev-1')
+
+      echoReply(relay, 'app:launch', { type: 'app:launch-error', sessionId: 'sess-1', message: 'nope' })
+      const err = await client.launchApp('sess-1', 42).catch((e: unknown) => e) as Error
+      expect(err.message).toBe('nope')
+    })
+
+    // The note decorates seven refusals and only `app:launch-error` was covered, so six call sites could be
+    // reverted to a bare error with the suite green. This is the one that matters most: a refused input is
+    // what #512's third finding was about.
+    it('explains a refused input on a rebound session too', async () => {
+      relay.setInputAck('error')
+      relay.send({ type: 'session:rebound', sessionId: 'sess-1', capabilities: [] })
+      await new Promise((r) => setTimeout(r, 20))
+      const err = await client.tap('sess-1', 1, 2).catch((e: unknown) => e) as Error
+      expect(err.message).toMatch(/device not booted/)
+      expect(err.message).toMatch(/boot_device again/i)
+    })
+
+    // `sessionNote`'s three branches are ordered and the terminated one sits on top, but nothing read it:
+    // the rejection builds its own prose and `shutdownDevice` reads the field directly. The branch is
+    // reached by a command issued *after* the termination, which is what a caller that missed the
+    // rejection does next.
+    it('explains a command issued after the session ended', async () => {
+      relay.send({ type: 'session:terminated', sessionId: 'sess-1', reason: 'agent-disconnected' })
+      await new Promise((r) => setTimeout(r, 20))
+      echoReply(relay, 'app:launch', { type: 'app:launch-error', sessionId: 'sess-1', message: 'Session not found' })
+      const err = await client.launchApp('sess-1', 42).catch((e: unknown) => e) as Error
+      expect(err.message).toMatch(/Session not found/)
+      expect(err.message).toMatch(/relay ended this session \(agent-disconnected\)/)
+      expect(err.message).toMatch(/list_devices/)
+    })
+
+    // **The narrowing is deliberate, so it is pinned in both directions.** The guard is `away`, not "any
+    // lifecycle note": a rebound session is answering again — the agent replies `input:error`/`no-session`
+    // to an input on it — so silence there is once more the agent's to explain, and a session that has
+    // never acked keeps the exemption. Widening the guard to `sessionNote(...) !== undefined` would leave
+    // the away test green and silently drop this.
+    it('still reports optimistically on a rebound session that has never acked', async () => {
+      relay.setInputAck('none')
+      relay.send({ type: 'session:rebound', sessionId: 'sess-1', capabilities: [] })
+      await new Promise((r) => setTimeout(r, 20))
+      await expect(client.tap('sess-1', 1, 2)).resolves.toBeUndefined()
+    }, 15_000)
+
+    // The deadline is the moment the state was held for: a waiter shorter than the relay's 15s grace never
+    // hears the outcome message, so the note is the only thing that can say why it gave up. Nothing answers
+    // `session:start` in this fixture, so the join runs its full 5s.
+    it('carries the note on a deadline, not only on a refusal', async () => {
+      relay.send({ type: 'session:agent-away', sessionId: 'sess-2' })
+      await new Promise((r) => setTimeout(r, 20))
+      const err = await client.connectDevice('sess-2').catch((e: unknown) => e) as Error
+      expect(err.message).toMatch(/Request timed out/)
+      expect(err.message).toMatch(/went away/i)
+    }, 15_000)
   })
 
   describe('WebSocket lifecycle', () => {

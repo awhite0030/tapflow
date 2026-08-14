@@ -33,7 +33,9 @@ the reply lands on the new socket, the relay forwards it to the same session, an
 on `requestId` and resolves. Finish during the backoff and the socket is null and the reply is dropped.
 So a rebound is not evidence that no answer can come, and rejecting on it would fail requests that
 succeed today — which is what the relay's 15-second grace window exists to protect. Both are held as
-state and read at the deadline instead, which is where they turn "timed out" into a cause.
+state and read at the deadline instead, which is where they turn "timed out" into a cause — three of
+each client's waiters are shorter than that 15-second window and three more sit exactly on it, so those
+never hear the outcome message at all.
 
 A rebound leaves the session needing `boot_device` again, because the agent's reconnect clears its own
 device bindings. It does **not** reset the device: the simulator stays booted and the app stays running,
@@ -50,3 +52,5 @@ so the advice says so rather than sending a caller at a reinstall it does not ne
 - `mcp-server`'s timeout and disconnect branches are distinguished by error class rather than by
   comparing the message string, which stopped being reliable the moment a deadline started carrying why
   it expired.
+- `flow-runner` exports `SessionEndedError` from its package entry, so a consumer can branch on the type
+  rather than on the message — the thing the point above stopped doing internally.

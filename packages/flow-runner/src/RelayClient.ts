@@ -67,6 +67,8 @@ export class SessionEndedError extends PlatformError {
  *
  * What both of them *are* good for is the **timeout** branch: when a waiter does give up, this is what
  * turns "timed out" into a cause. That is the half `agent-away` was costing us — see `awaitInputAck`.
+ * Three of this file's nine deadlines are shorter than the relay's 15s grace and two more sit exactly on
+ * it, so for those the outcome message cannot arrive in time to settle anything.
  */
 interface SessionLifecycle {
   /** `session:agent-away` seen with no outcome yet. Cleared by either outcome. */
@@ -210,7 +212,11 @@ export class RelayClient {
         this.ws = null
         for (const w of this.waiters.splice(0)) {
           clearTimeout(w.timer)
-          w.reject(new RelayClosedError('relay connection closed'))
+          // The other place a waiter is settled without an answer, so the other place the note belongs. A
+          // relay that dropped while its agent was already away has two things to say and only one of them
+          // is about the relay.
+          const note = w.sessionId ? this.sessionNote(w.sessionId) : undefined
+          w.reject(new RelayClosedError(note ? `relay connection closed — ${note}` : 'relay connection closed'))
         }
       })
     })
@@ -270,12 +276,16 @@ export class RelayClient {
    * What is currently wrong with this session, as a clause to append to a failure — or `undefined` when
    * the answer is "nothing we were told about".
    *
-   * The order is by certainty, not by recency: a terminated session is terminated whatever came before it.
+   * Ordered by **what stops the caller first**, which is not the same as most recent. `needsReboot` is
+   * cleared only by a successful boot, so a flapping agent — away, back, away again — has both it and
+   * `away` set at once, and only `away` is current. Reporting the rebound there would advise a boot that
+   * nothing can carry out.
    */
   private sessionNote(sessionId: string): string | undefined {
     const s = this.lifecycle.get(sessionId)
     if (!s) return undefined
     if (s.terminated) return `the relay ended this session (${s.terminated})`
+    if (s.away) return "the agent's connection to the relay went away, so nothing is reaching the device"
     if (s.needsReboot) {
       // Deliberately not "the device reset". `_scheduleReconnect` clears the agent's `deviceStates`, so the
       // session's binding is gone — but the simulator stays booted and the app stays on screen, which the
@@ -284,7 +294,6 @@ export class RelayClient {
       return 'the agent reconnected and cleared its device binding, so this session needs booting again ' +
         '(the app itself is still running)'
     }
-    if (s.away) return "the agent's connection to the relay went away, so nothing is reaching the device"
     return undefined
   }
 
@@ -327,8 +336,9 @@ export class RelayClient {
           this.lifecycleOf(sessionId).away = true
           console.error(
             `[tapflow] the agent behind session ${sessionId} went away. The relay holds the session briefly ` +
-            'for it to come back; requests already in flight are not cancelled, because one that finishes ' +
-            'after the reconnect still answers.',
+            'for it to come back, so a request waiting on this socket is not cancelled here — one that ' +
+            'finishes after the reconnect still answers. An in-flight screenshot or ui-tree query is a ' +
+            'different matter: the relay fails those itself when it starts holding.',
           )
           break
         case 'session:rebound': {
@@ -350,12 +360,21 @@ export class RelayClient {
           this.rejectSession(sessionId, named)
           break
         }
-        case 'session:joined':
-          // A fresh join starts the session's story over. It matters for the *re*-join: the relay replies
-          // `session:joined` and then `session:agent-away` when the session is being held, so clearing here
-          // and setting there is the order that leaves the flag on.
-          this.lifecycle.delete(sessionId)
+        case 'session:joined': {
+          // **`away` only.** A first draft deleted the whole entry, which silently undid `needsReboot` — and
+          // the comment on `bootDevice` says a boot is the one thing that clears it, because a boot is the
+          // one thing that answers it. A join is not a boot: it says the relay accepted us onto a live
+          // session and nothing at all about whether the device is bound.
+          //
+          // `away` genuinely does belong here. A browser socket that drops inside the hold window misses
+          // whichever outcome arrives while it is gone, so a re-join has to start from "not away" and let
+          // the relay restate it — which it does, sending `session:joined` and then `session:agent-away`
+          // when the session is being held. `terminated` is left alone and is unreachable either way: the
+          // relay removes a terminated session, so a join naming that id is refused rather than joined.
+          const s = this.lifecycle.get(sessionId)
+          if (s) s.away = false
           break
+        }
         default:
           break
       }
@@ -399,10 +418,9 @@ export class RelayClient {
       const timer = setTimeout(() => {
         const idx = this.waiters.findIndex((w) => w.resolve === resolve)
         if (idx !== -1) this.waiters.splice(idx, 1)
-        // Read **at the deadline**, not when the waiter was created. That is the entire value of holding the
-        // lifecycle as state: half the deadlines in this file are shorter than the relay's 15s grace, so for
-        // those the outcome message never arrives before the waiter gives up, and this is the only moment
-        // anything can say why it gave up.
+        // Read **at the deadline**, not when the waiter was created. That is the value of holding the
+        // lifecycle as state at all: the waiters that cannot outlive the relay's 15s grace never hear the
+        // outcome message, so this is the only moment anything can say why the wait ended.
         const note = sessionId ? this.sessionNote(sessionId) : undefined
         reject(new PlatformError(note ? `${what} timed out — ${note}` : `${what} timed out`))
       }, timeoutMs)
@@ -608,10 +626,12 @@ export class RelayClient {
       if (!(e instanceof RelayClosedError) && !this.lifecycle.get(sessionId)?.away) {
         this.warnInputAckSilence(sessionId)
       }
-      const note = this.sessionNote(sessionId)
+      // **No note appended here.** Both rejection sources already carry it — `waitFor` at the deadline and
+      // the close handler on a dropped socket — so adding one produced the clause twice in the same
+      // sentence. One source, and the wrapper says only what the wrapper knows.
       throw new PlatformError(
-        `${what} was not confirmed (${(e as Error).message})${note ? ` — ${note}` : ''} — it may have reached ` +
-        'the device, so do not repeat it blindly',
+        `${what} was not confirmed (${(e as Error).message}) — it may have reached the device, so do not ` +
+        'repeat it blindly',
         { cause: e },
       )
     }

@@ -127,9 +127,9 @@ class RelayClosedError extends Error {}
  *   `requestId`; finish during the backoff and `this.ws` is null and `?.` swallows it. A rebound is
  *   therefore not evidence that no answer can come.
  *
- * What they are good for is the **deadline**. Half the waiters in this file are shorter than the grace —
- * `awaitInputAck` is 2s against 15s — so for those no outcome message can arrive before the waiter gives
- * up, and this state is the only thing that knows why it did.
+ * What they are good for is the **deadline**. Three of this file's ten waiters are shorter than the grace
+ * — `awaitInputAck` is 2s against 15s — and three more sit exactly on it, so for those no outcome message
+ * can arrive in time, and this state is the only thing that knows why the wait ended.
  */
 interface SessionLifecycle {
   /** `session:agent-away` seen with no outcome yet. Cleared by either outcome. */
@@ -278,7 +278,11 @@ export class TapflowClient {
         const pending = this.waiters.splice(0)
         for (const w of pending) {
           clearTimeout(w.timer)
-          w.reject(new RelayClosedError('WebSocket closed'))
+          // The other place a waiter is settled without an answer, so the other place the note belongs. A
+          // relay that dropped while its agent was already away has two things to say and only one of them
+          // is about the relay.
+          const note = w.sessionId ? this.sessionNote(w.sessionId) : undefined
+          w.reject(new RelayClosedError(note ? `WebSocket closed — ${note}` : 'WebSocket closed'))
         }
       })
     })
@@ -308,7 +312,12 @@ export class TapflowClient {
    * answer is "nothing we were told about".
    *
    * Written for a model to act on, which is the one thing this file's prose diverges from `flow-runner`'s
-   * for: same facts, and advice naming the tool to call next. Ordered by certainty rather than recency.
+   * for: same facts, and advice naming the tool to call next.
+   *
+   * Ordered by **what stops the caller first**, which is not the same as most recent. `needsReboot` is
+   * cleared only by a successful boot, so a flapping agent — away, back, away again — has both it and
+   * `away` set at once, and only `away` is current. Advising `boot_device` there names a call the relay
+   * will refuse with `agent offline`.
    */
   private sessionNote(sessionId: string): string | undefined {
     const s = this.lifecycle.get(sessionId)
@@ -317,15 +326,15 @@ export class TapflowClient {
       return `the relay ended this session (${s.terminated}) — call list_devices and connect_device to get a ` +
         'live one before doing anything else'
     }
+    if (s.away) {
+      return "the agent's connection to the relay went away, so nothing is reaching the device right now"
+    }
     if (s.needsReboot) {
       // **Not "the device reset".** The agent's reconnect clears its own `deviceStates`, so the session's
       // binding is gone — but the simulator stays booted and the app stays on screen. Telling a model the
       // device reset sends it to reinstall an app that is running, and a reinstall is not free.
       return 'the agent reconnected and cleared its device binding, so this session needs boot_device again ' +
         '(the app itself is still running, so it does not need reinstalling)'
-    }
-    if (s.away) {
-      return "the agent's connection to the relay went away, so nothing is reaching the device right now"
     }
     return undefined
   }
@@ -371,8 +380,9 @@ export class TapflowClient {
           this.lifecycleOf(lifecycleSession).away = true
           console.error(
             `[tapflow] the agent behind session ${lifecycleSession} went away. The relay holds the session ` +
-            'briefly in case it comes back; requests already in flight are deliberately not cancelled, ' +
-            'because one that finishes after the reconnect still answers.',
+            'briefly in case it comes back, so a request waiting on this socket is deliberately not ' +
+            'cancelled — one that finishes after the reconnect still answers. An in-flight screenshot or ' +
+            'ui-tree query is a different matter: the relay fails those itself when it starts holding.',
           )
           break
         case 'session:rebound': {
@@ -394,12 +404,22 @@ export class TapflowClient {
           this.rejectSession(lifecycleSession, reason)
           break
         }
-        case 'session:joined':
-          // A fresh join starts the session's story over. The order matters for a *re*-join: the relay sends
-          // `session:joined` and then `session:agent-away` when the session is being held, so clearing here
-          // and setting there is what leaves the flag on.
-          this.lifecycle.delete(lifecycleSession)
+        case 'session:joined': {
+          // **`away` only.** A first draft deleted the whole entry, which silently undid `needsReboot` — and
+          // `bootDevice` says a boot is the one thing that clears it, because a boot is the one thing that
+          // answers it. A join is not a boot. `connect_device` is a tool a model calls freely, and the relay
+          // lets a socket re-join the session it already holds, so the draft lost the reason for every later
+          // failure on a rebound session: `No booted device` with nothing to say why.
+          //
+          // `away` does belong here. A socket that drops inside the hold window misses whichever outcome
+          // arrives while it is gone, so a re-join starts from "not away" and lets the relay restate it —
+          // which it does, sending `session:joined` and then `session:agent-away` for a held session.
+          // `terminated` is left alone and is unreachable either way: the relay removes a terminated
+          // session, so a join naming that id is refused rather than joined.
+          const s = this.lifecycle.get(lifecycleSession)
+          if (s) s.away = false
           break
+        }
         default:
           break
       }
@@ -457,9 +477,8 @@ export class TapflowClient {
         const idx = this.waiters.findIndex((w) => w.resolve === resolve)
         if (idx !== -1) this.waiters.splice(idx, 1)
         // Read **at the deadline**, not when the waiter was registered. That is what holding the lifecycle
-        // as state buys: half of this file's deadlines are shorter than the relay's 15s grace, so for those
-        // the outcome message cannot arrive in time to settle anything, and this is the only moment anything
-        // can say why the wait ended.
+        // as state buys: the waiters that cannot outlive the relay's 15s grace never hear the outcome
+        // message, so this is the only moment anything can say why the wait ended.
         const note = sessionId ? this.sessionNote(sessionId) : undefined
         reject(new RequestTimeoutError(note ? `Request timed out — ${note}` : 'Request timed out'))
       }, timeoutMs)
