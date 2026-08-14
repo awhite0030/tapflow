@@ -912,21 +912,12 @@ describe('IOSAgent', () => {
       )
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
-      // `handshakeTimeoutMs` alongside `reconnectDelays`, and it is the one that made this flake.
-      //
-      // This test stops the relay and starts a new one on the same port, then waits ~3s for the agent's
-      // own reconnect to re-register. The retry interval was already shortened to 20ms — but a reconnect
-      // that opens a socket and then does not receive `agent:registered` waits out
-      // `handshakeTimeoutMs`, which defaults to **10 seconds**. One attempt landing in that window is
-      // longer than the whole budget, so no further retry happens and the join below sees no session.
-      // The interval alone was never enough: it only decides how soon the *next* attempt starts, and the
-      // failing attempt is the one that never ends.
-      //
-      // Reachable whenever the agent connects to a relay that is not yet answering — the socket is
-      // accepted before the handler is ready, or the event loop is busy enough that the register round
-      // trip misses the window. Both are ordinary on a loaded CI runner and neither reproduces locally:
-      // this passed 8/8 in isolation while failing twice on CI.
-      const agent = new IOSAgent({ intervalMs: 50, reconnectDelays: [20], handshakeTimeoutMs: 200 }, simctl)
+      // A one-second handshake, not the 10s default and not the 200ms a first attempt at this flake
+      // used. 10s is longer than the whole budget below, so a single attempt landing in it stops every
+      // later one — `_scheduleReconnect` runs only from `connect()`'s `.catch`. 200ms went too far the
+      // other way: on a loaded runner the register round trip can miss it, and then *every* attempt
+      // fails for a reason the agent could not avoid. Neither reproduces locally.
+      const agent = new IOSAgent({ intervalMs: 50, reconnectDelays: [20], handshakeTimeoutMs: 1_000 }, simctl)
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
       await waitForType(browser, 'session:joined')
@@ -946,10 +937,16 @@ describe('IOSAgent', () => {
       await waitForOpen(rejoined)
       // A join only succeeds once the agent has re-registered, so this is the barrier that says
       // the socket is live again — and therefore that `!this.ws` no longer guards anything.
+      //
+      // 15s of budget, up from 3. Stopping a relay, starting another on the same port and waiting
+      // for the agent's own reconnect to re-register is the heaviest sequence in this file, and 3s
+      // was a guess that CI disproved twice — the second time with the handshake already shortened,
+      // so the deadline was never the whole story. The cost of the larger budget is nothing when the
+      // reconnect is prompt, which is every run that was already passing.
       let joined = null
-      for (let i = 0; i < 20 && joined === null; i++) {
+      for (let i = 0; i < 60 && joined === null; i++) {
         rejoined.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
-        joined = await waitForTypeOrNull(rejoined, 'session:joined', 150)
+        joined = await waitForTypeOrNull(rejoined, 'session:joined', 250)
       }
       expect(joined).not.toBeNull()
 
@@ -972,7 +969,10 @@ describe('IOSAgent', () => {
 
       agent.disconnect()
       rejoined.close()
-    })
+      // Above vitest's 5s default, because the wait above is allowed 15: stopping a relay, starting
+      // another on the same port and re-registering is the heaviest sequence in this file, and the
+      // budget is what CI twice proved too small.
+    }, 25_000)
 
     it('answers input:type-error when the paste chord is dropped', async () => {
       // No pasteboard deadline guards this path, unlike the copy in clipboard:read — the text
