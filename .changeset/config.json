@@ -20,6 +20,7 @@
   "updateInternalDependencies": "patch",
   "ignore": [
     "@tapflowio/dashboard",
-    "@tapflowio/playground"
+    "@tapflowio/playground",
+    "@tapflowio/test-utils"
   ]
 }

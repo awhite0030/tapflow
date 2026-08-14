@@ -450,7 +450,8 @@ export class IOSAgent implements DeviceAgent {
   private startBinaryStream(state: DeviceState, streamWs: WebSocket): void {
     // H.264 is the default; opt out per-agent with TAPFLOW_IOS_CODEC=jpeg. It also needs
     // a browser that reported it can decode it (device:boot acceptH264) — otherwise JPEG.
-    // Only on the ScreenCaptureStreamer path — the MjpegStreamer fallback is always JPEG.
+    // Only on the ScreenCaptureStreamer path — the MjpegStreamer fallback is always JPEG, and now
+    // genuinely produces it rather than only being stamped that way.
     const envAllowsH264 = process.env.TAPFLOW_IOS_CODEC !== 'jpeg'
     const useH264 = this.intervalMs === undefined && envAllowsH264 && state.acceptH264
     const codec = useH264 ? CODEC_H264 : CODEC_JPEG

@@ -20,7 +20,11 @@ export class MjpegStreamer {
           if (capturing) return
           capturing = true
           try {
-            const frame = await this.simctl.screenshot(this.udid)
+            // `'jpeg'` explicitly. The default is PNG, so this streamer produced PNG bytes while
+            // `IOSAgent` stamped CODEC_JPEG on every frame of it — the same lie #508 fixed on the
+            // screenshot path, in the one place that names its codec in the class name. Unreachable
+            // in production today (only tests pass `intervalMs`), which is why nobody saw it.
+            const frame = await this.simctl.screenshot(this.udid, 'jpeg')
             controller.enqueue({ payload: frame, keyframe: false })
           } catch (err) {
             controller.error(err)
