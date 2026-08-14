@@ -265,8 +265,9 @@ Every branch that can take the check now has it: the five acked inputs, `device:
 relay — three of its four senders never join the session. #527.
 
 A refusal is **answered where a waiter exists** and dropped where none does. Answering matters more than it
-looks: `awaitInputAck` reports silence from a session that has never acked as *success*, so a silent refusal
-would report a command that never left the relay as landed — worse than the misrouting it replaced. The two
+looks: `awaitInputAck` reports silence from a session that has never acked as *success* — unless the relay
+has already said the session's agent went away — so a silent refusal would report a command that never left
+the relay as landed, worse than the misrouting it replaced. The two
 session commands have no reply at all, so they are dropped; the same asymmetry as the input frames nothing
 acks, which is why the clause split matters twice.
 

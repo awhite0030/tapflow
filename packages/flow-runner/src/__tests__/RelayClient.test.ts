@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
-import { RelayClient, SessionJoinError } from '../RelayClient.js'
+import { RelayClient, SessionEndedError, SessionJoinError } from '../RelayClient.js'
 import { TransientQueryError } from '../errors.js'
 
 // Minimal Response stub for the ui-tree GET.
@@ -491,4 +491,344 @@ describe('RelayClient.joinSession — a refusal is addressed', () => {
     } finally { spy.mockRestore() }
     expect(logged.filter((l) => l.includes('predates addressed errors'))).toHaveLength(1)
   })
+})
+
+
+// #512, finding 4. The relay reports a session's fate on three messages and sends them **without closing
+// the socket**, so before this the `close` handler never ran, no waiter was settled, and a flow learned
+// that its agent had died by burning a 120s install deadline.
+//
+// The shape of the fix is the part worth pinning, because it is the part a later reader would most
+// plausibly "simplify": only `session:terminated` rejects anything. The other two are ambiguous about the
+// request in flight — both agents reconnect **without restarting the process**, so a request that finishes
+// after the reconnect still answers on the new socket — and rejecting on them would fail requests that
+// succeed today. They are held as state and read at the deadline instead.
+describe('RelayClient — session lifecycle (#512, finding 4)', () => {
+  let wss: WebSocketServer | null = null
+
+  afterEach(async () => {
+    // Two tests here spy on `console.error`, and the second one silences it. Without this the silence
+    // outlives the test and any later assertion about what was logged would pass for the wrong reason.
+    vi.restoreAllMocks()
+    const s = wss
+    wss = null
+    if (!s) return
+    for (const c of s.clients) c.terminate()
+    await new Promise<void>((r) => s.close(() => r()))
+  })
+
+  async function harness(): Promise<{
+    client: RelayClient
+    push: (msg: Record<string, unknown>) => void
+    settle: () => Promise<void>
+    reply: (requestType: string, body: Record<string, unknown>) => Promise<void>
+  }> {
+    let conn: WebSocket | null = null
+    const received: Record<string, unknown>[] = []
+    wss = new WebSocketServer({ port: 0 })
+    wss.on('connection', (ws) => {
+      conn = ws
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        received.push(msg)
+        // Only `s1` is answered, so a join naming anything else runs to its deadline — which is how the
+        // note-on-timeout path is observed without waiting out a 120s request.
+        if (msg['type'] === 'session:start' && msg['sessionId'] === 's1') {
+          ws.send(JSON.stringify({ type: 'session:joined', sessionId: msg['sessionId'], capabilities: [] }))
+        }
+      })
+    })
+    const port = (wss.address() as { port: number }).port
+    const client = new RelayClient(`ws://localhost:${port}`, '')
+    await client.connect()
+    await client.joinSession('s1')
+
+    // Correlators are minted by the client, so a reply has to wait for the request and echo the id it
+    // actually sent. Inventing one would only demonstrate that the waiter rejects invented ids — and
+    // reading `received` synchronously does not work either, since the request reaches the server on its
+    // own schedule. That was this harness's first shape and six tests timed out on it.
+    const awaitRequest = (type: string) => new Promise<Record<string, unknown>>((resolve, reject) => {
+      const started = Date.now()
+      const tick = setInterval(() => {
+        const found = received.filter((m) => m['type'] === type).at(-1)
+        if (found) { clearInterval(tick); resolve(found) }
+        else if (Date.now() - started > 2_000) { clearInterval(tick); reject(new Error(`no ${type} arrived`)) }
+      }, 5)
+    })
+
+    const push = (msg: Record<string, unknown>) => conn!.send(JSON.stringify(msg))
+
+    return {
+      // Safe to call the moment a request method has been *called*: every one of them registers its waiter
+      // synchronously before awaiting, so the waiter exists by the time the promise is handed back. That is
+      // what lets a lifecycle message be pushed at a request that is genuinely in flight.
+      push,
+      // Waits until everything pushed so far has been **dispatched by the client**, for the tests that need
+      // a lifecycle message to have landed *before* the request they are about. A round trip the client
+      // completes itself, not a sleep: `agents:list` carries no session, so no lifecycle message can settle
+      // its waiter, and same-socket frames are ordered — so once this resolves, everything pushed ahead of
+      // it has been through `dispatch`. A 20ms sleep here would be a guess about scheduling.
+      settle: async () => {
+        const listing = client.listDevices()
+        push({ type: 'agents:listed', sessions: [] })
+        await listing
+      },
+      client,
+      reply: async (requestType, body) => {
+        const req = await awaitRequest(requestType)
+        conn!.send(JSON.stringify({ sessionId: req['sessionId'], requestId: req['requestId'], ...body }))
+      },
+    }
+  }
+
+  const terminated = (sessionId: string) =>
+    ({ type: 'session:terminated', sessionId, reason: 'agent-disconnected' })
+
+  it('settles an in-flight install the moment the session is terminated, instead of at the 120s deadline', async () => {
+    const { client, push } = await harness()
+    const install = client.installApp('s1', 7)
+    push(terminated('s1'))
+    const err = await install.catch((e: unknown) => e) as SessionEndedError
+    expect(err).toBeInstanceOf(SessionEndedError)
+    expect(err.reason).toBe('agent-disconnected')
+    // Names the operation and the session. `Waiter.what` exists only for this, so without asserting it the
+    // whole field could be deleted with the suite green.
+    expect(err.message).toMatch(/^app install failed:/)
+    expect(err.message).toContain('s1')
+  })
+
+  // What the caller is allowed to conclude, and what it is not. The session being gone is a fact the relay
+  // states; whether the request reached the device before the agent went is not knowable from here, and a
+  // message that read as a clean failure would invite a repeat of a command that may already have run.
+  it('separates what is certain from what is not', async () => {
+    const { client, push } = await harness()
+    const install = client.installApp('s1', 7)
+    push(terminated('s1'))
+    const err = await install.catch((e: unknown) => e) as Error
+    expect(err.message).toMatch(/session is gone is certain/i)
+    expect(err.message).toMatch(/whether the request reached the device is not/i)
+    expect(err.message).toMatch(/do not repeat it blindly/i)
+  })
+
+  // The reason `Waiter` gained a `sessionId`. Matching on the predicate cannot do this — the predicates
+  // match *replies*, so a lifecycle message satisfies none of them — and rejecting the whole array would
+  // fail a request on a device that is perfectly healthy.
+  it("leaves another session's waiter alone", async () => {
+    const { client, push, reply } = await harness()
+    const install = client.installApp('s1', 7)
+    push(terminated('other-session'))
+    await reply('app:install', { type: 'app:install-done' })
+    await expect(install).resolves.toBeUndefined()
+  })
+
+  // `agents:list` carries no session on the wire, so no session ending can be about it.
+  it('leaves a session-less waiter alone', async () => {
+    const { client, push } = await harness()
+    const listing = client.listDevices()
+    push(terminated('s1'))
+    push({ type: 'agents:listed', sessions: [] })
+    await expect(listing).resolves.toEqual([])
+  })
+
+  // **The mutation guard for the whole design.** Rejecting here is the obvious-looking change and it is a
+  // regression: the agent reconnects without restarting, its reply closure reads the socket at completion
+  // time, and a request that finishes after the reconnect lands on the new socket and matches on
+  // `requestId`. The relay's 15s grace exists to keep exactly this alive.
+  it('does NOT settle an in-flight request on rebound — the reply can still arrive', async () => {
+    const { client, push, reply } = await harness()
+    const install = client.installApp('s1', 7)
+    push({ type: 'session:rebound', sessionId: 's1', capabilities: [] })
+    await reply('app:install', { type: 'app:install-done' })
+    await expect(install).resolves.toBeUndefined()
+  })
+
+  it('does NOT settle an in-flight request on agent-away — the relay is still holding the session', async () => {
+    const { client, push, reply } = await harness()
+    const install = client.installApp('s1', 7)
+    push({ type: 'session:agent-away', sessionId: 's1' })
+    await reply('app:install', { type: 'app:install-done' })
+    await expect(install).resolves.toBeUndefined()
+  })
+
+  // A rebound session answers commands with `No booted device`, which is true and points nowhere: the
+  // simulator is booted and the app is on screen. What the agent lost is its own binding, cleared by its
+  // reconnect. Saying "the device reset" would send a runner at a reinstall it does not need.
+  it('explains a later failure on a rebound session as a reconnect, not as a device reset', async () => {
+    const { client, push, reply } = await harness()
+    push({ type: 'session:rebound', sessionId: 's1', capabilities: [] })
+    const launch = client.launchApp('s1', 7)
+    await reply('app:launch', { type: 'app:launch-error', message: 'No booted device' })
+    const err = await launch.catch((e: unknown) => e) as Error
+    expect(err.message).toMatch(/No booted device/)
+    expect(err.message).toMatch(/agent reconnected/i)
+    expect(err.message).toMatch(/still running/i)
+    expect(err.message).not.toMatch(/reset/i)
+  })
+
+  it('clears the away state when the agent comes back', async () => {
+    const { client, push, reply } = await harness()
+    push({ type: 'session:agent-away', sessionId: 's1' })
+    push({ type: 'session:rebound', sessionId: 's1', capabilities: [] })
+    const launch = client.launchApp('s1', 7)
+    await reply('app:launch', { type: 'app:launch-error', message: 'No booted device' })
+    const err = await launch.catch((e: unknown) => e) as Error
+    expect(err.message).toMatch(/agent reconnected/i)
+    expect(err.message).not.toMatch(/went away/i)
+  })
+
+  // A boot is the one thing that answers what a rebound cost the session, so it is the one thing that
+  // clears the note. If anything else cleared it, the advice would go quiet while still being true.
+  it('stops asking for a reboot once one has happened', async () => {
+    const { client, push, reply } = await harness()
+    push({ type: 'session:rebound', sessionId: 's1', capabilities: [] })
+    const boot = client.bootDevice('s1', 'dev-1')
+    await reply('device:boot', { type: 'device:ready' })
+    await boot
+
+    const launch = client.launchApp('s1', 7)
+    await reply('app:launch', { type: 'app:launch-error', message: 'nope' })
+    const err = await launch.catch((e: unknown) => e) as Error
+    expect(err.message).toBe('nope')
+  })
+
+  // The frame that arrives with nothing pending is the one that has to be kept, because it is the *next*
+  // request that would otherwise be unexplainable — so arriving early must not be an error either.
+  it('takes all three with nothing pending', async () => {
+    const { client, push } = await harness()
+    push({ type: 'session:agent-away', sessionId: 's1' })
+    push({ type: 'session:rebound', sessionId: 's1', capabilities: [] })
+    push(terminated('s1'))
+    // Still alive and still dispatching: a reply on a session-less request resolves normally.
+    const listing = client.listDevices()
+    push({ type: 'agents:listed', sessions: [] })
+    await expect(listing).resolves.toEqual([])
+  })
+
+  // `warnInputAckSilence` accuses the agent of predating input correlation or of being slow. Both are false
+  // when the relay has said the agent is gone, and this is the one place an operator goes looking — the
+  // same reason `RelayClosedError` was split out of the silence path in the first place.
+  it('does not blame the agent for an unanswered input while the relay says it is away', async () => {
+    const { client, push, settle } = await harness()
+    const errors: string[] = []
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(' ')) })
+
+    push({ type: 'session:agent-away', sessionId: 's1' })
+    await settle()
+    const err = await client.tap('s1', 0.5, 0.5).catch((e: unknown) => e) as Error
+
+    expect(err.message).toMatch(/not confirmed/i)
+    expect(err.message).toMatch(/went away/i)
+    expect(errors.join('\n')).not.toMatch(/predates input correlation/)
+
+    // **And the narrowing is deliberate, so it is pinned in both directions.** The guard is `away`, not
+    // "any lifecycle note": once the agent is back, an unanswered input is the agent's to explain again.
+    // Widening it to `!this.sessionNote(...)` would leave the half above green and silently drop this.
+    push({ type: 'session:rebound', sessionId: 's1', capabilities: [] })
+    await settle()
+    await client.tap('s1', 0.5, 0.5).catch((e: unknown) => e)
+    expect(errors.join('\n')).toMatch(/predates input correlation/)
+  }, 40_000)
+
+  // The away clause has two possible sources — `waitFor`'s deadline message and the wrapper around it —
+  // and a draft had both, so the sentence carried it twice. One source.
+  it('says why once, not twice', async () => {
+    const { client, push, settle } = await harness()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    push({ type: 'session:agent-away', sessionId: 's1' })
+    await settle()
+    const err = await client.tap('s1', 0.5, 0.5).catch((e: unknown) => e) as Error
+    expect(err.message.match(/went away/g)).toHaveLength(1)
+  }, 20_000)
+
+  // `SessionTerminatedReason` has one member, so anything else means a relay newer than this client. The
+  // comment on that branch says inventing `agent-disconnected` for a cause we cannot name is what `reason`
+  // exists to stop — and with every test sending `agent-disconnected`, collapsing the ternary to that
+  // constant was green. The sibling one `describe` up (`SessionJoinError`) already had this test.
+  it('reads a reason it does not know as unknown rather than inventing one', async () => {
+    const { client, push } = await harness()
+    const install = client.installApp('s1', 7)
+    push({ type: 'session:terminated', sessionId: 's1', reason: 'evicted-by-something-newer' })
+    const err = await install.catch((e: unknown) => e) as SessionEndedError
+    expect(err.reason).toBe('unknown')
+    expect(err.message).not.toMatch(/agent-disconnected/)
+  })
+
+  // **A join is not a boot.** A draft deleted the whole lifecycle entry here, which undid `needsReboot`
+  // silently — and a re-join is ordinary, so the reason for every later failure went with it.
+  it('keeps the reboot note across a re-join', async () => {
+    const { client, push, reply } = await harness()
+    push({ type: 'session:rebound', sessionId: 's1', capabilities: [] })
+    await client.joinSession('s1')
+    const launch = client.launchApp('s1', 7)
+    await reply('app:launch', { type: 'app:launch-error', message: 'No booted device' })
+    const err = await launch.catch((e: unknown) => e) as Error
+    expect(err.message).toMatch(/agent reconnected/i)
+  })
+
+  // The half of a re-join that *does* reset: a socket that dropped inside the hold window missed whichever
+  // outcome arrived while it was gone, so it starts from "not away" and lets the relay restate it.
+  it('starts a re-join from not-away', async () => {
+    const { client, push, reply } = await harness()
+    push({ type: 'session:agent-away', sessionId: 's1' })
+    await client.joinSession('s1')
+    const launch = client.launchApp('s1', 7)
+    await reply('app:launch', { type: 'app:launch-error', message: 'nope' })
+    const err = await launch.catch((e: unknown) => e) as Error
+    expect(err.message).toBe('nope')
+  })
+
+  // `needsReboot` is cleared only by a boot, so a flapping agent has it and `away` set at once. Only `away`
+  // is current, and advising a boot there names something nothing can carry out.
+  it('reports a live agent-away over a stale rebound', async () => {
+    const { client, push, reply } = await harness()
+    push({ type: 'session:agent-away', sessionId: 's1' })
+    push({ type: 'session:rebound', sessionId: 's1', capabilities: [] })
+    push({ type: 'session:agent-away', sessionId: 's1' })
+    const launch = client.launchApp('s1', 7)
+    await reply('app:launch', { type: 'app:launch-error', message: 'nope' })
+    const err = await launch.catch((e: unknown) => e) as Error
+    expect(err.message).toMatch(/went away/i)
+    expect(err.message).not.toMatch(/agent reconnected/i)
+  })
+
+  // The note decorates seven refusals, and only `app:launch-error` was covered — so six call sites could
+  // be reverted to a bare error with the suite green. This is the one that matters most: a refused input
+  // is what #512's third finding was about.
+  it('explains a refused input on a rebound session too', async () => {
+    const { client, push, reply } = await harness()
+    push({ type: 'session:rebound', sessionId: 's1', capabilities: [] })
+    const tap = client.tap('s1', 0.5, 0.5)
+    // `reply` waits for the terminal frame to arrive and echoes its correlator, so the refusal reaches a
+    // waiter that is genuinely pending rather than landing on nothing.
+    await reply('input:touch:end', { type: 'input:error', reason: 'not-booted', message: 'nope' })
+    const err = await tap.catch((e: unknown) => e) as Error
+    expect(err.message).toMatch(/refused by the device \(not-booted\)/)
+    expect(err.message).toMatch(/agent reconnected/i)
+  })
+
+  // `sessionNote`'s three branches are ordered, and the terminated one sits on top. Nothing read it: the
+  // rejection builds its own prose, so the branch was reachable only through a command issued *after* the
+  // termination — which is exactly what a caller that missed the rejection does next.
+  it('explains a command issued after the session ended', async () => {
+    const { client, push, settle, reply } = await harness()
+    push(terminated('s1'))
+    await settle() // without this the launch waiter is in flight when the rejection fires, which is a different test
+    const launch = client.launchApp('s1', 7)
+    await reply('app:launch', { type: 'app:launch-error', message: 'Session not found' })
+    const err = await launch.catch((e: unknown) => e) as Error
+    expect(err.message).toMatch(/Session not found/)
+    expect(err.message).toMatch(/relay ended this session \(agent-disconnected\)/)
+  })
+
+  // The deadline is the moment the state was held for: a waiter shorter than the relay's 15s grace never
+  // hears the outcome message, so the note is the only thing that can say why it gave up.
+  it('carries the note on a deadline, not only on a refusal', async () => {
+    const { client, push, settle } = await harness()
+    push({ type: 'session:agent-away', sessionId: 's2' })
+    await settle()
+    // `s2` is never answered by the harness, so this join runs its full 5s.
+    const err = await client.joinSession('s2').catch((e: unknown) => e) as Error
+    expect(err.message).toMatch(/session join timed out/)
+    expect(err.message).toMatch(/went away/i)
+  }, 15_000)
 })

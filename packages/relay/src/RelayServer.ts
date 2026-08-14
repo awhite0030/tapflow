@@ -1086,8 +1086,9 @@ export class RelayServer {
     // the tab sits on "Waiting for first frame..." with no explanation (#426).
     //
     // `sendTo` skips a socket that is not OPEN, and a session nobody has joined has no
-    // `browserSocket` at all. An attached MCP client does have one and will receive this; its
-    // dispatcher drops messages no waiter matches, so that is harmless.
+    // `browserSocket` at all. An attached MCP client does have one and will receive this — and as of
+    // #512 it **acts** on it, settling that session's pending requests instead of waiting them out. The
+    // clause here used to say the client drops it as unmatched, which was true and was the problem.
     for (const s of agentSessions) {
       if (s.browserSocket) {
         this.sendTo(s.browserSocket, {

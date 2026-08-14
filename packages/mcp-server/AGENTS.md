@@ -48,7 +48,7 @@ Connects to the relay over WebSocket + REST (`TapflowClient`), registers MCP too
 
 `awaitInputAck` used to report **success** when no ack arrived within 2s. That fallback was for agents
 predating the ack protocol and it outlived them, so a tap that never reached the device was reported as
-landed to a model that then moved on (#457). Three things about the fix are easy to undo.
+landed to a model that then moved on (#457). Four things about the fix are easy to undo.
 
 - **Silence *and a dropped connection* are both "could not confirm", not "dropped".** `ackInput` on both agents awaits a `simctl list` /
   `adb` device verify on the first input after a boot or reconnect, on the same Mac the relay gates at
@@ -82,11 +82,20 @@ landed to a model that then moved on (#457). Three things about the fix are easy
   both agents, kept in step by a static check, and would then sit inert forever once every install had
   it, unremovable because consumers key on its absence. It would also have pre-decided the fork #491 is
   open on. The residual gap is any session that has never had an answer — usually just its first input,
-  but **not bounded to one**: an agent whose acks never arrive keeps the optimistic path indefinitely.
-  What the gate buys is that once a session answers, silence after that is reported.
+  but **not bounded to one**: an agent whose acks never arrive keeps the optimistic path for as long as
+  nothing else explains the silence. What the gate buys is that once a session answers, silence after that
+  is reported.
   The ledger is written in `dispatch`, not where the ack is awaited, so an ack that missed its own
   window still counts — that is the case worth learning from, and a ledger kept at the waiter would see
   nothing.
+- **The optimistic path is suspended while the relay says the agent is away**, and this is the one place
+  the gap above is closed rather than merely bounded. `session:agent-away` means the agent's socket is
+  gone; the relay refuses inputs sent *after* that, so an input already in flight gets nothing at all —
+  and the exemption's usual case is the first input after a boot, which is that same input. Reporting it
+  as landed is #457 with the evidence sitting unread in `dispatch`. So the return at `timedOut && !strict`
+  carries `&& !away`, and the thrown text names the departure as the cause.
+  **Narrowed to `away`, not to any lifecycle state**: a rebound session is answering again, so silence on
+  it is once more the agent's to explain. `session:rebound` and `session:terminated` do not suppress it.
 - **Nothing is retried here.** A per-reason retry was designed and discarded: `no-gesture` means either
   "nothing reached the device" or "the opening frames landed and only the last was refused", and the
   wire cannot tell them apart, so a client that retried would sometimes apply a drag twice with nobody

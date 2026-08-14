@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import type { BrowserToRelay, DeviceSummary, InputErrorReason, UIElement } from '@tapflowio/protocol'
+import type {
+  BrowserToRelay, DeviceSummary, InputErrorReason, SessionTerminatedReason, UIElement,
+} from '@tapflowio/protocol'
 
 // Protocol owns the wire shape; this file used to declare an identical copy under a name the
 // relay uses for a *different* shape. Kept exported as `DeviceInfo` because that is this
@@ -71,6 +73,74 @@ interface Waiter {
   resolve: (msg: RelayMsg) => void
   reject: (err: Error) => void
   timer: ReturnType<typeof setTimeout>
+  /** Which session this waiter belongs to, so a `session:terminated` settles **that** session's waiters and
+   *  no others. This class is a long-lived stdio process and an LLM can hold several sessions at once, so
+   *  rejecting the whole array would fail commands on devices that are perfectly healthy — which is the
+   *  cross-session confusion #512's first finding removed from the join. Absent on `agents:list`, which
+   *  carries no session on the wire.
+   *
+   *  The field is new, and the reason it had to be is recorded a few lines down on `addressSkewLogged`: the
+   *  session id lives inside `predicate` as a closure variable and cannot be read back out. That note says
+   *  keying per session "is not available"; it is available now, by putting the id on the record rather than
+   *  by guessing it. */
+  sessionId?: string
+}
+
+/**
+ * The relay said this session ended while a request was still in flight (#512, finding 4).
+ *
+ * Its own class because it carries a certainty a timeout does not. `Request timed out` says no reply
+ * arrived in time; this says the session a reply would have been addressed to **no longer exists** — the
+ * relay removes it in the same breath as sending the message. What stays unknown is what every
+ * unconfirmed reply leaves unknown, and the prose keeps the two apart rather than reporting a clean
+ * failure the caller could act on as if the device were untouched.
+ */
+export class SessionEndedError extends Error {
+  constructor(message: string, readonly reason: SessionTerminatedReason | 'unknown') {
+    super(message)
+  }
+}
+
+/**
+ * A waiter that reached its deadline, and one that lost the socket.
+ *
+ * Classes rather than the two sentinel strings `awaitInputAck` used to compare against
+ * (`e.message === 'Request timed out'`, `=== 'WebSocket closed'`). The comparison was exact, and the
+ * moment a deadline started carrying *why* it expired, both branches would have silently stopped
+ * matching — including the one that decides whether an unanswered input is reported at all. A message is
+ * prose for whoever reads it; the kind is what the code is allowed to branch on.
+ */
+class RequestTimeoutError extends Error {}
+class RelayClosedError extends Error {}
+
+/**
+ * What the relay has told us about a session, for the three messages this client used to drop.
+ *
+ * **Only `terminated` licenses a rejection.** The other two are held as state precisely because they do
+ * not settle anything:
+ *
+ * - `agent-away` means the relay is *holding* the session for `TAPFLOW_AGENT_GRACE_MS` (15s by default) so
+ *   a reconnecting agent keeps it. Rejecting here kills the case the grace exists for.
+ * - `rebound` is **ambiguous about the request in flight**. Both agents reconnect without restarting the
+ *   process, so the request is still running and its reply goes out through `sendMsg`, which reads the
+ *   socket at *completion* time: finish after the reconnect and the reply lands and matches on
+ *   `requestId`; finish during the backoff and `this.ws` is null and `?.` swallows it. A rebound is
+ *   therefore not evidence that no answer can come.
+ *
+ * What they are good for is the **deadline**. Three of this file's ten waiters are shorter than the grace
+ * — `awaitInputAck` is 2s against 15s — and three more sit exactly on it, so for those no outcome message
+ * can arrive in time, and this state is the only thing that knows why the wait ended.
+ */
+interface SessionLifecycle {
+  /** `session:agent-away` seen with no outcome yet. Cleared by either outcome. */
+  away: boolean
+  /** `session:rebound` seen. The agent is back, but `_scheduleReconnect` cleared its `deviceStates`, so the
+   *  session's device binding is gone until something boots it again. The simulator and the app are **not**
+   *  gone — the agent keeps `lastBundleIds` outside that map so the app keeps running — which is why the
+   *  advice here is "boot again", never "the device reset". */
+  needsReboot: boolean
+  /** `session:terminated`'s reason, or `null` while the session is alive. Terminal: ids are not reused. */
+  terminated: SessionTerminatedReason | 'unknown' | null
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -155,12 +225,13 @@ export class TapflowClient {
    *  holds one socket to one relay for the life of the process, so "this relay predates addressed errors" is
    *  answered once and cannot change under us.
    *
-   *  Keying it per session was tried and is not available: the frame carries **no** session, and the only
-   *  other candidate — the join in flight — is unreadable, because `Waiter` keeps its predicate as a closure
-   *  and no session id survives on the record. Reaching for it anyway would mean naming a session on a
-   *  guess, and one refusal cannot be attributed to one of several pending joins. That guess is the defect
-   *  this whole slice removes, so the diagnostic must not reintroduce it: the line names the relay, which is
-   *  what the operator has to act on, and does not name a session it cannot know. */
+   *  Keying it per session is still not available, and the reason narrowed when `Waiter` gained a
+   *  `sessionId`. It **used** to be two reasons — the frame carries no session, and the join in flight was
+   *  unreadable because the id lived only inside the predicate's closure. The second one is gone: the id is
+   *  on the record now, put there so `session:terminated` can settle one session's waiters. The first one
+   *  decides it on its own. A refusal that names no session cannot be attributed to one of several pending
+   *  joins, so reaching for the record would mean naming a session on a guess — the defect this slice
+   *  removes. The line names the relay, which is what the operator has to act on. */
   private addressSkewLogged = false
 
   private noteAddressSkew(): void {
@@ -207,7 +278,11 @@ export class TapflowClient {
         const pending = this.waiters.splice(0)
         for (const w of pending) {
           clearTimeout(w.timer)
-          w.reject(new Error('WebSocket closed'))
+          // The other place a waiter is settled without an answer, so the other place the note belongs. A
+          // relay that dropped while its agent was already away has two things to say and only one of them
+          // is about the relay.
+          const note = w.sessionId ? this.sessionNote(w.sessionId) : undefined
+          w.reject(new RelayClosedError(note ? `WebSocket closed — ${note}` : 'WebSocket closed'))
         }
       })
     })
@@ -218,7 +293,137 @@ export class TapflowClient {
     this.ws = null
   }
 
+  /** The relay's word on a session, keyed by id. One entry per session this process joins, which is one per
+   *  device per agent registration — slow enough that this does not become the never-shrinking set the ack
+   *  ledger above rules out, because that one would have grown per *request*. */
+  private readonly lifecycle = new Map<string, SessionLifecycle>()
+
+  private lifecycleOf(sessionId: string): SessionLifecycle {
+    let s = this.lifecycle.get(sessionId)
+    if (!s) {
+      s = { away: false, needsReboot: false, terminated: null }
+      this.lifecycle.set(sessionId, s)
+    }
+    return s
+  }
+
+  /**
+   * What is currently wrong with this session, as a clause to append to a failure — or `undefined` when the
+   * answer is "nothing we were told about".
+   *
+   * Written for a model to act on, which is the one thing this file's prose diverges from `flow-runner`'s
+   * for: same facts, and advice naming the tool to call next.
+   *
+   * Ordered by **what stops the caller first**, which is not the same as most recent. `needsReboot` is
+   * cleared only by a successful boot, so a flapping agent — away, back, away again — has both it and
+   * `away` set at once, and only `away` is current. Advising `boot_device` there names a call the relay
+   * will refuse with `agent offline`.
+   */
+  private sessionNote(sessionId: string): string | undefined {
+    const s = this.lifecycle.get(sessionId)
+    if (!s) return undefined
+    if (s.terminated) {
+      return `the relay ended this session (${s.terminated}) — call list_devices and connect_device to get a ` +
+        'live one before doing anything else'
+    }
+    if (s.away) {
+      return "the agent's connection to the relay went away, so nothing is reaching the device right now"
+    }
+    if (s.needsReboot) {
+      // **Not "the device reset".** The agent's reconnect clears its own `deviceStates`, so the session's
+      // binding is gone — but the simulator stays booted and the app stays on screen. Telling a model the
+      // device reset sends it to reinstall an app that is running, and a reinstall is not free.
+      return 'the agent reconnected and cleared its device binding, so this session needs boot_device again ' +
+        '(the app itself is still running, so it does not need reinstalling)'
+    }
+    return undefined
+  }
+
+  /**
+   * A failure carrying whatever the relay has said about this session.
+   *
+   * The refusals this decorates already say *what* went wrong and give a model nowhere to go: an agent
+   * answers a command on a rebound session with `No booted device`, which is true, and which a model will
+   * try to fix by booting a device it believes is off. The note is what turns it into a cause — the binding
+   * is gone because the agent reconnected — and names the tool that repairs it.
+   */
+  private failed(sessionId: string, message: string): Error {
+    const note = this.sessionNote(sessionId)
+    return new Error(note ? `${message} — ${note}` : message)
+  }
+
+  /** Settle the waiters of a session the relay has just removed. Reverse order because it splices. */
+  private rejectSession(sessionId: string, reason: SessionTerminatedReason | 'unknown'): void {
+    for (let i = this.waiters.length - 1; i >= 0; i--) {
+      const w = this.waiters[i]
+      if (w.sessionId !== sessionId) continue
+      this.waiters.splice(i, 1)
+      clearTimeout(w.timer)
+      w.reject(new SessionEndedError(
+        `The relay ended session ${sessionId} (${reason}) while this request was in flight. That the session ` +
+        'is gone is certain; whether the request reached the device is not, so check device state rather ' +
+        'than assuming it did nothing. Call list_devices and connect_device to get a live session.',
+        reason,
+      ))
+    }
+  }
+
   private dispatch(msg: RelayMsg): void {
+    // Read before the waiter loop, and read whether or not anything is waiting — the same rule the ack
+    // ledger below is written to, for the same reason. These three settle no request by themselves; they
+    // are the relay describing the session, and the copy that arrives with nothing pending is precisely the
+    // one that has to be kept, because it is the *next* request that would otherwise be unexplainable.
+    const lifecycleSession = msg['sessionId']
+    if (typeof lifecycleSession === 'string') {
+      switch (msg['type']) {
+        case 'session:agent-away':
+          this.lifecycleOf(lifecycleSession).away = true
+          console.error(
+            `[tapflow] the agent behind session ${lifecycleSession} went away. The relay holds the session ` +
+            'briefly in case it comes back, so a request waiting on this socket is deliberately not ' +
+            'cancelled — one that finishes after the reconnect still answers. An in-flight screenshot or ' +
+            'ui-tree query is a different matter: the relay fails those itself when it starts holding.',
+          )
+          break
+        case 'session:rebound': {
+          const s = this.lifecycleOf(lifecycleSession)
+          s.away = false
+          s.needsReboot = true
+          break
+        }
+        case 'session:terminated': {
+          // `SessionTerminatedReason` has one member today, so a value this build does not know means a
+          // relay newer than this client rather than a malformed frame. Recorded as `unknown` rather than
+          // coerced: a caller reads this to explain a failure, and inventing `agent-disconnected` for a
+          // cause we cannot name is the specific-claim-on-an-unknown-cause the `reason` field exists to stop.
+          const raw = msg['reason']
+          const reason: SessionTerminatedReason | 'unknown' = raw === 'agent-disconnected' ? raw : 'unknown'
+          const s = this.lifecycleOf(lifecycleSession)
+          s.away = false
+          s.terminated = reason
+          this.rejectSession(lifecycleSession, reason)
+          break
+        }
+        case 'session:joined': {
+          // **`away` only.** A first draft deleted the whole entry, which silently undid `needsReboot` — and
+          // `bootDevice` says a boot is the one thing that clears it, because a boot is the one thing that
+          // answers it. A join is not a boot. `connect_device` is a tool a model calls freely, and the relay
+          // lets a socket re-join the session it already holds, so the draft lost the reason for every later
+          // failure on a rebound session: `No booted device` with nothing to say why.
+          //
+          // `away` does belong here. A socket that drops inside the hold window misses whichever outcome
+          // arrives while it is gone, so a re-join starts from "not away" and lets the relay restate it —
+          // which it does, sending `session:joined` and then `session:agent-away` for a held session.
+          // `terminated` is left alone and is unreachable either way: the relay removes a terminated
+          // session, so a join naming that id is refused rather than joined.
+          const s = this.lifecycle.get(lifecycleSession)
+          if (s) s.away = false
+          break
+        }
+        default:
+          break
+      }
+    }
     // `input:done` only, and that is load-bearing: the **relay** originates `input:error` to this very
     // socket for a terminal input it cannot dispatch (`RelayServer.ts`, `'agent offline'` /
     // `'Session not found'`, both `channel-unavailable`). Counting those would let one agent-offline
@@ -262,14 +467,22 @@ export class TapflowClient {
     this.ws.send(JSON.stringify(msg))
   }
 
-  private waitFor(predicate: (msg: RelayMsg) => boolean, timeoutMs: number): Promise<RelayMsg> {
+  private waitFor(
+    predicate: (msg: RelayMsg) => boolean,
+    timeoutMs: number,
+    sessionId?: string,
+  ): Promise<RelayMsg> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const idx = this.waiters.findIndex((w) => w.resolve === resolve)
         if (idx !== -1) this.waiters.splice(idx, 1)
-        reject(new Error('Request timed out'))
+        // Read **at the deadline**, not when the waiter was registered. That is what holding the lifecycle
+        // as state buys: the waiters that cannot outlive the relay's 15s grace never hear the outcome
+        // message, so this is the only moment anything can say why the wait ended.
+        const note = sessionId ? this.sessionNote(sessionId) : undefined
+        reject(new RequestTimeoutError(note ? `Request timed out — ${note}` : 'Request timed out'))
       }, timeoutMs)
-      this.waiters.push({ predicate, resolve, reject, timer })
+      this.waiters.push({ predicate, resolve, reject, timer, sessionId })
     })
   }
 
@@ -298,6 +511,7 @@ export class TapflowClient {
         // the input-ack skew record, on the same reasoning that logging is not matching.
         (m['type'] === 'error' && m['sessionId'] === sessionId),
       5_000,
+      sessionId,
     )
     if (msg['type'] === 'error') throw new Error((msg['message'] as string) ?? 'Connect failed')
   }
@@ -321,16 +535,36 @@ export class TapflowClient {
         m['sessionId'] === sessionId &&
         correlatesWith(m, requestId),
       30_000,
+      sessionId,
     )
     if (msg['type'] === 'device:boot-error') {
-      throw new Error((msg['message'] as string) ?? 'Boot failed')
+      throw this.failed(sessionId, (msg['message'] as string) ?? 'Boot failed')
     }
+    // The one thing that clears `needsReboot`, because it is the one thing that answers it: what a rebound
+    // costs the session is the agent-side binding a boot creates. Clearing it anywhere else would let the
+    // advice go quiet while the condition it describes is still true.
+    const s = this.lifecycle.get(sessionId)
+    if (s) s.needsReboot = false
   }
 
   // Powers the session's booted device down (agent runs simctl/adb shutdown, replies device:shutdown-done).
   // payload carries deviceId, matching the agent handler and the relay's own shutdown path. There is no
   // shutdown-error message: Android replies done regardless, iOS surfaces a failed shutdown as a wait timeout.
   async shutdownDevice(sessionId: string, deviceId: string): Promise<void> {
+    // **The one command the relay does not answer when it cannot dispatch it.** `device:shutdown` resolves
+    // its session inline rather than through `dispatchTarget`, so a message addressed to a session that no
+    // longer exists is dropped in silence — and there is no `device:shutdown-error` on the wire to answer
+    // with, which is why fixing it there is a protocol change (#542). Every other command in this file has
+    // the relay refusing it within a round trip; this waiter's silence is the only one nothing explains, so
+    // the case we can rule out from here is worth ruling out: 30s of nothing, versus saying why.
+    const terminated = this.lifecycle.get(sessionId)?.terminated
+    if (terminated) {
+      throw new SessionEndedError(
+        `The relay ended session ${sessionId} (${terminated}), so a shutdown addressed to it would be ` +
+        'dropped with no reply at all. Call list_devices to see which sessions are live.',
+        terminated,
+      )
+    }
     const requestId = randomUUID()
     this.send({ type: 'device:shutdown', sessionId, requestId, payload: { deviceId } })
     await this.waitFor(
@@ -339,6 +573,7 @@ export class TapflowClient {
         m['sessionId'] === sessionId &&
         correlatesWith(m, requestId),
       30_000,
+      sessionId,
     )
   }
 
@@ -388,33 +623,57 @@ export class TapflowClient {
           (m['type'] === 'input:done' || m['type'] === 'input:error') &&
           m['sessionId'] === sessionId && m['requestId'] === requestId,
         2_000,
+        sessionId,
       )
     } catch (e) {
       if (!(e instanceof Error)) throw e
-      const timedOut = e.message === 'Request timed out'
+      // Already the most specific thing anyone can say about this input, and it names the session. Wrapping
+      // it in "could not confirm" would bury the certain half under the uncertain one.
+      if (e instanceof SessionEndedError) throw e
+      const timedOut = e instanceof RequestTimeoutError
       // A dropped connection is *also* unconfirmed, not undispatched. Every caller sends its input
       // before awaiting the ack — `tap` sends both frames, `swipe` all ten — so by the time the socket
       // closes the input has left this process and the relay may already have forwarded it. This branch
       // used to claim the opposite, which is the same false certainty the rest of this method exists to
       // remove. It is unconfirmed regardless of the ledger: a close says nothing about whether the agent
       // acks, only that we stopped being able to hear it.
-      const disconnected = e.message === 'WebSocket closed'
+      const disconnected = e instanceof RelayClosedError
+      // **The relay has already told us why this is silent, and the optimistic path must not run.**
+      //
+      // Without this clause the branch below returns *success* for an input whose agent the relay has
+      // reported gone: `agent-away` is not sent until the agent's socket is closed, and the relay only
+      // refuses inputs sent *after* that, so one already in flight gets nothing at all. That is #457's
+      // defect exactly — a tap reported as landed to a model that then moves on — reached through a door
+      // this client can now see through and was choosing not to look at.
+      //
+      // It is not a rare corner. The exemption below is for a session that has never acked, which is the
+      // *first input after a boot*; `agent-away` is precisely when its ack cannot come. And this waiter is
+      // 2s against the relay's 15s grace, so the outcome message that would settle the question is still
+      // 13 seconds away when this decision gets made.
+      const away = this.lifecycle.get(sessionId)?.away === true
       // The one case the optimistic path is still for: silence from a session that has never answered
       // an input at all is an agent that does not answer them.
-      if (timedOut && !strict) return
+      if (timedOut && !strict && !away) return
       if (!timedOut && !disconnected) throw e
-      const cause = timedOut
+      // The note first, when there is one. This branch rebuilds its own prose rather than wrapping
+      // `e.message`, so it was the one path in either client where what the relay said about the session
+      // did not reach the caller — a model whose input timed out on a rebound session was told the ack
+      // went unanswered and not that the session needs booting again.
+      const note = this.sessionNote(sessionId)
+      const cause = note ?? (timedOut
         ? 'this session has acknowledged input before, and this one went unanswered'
-        : 'the relay connection dropped before the acknowledgement arrived'
+        : 'the relay connection dropped before the acknowledgement arrived')
       throw new Error(
         `Could not confirm the input reached the device: ${cause}. Do not repeat the input — it may ` +
         'have landed. Check the device state (screenshot or ui_tree) before deciding what to do next.',
+        // The prose is rebuilt, so this is the only thing carrying the original rejection's stack.
+        { cause: e },
       )
     }
     if (msg['type'] === 'input:error') {
       const reason = msg['reason'] as string | undefined
       const prose = (msg['message'] as string) ?? 'Input failed'
-      throw new Error(`${prose}${reason ? ` (${reason})` : ''} — ${reasonAdvice(reason)}`)
+      throw this.failed(sessionId, `${prose}${reason ? ` (${reason})` : ''} — ${reasonAdvice(reason)}`)
     }
   }
 
@@ -468,6 +727,7 @@ export class TapflowClient {
         (m['type'] === 'input:type-done' || m['type'] === 'input:type-error') &&
         m['sessionId'] === sessionId && m['requestId'] === requestId,
       15_000,
+      sessionId,
     )
     if (msg['type'] === 'input:type-error') {
       // The reason is read here for the same purpose as on `input:error`: the prose is the producer's and
@@ -478,7 +738,7 @@ export class TapflowClient {
       // string the caller would have had to branch on (#492).
       const reason = msg['reason'] as string | undefined
       const prose = (msg['message'] as string) ?? 'Type text failed'
-      throw new Error(reason ? `${prose} (${reason}) — ${reasonAdvice(reason)}` : prose)
+      throw this.failed(sessionId, reason ? `${prose} (${reason}) — ${reasonAdvice(reason)}` : prose)
     }
   }
 
@@ -511,9 +771,10 @@ export class TapflowClient {
         (m['type'] === 'open-url:done' || m['type'] === 'open-url:error') &&
         m['requestId'] === requestId,
       15_000,
+      sessionId,
     )
     if (msg['type'] === 'open-url:error') {
-      throw new Error((msg['message'] as string) ?? 'Open URL failed')
+      throw this.failed(sessionId, (msg['message'] as string) ?? 'Open URL failed')
     }
   }
 
@@ -525,9 +786,10 @@ export class TapflowClient {
         (m['type'] === 'app:clear-state-done' || m['type'] === 'app:clear-state-error') &&
         m['requestId'] === requestId,
       30_000,
+      sessionId,
     )
     if (msg['type'] === 'app:clear-state-error') {
-      throw new Error((msg['message'] as string) ?? 'Clear state failed')
+      throw this.failed(sessionId, (msg['message'] as string) ?? 'Clear state failed')
     }
   }
 
@@ -539,9 +801,10 @@ export class TapflowClient {
         (m['type'] === 'app:install-done' || m['type'] === 'app:install-error') &&
         m['requestId'] === requestId,
       60_000,
+      sessionId,
     )
     if (msg['type'] === 'app:install-error') {
-      throw new Error((msg['message'] as string) ?? 'Install failed')
+      throw this.failed(sessionId, (msg['message'] as string) ?? 'Install failed')
     }
   }
 
@@ -553,9 +816,10 @@ export class TapflowClient {
         (m['type'] === 'app:launch-done' || m['type'] === 'app:launch-error') &&
         m['requestId'] === requestId,
       15_000,
+      sessionId,
     )
     if (msg['type'] === 'app:launch-error') {
-      throw new Error((msg['message'] as string) ?? 'Launch failed')
+      throw this.failed(sessionId, (msg['message'] as string) ?? 'Launch failed')
     }
   }
 
