@@ -112,7 +112,12 @@ describe('browser-role outbound is typed against the wire contract', () => {
     const browserRole = new Set(
       tracked
         .filter((f) => pkgOf(f) !== 'protocol')
-        .filter((f) => /BrowserToRelay/.test(readFileSync(join(root, f), 'utf8')))
+        // **Comments stripped first.** A mention in prose is not a usage, and the raw form counted one:
+        // a comment in `relay/src/RelayServer.ts` explaining why that file must *not* name the union
+        // put the relay in this set. Same shape as the `browserInboundRouting` defect this repo
+        // already recorded, where a comment mentioning `{ type: 'error' }` was counted as a union
+        // member — and the same shape as the offender scan two lines down, which already strips.
+        .filter((f) => /BrowserToRelay/.test(stripComments(readFileSync(join(root, f), 'utf8'))))
         .map(pkgOf),
     )
     expect([...browserRole].sort()).toEqual(['dashboard', 'flow-runner', 'mcp-server'])

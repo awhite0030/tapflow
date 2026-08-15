@@ -17,6 +17,7 @@ import type {
   InputTypeError, KeyboardToggled, OpenUrl, OpenUrlDone, OpenUrlError, RelayOutbound, ScreenshotDone,
   ScreenshotError, ScreenshotRequest, SessionAgentAway, SessionChrome, SessionDeviceInfo, SessionEnd,
   SessionJoined, SessionLeave, SessionRebound, SessionStart, SessionTerminated, StreamRegister,
+  AgentControlOutbound, StreamToRelay,
   StreamRegistered, StreamRequestIdr, UiTreeError, UiTreeRequest, UiTreeResponse,
 } from './index.js'
 
@@ -92,11 +93,17 @@ export const streamRegistered: RelayOutbound = { type: 'stream:registered' }
 export const streamIsNotBrowserInbound: BrowserInbound = { type: 'stream:registered' }
 
 // ── input:error reason ───────────────────────────────────────────────────────
-// The field is optional on purpose: an agent that predates it omits it, and a consumer must read
-// absence as "unknown" rather than "fine". Making it required is the breaking step.
+// The field was optional so an agent predating it could omit one, and a consumer had to read absence
+// as "unknown" rather than "fine". #491 took the breaking step: all six in-repo producers already sent
+// a reason, so what this closes is an agent outside the repo omitting it, and a consumer being handed a
+// failure it cannot branch on.
 
+// @ts-expect-error - reason is required as of #491; prose alone is not an answer a caller can act on
 export const errorWithoutReason: RelayOutbound = { type: 'input:error', sessionId: 's', requestId: 'rq', message: 'agent offline' }
 export const errorWithReason: RelayOutbound = { type: 'input:error', sessionId: 's', requestId: 'rq', message: 'agent offline', reason: 'channel-unavailable' }
+// The other half of the inversion: prose is now the optional one, and a producer with nothing
+// parameterised to add may leave it out.
+export const errorWithoutMessage: RelayOutbound = { type: 'input:error', sessionId: 's', requestId: 'rq', reason: 'channel-unavailable' }
 
 // @ts-expect-error - the reason set is closed; a free string would let each agent invent its own
 export const errorWithFreeReason: RelayOutbound = { type: 'input:error', sessionId: 's', message: 'x', reason: 'something-else' }
@@ -177,3 +184,23 @@ export const _ScreenshotError: ScreenshotError['type'] = 'screenshot:error'
 export const _StreamRegister: StreamRegister['type'] = 'stream:register'
 export const _UiTreeResponse: UiTreeResponse['type'] = 'ui:tree:response'
 export const _UiTreeError: UiTreeError['type'] = 'ui:tree:error'
+
+// ── membership: what a browser may send, and what an agent produces, do not overlap ──────────────
+//
+// The relay's door closes a `browser`-role socket with 1008 for any agent-produced type, because the
+// forwards it guards mostly resolve a session from the message and send to *that session's* browser
+// with no check that the sender is that session's agent. So the two sets overlapping is not an
+// untidiness — it is a message a browser can inject into a stranger's viewer.
+//
+// Stated as `Extract` rather than as a list, which is what lets it catch a widening without restating
+// 63 literals. Measured before this existed: adding `DeviceBooting` to `BrowserToRelay` left
+// `pnpm typecheck` at zero errors and all 294 static tests green.
+//
+// **Not blanket disjointness between directions.** `device:shutdown` is deliberately a member of both
+// `RelayToAgent` and `BrowserToRelay`, identical in both; it is not agent-produced, so it is not here.
+// And a *relay*-produced message added to `BrowserToRelay` is outside this claim — `route()` has no
+// case for one, and #557 is where the forwarding half is tracked.
+type AgentProduced = (AgentControlOutbound | StreamToRelay)['type']
+type AssertTrue<T extends true> = T
+type NoOverlap<A, B> = [Extract<A, B>] extends [never] ? true : false
+export type _BrowserSendsNothingAgentProduced = AssertTrue<NoOverlap<BrowserToRelay['type'], AgentProduced>>

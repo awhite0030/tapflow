@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Migrate:` upgrade every device agent to this release at the same time as the relay. Packages are
   versioned together, but nothing installs them together — this is the case where a Mac left on the
   previous agent is the one that breaks.
+- **An agent must now send a machine-readable `reason` when it refuses an input.** `input:error` used
+  to guarantee only `message`, the human-readable prose each agent writes for itself, while `reason` —
+  the closed set a caller actually branches on — was optional. That is backwards: the field you were
+  guaranteed was the one you must not depend on. `reason` is required now and `message` is optional.
+  Every agent shipped with tapflow already sends one, so no producer here had to change; what this
+  affects is a third-party or self-modified agent built against an older contract.
+  `Migrate:` add `reason` to every `input:error` your agent sends, choosing from `not-booted`,
+  `channel-starting`, `channel-unavailable`, `no-gesture`, `dispatch-failed`, `unsupported` or
+  `malformed`. Pick by what the caller should do differently, not by which of your internal states
+  produced it — the set is deliberately smaller than any one agent's internals. (`not-session-owner`
+  is the eighth member and is the relay's alone: it refuses such a frame at its door, before any agent
+  sees it.) Prose stays welcome in `message` and may now be omitted.
 
 ### Changed
 

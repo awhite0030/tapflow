@@ -16,8 +16,9 @@ import { join } from 'node:path'
 // are what catch it, and this file asserts every message interface has one — a guard you can forget an
 // entry of is a guard with 57-of-58 coverage, and the missing one is invisible.
 //
-// **2. That a session-scoped failure declares `extends SessionError`.** This cannot be asserted with a
-// type: every object with `{ sessionId, message }` is assignable to `SessionError`, so the assignment
+// **2. That a session-scoped failure declares `extends SessionScoped`.** This cannot be asserted with a
+// type: every object with `{ sessionId }` is assignable to `SessionScoped` — a weaker bar than the
+// `{ sessionId, message }` pair this argued from before #491, so the assignment
 // succeeds whether or not the interface declares the inheritance. And `extends` is transparent to
 // `Equals` — inherited members arrive in the resolved member set, so an error written inline instead
 // passes every type-level check. The inheritance exists for the family relation, which is source text,
@@ -32,24 +33,100 @@ const assertionsRaw = readFileSync(join(root, 'packages/protocol/src/typeAsserti
 // was counted as an eleventh union member.
 const assertions = assertionsRaw.replace(/^\s*\/\/.*$/gm, '')
 
+/** `index.ts` with comments removed, for the union parser below.
+ *
+ *  **The line filter is the load-bearing half, and the first draft credited the wrong one.** That
+ *  draft said removing comment lines rather than blanking them was what mattered, because blanking
+ *  leaves an empty line the parser stops at. Review measured both variants over the real file and
+ *  found no difference in any of the nineteen unions. What actually broke was leaving `//` lines in:
+ *  `unionMembers` then reads their prose as members, so `RelayOrAgentToBrowser` came back with
+ *  `Moved`, `L5c`, `An` and `TERMINAL_INPUT_TYPES` among its members.
+ *
+ *  The trailing `[ \t]*` and `\n?` are not cosmetic either. Without them a docblock between two union
+ *  members leaves its indentation behind as a whitespace-only line, and `unionMembers` stops at one —
+ *  measured: a `/** … *\/` inserted inside `AgentToBrowser` reported `ClipboardData` and
+ *  `ClipboardWriteDone` as orphans of nothing. A parser that loses a declaration reports a hole that
+ *  is not there, which is the same class of failure as one that reports full coverage of nothing. */
+const srcNoComments = src
+  // Every block comment, not only JSDoc, and the whitespace it sat on — see below for why the trailing
+  // `\n?` matters.
+  .replace(/[ \t]*\/\*[\s\S]*?\*\/\n?/g, '')
+  .split('\n')
+  // A comment-only line goes entirely: leaving it blank would terminate the union parser, which stops
+  // at a blank line.
+  .filter((l) => !/^\s*\/\//.test(l))
+  // **And an inline one goes while its line stays.** A first draft stripped only whole-line comments,
+  // and a trailing `// unlike OrphanPing, …` on a union member put `OrphanPing` in that direction's
+  // member list — so a message declared in no direction at all was reported as reachable and the
+  // orphan check stayed green. Measured. Prose read as a value is the shape this repo has now been
+  // bitten by three times.
+  .map((l) => l.replace(/\s*\/\/.*$/, ''))
+  .join('\n')
+
+/** Every `export type X = A | B | …` whose right-hand side is a union of names. */
+function unionMembers(text) {
+  const out = new Map()
+  for (const m of text.matchAll(/export type (\w+)\s*=([\s\S]*?)(?=\n\s*\n|\nexport |\n\/\*)/g)) {
+    // Skip object and string-literal types (`SessionTerminatedReason`, `ChromePayload`): only unions
+    // of interface names can carry a message into a direction.
+    if (/[{'"]/.test(m[2])) continue
+    const names = [...m[2].matchAll(/\b([A-Z]\w+)\b/g)].map((x) => x[1])
+    if (names.length) out.set(m[1], names)
+  }
+  return out
+}
+
+/** The seven directions a message can travel. Every declared message must be reachable from one.
+ *
+ *  This list is the one thing here that is restated rather than derived, and it is the small stable
+ *  half: directions are added once a year, messages weekly. A renamed or deleted root is caught by the
+ *  assertion that every name in it parses. */
+const DIRECTIONS = [
+  'BrowserToRelay', 'RelayToBrowser', 'AgentToRelay', 'AgentToBrowser',
+  'RelayToAgent', 'StreamToRelay', 'RelayToStream',
+]
+
 /** Every `export interface` that declares a `type: '<literal>'` — i.e. every wire message.
  *
  *  Bodies are found by counting braces, not by matching a run of two-space lines. The regex version
  *  skipped any interface with a blank line in its body — and `expect(messages.size).toBe(65)` was then
  *  satisfied *because* of the skip, so a new message with no binding passed all seventeen assertions.
  *  A count is only coverage if the parser cannot lose a declaration. */
-function messageInterfaces(text) {
-  const out = new Map()
-  for (const m of text.matchAll(/export interface (\w+)(?: extends (\w+))? \{/g)) {
+function interfaceBlocks(text) {
+  const out = []
+  // Tolerant on purpose, and each allowance is a measured escape: a generic parameter list, and an
+  // `extends` wrapped onto its own line, each made a declaration invisible to the strict form — and
+  // invisible means exempt from every assertion in this file *and* from `AnyWireMessage`, which is
+  // the hole this file's direction check exists to close.
+  for (const m of text.matchAll(/export interface (\w+)\s*(?:<[^>]*>)?\s*(?:extends\s+(\w+)[^{]*)?\{/g)) {
     let depth = 0
     let end = m.index + m[0].length - 1
     for (; end < text.length; end++) {
       if (text[end] === '{') depth++
       else if (text[end] === '}' && --depth === 0) break
     }
-    const body = text.slice(m.index + m[0].length, end)
-    const lit = body.match(/^ {2}type: '([^']+)';?$/m)
-    if (lit) out.set(m[1], { literal: lit[1], extends: m[2] ?? null, body })
+    out.push({ name: m[1], extends: m[2] ?? null, body: text.slice(m.index + m[0].length, end) })
+  }
+  return out
+}
+
+/** Every `export interface` that declares a `type: '<literal>'` — i.e. every wire message.
+ *
+ *  Bodies are found by counting braces, not by matching a run of two-space lines. The regex version
+ *  skipped any interface with a blank line in its body — and `expect(messages.size).toBe(65)` was then
+ *  satisfied *because* of the skip, so a new message with no binding passed all seventeen assertions.
+ *  A count is only coverage if the parser cannot lose a declaration.
+ *
+ *  Which is why the count is no longer the only thing holding that. Review measured four further ways
+ *  to be dropped — a trailing `//` after the literal, `type:'x'` with no space, a generic parameter
+ *  list, a wrapped `extends` — and every one of them kept the size at exactly 65, so the pin was
+ *  satisfied by the loss in each case. `everyDeclaredLiteralWasCaptured` below audits the capture with
+ *  a looser pattern than the capture itself uses; a pin cannot audit the parser that feeds it. */
+function messageInterfaces(text) {
+  const out = new Map()
+  for (const b of interfaceBlocks(text)) {
+    const lit = b.body.match(/^\s*type\s*:\s*'([^']+)'\s*;?\s*(?:\/\/.*)?$/m)
+    if (lit) out.set(b.name, { literal: lit[1], extends: b.extends, body: b.body })
   }
   return out
 }
@@ -97,6 +174,62 @@ describe('protocol message interfaces', () => {
     expect(messages.has('InputKey')).toBe(true)
   })
 
+  // The pin above cannot audit the parser that feeds it: every measured way to lose a declaration kept
+  // the size at 65, so the floor was satisfied by the loss. This asks the question the other way round
+  // — with a pattern loose enough to find a literal the capture would miss — so a declaration the
+  // capture drops is named rather than counted as absent.
+  it('captured every interface that declares a literal', () => {
+    const dropped = interfaceBlocks(src)
+      .filter((b) => /^\s*type\s*:\s*'/m.test(b.body))
+      .map((b) => b.name)
+      .filter((n) => !messages.has(n))
+    expect(dropped, `declares a type literal but the parser dropped it: ${dropped.join(', ')}`).toEqual([])
+  })
+
+  // **The half `AnyWireMessage` cannot state about itself.** `relay/src/types.ts` asserts its literal
+  // list against `AnyWireMessage`, which is the seven directions unioned — so a message added to a
+  // direction reaches the relay's check for free. A message added to **no** direction reaches nothing:
+  // it is absent from `AnyWireMessage`, so the relay is never obliged to know it, and every type-level
+  // assertion stays green while a declared message travels on no declared path.
+  //
+  // Types cannot enumerate their own declarations, which is why this is here and not there — the same
+  // reason the two facts at the top of this file are checked as source text.
+  it('every message interface belongs to a direction', () => {
+    const unions = unionMembers(srcNoComments)
+
+    // Anti-vacuity first, and in the specific way this check can go quiet: if a direction is renamed
+    // and this list is not, its members vanish from `reachable` and every message in it is reported as
+    // an orphan — loud. If the *parser* stops matching, `reachable` is empty and the orphan list is
+    // everything — also loud. The dangerous direction is a root silently resolving to nothing, so each
+    // one is required to have parsed.
+    for (const d of DIRECTIONS) {
+      expect(unions.get(d), `direction ${d} did not parse — renamed, or the parser stopped matching`).toBeDefined()
+    }
+
+    const seen = new Set()
+    const stack = [...DIRECTIONS]
+    while (stack.length) {
+      const name = stack.pop()
+      if (seen.has(name)) continue
+      seen.add(name)
+      for (const member of unions.get(name) ?? []) stack.push(member)
+    }
+
+    const orphans = [...messages.keys()].filter((n) => !seen.has(n))
+    expect(orphans, `declared but in no direction: ${orphans.join(', ')}`).toEqual([])
+  })
+
+  // `DIRECTIONS` above and `AnyWireMessage` in the protocol are two copies of one list, and only one
+  // divergence is loud. A direction added to `AnyWireMessage` alone orphans its members — safe. A
+  // direction added to `DIRECTIONS` alone is **green everywhere**: the orphan check is satisfied while
+  // every literal in that direction stays exempt from the relay's `_MessageTypeCoversProtocol`, and if
+  // it is agent-produced, from `_AgentSetCoversProtocol` too — so the door would let a browser send it.
+  it('the direction list matches AnyWireMessage', () => {
+    const declared = unionMembers(srcNoComments).get('AnyWireMessage')
+    expect(declared, 'AnyWireMessage did not parse').toBeDefined()
+    expect([...declared].sort()).toEqual([...DIRECTIONS].sort())
+  })
+
   it('every message interface has a name↔literal binding', () => {
     const missing = []
     const wrong = []
@@ -129,28 +262,35 @@ describe('protocol message interfaces', () => {
   })
 
   // Failures addressed to a *request*, not to a session: the relay resolves both by `requestId` alone
-  // (`RelayServer.ts:1293-1312`). Listing them draws the boundary of `SessionError` rather than widening it —
+  // (`RelayServer.ts:1293-1312`). Listing them draws the boundary of the family rather than widening it —
   // the base is for a failure a session is waiting on.
   const REQUEST_SCOPED = new Set(['screenshot:error', 'ui:tree:error'])
 
-  it('a session-scoped failure declares extends SessionError', () => {
+  it('a session-scoped failure declares extends SessionScoped', () => {
     const offenders = []
     for (const [name, { literal, extends: base, body }] of messages) {
       const isFailure = /error$/.test(literal) && !REQUEST_SCOPED.has(literal)
-      const hasSession = /^ {2}sessionId[?]?:/m.test(body) || base === 'SessionError'
+      const hasSession = /^ {2}sessionId[?]?:/m.test(body) || base === 'SessionScoped'
       // `error` used to be excluded here, on the grounds that it was the escape hatch for a failure that
       // could not be attributed to a session — "the member's nature, not an exception". L5d replaced that
       // nature: a request naming no session is dropped at the relay's door, so every producer of `error`
       // answers one specific join, and it joins the family like every other session-scoped failure. The
       // predicate needed no change; what changed is that `error` now satisfies it.
       if (!isFailure || !hasSession) continue
-      if (base !== 'SessionError') offenders.push(`${name} ('${literal}')`)
+      if (base !== 'SessionScoped') offenders.push(`${name} ('${literal}')`)
     }
     expect(offenders).toEqual([])
-    expect([...messages].filter(([, m]) => m.extends === 'SessionError')).toHaveLength(9)
+    expect([...messages].filter(([, m]) => m.extends === 'SessionScoped')).toHaveLength(9)
     // `error` is the ninth, as of L5d. Pinned by name rather than only by the count, because the count alone
     // would be satisfied by any new member and this is the one whose membership was argued.
-    expect(messages.get('GenericError')).toMatchObject({ literal: 'error', extends: 'SessionError' })
+    expect(messages.get('GenericError')).toMatchObject({ literal: 'error', extends: 'SessionScoped' })
+    // #491 moved `message` off the base onto each member that requires it, so the family relation is no
+    // longer implied by the shared pair — the `extends` is the only thing left saying these nine are one
+    // kind. That makes this assertion load-bearing in a way it was not when the base carried two fields.
+    for (const [name, { body, extends: base }] of messages) {
+      if (base !== 'SessionScoped' || name === 'InputError') continue
+      expect(/^ {2}message: string$/m.test(body), `${name} lost its message declaration`).toBe(true)
+    }
     expect(REQUEST_SCOPED.size).toBe(2)
     for (const literal of REQUEST_SCOPED) {
       const entry = [...messages].find(([, m]) => m.literal === literal)
@@ -164,12 +304,16 @@ describe('protocol message interfaces', () => {
     }
     // What the base carries, pinned. `browserInboundRouting`'s signatures resolve `extends` and sort,
     // so they cannot tell an inherited field from an own-declared one: moving `sessionId` out of the
-    // base and into all eight subclasses leaves every signature identical and every check green.
+    // base and into all nine subclasses leaves every signature identical and every check green.
     // Measured. This line is what makes the inheritance mean something.
+    //
+    // It carried `message` too until #491, which demoted prose to optional on `input:error` alone —
+    // TypeScript cannot narrow an inherited required member, so the field moved onto each of the nine.
+    // That left the base with the one thing all nine actually share, and the name followed the shape.
     const base = readFileSync(join(root, 'packages/protocol/src/index.ts'), 'utf8')
-      .match(/export interface SessionError \{([^}]*)\}/)
-    expect(base, 'SessionError is gone').not.toBeNull()
-    expect([...base[1].matchAll(/^ {2}(\w+)(\??):/gm)].map((m) => m[1] + m[2]).sort()).toEqual(['message', 'sessionId'])
+      .match(/export interface SessionScoped \{([^}]*)\}/)
+    expect(base, 'SessionScoped is gone').not.toBeNull()
+    expect([...base[1].matchAll(/^ {2}(\w+)(\??):/gm)].map((m) => m[1] + m[2]).sort()).toEqual(['sessionId'])
   })
 
   it('the L1 conversion net is gone', () => {

@@ -313,7 +313,7 @@ describe('TapflowClient', () => {
     })
 
     it('behaves exactly as before for an agent that sends no reason', async () => {
-      // The field is optional so an older agent can omit it — absence must not change anything.
+      // The field is required as of #491; an agent outside this repo predating it still omits one, which is the population the branch is for — absence must not change anything.
       relay.setInputAck('error')
       await expect(client.tap('sess-1', 1, 2)).rejects.toThrow('device not booted')
     })
