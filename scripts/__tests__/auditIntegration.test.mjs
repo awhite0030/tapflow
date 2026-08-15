@@ -134,6 +134,38 @@ describe('the PR gate asks for a root CHANGELOG entry', () => {
     expect(r.out).not.toMatch(/no entry in the root CHANGELOG/i)
   })
 
+  // Deleting the file is not writing in it. `changed` comes from a bare `--name-only`, which lists a
+  // deletion like any other path, so the first draft of the demand was satisfied by removing the file.
+  it('does not accept deleting the CHANGELOG as writing an entry', () => {
+    writeFileSync(join(repo, 'CHANGELOG.md'), '## [Unreleased]\n')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'a changelog to delete')
+    git('checkout', '-q', '-b', 'feature')
+    mkdirSync(join(repo, dirname(SHIPPED)), { recursive: true })
+    writeFileSync(join(repo, SHIPPED), 'export const a = 1\n')
+    writeFileSync(join(repo, '.changeset', 'x.md'), CHANGESET('a fix'))
+    rmSync(join(repo, 'CHANGELOG.md'))
+    git('add', '-A')
+    git('commit', '-q', '-m', 'work')
+    const r = gate()
+    expect(r.code).toBe(1)
+    expect(r.out).toMatch(/no entry in the root CHANGELOG/i)
+  })
+
+  // The mirror of the amended case: satisfying the demand must actually pass. Widening the demand to
+  // `AMR` while the success path still counted only `added` made this a false failure.
+  it('passes an amended changeset that does write its entry', () => {
+    writeFileSync(join(repo, '.changeset', 'existing.md'), CHANGESET('first pass'))
+    git('add', '-A')
+    git('commit', '-q', '-m', 'earlier changeset')
+    branchWith({
+      [SHIPPED]: 'export const a = 1\n',
+      '.changeset/existing.md': CHANGESET('first pass, now also this'),
+      'CHANGELOG.md': '## [Unreleased]\n\n### Fixed\n\n- also this\n',
+    })
+    expect(gate().code).toBe(0)
+  })
+
   // The amended and renamed cases, which keying on `--diff-filter=A` let through. A follow-up that
   // extends an existing unconsumed changeset with new behaviour is the ordinary shape of a second PR on
   // one subject, and it was invisible.

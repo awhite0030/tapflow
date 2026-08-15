@@ -609,7 +609,12 @@ function main() {
     .split('\n')
     .filter((f) => /^\.changeset\/.+\.md$/.test(f) && !/^\.changeset\/README\.md$/i.test(f))
   const owed = changelogEntryOwed(touchedChangesets, (f) => readFileSync(f, 'utf8'))
-  if (owed.length > 0 && !changed.includes('CHANGELOG.md')) {
+  // Added or modified, not merely *named in the diff*. `changed` comes from a bare `--name-only`, which
+  // lists deletions too — so deleting the file satisfied the demand to write in it.
+  const changelogWritten = git('diff', '--name-only', '--diff-filter=AM', `${mergeBase}...HEAD`)
+    .split('\n')
+    .includes('CHANGELOG.md')
+  if (owed.length > 0 && !changelogWritten) {
     console.error('Changeset added with no entry in the root CHANGELOG.md:\n')
     for (const f of owed) console.error(`  ${f}`)
     console.error('\nThat file is what a self-hoster reads to decide whether to upgrade, and unlike the')
@@ -621,9 +626,13 @@ function main() {
     process.exit(1)
   }
 
-  if (added.length > 0) {
-    console.log(`Published source changed and ${added.length} changeset(s) added:`)
-    for (const f of added) console.log(`  + ${f}`)
+  // **`touchedChangesets`, matching the obligation above.** Widening the demand to `AMR` and leaving the
+  // success path on `added` was half a change: a branch that amended an existing changeset *and* wrote its
+  // CHANGELOG entry satisfied the demand and then fell through to "adds no changeset" — a false failure,
+  // and the direction that teaches people the gate is noise.
+  if (touchedChangesets.length > 0) {
+    console.log(`Published source changed and ${touchedChangesets.length} changeset(s) touched:`)
+    for (const f of touchedChangesets) console.log(`  + ${f}`)
     process.exit(0)
   }
 
