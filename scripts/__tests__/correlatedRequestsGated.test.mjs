@@ -64,17 +64,39 @@ function correlatedRequestTypes(proto) {
 }
 
 /**
- * For each literal in the inbound schema map, the text of its schema expression.
+ * For each literal in the inbound schema map, the **top-level** `requestId` property of its schema.
  *
- * Parsed rather than grepped: a `z.object({ … })` spans lines and nests, so a line-based match would
- * stop at the first `}` and read a request's gate off its payload's shape.
+ * Parsed rather than grepped, and the difference is the whole check. A first draft matched
+ * `/(^|[^.\w])requestId\b/` against the schema's source text, which passes on a `requestId` nested
+ * inside a payload, on the word appearing in a comment, and — the one that matters — on an inline
+ * `requestId: z.string()` written in place of the shared `.min(1)` constant. That last one is
+ * invisible to every other gate in the repo: `SchemaExact` cannot see it, because `.min(1)` does not
+ * change what `z.output` infers, which is exactly why it costs the tier assertions nothing. The
+ * empty-string half would have gone back to being unguarded per message while the whole suite stayed
+ * green, reproducing the `clipboard:error` defect this file exists for.
+ *
+ * Returns `null` when there is no `requestId` property, and otherwise the initializer's text.
  */
-function schemaBodies(sf) {
+function correlatorOf(sf) {
   const out = new Map()
   const visit = (node) => {
-    if (ts.isPropertyAssignment(node) && ts.isStringLiteral(node.name)) {
-      out.set(node.name.text, node.initializer.getText(sf))
+    // `'app:install': z.object({ … })` — a string-literal key whose value is a call.
+    if (!ts.isPropertyAssignment(node) || !ts.isStringLiteral(node.name)) return ts.forEachChild(node, visit)
+    const shape = ts.isCallExpression(node.initializer) ? node.initializer.arguments[0] : undefined
+    if (!shape || !ts.isObjectLiteralExpression(shape)) {
+      out.set(node.name.text, { present: false, init: null })
+      return ts.forEachChild(node, visit)
     }
+    const prop = shape.properties.find(
+      (p) =>
+        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+        p.name && ts.isIdentifier(p.name) && p.name.text === 'requestId',
+    )
+    out.set(node.name.text, {
+      present: prop !== undefined,
+      // A shorthand `requestId,` *is* the shared constant; a longhand carries its own expression.
+      init: prop === undefined ? null : ts.isShorthandPropertyAssignment(prop) ? 'requestId' : prop.initializer.getText(sf),
+    })
     ts.forEachChild(node, visit)
   }
   visit(sf)
@@ -88,7 +110,7 @@ describe('every correlated browser request is gated at the relay door', () => {
   const sf = sourceOf(validatePath, validateSrc)
 
   const types = correlatedRequestTypes(proto)
-  const bodies = schemaBodies(sf)
+  const bodies = correlatorOf(sf)
 
   it('finds the correlated request set, derived rather than listed', () => {
     // If this drops to zero the derivation broke and every assertion below would vacuously pass — the
@@ -100,28 +122,36 @@ describe('every correlated browser request is gated at the relay door', () => {
 
   for (const type of types) {
     it(`${type} is gated`, () => {
-      const body = bodies.get(type)
-      expect(body, `${type} has no schema in the inbound map — the door would refuse it as unknown-type`)
+      const entry = bodies.get(type)
+      expect(entry, `${type} has no schema in the inbound map — the door would refuse it as unknown-type`)
         .toBeDefined()
 
       expect(
-        /(^|[^.\w])requestId\b/.test(body),
-        `${type} declares a required requestId but its schema does not demand one, so the door forwards ` +
-        `an uncorrelatable request and the reply it produces cannot be attributed`,
+        entry.present,
+        `${type} declares a required requestId but its schema has no top-level requestId, so the door ` +
+        `forwards an uncorrelatable request and the reply it produces cannot be attributed`,
+      ).toBe(true)
+
+      // The shared constant, or something that carries its `.min(1)` — and never `.optional()`.
+      // Both halves matter: absence lets the request through uncorrelated, and `''` produces a reply
+      // whose required correlator is present-but-empty, which every correlating consumer discards.
+      expect(
+        entry.init === 'requestId' || /\.min\(1\)/.test(entry.init),
+        `${type}'s schema declares requestId as \`${entry.init}\`, which does not carry the non-empty ` +
+        `constraint. Use the shared \`requestId\` constant — an inline z.string() accepts '' and no ` +
+        `type-level assertion can see the difference.`,
       ).toBe(true)
       expect(
-        body.includes('requestId: requestId.optional()'),
+        /\.optional\(\)|\.nullish\(\)/.test(entry.init),
         `${type} declares a required requestId and its schema makes it optional — the two disagree, and ` +
         `the schema is the one the wire obeys`,
       ).toBe(false)
     })
   }
 
-  it('the gate tests both halves — absent and empty', () => {
-    // The predicate this replaced rejected `''` as well as absence, and a bare `z.string()` accepts it.
-    // Nothing type-level can hold that: `.min(1)` does not change what `z.output` infers, which is
-    // exactly why it costs the tier assertions nothing — so it is checked here and exercised in
-    // `protocol`'s own `rejects an empty requestId`.
+  it('the shared constants carry the non-empty half', () => {
+    // The per-type assertions above accept the shared constant by name, so this is what gives that name
+    // its meaning. Weakening the constant fails here; weakening one call site fails above.
     expect(validateSrc).toMatch(/^const requestId = z\.string\(\)\.min\(1\)$/m)
     expect(validateSrc).toMatch(/^const sessionId = z\.string\(\)\.min\(1\)$/m)
   })

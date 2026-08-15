@@ -20,14 +20,21 @@ What a user can observe:
 
 - **A malformed command is refused where it used to be forwarded.** A `device:boot` with no payload, a
   `session:start` whose `sessionId` is the empty string, an `app:install` whose `buildId` is an object
-  — these reached an agent before, or produced a reply whose own required field was missing. Where the
-  request has an error reply the caller still gets one; where it has none it is dropped and logged with
-  the field that failed, instead of silently doing nothing.
+  — these reached an agent before, or produced a reply whose own required field was missing. The frame
+  is now dropped and the log names the field that failed, instead of the command silently doing
+  nothing. `app:install` and `app:launch` are the exception and still answer `Build not found`, because
+  that answer already existed and is worth more than the refusal. No client shipped here can produce
+  any of these; a third-party one can.
 - **A key appended to a browser message no longer reaches a device.** Browser-origin frames are
   forwarded as the parse product, so anything the contract does not declare is gone before an agent
   sees it. Agent-origin frames are forwarded unchanged, so a field a newer agent adds still survives a
   relay that does not know it.
 - **Nothing else changes.** Every well-formed frame routes exactly as before.
+
+`@tapflowio/protocol` gains a `./validate` subpath and, with it, a runtime dependency on `zod` — its
+first dependency of any kind. The main entry is unchanged: still types only, still fully erased by
+`import type`, and it does not reach `zod`. A consumer that imports only `@tapflowio/protocol` gains
+nothing in its bundle and one package in its install.
 
 Agent payloads are deliberately not validated, and that is a decision with a reason rather than a gap:
 `AgentRegister.platform` is `string` — open, so a third-party platform can register through

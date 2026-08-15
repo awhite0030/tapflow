@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sees it.) Prose stays welcome in `message` and may now be omitted.
 - **`@tapflowio/relay` no longer exports `RelayMessage` or `MessageType`.** They were the relay's own
   copy of the wire contract — a flat interface where `type` was the only required member, and a
-  hand-maintained list of 62 literals beside it — and they disagreed with `@tapflowio/protocol` about
+  hand-maintained list of 63 literals beside it — and they disagreed with `@tapflowio/protocol` about
   the same fields, which is the drift this release closes. Nothing in tapflow imported them; this
   affects code outside it that did.
   `Migrate:` import the message types from `@tapflowio/protocol` instead, which declares one interface
@@ -56,6 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A field appended to a browser message no longer reaches a device.** Anything the contract does not
   declare is removed before the relay forwards it on. Messages coming *from* an agent are forwarded
   untouched, so an agent newer than its relay does not lose fields it adds.
+- **`@tapflowio/protocol` has a second entry point, `@tapflowio/protocol/validate`.** It holds the
+  relay's inbound parser, and it brings the package its first runtime dependency (`zod`). The main
+  entry is unchanged — types only, fully erased by `import type`, and it does not reach `zod` — so a
+  consumer that imports only `@tapflowio/protocol` gains nothing in its bundle.
 - Split stable dashboard vendor dependencies into smaller chunks to reduce maximum bundle size and improve cache reuse across releases.
 - **A refused session now says which session it refused and why.** Opening a device someone else already
   has open, or one whose Mac is under load, used to produce a generic failure the dashboard could not

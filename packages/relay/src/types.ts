@@ -2,7 +2,7 @@
 // today only the re-exports and aliases below.
 //
 // **`RelayMessage` and `MessageType` were removed here (#550).** They were a flat interface where
-// `type` was the only required member and a hand-copied union of 62 literals beside it, and they were
+// `type` was the only required member and a hand-copied union of 63 literals beside it, and they were
 // the relay's *inbound* type: `route` took a `RelayMessage`, so every field it read was optional by
 // construction and every one it needed came with a `!`. That is why the two type systems could
 // disagree about the same wire field — `format?` here against a required `format` in the protocol —

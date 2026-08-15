@@ -110,6 +110,24 @@ describe('an agent older than a field still registers', () => {
     expect(ok(raw).msg).toMatchObject({ capabilities: ['clipboard'], devices: [] })
   })
 
+  // **The most expensive rejection in the protocol, so the most tolerant schema.** A first draft
+  // required `platform` and `agentName` — both declared required, both sent by both agents here — and
+  // the relay reads each through a `??`. An agent omitting either would have had its frame refused, so
+  // no `agent:registered` goes back, so its handshake promise never resolves: the whole Mac and every
+  // device on it absent from the dashboard, with one relay-side warn as the only trace.
+  it('registers an agent that sends neither a platform nor a name', () => {
+    const r = ok({ type: 'agent:register', devices: [] })
+    expect(r.msg).toMatchObject({ platform: '', agentName: '', capabilities: [], devices: [] })
+  })
+
+  // `''` and not `undefined` is what lets `z.output` match the interface, and it has to stay falsy:
+  // the relay's eviction runs only `if (identity)`, where identity is `agentId ?? agentName`. A
+  // placeholder like `'unknown'` there would make every nameless agent evict every other one.
+  it('leaves a defaulted name falsy, because identity keys on it', () => {
+    const r = ok({ type: 'agent:register', devices: [] })
+    expect((r.msg as { agentName: string }).agentName).toBeFalsy()
+  })
+
   // The tolerance is for *absence*, not for a wrong shape — otherwise `.default()` would be
   // indistinguishable from not checking the field at all.
   it('still refuses capabilities that are not strings', () => {

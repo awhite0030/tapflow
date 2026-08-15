@@ -199,12 +199,23 @@ const BROWSER_INBOUND = {
 const AGENT_CONSUMED = {
   'agent:register': z.object({
     type: z.literal('agent:register'),
-    platform: z.string(),
-    // Required on the interface; absent from agents that predate the field, which is how a viewer
-    // tells them apart. `RelayServer` carried `msg.capabilities ?? []` for exactly this.
+    // **All four defaults come from a `??` in `RelayServer`, and the list is exhaustive by
+    // construction** — `agentId ?? agentName` for identity, `devices ?? []`, `capabilities ?? []`, and
+    // `agentName ?? agentId ?? 'unknown'` / `platform ?? 'unknown'` in the connect log. A first draft
+    // defaulted only `capabilities` and `devices` and required these two, which would have made an
+    // agent omitting either **never register at all**: the frame is refused, no `agent:registered`
+    // goes back, and the agent's handshake promise never resolves — the whole Mac and every device on
+    // it simply absent from the dashboard, with one relay-side warn as the only trace. That is the
+    // most expensive rejection in the protocol, so this message is the one to be most tolerant on.
+    //
+    // `''` rather than `undefined` because `z.output` must match the interface, and it is behaviourally
+    // the same everywhere it reaches: `identity` stays falsy so no eviction runs, and the log line uses
+    // `||` for exactly this.
+    platform: z.string().default(''),
+    // How a viewer tells an agent that predates a capability from one that has it.
     capabilities: z.array(z.string()).default([]),
     agentId: z.string().optional(),
-    agentName: z.string(),
+    agentName: z.string().default(''),
     // Deduplication by device id stays in the handler — it is a policy about the *set*, not a shape.
     devices: z.array(z.object({
       id: z.string(), name: z.string(), platform: z.string(), status: z.string(),

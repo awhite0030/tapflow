@@ -344,7 +344,7 @@ export type InputErrorReason =
 // `stream:registered` goes to a stream socket rather than a viewer. It is grouped here because the
 // relay treats "everything that is not an agent" alike on the way out; splitting the outbound union
 // by socket role is a later refinement, and the roles are already distinguished at runtime
-// (`wsRoles`, `AGENT_MSG_TYPES`).
+// (`wsRoles`, and `directionOf` from this package's `validate` entry).
 
 /** Browser-inbound messages with **two** producers: an agent sends it and the relay also originates
  *  its own copy — replaying session state to a re-joining viewer, or failing fast when it cannot
@@ -616,7 +616,7 @@ export type SessionStartFailure =
  * the reason has a single producer inside `handleSessionStart`. Both were in HEAD at once for two months.
  *
  * L5c settled it by removing the general role rather than the specific one: a request that names no session
- * is now **dropped at the relay's door** (`isAddressed`), because answering it would ship a frame whose own
+ * is now **dropped at the relay's door** — by the inbound schema since #444 — because answering it would ship a frame whose own
  * required `sessionId` `JSON.stringify` erases, and `error` has no `requestId` either — so a caller could not
  * attribute the answer and would wait out the same deadline silence costs. With nothing left needing an
  * unaddressed failure, every producer of this message answers one specific join.
@@ -747,12 +747,13 @@ export interface ClipboardWriteDone {
   requestId: string
 }
 
-/** Messages an agent produces. The relay forwards them byte-for-byte (`JSON.stringify(msg)`) rather
+/** Messages an agent produces. The relay forwards them byte-for-byte (`JSON.stringify(raw)`, the frame
+ *  exactly as it arrived, so a field a newer agent adds is not stripped by a relay that does not know it) rather
  *  than re-creating them, so it never constructs one — which is exactly why they were missing from
  *  this file until L3: nothing on the relay's own send path referenced them.
  *
  *  The twelve declared below carry `sessionId` as required, on two independent grounds: both agents
- *  include it in every send literal, and the relay's forward gate resolves `sessions.get(msg.sessionId!)`
+ *  include it in every send literal, and the relay's forward gate resolves `sessions.get(msg.sessionId)`
  *  before forwarding, so a message with no sessionId never reaches a browser by this path.
  *
  *  Nine of the ten inherited from `RelayOrAgentToBrowser` now carry it too. Three of them

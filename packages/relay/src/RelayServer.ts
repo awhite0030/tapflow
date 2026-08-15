@@ -563,11 +563,14 @@ export class RelayServer {
       // browser socket had spoofed *badly* — the 1008 that closes such a socket never fired, so the
       // spoofer kept its connection. The direction is a fact about the `type` alone, and the type is
       // known on a shape failure too, so nothing about that check needs the payload to be valid.
+      // **Logged before the gate, not after it.** A first draft called `settleRole` first and logged in
+      // the `!ok` branch below it — which never ran for two of the three failure reasons, because
+      // `settleRole` returns `false` for them. The case that mattered was a malformed handshake on a
+      // role-less socket: dropped in silence, which is precisely the agent-registration skew this log
+      // exists to make visible.
+      if (!inbound.ok) logInboundRejection(inbound)
       if (!this.settleRole(ws, inbound)) return
-      if (!inbound.ok) {
-        logInboundRejection(inbound)
-        return
-      }
+      if (!inbound.ok) return
       try {
         this.route(ws, inbound.msg, inbound.raw)
       } catch (e) {
@@ -638,7 +641,7 @@ export class RelayServer {
     if (!this.wsRoles.has(ws)) {
       // A handshake that did not parse confers nothing. Returning here rather than falling through to
       // `browser` is what keeps an agent whose register is malformed from being closed with
-      // `Forbidden` — its frame is dropped and logged, and the next one still gets to introduce it.
+      // `Forbidden` — the caller has already logged it, and the next frame still gets to introduce it.
       if (handshake && !inbound.ok) return false
       if (type === 'agent:register') this.wsRoles.set(ws, 'agent')
       else if (type === 'stream:register') this.wsRoles.set(ws, 'stream')
@@ -685,9 +688,10 @@ export class RelayServer {
       // which is why `not-session-owner` needed real copy in the dashboard rather than the `null` a first
       // draft gave it.
       //
-      // `msg.sessionId &&` rather than `isAddressed`: a falsy check already rejects both an absent id and an
-      // empty one, and the miss below rejects a non-string, so the predicate would add only its log here —
-      // and a mutation confirmed there is nothing observable to hold it with.
+      // No address check here at all any more: the schema declares `sessionId` with `.min(1)`, so an absent
+      // id, an empty one and a non-string are all refused before this case is reached. It used to be a bare
+      // `msg.sessionId &&` rather than the `isAddressed` predicate, because a falsy check already covered
+      // both halves and the predicate would have added only its log.
       //
       // **Dropped rather than refused, and that is the contract**: neither has a reply, so there is no
       // waiter to tell. The same asymmetry as the input frames nothing acks. Inventing a
@@ -831,11 +835,11 @@ export class RelayServer {
       // ── Browser → Agent ────────────────────────────────────────────────────
       //
       // These two shared one fall-through clause. Separated because the sharing is the trap for
-      // whoever adds the door gate: an `isCorrelated(msg)` written into a shared body would gate
+      // whoever adds the door gate: a correlator check written into a shared body would gate
       // `device:shutdown` too, and the relay originates that message with no id — so the dashboard's
       // four senders and the relay's own idle timer would stop reaching the agent, silently, in the
-      // one direction no reply reports. `correlatedRequestsGated` resolves fall-through by sharing the
-      // next non-empty body, so it would have read the gate as covering both and passed.
+      // one direction no reply reports. That gate is a schema now and cannot be written into a case at
+      // all, which is what makes the trap unreachable rather than merely avoided.
       case 'device:boot': {
         // The door gate that stood here is now the schema: `device:boot` declares `sessionId` and
         // `requestId` required, and the parser rejects an absent **or empty** one before this case is
@@ -1229,13 +1233,16 @@ export class RelayServer {
     // The startup banner prints "Waiting for agents..." once and then the relay says nothing either
     // way, so a terminal gives no signal about whether an agent is attached. One line per
     // transition, matching the disconnect line in evictAgentSocket.
-    logger.info(`agent connected: ${msg.agentName ?? msg.agentId ?? 'unknown'} (${msg.platform ?? 'unknown'}) — ${registeredSessions.length} device(s)`)
+    // `||`, not `??`: the schema defaults both of these to `''` for an agent that omits them, so `??`
+    // would print an empty name and an empty platform where this used to print `unknown`.
+    logger.info(`agent connected: ${msg.agentName || msg.agentId || 'unknown'} (${msg.platform || 'unknown'}) — ${registeredSessions.length} device(s)`)
   }
 
   /** The only producer of `error` — all four exits below, and nothing else in the repo sends that message.
    *
    *  That is what makes the address possible rather than aspirational: `msg.sessionId` is narrowed to a
-   *  non-empty `string` by the door (`isAddressed`), so every refusal can name the join it refuses. Before
+   *  non-empty `string` by the door — the inbound schema, `isAddressed` before it — so every refusal can
+   *  name the join it refuses. Before
    *  L5d they carried none, and the clients' join waiters matched `sessionId === undefined || sessionId ===
    *  mine` — with no such key the left half was always true, so any refusal resolved any pending join. */
   private handleSessionStart(ws: WebSocket, msg: Inbound<'session:start'>): void {

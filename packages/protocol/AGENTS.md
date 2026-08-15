@@ -23,7 +23,7 @@ It exists because the relay and the dashboard each kept their own copy and they 
 
 `protocol` is deliberately broader than what the package holds today, because the alternatives age worse.
 
-- `protocol-types` would become a lie the moment a runtime validator lands, and one plausibly will — the relay validates nothing on the way in.
+- `protocol-types` became a lie the moment a runtime validator landed, and one did — `src/validate/` is the relay's inbound parser (#444). The broad name is what let it move in without renaming the package.
 - `relay-protocol` reads narrower than the truth: these messages are exchanged by browser ↔ relay ↔ agent, not owned by the relay. It also sits one letter away from `@tapflowio/relay` at every import site.
 - `messages` cannot hold anything that is not a message, which is the same corner `protocol-types` paints into.
 
@@ -308,7 +308,8 @@ claimed *"the escape hatch for a failure the relay cannot correlate to a session
 be true, and the program plan recorded that they were both in HEAD.
 
 L5c settled it by removing the general role rather than the specific one. A request naming no session is
-dropped at the relay's door (`isAddressed`), because answering it would ship a frame whose own required
+dropped at the relay's door — by the schema in `src/validate/` since #444, and by an `isAddressed`
+predicate before that — because answering it would ship a frame whose own required
 `sessionId` `JSON.stringify` erases — and `error` has no `requestId` either, so a caller could not attribute
 the answer and would wait out the same deadline silence costs. With nothing left needing an unaddressed
 failure, all four producers answer one specific join, and `error` **extends `SessionScoped`**: the shape is the
@@ -352,7 +353,8 @@ type-check that message could take over the session's video path. The stream soc
 own send site in `agent-core/src/utils/stream.ts`.
 
 That mattered because an agent's literal was the one thing no compiler saw — the relay forwards replies with
-`JSON.stringify(msg)`, so nothing typed re-creates them. #489 and #490 are what the gap cost, and
+`JSON.stringify(raw)` — the frame exactly as it arrived — so nothing typed re-creates them. #489 and
+#490 are what the gap cost, and
 `inputErrorReason.test.mjs` exists because a script had to stand in for a compiler.
 
 **The browser side is the same rule and the same check shape.** All three browser-role producers — the dashboard's
@@ -385,8 +387,8 @@ A browser receives 28 message types. They come from two producers, and the diffe
 - **`RelayToBrowser`** — the relay builds these itself, so `sendTo(socket, msg: RelayOutbound)` holds
   them to the union. The compiler is the check.
 - **`AgentToBrowser`** — an agent builds these and the relay forwards them with
-  `JSON.stringify(msg)`. Nothing on the relay's send path references them, so **no compiler sees
-  them.** That is why all twelve forward-only messages were absent from this file until L3, and why
+  `JSON.stringify(raw)`, the frame exactly as it arrived. Nothing on the relay's send path references
+  them, so **no compiler sees them.** That is why all twelve forward-only messages were absent from this file until L3, and why
   `scripts/__tests__/browserInboundRouting.test.mjs` exists: it compares the relay's forward case
   labels against this union in both directions.
 - **`RelayOrAgentToBrowser`** — the ten with *both* producers (the relay replays session state to a
@@ -402,13 +404,17 @@ A browser receives 28 message types. They come from two producers, and the diffe
 
 ### `sessionId` stays required, even where the relay cannot prove it
 
-The relay reaches eleven sessions through `msg.sessionId!` — an assertion the compiler cannot verify —
-and `JSON.stringify` drops a key whose value is `undefined`. **Eight are agent→browser forwards and three
-are request-side paths that deliberately have no address gate**; the seven *reply* sites this paragraph
-used to count went away with L5c's door predicates, and the number outlived them here. The composition
-matters more than the total, because "all forwards" invites the conclusion that the request side is
-settled — and `device:shutdown` is on the request side with no ownership gate either (#527). The fix is
-**not** to widen the declaration:
+The relay used to reach eleven sessions through `msg.sessionId!` — an assertion the compiler cannot
+verify — and `JSON.stringify` drops a key whose value is `undefined`. **`RelayServer.ts` now contains
+none of them.** #444 made the inbound frame the product of a parse, so `sessionId` is a narrowed
+`string` by the time any case reads it, and `.min(1)` refuses the empty string the old predicates were
+written to catch. Two numbers stood in this paragraph before that — seven reply sites removed by L5c's
+door predicates, then eleven reads — and each outlived its own basis, which is why there is no count
+here now.
+
+`device:shutdown` is still on the request side with no **ownership** gate (#527); that is a different
+question from addressing and the parse does not answer it. The declaration was nevertheless right to
+stay required rather than be widened:
 
 - Every in-repo sender does supply one. `BrowserToRelay` declares `sessionId: string` on every member
   but `agents:list`, and since L4c all three senders are typed against that union, so the compiler
@@ -422,8 +428,9 @@ settled — and `device:shutdown` is on the request side with no ownership gate 
   that names no session at the door. Both halves of the old advice are gone: there is no unaddressed failure
   left to send, and nothing left that would need one.
 
-Widening would let #444 delete those `!` with no consumer forced to care, and the guarantee would go
-quietly with them. It is also close to irreversible: once optional, every consumer grows a guard.
+Widening would have let #444 delete those `!` with no consumer forced to care, and the guarantee would
+have gone quietly with them — the door now enforces the declaration instead. It is also close to
+irreversible: once optional, every consumer grows a guard.
 
 The same reasoning applies to "no producer sends this yet, so leave it open." `mcp-server` has no
 clipboard tool today; when one is added, `requestId` being **required** is what makes a missing id a
