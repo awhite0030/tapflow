@@ -358,20 +358,20 @@ describe('SessionManager', () => {
       const ws = mockSocket()
       const [idA] = sm.create(ws, [{ id: 'devA', name: 'A', platform: 'ios', status: 'shutdown' }])
       const listed = sm.list()
-      expect(listed[0].devices[0].sessionId).toBe(idA)
+      expect(listed[0].devices[0]!.sessionId).toBe(idA)
     })
 
     it('reflects busy=true when browserSocket is set', () => {
       const sm = new SessionManager()
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
       sm.join(id, mockSocket())
-      expect(sm.list()[0].devices[0].busy).toBe(true)
+      expect(sm.list()[0].devices[0]!.busy).toBe(true)
     })
 
     it('reflects busy=false when browserSocket is null', () => {
       const sm = new SessionManager()
       sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
-      expect(sm.list()[0].devices[0].busy).toBe(false)
+      expect(sm.list()[0].devices[0]!.busy).toBe(false)
     })
 
   })

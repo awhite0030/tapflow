@@ -5,8 +5,8 @@ import path from 'path'
 import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb, getDb } from '../db'
-import type { RelayMessage } from '../types'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
+import type { AgentRegistered } from '@tapflowio/protocol'
 
 
 // #445: every failure of app:install / app:launch has to reach the caller, carrying the sessionId
@@ -42,11 +42,11 @@ describe('app command failures reach the caller (#445)', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({
-      type: 'agent:register',
+      type: 'agent:register', platform: 'ios', agentName: 'appCommandErrors-1',
       devices: [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }],
     }))
-    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
-    const sessionId = reply.registeredSessions![0]!.sessionId
+    const reply = await waitForType<AgentRegistered>(agent, 'agent:registered')
+    const sessionId = reply.registeredSessions[0]!.sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
@@ -220,7 +220,8 @@ describe('app command failures reach the caller (#445)', () => {
     agent.close(); browser.close()
   })
 
-  // `JSON.parse` does not honour the `RelayMessage` type, so buildId arrives as whatever was sent.
+  // The schema refuses a non-integer `buildId` at the door now, so this asserts the *answer* the
+  // handler gives rather than the parse — the caller gets `Build not found` instead of silence.
   // An object or array makes better-sqlite3 throw, and that exception used to be caught by the
   // message loop alongside genuine parse failures — the caller got nothing at all. This is the
   // same silence the rest of the file is about, reached through the type system's blind spot.

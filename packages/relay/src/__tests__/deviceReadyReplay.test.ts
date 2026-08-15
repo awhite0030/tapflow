@@ -6,7 +6,7 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
-import type { RelayMessage } from '../types'
+import type { AgentRegistered, AgentsListed, DeviceReady, SessionChrome, SessionDeviceInfo, SessionJoined, StreamRegistered, StreamRequestIdr } from '@tapflowio/protocol'
 
 
 // #440: the relay replays `device:ready` so a browser that reconnects mid-stream gets a picture
@@ -43,22 +43,22 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({
-      type: 'agent:register',
+      type: 'agent:register', platform: 'ios', agentName: 'deviceReadyReplay-1',
       devices: [{ id: 'devA', name: 'iPhone A', platform: 'ios', status }],
     }))
-    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
-    return { agent, sessionId: reply.registeredSessions![0]!.sessionId }
+    const reply = await waitForType<AgentRegistered>(agent, 'agent:registered')
+    return { agent, sessionId: reply.registeredSessions[0]!.sessionId }
   }
 
   async function joinAs(sessionId: string) {
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    await waitForType<RelayMessage>(browser, 'session:joined')
+    await waitForType<SessionJoined>(browser, 'session:joined')
     // The barrier proves the relay is done with the join, so whatever it was going to send is
     // already recorded — `waitForTypeOrNull` reads that recording rather than racing it.
     await barrier(browser)
-    const ready = await waitForTypeOrNull<RelayMessage>(browser, 'device:ready', 0)
+    const ready = await waitForTypeOrNull<DeviceReady>(browser, 'device:ready', 0)
     return { browser, ready }
   }
 
@@ -93,8 +93,8 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     // recording `waitForType` reads from is attached by its first call, so a reply that arrives before
     // that call is not queued anywhere and the wait hangs. `handleSessionStart` sends the join and both
     // replays in one turn, so awaiting them one after the other flakes — measured, once.
-    const chrome = waitForType<RelayMessage>(browser, 'session:chrome')
-    const info = waitForType<RelayMessage>(browser, 'session:deviceInfo')
+    const chrome = waitForType<SessionChrome>(browser, 'session:chrome')
+    const info = waitForType<SessionDeviceInfo>(browser, 'session:deviceInfo')
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
 
     expect((await chrome).sessionId).toBe(sessionId)
@@ -114,7 +114,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     // The IDR request rides the same branch, and it goes out during the join — so the listener has
     // to exist before it. Asserting it here keeps it covered: moving it out of the replay block
     // would otherwise be caught by nothing.
-    const idrPromise = waitForType<RelayMessage>(agent, 'stream:request-idr')
+    const idrPromise = waitForType<StreamRequestIdr>(agent, 'stream:request-idr')
     const { browser, ready } = await joinAs(sessionId)
 
     expect(ready).not.toBeNull()
@@ -166,7 +166,7 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     const streamWs = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(streamWs)
     streamWs.send(JSON.stringify({ type: 'stream:register', sessionId }))
-    await waitForType<RelayMessage>(streamWs, 'stream:registered')
+    await waitForType<StreamRegistered>(streamWs, 'stream:registered')
     const closed = new Promise<void>((r) => streamWs.on('close', () => r()))
     streamWs.close()
     await closed
@@ -187,9 +187,9 @@ describe('device:ready replay tracks the session, not the device (#440)', () => 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'agents:list' }))
-    const listed = await waitForType<RelayMessage>(browser, 'agents:listed')
+    const listed = await waitForType<AgentsListed>(browser, 'agents:listed')
 
-    const device = listed.sessions![0]!.devices.find((d) => d.sessionId === sessionId)
+    const device = listed.sessions[0]!.devices.find((d) => d.sessionId === sessionId)
     expect(device?.status).toBe('booted')
 
     agent.close(); browser.close()

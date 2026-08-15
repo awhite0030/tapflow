@@ -6,7 +6,7 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
-import type { RelayMessage } from '../types'
+import type { AgentRegistered, AgentsListed, GenericError, SessionJoined, SessionRebound, SessionTerminated } from '@tapflowio/protocol'
 
 // #426 stage 2. Restarting an agent used to end every session it held: the browser was told
 // `session:terminated` and sent back to the Mac list, losing its navigation for something that
@@ -53,8 +53,8 @@ describe('a session survives its agent restarting (#426)', () => {
       agentId: 'mac-1', agentName: 'the-mac', platform: 'ios',
       devices, capabilities,
     }))
-    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
-    const byDevice = new Map(reply.registeredSessions!.map((r) => [r.deviceId, r.sessionId]))
+    const reply = await waitForType<AgentRegistered>(agent, 'agent:registered')
+    const byDevice = new Map(reply.registeredSessions.map((r) => [r.deviceId, r.sessionId]))
     return { agent, byDevice, registered: reply.registeredSessions! }
   }
 
@@ -64,14 +64,14 @@ describe('a session survives its agent restarting (#426)', () => {
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    const joined = await waitForType<RelayMessage>(browser, 'session:joined')
+    const joined = await waitForType<SessionJoined>(browser, 'session:joined')
     return Object.assign(browser, { joined })
   }
 
   /** The device list as the dashboard sees it, flattened across agents. */
   async function devices(ws: WebSocket) {
     ws.send(JSON.stringify({ type: 'agents:list' }))
-    const listed = await waitForType<RelayMessage>(ws, 'agents:listed')
+    const listed = await waitForType<AgentsListed>(ws, 'agents:listed')
     return (listed.sessions ?? []).flatMap((s) => s.devices)
   }
 
@@ -82,7 +82,7 @@ describe('a session survives its agent restarting (#426)', () => {
 
     const second = await register([DEV_A])
 
-    const rebound = await waitForType<RelayMessage>(browser, 'session:rebound')
+    const rebound = await waitForType<SessionRebound>(browser, 'session:rebound')
     expect(rebound.sessionId).toBe(sessionId)
     // The same id came back to the agent too, or its own bookkeeping would point at a session the
     // relay has since replaced.
@@ -174,7 +174,7 @@ describe('a session survives its agent restarting (#426)', () => {
 
     const second = await register([DEV_B])
 
-    const ended = await waitForType<RelayMessage>(browser, 'session:terminated')
+    const ended = await waitForType<SessionTerminated>(browser, 'session:terminated')
     expect(ended.reason).toBe('agent-disconnected')
     expect((await devices(second.agent)).map((d) => d.id)).toEqual(['devB'])
 
@@ -189,7 +189,7 @@ describe('a session survives its agent restarting (#426)', () => {
 
     const second = await register([DEV_A])
 
-    expect((await waitForType<RelayMessage>(browserA, 'session:rebound')).sessionId).toBe(keptA)
+    expect((await waitForType<SessionRebound>(browserA, 'session:rebound')).sessionId).toBe(keptA)
     await waitForType(browserB, 'session:terminated')
     expect((await devices(second.agent)).map((d) => d.id)).toEqual(['devA'])
 
@@ -209,7 +209,7 @@ describe('a session survives its agent restarting (#426)', () => {
       ['clipboard', 'audio'],
     )
 
-    const rebound = await waitForType<RelayMessage>(browser, 'session:rebound')
+    const rebound = await waitForType<SessionRebound>(browser, 'session:rebound')
     expect(rebound.capabilities).toEqual(['clipboard', 'audio'])
     // ...but that one only proves the register frame was echoed: the relay copies `msg.capabilities`
     // into it directly, so it holds even if the session was never updated. `session:joined` is what
@@ -312,7 +312,7 @@ describe('a session survives its agent restarting (#426)', () => {
     const refused = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(refused)
     refused.send(JSON.stringify({ type: 'session:start', sessionId }))
-    expect((await waitForType<RelayMessage>(refused, 'error')).message).toBe('Agent resources exhausted')
+    expect((await waitForType<GenericError>(refused, 'error')).message).toBe('Agent resources exhausted')
     refused.close()
 
     const second = await register([DEV_A])

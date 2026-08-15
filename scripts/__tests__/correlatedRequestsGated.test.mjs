@@ -14,11 +14,17 @@ import ts from 'typescript'
 // check can see it (see the note above `OpenUrlReplyBody`).
 //
 // The member set is **derived** from the protocol, so an eighth correlated request added later fails here
-// rather than being noticed by whoever reads the comment. Two gate forms count, and both are real:
+// rather than being noticed by whoever reads the comment.
 //
-//  - `isCorrelated(msg)` inside the `case` — the inline form.
-//  - dispatch to a handler whose parameter is narrowed to `{ requestId: string }` — then the **compiler**
-//    enforces the gate, since an ungated `msg` does not satisfy the signature.
+// **Where the gate lives moved, and this file moved with it.** It used to be `isCorrelated(msg)` written
+// into each `case`, or a dispatch to a handler whose parameter was narrowed to `{ requestId: string }`.
+// Since #444 the door is a parse: `@tapflowio/protocol/validate` refuses a frame whose schema declares
+// `requestId` before `route` ever runs. So the property to check is that each correlated request's
+// **schema** demands the correlator — the same claim, one layer earlier, and now covering the empty
+// string as well as the absent field without either being spelled out at a call site.
+//
+// Checking the schema rather than the case body is also why this survives the next refactor of the
+// switch: the gate is no longer something a `case` can forget to write.
 
 const root = join(import.meta.dirname, '../..')
 const read = (p) => readFileSync(join(root, p), 'utf8')
@@ -57,53 +63,32 @@ function correlatedRequestTypes(proto) {
   return out
 }
 
-/** Handlers whose `msg` parameter is narrowed to carry the correlator — the compiler-enforced gate form. */
-function narrowedHandlers(sf) {
-  const names = new Set()
+/**
+ * For each literal in the inbound schema map, the text of its schema expression.
+ *
+ * Parsed rather than grepped: a `z.object({ … })` spans lines and nests, so a line-based match would
+ * stop at the first `}` and read a request's gate off its payload's shape.
+ */
+function schemaBodies(sf) {
+  const out = new Map()
   const visit = (node) => {
-    if (ts.isMethodDeclaration(node) && node.name) {
-      const p = node.parameters.find((x) => x.name.getText(sf) === 'msg')
-      if (p?.type && /requestId:\s*string/.test(p.type.getText(sf))) names.add(node.name.getText(sf))
+    if (ts.isPropertyAssignment(node) && ts.isStringLiteral(node.name)) {
+      out.set(node.name.text, node.initializer.getText(sf))
     }
     ts.forEachChild(node, visit)
   }
   visit(sf)
-  return names
-}
-
-/** For each `case '<type>':` in the relay's message switch, the text of its clause. */
-function caseBodies(sf) {
-  const bodies = new Map()
-  const visit = (node) => {
-    if (ts.isCaseClause(node) && ts.isStringLiteral(node.expression)) {
-      // Fall-through clauses (`case 'a': case 'b': { … }`) have an empty statement list; the following
-      // clause carries the body, so accumulate until one is non-empty.
-      bodies.set(node.expression.text, node.statements.map((s) => s.getText(sf)).join('\n'))
-    }
-    ts.forEachChild(node, visit)
-  }
-  visit(sf)
-
-  // Resolve fall-through: an empty clause shares the next non-empty one.
-  const entries = [...bodies.entries()]
-  for (let i = 0; i < entries.length; i++) {
-    if (entries[i][1] !== '') continue
-    for (let j = i + 1; j < entries.length; j++) {
-      if (entries[j][1] !== '') { bodies.set(entries[i][0], entries[j][1]); break }
-    }
-  }
-  return bodies
+  return out
 }
 
 describe('every correlated browser request is gated at the relay door', () => {
   const proto = read('packages/protocol/src/index.ts')
-  const relayPath = 'packages/relay/src/RelayServer.ts'
-  const relaySrc = read(relayPath)
-  const sf = sourceOf(relayPath, relaySrc)
+  const validatePath = 'packages/protocol/src/validate/index.ts'
+  const validateSrc = read(validatePath)
+  const sf = sourceOf(validatePath, validateSrc)
 
   const types = correlatedRequestTypes(proto)
-  const handlers = narrowedHandlers(sf)
-  const bodies = caseBodies(sf)
+  const bodies = schemaBodies(sf)
 
   it('finds the correlated request set, derived rather than listed', () => {
     // If this drops to zero the derivation broke and every assertion below would vacuously pass — the
@@ -116,25 +101,28 @@ describe('every correlated browser request is gated at the relay door', () => {
   for (const type of types) {
     it(`${type} is gated`, () => {
       const body = bodies.get(type)
-      expect(body, `${type} has no case in the relay's switch`).toBeDefined()
+      expect(body, `${type} has no schema in the inbound map — the door would refuse it as unknown-type`)
+        .toBeDefined()
 
-      const inline = body.includes('isCorrelated(msg)')
-      const viaHandler = [...handlers].some((h) => body.includes(`this.${h}(`))
       expect(
-        inline || viaHandler,
-        `${type} reaches the relay with no correlator gate: no isCorrelated(msg), and no dispatch to a ` +
-        `handler whose msg parameter requires requestId (candidates: ${[...handlers].join(', ') || 'none'})`,
+        /(^|[^.\w])requestId\b/.test(body),
+        `${type} declares a required requestId but its schema does not demand one, so the door forwards ` +
+        `an uncorrelatable request and the reply it produces cannot be attributed`,
       ).toBe(true)
+      expect(
+        body.includes('requestId: requestId.optional()'),
+        `${type} declares a required requestId and its schema makes it optional — the two disagree, and ` +
+        `the schema is the one the wire obeys`,
+      ).toBe(false)
     })
   }
 
   it('the gate tests both halves — absent and empty', () => {
-    // A gate that only checked `!== undefined` would let `''` through, and one that only checked `typeof`
-    // would let `''` through too. Both halves have a relay test behind them; this pins the predicate the
-    // derivation above trusts.
-    const decl = relaySrc.match(/function isCorrelated\([^)]*\)[^{]*\{([\s\S]*?)\n\}/)
-    expect(decl, 'isCorrelated is gone').not.toBeNull()
-    expect(decl[1]).toMatch(/typeof msg\.requestId === 'string'/)
-    expect(decl[1]).toMatch(/msg\.requestId !== ''/)
+    // The predicate this replaced rejected `''` as well as absence, and a bare `z.string()` accepts it.
+    // Nothing type-level can hold that: `.min(1)` does not change what `z.output` infers, which is
+    // exactly why it costs the tier assertions nothing — so it is checked here and exercised in
+    // `protocol`'s own `rejects an empty requestId`.
+    expect(validateSrc).toMatch(/^const requestId = z\.string\(\)\.min\(1\)$/m)
+    expect(validateSrc).toMatch(/^const sessionId = z\.string\(\)\.min\(1\)$/m)
   })
 })

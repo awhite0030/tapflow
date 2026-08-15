@@ -7,10 +7,10 @@ import { randomUUID } from 'crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import { SessionManager } from './SessionManager.js'
 import type { Session } from './SessionManager.js'
-import type { Assert, DeviceDetails, IsEmpty, RelayMessage, UIElement } from './types.js'
-import type {
-  AgentControlOutbound, ChromePayload, InputErrorReason, RelayOutbound, StreamToRelay,
-} from '@tapflowio/protocol'
+import type { DeviceDetails, UIElement } from './types.js'
+import type { ChromePayload, InputErrorReason, RelayOutbound } from '@tapflowio/protocol'
+import { directionOf, parseInbound } from '@tapflowio/protocol/validate'
+import type { ParsedInbound, ParseFailure, ParseResult } from '@tapflowio/protocol/validate'
 import { Router, json } from './router.js'
 import { requireViewAuth, requireAuth, getAuth, verifyPat } from './middleware/auth.js'
 import { classifyConnection } from './lib/connectionAuth.js'
@@ -112,18 +112,6 @@ const RESOURCE_THRESHOLD = Number.isFinite(_parsedThreshold) ? _parsedThreshold 
 // Terminal input messages the MCP client awaits an ack for — if the agent is offline
 // the relay replies input:error so the client fails truthfully (non-terminal moves/starts
 // expect no ack and are dropped silently).
-/** A request that carries a usable correlator.
- *
- *  A predicate rather than a bare `typeof` at each site, for two measured reasons. A bare check in the
- *  `switch` narrows the *property* and not the object, so `this.handleBrowserAppInstall(ws, msg)` still
- *  sees `requestId?: string` and fails to compile. And narrowing does **not** survive into a nested
- *  function, so a `fail()` closure built after the check sees `string | undefined` again — whose shortest
- *  fix is `msg.requestId!`, the write removed in `e98abd4` precisely because it puts a frame with an
- *  absent required field on the wire. This carries the narrowing through the handler signature instead,
- *  so neither a `const` copy nor an assertion is needed.
- *
- *  Empty string counts as absent: it type-checks against a required `string`, nothing validates inbound
- *  JSON (#444), and `mcp-server`'s tool schemas are bare `z.string()`. */
 /** Why a session is not this socket's to command. One reason, two prose strings — the treatment `#492`
  *  settled for `agent offline` / `Session not found`: telling a caller the session is in use when it is
  *  idle steers it off a device it could have had. Shared so the two never drift. */
@@ -131,98 +119,43 @@ function ownershipRefusal(session: Session): string {
   return session.browserSocket ? 'session held by another client' : 'session not joined'
 }
 
-/** A request that names a session, with the same policy as `isCorrelated` and for the same reason.
+/**
+ * What the door refused, said once and in a form an operator can act on.
  *
- *  Nothing validates inbound JSON (#444), so a third-party client — or an LLM driving `mcp-server`, whose
- *  tool schemas are bare `z.string()` — can send a command with no `sessionId` or an empty one. Every reply
- *  these doors produce declares `sessionId` **required**, so answering means putting a frame on the wire
- *  whose required field `JSON.stringify` erases, which every consumer's session gate then discards.
+ * This is where `isAddressed` and `isCorrelated` ended up. Both were predicates whose whole
+ * observable output was a `console.warn` — an id-less request resolved no session and was dropped by
+ * the miss anyway — and the schemas now reject the same frames earlier, including the empty-string
+ * case a bare `z.string()` would have let through. What is new is that the log names the *field*:
+ * "requestId: Too small" instead of "dropped, cannot correlate a reply".
  *
- *  **So the request is dropped, not answered.** The base's doc argued the opposite until L5d — "the
- *  only correct thing for it to send with no sessionId is `{ type: 'error' }`" — and its own premise refutes
- *  it: `GenericError` has no `requestId`, so a caller that receives one cannot attribute it and waits out the
- *  same deadline it would have waited out on silence. Answering buys nothing it did not already have; not
- *  shipping a frame that violates its own declaration is the whole payoff, and dropping achieves that more
- *  cheaply. L5d then made `error` require `sessionId`, so the escape it named no longer exists at all.
+ * Worth logging at all for the reason `isCorrelated` gave: the three places a bad frame can be
+ * dropped are otherwise silent, and an operator who upgrades the relay but not an independently
+ * installed `mcp-server` would watch commands do nothing with no trace.
  *
- *  The general form of that argument — "a caller cannot attribute an unaddressed answer" — is **narrower than
- *  it sounds**, and worth stating so nobody builds on the wide version. A dashboard viewer holds one session
- *  per socket, so an unaddressed reply would land somewhere sensible there; `SessionList` attributes a
- *  shutdown by single-slot convention with no correlator at all. What makes dropping right here is not that
- *  attribution is impossible for every consumer, but that the frame would violate its own declaration and be
- *  discarded by each consumer's session gate before any of them looked.
- *
- *  Widening `SessionStartFailure` to carry an "unaddressed" reason was the alternative, and it is what L5d
- *  is for: that union's own doc says it has a single producer in `handleSessionStart`, and adding a member
- *  here would make that false while pre-deciding what `error` is. */
-function isAddressed(msg: RelayMessage): msg is RelayMessage & { sessionId: string } {
-  if (typeof msg.sessionId === 'string' && msg.sessionId !== '') return true
-  console.warn(`[tapflow] ${msg.type} without a usable sessionId — dropped, no reply could be addressed`)
-  return false
+ * `unknown-type` stays at debug: eleven relay-produced literals land here whenever a client echoes
+ * one back, and none of them is a defect.
+ */
+function logInboundRejection(failure: ParseFailure): void {
+  if (failure.reason === 'not-an-object') return
+  if (failure.reason === 'unknown-type') {
+    logger.debug(`[tapflow] inbound frame of unknown type ${failure.type} — dropped`)
+    return
+  }
+  logger.warn(`[tapflow] inbound ${failure.type} does not match the contract — dropped:\n${failure.detail}`)
 }
+/** One member of the parse product, by literal. `route` narrows to these; a handler that takes one
+ *  gets exactly what the door proved for that type and nothing else. */
+type Inbound<T extends ParsedInbound['type']> = Extract<ParsedInbound, { type: T }>
 
-function isCorrelated(msg: RelayMessage): msg is RelayMessage & { requestId: string } {
-  if (typeof msg.requestId === 'string' && msg.requestId !== '') return true
-  // Logged, because the three places this can be dropped are all silent otherwise: the relay `break`s, the
-  // agents' own guards never see the frame, and the browser gate `return`s. An operator who upgrades the
-  // relay but not an independently installed `mcp-server` would watch commands do nothing with no trace.
-  console.warn(`[tapflow] ${msg.type} without a usable requestId — dropped, cannot correlate a reply`)
-  return false
-}
-
-const AGENT_MSG_TYPE_LIST = [
-  'agent:register', 'agent:resources', 'screenshot:done', 'screenshot:error',
-  'ui:tree:response', 'ui:tree:error',
-  'app:clear-state-done', 'app:clear-state-error',
-  'device:booting', 'device:boot-error', 'device:shutdown-done', 'device:ready',
-  'session:chrome', 'session:deviceInfo',
-  'app:install-done', 'app:install-error', 'app:launch-done', 'app:launch-error',
-  'open-url:done', 'open-url:error', 'keyboard:toggled',
-  'input:type-done', 'input:type-error', 'input:done', 'input:error',
-  // clipboard:data carries the simulator's clipboard — agent-authenticated, so a
-  // browser socket can never inject it into another viewer.
-  'clipboard:data', 'clipboard:write-done', 'clipboard:error',
-  // stream:register binds a session's stream socket — agent-only, or a browser
-  // (view PAT / cookie) could hijack an existing session's video feed.
-  'stream:register',
-] as const
-
-/** Typed `ReadonlySet<string>`, deliberately: the door below tests a `MessageType`, which is wider
- *  than the literals above, and `Set<T>.has` takes a `T`. The literal union stays reachable through
- *  the array, which is where the assertions read it from. */
-const AGENT_MSG_TYPES: ReadonlySet<string> = new Set(AGENT_MSG_TYPE_LIST)
-
-// ── the list above is checked against the protocol, both ways (#532) ─────────────────────────────
-//
-// It is a hand-maintained second copy of "what an agent produces", and it is the copy with the
-// security consequence: the door below closes a `browser`-role socket with 1008 for any member. The
-// forwards it guards mostly resolve a session from the message and send to *that session's* browser
-// with no check that the sender is that session's agent — `clipboard:*` is the deliberate exception.
-// So an agent→browser message added to the protocol and forgotten here makes a viewer drivable by
-// anyone who knows a session id, with the type union claiming otherwise.
-//
-// Measured before this change: dropping `keyboard:toggled` from the set left the static suite and
-// the relay suite green. `clipboard:data` was held only because somebody wrote that one test by
-// hand. The other 28 entries were held by nothing.
-//
-// Derivation is not available — types erase, so no runtime array can come out of a union. What is
-// available is the compiler checking two lists against each other, which is what these two lines do.
-type AgentProduced = (AgentControlOutbound | StreamToRelay)['type']
-type Listed = (typeof AGENT_MSG_TYPE_LIST)[number]
-// **`satisfies` first, and it is the security direction's real floor.** `Exclude<AgentProduced, string>`
-// is `never`, so if the list ever widens past its literals — dropping `as const`, or one non-literal
-// element — the covering assertion below passes while checking nothing. Only its sibling would fail,
-// and that sibling's own comment calls its direction the one that "gates nothing", so an author
-// trusting the comment could delete the wrong one. This line fails first and names the list.
-AGENT_MSG_TYPE_LIST satisfies readonly AgentProduced[]
-type _AgentSetCoversProtocol = Assert<IsEmpty<Exclude<AgentProduced, Listed>>>
-type _AgentSetInventsNothing = Assert<IsEmpty<Exclude<Listed, AgentProduced>>>
-
-// The invariant the door *enforces* — that nothing a browser may send is something an agent produces
-// — is asserted in `protocol/src/typeAssertions.ts` instead. It is a claim about the protocol's own
-// directions, not about this file, and naming `BrowserToRelay` here made `clientOutboundTyped` read
-// the relay as a browser-role sender. That guard was right to say so.
-
+/** The five inputs an ack answers, and the six it does not. Written as unions of `Inbound<…>` rather
+ *  than as `& { requestId: string }` intersections: the correlator is now declared on the members
+ *  themselves, so an intersection would re-state a fact the union already carries — and would keep
+ *  compiling if one of them lost the field. */
+type Acked = Inbound<'input:touch:end' | 'input:pinch:end' | 'input:key' | 'input:button' | 'input:type'>
+type Unacked = Inbound<
+  'input:touch:start' | 'input:touch:move' | 'input:pinch:start' | 'input:pinch:move'
+  | 'input:rotate' | 'input:keyboard:toggle'
+>
 
 export class RelayServer {
   private httpServer: http.Server | https.Server
@@ -616,18 +549,32 @@ export class RelayServer {
       } catch {
         return // genuinely malformed — there is no type to answer on
       }
-      // `JSON.parse` returns bare `null`, numbers and strings without throwing, and `route` reads
-      // `.type` off whatever it is handed. Rejecting non-objects here is what lets the catch below
-      // name the message safely.
-      if (typeof parsed !== 'object' || parsed === null) return
-      const msg = parsed as RelayMessage
+      // **The frame becomes a union here, and not by a cast.** `#550` asked for `RelayMessage` — a flat
+      // interface where `type` is the only required member — to become a discriminated union, and doing
+      // that with an `as` at this line would have been a downgrade: the visible cast at the
+      // `session:chrome` handler would have turned into an invisible `msg.payload`, with the compiler
+      // vouching for JSON that arrived over a socket. So the union is the *product* of a parse (#444),
+      // and what the parse could not prove is not in the type. Non-objects, unknown types and shape
+      // failures are all refused in there — including the bare `null` / number / string that
+      // `JSON.parse` returns without throwing.
+      const inbound = parseInbound(parsed)
+      // **Role and direction are settled before the shape is, and the order is load-bearing.** A first
+      // draft rejected a malformed frame and returned, which silently dropped an agent-only type a
+      // browser socket had spoofed *badly* — the 1008 that closes such a socket never fired, so the
+      // spoofer kept its connection. The direction is a fact about the `type` alone, and the type is
+      // known on a shape failure too, so nothing about that check needs the payload to be valid.
+      if (!this.settleRole(ws, inbound)) return
+      if (!inbound.ok) {
+        logInboundRejection(inbound)
+        return
+      }
       try {
-        this.route(ws, msg)
+        this.route(ws, inbound.msg, inbound.raw)
       } catch (e) {
         // A throw inside a handler used to land in the same catch as a parse failure and vanish.
         // Anything reaching here is a bug in routing, not a bad message, and the caller is left
         // waiting either way — so at least say so once instead of dropping it silently.
-        logger.error(`route failed for ${String(msg.type)}:`, e)
+        logger.error(`route failed for ${inbound.msg.type}:`, e)
       }
     })
 
@@ -662,25 +609,58 @@ export class RelayServer {
     })
   }
 
-  private route(ws: WebSocket, msg: RelayMessage): void {
-    // Assign role on the first message for local no-auth connections (agents / streams)
+  /**
+   * @param msg  what the door proved — see `parseInbound`. An Envelope-tier member arrives carrying
+   *             `type` and its correlators and nothing else, so a payload the parser did not check
+   *             cannot be read off it.
+   * @param raw  the frame as it arrived. Agent-origin messages are **forwarded as this**, so a field
+   *             a newer agent added survives a relay that does not know it — `z.object` strips, and
+   *             stripping is wrong in the one direction where the sender is the more recently
+   *             updated side. Browser-origin messages are forwarded as `msg` instead, so a key an attacker
+   *             appended does not survive. It is also where the two stored Envelope payloads come
+   *             from, which is the point: a value read off `raw` is one the parser did not vouch for.
+   */
+  /**
+   * Assign this socket's role if it does not have one, then refuse a message its role may not send.
+   *
+   * @returns `false` when the caller must stop — the socket was closed, or the frame is a failed
+   *          handshake that must not confer a role.
+   */
+  private settleRole(ws: WebSocket, inbound: ParseResult): boolean {
+    const type = inbound.ok ? inbound.msg.type : inbound.reason === 'bad-shape' ? inbound.type : undefined
+    if (type === undefined) return false
+
+    // **The role comes from the two handshake literals, deliberately not from `directionOf`.** Reading
+    // it from the message's own direction is the obvious simplification now that one exists, and it
+    // inverts the check below: a socket whose first frame is `screenshot:done` would be handed the
+    // `agent` role and then waved through the gate that exists to refuse exactly that.
+    const handshake = type === 'agent:register' || type === 'stream:register'
     if (!this.wsRoles.has(ws)) {
-      if (msg.type === 'agent:register') {
-        this.wsRoles.set(ws, 'agent')
-      } else if (msg.type === 'stream:register') {
-        this.wsRoles.set(ws, 'stream')
-      } else {
-        // Local connection whose first message is not an agent/stream handshake —
-        // treat it as a browser (e.g. dashboard opened on the same machine).
-        this.wsRoles.set(ws, 'browser')
-      }
+      // A handshake that did not parse confers nothing. Returning here rather than falling through to
+      // `browser` is what keeps an agent whose register is malformed from being closed with
+      // `Forbidden` — its frame is dropped and logged, and the next one still gets to introduce it.
+      if (handshake && !inbound.ok) return false
+      if (type === 'agent:register') this.wsRoles.set(ws, 'agent')
+      else if (type === 'stream:register') this.wsRoles.set(ws, 'stream')
+      // Local connection whose first message is not an agent/stream handshake — treat it as a browser
+      // (e.g. dashboard opened on the same machine). This fallback is what puts such a socket under
+      // the gate below.
+      else this.wsRoles.set(ws, 'browser')
     }
 
-    // Browser sockets must not spoof agent control messages
-    if (this.wsRoles.get(ws) === 'browser' && AGENT_MSG_TYPES.has(msg.type)) {
+    // Browser sockets must not spoof agent control messages.
+    //
+    // This was a hand-copied array of 29 literals with two type assertions holding it against the
+    // protocol. `directionOf` derives the same set from the schema map — verified member for member
+    // against the array it replaces, no literal added and none lost.
+    if (this.wsRoles.get(ws) === 'browser' && directionOf(type) !== 'browser') {
       ws.close(1008, 'Forbidden')
-      return
+      return false
     }
+    return true
+  }
+
+  private route(ws: WebSocket, msg: ParsedInbound, raw: Readonly<Record<string, unknown>>): void {
 
     switch (msg.type) {
       // ── Agent → Relay ─────────────────────────────────────────────────────
@@ -696,7 +676,7 @@ export class RelayServer {
       }
 
       // ── Session / Stream lifecycle ─────────────────────────────────────────
-      case 'session:start':    if (isAddressed(msg)) this.handleSessionStart(ws, msg); break
+      case 'session:start':    this.handleSessionStart(ws, msg); break
       // ── the two session commands, gated but not answered ───────────────────────────────────────
       //
       // Both destroy state a viewer depends on, and until L5c both acted on the strength of the session
@@ -714,7 +694,7 @@ export class RelayServer {
       // `session:leave-error` would grow the wire for a message no consumer reads — and `session:end` has
       // no in-repo sender at all, so it would be a reply to nobody.
       case 'session:end': {
-        if (msg.sessionId && this.ownsSession(ws, this.sessions.get(msg.sessionId))) {
+        if (this.ownsSession(ws, this.sessions.get(msg.sessionId))) {
           this.sessions.remove(msg.sessionId)
           this.dropHandlers.delete(msg.sessionId)
           this.audioDropHandlers.delete(msg.sessionId)
@@ -724,7 +704,7 @@ export class RelayServer {
         break
       }
       case 'session:leave': {
-        if (msg.sessionId && this.ownsSession(ws, this.sessions.get(msg.sessionId))) {
+        if (this.ownsSession(ws, this.sessions.get(msg.sessionId))) {
           this.sessions.clearBrowser(msg.sessionId)
           this.dropHandlers.delete(msg.sessionId)
           this.audioDropHandlers.delete(msg.sessionId)
@@ -734,7 +714,7 @@ export class RelayServer {
         break
       }
       case 'stream:register': {
-        const session = this.sessions.get(msg.sessionId!)
+        const session = this.sessions.get(msg.sessionId)
         if (session) {
           this.sessions.setStreamSocket(session.id, ws)
           this.sendTo(ws, { type: 'stream:registered' })
@@ -744,61 +724,74 @@ export class RelayServer {
 
       // ── Agent → Browser ────────────────────────────────────────────────────
       case 'session:chrome': {
-        const session = this.sessions.get(msg.sessionId!)
+        const session = this.sessions.get(msg.sessionId)
         if (!session) break
-        // Cast, not a check: nothing validates inbound messages, so the relay takes the agent's
-        // word for the shape. It only stores and forwards this, so a wrong shape surfaces in the
-        // viewer rather than here — but this is where a runtime validator belongs when one exists
-        // (see packages/protocol/AGENTS.md).
-        this.sessions.setChromeData(session.id, msg.payload as ChromePayload)
+        // **Off `raw`, and still a cast — deliberately both.**
+        //
+        // `session:chrome` is Envelope tier, so the parser proved `type` and `sessionId` and nothing
+        // about this value; reading it from `raw` is what makes that visible at the line rather than
+        // in a header. The old comment here promised a validator would replace the cast. It did not,
+        // and the reason is worth having instead of the promise: `ChromePayload` is a **closed
+        // two-member union** while `AgentRegister.platform` is `string`, open so that a third-party
+        // platform can register through `AgentRegistry.register()` (root AGENTS.md, OCP). Validating
+        // this would refuse a platform the repo promises to support — and refusing costs more than a
+        // dropped frame, because the message arrives once per boot and skipping `setChromeData` also
+        // empties what the re-join replay reads. The relay never looks inside; the viewer does, and it
+        // is where the variants are already told apart.
+        this.sessions.setChromeData(session.id, raw['payload'] as ChromePayload)
         if (session.browserSocket?.readyState === WebSocket.OPEN) {
-          session.browserSocket.send(JSON.stringify(msg))
+          session.browserSocket.send(JSON.stringify(raw))
         }
         break
       }
       case 'session:deviceInfo': {
-        const session = this.sessions.get(msg.sessionId!)
+        const session = this.sessions.get(msg.sessionId)
         if (!session) break
-        this.sessions.setDeviceInfo(session.id, msg.payload as DeviceDetails)
+        // See `session:chrome` above for why this one is a cast off `raw` too.
+        this.sessions.setDeviceInfo(session.id, raw['payload'] as DeviceDetails)
         if (session.browserSocket?.readyState === WebSocket.OPEN) {
-          session.browserSocket.send(JSON.stringify(msg))
+          session.browserSocket.send(JSON.stringify(raw))
         }
         break
       }
       case 'device:booting': {
         // clear cached device data so reconnecting browser doesn't get stale chrome
-        const session = this.sessions.get(msg.sessionId!)
+        const session = this.sessions.get(msg.sessionId)
         if (!session) break
         this.sessions.clearDeviceCache(session.id)
         if (session.browserSocket?.readyState === WebSocket.OPEN) {
-          session.browserSocket.send(JSON.stringify(msg))
+          session.browserSocket.send(JSON.stringify(raw))
         }
         break
       }
       case 'device:boot-error': {
-        const session = this.sessions.get(msg.sessionId!)
+        const session = this.sessions.get(msg.sessionId)
         if (session?.browserSocket?.readyState === WebSocket.OPEN) {
-          session.browserSocket.send(JSON.stringify(msg))
+          session.browserSocket.send(JSON.stringify(raw))
         }
         break
       }
       case 'device:shutdown-done': {
-        const session = this.sessions.get(msg.sessionId!)
+        const session = this.sessions.get(msg.sessionId)
         if (!session) break
         this.sessions.updateDeviceStatus(session.id, 'shutdown')
         this.sessions.setReadySent(session.id, false)
         if (session.browserSocket?.readyState === WebSocket.OPEN) {
-          session.browserSocket.send(JSON.stringify(msg))
+          session.browserSocket.send(JSON.stringify(raw))
         }
         break
       }
       case 'device:ready': {
-        const session = this.sessions.get(msg.sessionId!)
+        // The one inbound member whose `sessionId` is declared optional, and it is a reasoned deferral
+        // rather than an oversight — see `DeviceReady`. So this is a real guard, not a dropped `!`:
+        // an agent that omits it resolves no session here, exactly as before.
+        if (msg.sessionId === undefined) break
+        const session = this.sessions.get(msg.sessionId)
         if (!session) break
         this.sessions.updateDeviceStatus(session.id, 'booted')
         this.sessions.setReadySent(session.id, true)
         if (session.browserSocket?.readyState === WebSocket.OPEN) {
-          session.browserSocket.send(JSON.stringify(msg))
+          session.browserSocket.send(JSON.stringify(raw))
         }
         break
       }
@@ -815,9 +808,9 @@ export class RelayServer {
       case 'input:done':
       case 'input:error':
       case 'keyboard:toggled': {
-        const session = this.sessions.get(msg.sessionId!)
+        const session = this.sessions.get(msg.sessionId)
         if (session?.browserSocket?.readyState === WebSocket.OPEN) {
-          session.browserSocket.send(JSON.stringify(msg))
+          session.browserSocket.send(JSON.stringify(raw))
         }
         break
       }
@@ -827,10 +820,10 @@ export class RelayServer {
       case 'clipboard:data':
       case 'clipboard:write-done':
       case 'clipboard:error': {
-        const session = this.sessions.get(msg.sessionId!)
+        const session = this.sessions.get(msg.sessionId)
         if (session?.agentSocket !== ws) break
         if (session.browserSocket?.readyState === WebSocket.OPEN) {
-          session.browserSocket.send(JSON.stringify(msg))
+          session.browserSocket.send(JSON.stringify(raw))
         }
         break
       }
@@ -844,11 +837,13 @@ export class RelayServer {
       // one direction no reply reports. `correlatedRequestsGated` resolves fall-through by sharing the
       // next non-empty body, so it would have read the gate as covering both and passed.
       case 'device:boot': {
-        // At the door, before the session lookup — one policy for the whole request, the same shape as
-        // `open-url` next door. Both things the relay could do with an id-less boot are downstream of
-        // here (forward it, or answer it with a `device:boot-error`), and gating only one of them leaves
-        // the guarantee resting on whichever branch was not gated.
-        if (!isCorrelated(msg) || !isAddressed(msg)) break
+        // The door gate that stood here is now the schema: `device:boot` declares `sessionId` and
+        // `requestId` required, and the parser rejects an absent **or empty** one before this case is
+        // reached. The policy it enforced is unchanged and its reason still holds — both things the
+        // relay could do with an id-less boot are downstream of here (forward it, or answer it with a
+        // `device:boot-error`), so gating only one of them would leave the guarantee resting on
+        // whichever branch was not gated.
+        //
         // A boot the agent never receives leaves the viewer on "Waiting for first frame…" with nothing
         // said, and the reasons it might not arrive are worth telling apart: `bootDevice` is the first
         // call an MCP caller makes, so reporting a stale session id as a dead Mac sends the reader after
@@ -871,20 +866,25 @@ export class RelayServer {
         }
         // Tag the boot with whether the viewer is external (public IP) so the agent can pick the
         // downscale tier. The browser already reports secureContext in the payload.
-        if (msg.payload && typeof msg.payload === 'object') {
-          (msg.payload as Record<string, unknown>).external = this.wsExternal.get(ws) ?? false
-        }
+        //
+        // **Mutating the parse product, not the frame that arrived**, which is what makes this safe as
+        // well as correct: `payload` is a fresh object the parser built, so `raw` is untouched. The
+        // presence check the old line carried is gone because the schema requires the payload — and
+        // `external` is deliberately not declared on `DeviceBoot`, since the browser never sends it.
+        (msg.payload as Record<string, unknown>)['external'] = this.wsExternal.get(ws) ?? false
+        // The parse product, so a key a viewer appended from devtools is gone before the agent sees it.
         boot.session.agentSocket.send(JSON.stringify(msg))
         break
       }
       case 'device:shutdown': {
         // Deliberately **un**correlated: the relay sends this itself from the idle timer, with no browser and
-        // no id behind it, so a correlator cannot be required and an absent one is not an error. Addressing
-        // is different, and it gets **no gate either** — for the reason the unacked input clause does not:
-        // an unaddressed shutdown resolves no session and is dropped by the miss, so a gate would buy only
-        // its log, and a line no test can hold is a line that will drift. A mutation confirmed there is
-        // nothing observable to hold. Ownership is #527.
-        const session = this.sessions.get(msg.sessionId!)
+        // no id behind it, so a correlator cannot be required and an absent one is not an error.
+        //
+        // Addressing used to have no gate either, on the grounds that an unaddressed shutdown resolves no
+        // session and is dropped by the miss, so a gate would buy only its log. That reasoning is now moot
+        // rather than wrong: the schema declares `sessionId` required, so the parser refuses the frame and
+        // the log it would have bought is the one `logInboundRejection` writes. Ownership is #527.
+        const session = this.sessions.get(msg.sessionId)
         if (session?.agentSocket.readyState === WebSocket.OPEN) {
           session.agentSocket.send(JSON.stringify(msg))
         }
@@ -892,8 +892,8 @@ export class RelayServer {
       }
       // Door checks, one policy per request: an uncorrelatable request is not forwarded, not rebuilt and
       // not answered, because every reply these produce declares `requestId` as required.
-      case 'app:install': if (isCorrelated(msg) && isAddressed(msg)) this.handleBrowserAppInstall(ws, msg); break
-      case 'app:launch':  if (isCorrelated(msg) && isAddressed(msg)) this.handleBrowserAppLaunch(ws, msg); break
+      case 'app:install': this.handleBrowserAppInstall(ws, msg); break
+      case 'app:launch':  this.handleBrowserAppLaunch(ws, msg); break
       case 'open-url': {
         // **At the door, before either branch.** A correlator is required on this request, and the
         // relay has two things it could do with one that lacks it — forward it, or answer it — so
@@ -903,16 +903,17 @@ export class RelayServer {
         // an agent that predates this field would execute the request and reply uncorrelated, and
         // then nothing downstream can attribute the reply.
         //
-        // The check is here rather than in a validator because this is one required field on one
-        // message, and the relay can act on its absence locally. General inbound validation is #444.
+        // **The check is the validator now**, and the argument for it is unchanged. It read "here rather
+        // than in a validator because this is one required field on one message"; #444 built the
+        // validator, and the schema for `open-url` demands the correlator before this case is reached.
         //
-        // Dropping is the only honest answer: `open-url:error` requires the correlator too, so
+        // Dropping is still the only honest answer: `open-url:error` requires the correlator too, so
         // answering would mean shipping a frame that violates its own declaration — `JSON.stringify`
         // erases the absent key, every correlating consumer discards the result, and "agent offline"
-        // becomes a caller waiting out its full deadline. That was the first draft's other half:
-        // `requestId: msg.requestId!`, which is not the `sessionId!` below it in kind, because that
-        // one feeds a *read* whose miss still produces a visible error.
-        if (!isCorrelated(msg) || !isAddressed(msg)) break
+        // becomes a caller waiting out its full deadline. That was the first draft's other half,
+        // `requestId: msg.requestId!` — an assertion in an *outbound* frame, unlike the inbound
+        // `sessionId!` this file used to carry, which fed a read whose miss still produced a visible
+        // error. Neither exists any more.
         const target = this.dispatchTarget(ws, msg.sessionId)
         if (target.ok) {
           target.session.agentSocket.send(JSON.stringify(msg))
@@ -929,7 +930,6 @@ export class RelayServer {
       case 'app:clear-state': {
         // Verbatim forward like `open-url`, so the correlator rides for free; the door check and the echo
         // are the same two lines.
-        if (!isCorrelated(msg) || !isAddressed(msg)) break
         const target = this.dispatchTarget(ws, msg.sessionId)
         if (target.ok) {
           target.session.agentSocket.send(JSON.stringify(msg))
@@ -960,11 +960,10 @@ export class RelayServer {
         // No ack, so no correlator to check and nothing to answer. An unowned frame is dropped rather
         // than refused for the same reason: there is no waiter to tell.
         //
-        // **And no `isAddressed` gate**, unlike the answered five. An unaddressed frame resolves no session
-        // and is dropped by the miss either way, so the gate would buy only its log — one line per
-        // `input:touch:move`, which is the ~60/s the ownership warn was removed from this same method for.
-        // A mutation confirmed it: adding the gate here changes nothing a test can observe, and a line no
-        // test can hold is a line that will drift.
+        // These carry no correlator by declaration, so nothing was ever gated on one here — and the
+        // address is now the schema's business rather than this clause's. What the split still buys is
+        // unchanged and is the reason it exists: a correlator gate written into a shared body would have
+        // reached these six as well, dropping every opening and move frame with the answered five.
         this.forwardUnacked(ws, msg)
         break
       }
@@ -975,7 +974,7 @@ export class RelayServer {
       case 'input:type': {
         // One policy at the door, as for the app commands: an uncorrelatable request is not forwarded and
         // not answered, because every reply it could produce declares `requestId` required.
-        if (isCorrelated(msg) && isAddressed(msg)) this.handleAckedInput(ws, msg)
+        this.handleAckedInput(ws, msg)
         break
       }
       // Kept out of the input:* chain above: these need their own error type, and the caller
@@ -990,7 +989,6 @@ export class RelayServer {
         // `clipboard:error` whose required correlator is missing, which `useClipboardBridge` discards on
         // `if (!msg.requestId) return` — so "agent offline" became the caller waiting out its budget.
         // Removed once already in `e98abd4`, for `open-url`, and still here.
-        if (!isCorrelated(msg) || !isAddressed(msg)) break
         // Ownership matters most here of all of them: a `clipboard:write` from a socket that does not hold
         // the session pastes its text into someone else's device, and a `clipboard:read` presses the copy
         // or cut chord on it — and the reply routes to the session's own browser, so the payload lands on
@@ -1009,8 +1007,7 @@ export class RelayServer {
     }
   }
 
-  private handleAgentResources(ws: WebSocket, msg: RelayMessage): void {
-    if (!msg.resources) return
+  private handleAgentResources(ws: WebSocket, msg: Inbound<'agent:resources'>): void {
     this.sessions.setResources(ws, msg.resources)
     const agentName = this.sessions.getAllByAgentSocket(ws)[0]?.agentName
     if (agentName) {
@@ -1143,7 +1140,7 @@ export class RelayServer {
     return true
   }
 
-  private handleAgentRegister(ws: WebSocket, msg: RelayMessage): void {
+  private handleAgentRegister(ws: WebSocket, msg: Inbound<'agent:register'>): void {
     // Re-register from the same Mac (machine id + platform): the old socket's close may not have
     // fired yet after an unclean drop (Wi-Fi loss, sleep) — its TCP teardown lags — which would
     // leave a duplicate, eventually-"Stale" card. Evict the stale agent's sessions and terminate
@@ -1241,7 +1238,7 @@ export class RelayServer {
    *  non-empty `string` by the door (`isAddressed`), so every refusal can name the join it refuses. Before
    *  L5d they carried none, and the clients' join waiters matched `sessionId === undefined || sessionId ===
    *  mine` — with no such key the left half was always true, so any refusal resolved any pending join. */
-  private handleSessionStart(ws: WebSocket, msg: RelayMessage & { sessionId: string }): void {
+  private handleSessionStart(ws: WebSocket, msg: Inbound<'session:start'>): void {
     const session = this.sessions.get(msg.sessionId)
     if (!session) {
       this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message: 'Session not found', reason: 'session-not-found' })
@@ -1367,8 +1364,8 @@ export class RelayServer {
    *  Dropped rather than refused when unowned, and that asymmetry with `handleAckedInput` is the whole
    *  reason these have their own clause: refusing means answering, and there is no waiter here to answer.
    *  `clipboard:data`'s silent `break` is the precedent that fits — a frame nobody is waiting on. */
-  private forwardUnacked(ws: WebSocket, msg: RelayMessage): void {
-    const session = this.sessions.get(msg.sessionId!)
+  private forwardUnacked(ws: WebSocket, msg: Unacked): void {
+    const session = this.sessions.get(msg.sessionId)
     if (session && !this.ownsSession(ws, session)) {
       // **Deliberately silent.** A first draft logged here, which is one line per `input:touch:move` — the
       // dashboard sends those per `pointermove`, so ~60/s for as long as a finger is down, unbounded and
@@ -1387,9 +1384,8 @@ export class RelayServer {
    *  a 2s deadline must not be dropped silently, because the caller's fallback reports silence from a
    *  session that has never acked as **success** (#457) — so a silent drop here would report an input that
    *  never left the relay as landed, which is worse than the misrouting it replaced. */
-  private handleAckedInput(ws: WebSocket, msg: RelayMessage & { requestId: string; sessionId: string }): void {
-    // No `!`: the door predicate narrowed the parameter, so the assertion here was dead and counted itself
-    // into #444's remaining body as if it were a real gap.
+  private handleAckedInput(ws: WebSocket, msg: Acked): void {
+    // No `!`: the parameter is narrowed by the door, which is the parse now rather than a predicate.
     const session = this.sessions.get(msg.sessionId)
 
     if (session && !this.ownsSession(ws, session)) {
@@ -1433,7 +1429,7 @@ export class RelayServer {
    *  and burned its caller's full deadline. */
   private refuseInput(
     ws: WebSocket,
-    msg: RelayMessage & { requestId: string; sessionId: string },
+    msg: Acked,
     message: string,
     reason: InputErrorReason,
   ): void {
@@ -1451,7 +1447,7 @@ export class RelayServer {
    *  caller waits for the reply matching its own sessionId, so anything else is indistinguishable
    *  from silence and it waits out the deadline (#445). `Session not found` is app-specific for the
    *  same reason: a generic `error` cannot be correlated by construction. */
-  private handleBrowserAppInstall(ws: WebSocket, msg: RelayMessage & { requestId: string; sessionId: string }): void {
+  private handleBrowserAppInstall(ws: WebSocket, msg: Inbound<'app:install'>): void {
     const sessionId = msg.sessionId
     const { requestId } = msg
     // Closing over the narrowed correlator covers all four failure exits at once. It does **not** cover a
@@ -1469,10 +1465,13 @@ export class RelayServer {
     // someone else was testing, with the reply going to that session's browser rather than to it.
     if (!this.ownsSession(ws, session)) return fail(ownershipRefusal(session))
 
-    // `JSON.parse` does not honour `RelayMessage`, so buildId is whatever the sender put there.
+    // The schema already refused a non-integer `buildId`, so this is now belt-and-braces rather than
+    // the only guard. Kept because it is also the *answer*: the parser drops a bad frame silently and
+    // this tells the caller `Build not found` instead of leaving it on its deadline.
     // better-sqlite3 binds a missing value as NULL but *throws* on an object or array — and that
     // exception is swallowed by the message-loop catch, which is the silence this PR exists to
-    // remove. Checked here rather than trusted; general inbound validation is #444.
+    // remove. The schema refuses the object and array outright; this catches the `NaN` it carries
+    // through for the rest, which is what keeps the caller answered instead of silently dropped.
     if (!Number.isInteger(msg.buildId)) return fail('Build not found')
 
     const build = getDb()
@@ -1497,7 +1496,7 @@ export class RelayServer {
   }
 
   /** Relay looks up bundle_id from DB. Same correlation rules as `handleBrowserAppInstall`. */
-  private handleBrowserAppLaunch(ws: WebSocket, msg: RelayMessage & { requestId: string; sessionId: string }): void {
+  private handleBrowserAppLaunch(ws: WebSocket, msg: Inbound<'app:launch'>): void {
     const sessionId = msg.sessionId
     const { requestId } = msg
     // Closing over the narrowed correlator covers all four failure exits at once. It does **not** cover a
@@ -1515,8 +1514,7 @@ export class RelayServer {
     // someone else was testing, with the reply going to that session's browser rather than to it.
     if (!this.ownsSession(ws, session)) return fail(ownershipRefusal(session))
 
-    // See handleBrowserAppInstall — an object here throws inside the driver and the exception is
-    // swallowed upstream.
+    // See `handleBrowserAppInstall` — the schema refuses it first; this is what answers the caller.
     if (!Number.isInteger(msg.buildId)) return fail('Bundle ID not available for this build')
 
     const build = getDb()
@@ -1644,26 +1642,27 @@ export class RelayServer {
     })
   }
 
-  private handleUITreeResponse(msg: RelayMessage): void {
-    if (!msg.requestId) return
+  private handleUITreeResponse(msg: Inbound<'ui:tree:response'>): void {
     const pending = this.pendingUITrees.get(msg.requestId)
     if (!pending) return
-    pending.resolve(msg.elements ?? [])
+    pending.resolve(msg.elements)
   }
 
-  private handleUITreeError(msg: RelayMessage): void {
-    if (!msg.requestId) return
+  private handleUITreeError(msg: Inbound<'ui:tree:error'>): void {
     const pending = this.pendingUITrees.get(msg.requestId)
     if (!pending) return
-    pending.reject(new Error(msg.message ?? 'UI tree query failed'))
+    // `||`, not `??`: the schema defaults an absent message to `''` rather than leaving it undefined,
+    // so the fallback has to treat empty as absent or an older agent's error would read as blank.
+    pending.reject(new Error(msg.message || 'UI tree query failed'))
   }
 
-  private handleScreenshotDone(msg: RelayMessage): void {
-    if (!msg.requestId) return
+  private handleScreenshotDone(msg: Inbound<'screenshot:done'>): void {
     const pending = this.pendingScreenshots.get(msg.requestId)
     if (!pending) return
-    const buf = Buffer.from(msg.data ?? '', 'base64')
-    const claimed = msg.format ?? 'png'
+    // The `?? ''` / `?? 'png'` these two used to carry are now `.default()`s in the schema, where a
+    // reader can see that the tolerance is for an older agent rather than for any absent field.
+    const buf = Buffer.from(msg.data, 'base64')
+    const claimed = msg.format
     // Logged, **not** overwritten. The field means what the agent says it produced, and correcting it
     // here would make the relay the authority on something only the agent can know — a contract
     // change, where this is a drift detector. It costs four bytes of an already-decoded buffer.
@@ -1680,11 +1679,11 @@ export class RelayServer {
     pending.resolve(buf, claimed)
   }
 
-  private handleScreenshotError(msg: RelayMessage): void {
-    if (!msg.requestId) return
+  private handleScreenshotError(msg: Inbound<'screenshot:error'>): void {
     const pending = this.pendingScreenshots.get(msg.requestId)
     if (!pending) return
-    pending.reject(new Error(msg.message ?? 'Screenshot failed'))
+    // `||` for the reason `handleUITreeError` gives.
+    pending.reject(new Error(msg.message || 'Screenshot failed'))
   }
 
   private flushResourceBuffers(): void {

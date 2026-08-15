@@ -34,9 +34,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produced it — the set is deliberately smaller than any one agent's internals. (`not-session-owner`
   is the eighth member and is the relay's alone: it refuses such a frame at its door, before any agent
   sees it.) Prose stays welcome in `message` and may now be omitted.
+- **`@tapflowio/relay` no longer exports `RelayMessage` or `MessageType`.** They were the relay's own
+  copy of the wire contract — a flat interface where `type` was the only required member, and a
+  hand-maintained list of 62 literals beside it — and they disagreed with `@tapflowio/protocol` about
+  the same fields, which is the drift this release closes. Nothing in tapflow imported them; this
+  affects code outside it that did.
+  `Migrate:` import the message types from `@tapflowio/protocol` instead, which declares one interface
+  per message and unions them by direction — `BrowserToRelay`, `AgentToRelay`, `BrowserInbound` and so
+  on. A `RelayMessage` used as "any frame on this socket" becomes the union for that socket's
+  direction, and narrowing on `type` gives the individual message.
 
 ### Changed
 
+- **The relay now checks every message it receives against the contract, and refuses the ones that
+  break it.** Until now it checked only what it *sent*. A command with a missing payload, an empty
+  session id, or a build id that was not a number was forwarded to a device anyway — or answered with a
+  reply whose own required field was missing, which every client discards, turning a diagnosis into a
+  caller waiting out its deadline. Where a request has an error reply the caller still gets one; where
+  it has none the frame is dropped and the log names the field that failed, instead of the command
+  silently doing nothing. Well-formed messages are unaffected.
+- **A field appended to a browser message no longer reaches a device.** Anything the contract does not
+  declare is removed before the relay forwards it on. Messages coming *from* an agent are forwarded
+  untouched, so an agent newer than its relay does not lose fields it adds.
 - Split stable dashboard vendor dependencies into smaller chunks to reduce maximum bundle size and improve cache reuse across releases.
 - **A refused session now says which session it refused and why.** Opening a device someone else already
   has open, or one whose Mac is under load, used to produce a generic failure the dashboard could not

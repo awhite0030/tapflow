@@ -32,7 +32,18 @@ The cost of a broad name is ambiguity about what belongs — answered by the two
 ## Scope — what belongs here
 
 - **JSON message types** over the relay WebSocket, grouped by direction. That is all the package holds today, and the main entry point is **runtime-free** — see HOW NOT.
-- **Runtime validators** would belong here *conceptually* — next to the types they validate, since splitting them recreates the drift this package removes. But they cannot go in the main entry: that would break the erasure the dashboard depends on. Adding them means a second entry point (`@tapflowio/protocol/validate`) that only server-side consumers import, which is an explicit scope change, not a drive-by addition. Tracked in #444.
+- **Runtime validation of inbound messages** lives in `src/validate/`, reached as
+  `@tapflowio/protocol/validate` and imported only by the relay. It is here rather than in the relay for
+  the reason the package exists: a schema file is a second copy of the contract, and a second copy
+  drifts. The main entry stays runtime-free, so the erasure the dashboard depends on is unchanged.
+  Two rules make the copy safe, and both are compile errors rather than conventions:
+  - **Two tiers, with different static types.** `Validated` parses to the interface;
+    `Envelope` parses to `EnvelopeOf<I>` — the interface projected onto `type`/`sessionId`/`requestId`
+    — so a payload the door did not check **cannot be read** off the result. A field that was not
+    validated must not appear in the type; anything else moves the lie somewhere quieter.
+  - **`SchemaExact` ties each schema to its interface**, and refuses `z.custom<T>()` and a
+    `const s: z.ZodType<T>` annotation by kind, because both produce `T` with no `any` for `IsAny` to
+    catch and would compare `T` with itself.
 
 ## Scope — what does not
 
@@ -460,10 +471,23 @@ sends through `sendTo(socket, msg: RelayOutbound)`, so its literal is checked by
 ## HOW NOT
 
 - **No `enum`, no const objects, no runtime values of any kind — in the main entry.** They compile to JavaScript, so the moment a consumer references one as a value it stops being erased by `import type` and lands in the dashboard's browser bundle. String literal unions only. (`src/typeAssertions.ts` is checked by `tsconfig.assertions.json` and excluded from the build for exactly this reason — it declares values, so it must not reach `dist`.)
-- **Do not add a dependency.** This package is a leaf — it must stay importable from the browser bundle, the relay, and mcp-server alike.
+- **Do not add a dependency to the main entry.** It must stay importable from the browser bundle, the
+  relay and mcp-server alike, and erasable under `import type`.
+  `zod` is a dependency of the package (`./validate` needs it at runtime) and is deliberately **not**
+  reachable from `./`. The cost is stated rather than hidden: `agent-core` and `flow-runner` import this
+  package without importing `/validate`, so they carry zod in their install for nothing. It has no
+  transitive dependencies and neither ships to a browser, which is why that was judged cheap — a second
+  runtime dependency is not automatically the same trade.
 - Do not widen a message to `unknown`/`Record<string, unknown>` to make a call site compile. That reopens the hole this package closes; fix the call site or correct the type.
 
 ## Consuming it
+
+**Every `exports` subpath needs its own `source` condition.** `./validate` carries one, and without it
+the relay's tests would validate against whatever was last *built* of this package — a stale parser
+reporting green on a schema you just edited, which is the failure #459 shipped and the direction that
+hides a validation hole rather than exposing one. `scripts/__tests__/testsReadSource.test.mjs` checks
+that a package extends `sourceFirst`; it does **not** look at subpaths, so nothing would report the
+omission.
 
 The relay is composite (TS project references), so it needs both the dependency **and** a `references` entry pointing here — see [`contributing/monorepo-project-references.md`](../../contributing/monorepo-project-references.md). `dashboard` and `mcp-server` are not composite and need only the dependency — but they do **not** read `src` under `tsc`. Neither sets `customConditions` (`dashboard` is `moduleResolution: bundler`, `mcp-server` is `Node16`), so both take the first key in this package's `exports`, which is `./dist/index.d.ts`. The `source` condition is wired into **vitest** only, via `vitest.shared.ts`'s `ssr.resolve.conditions`.
 

@@ -6,9 +6,17 @@ import path from 'path'
 import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
-import type { RelayMessage, UIElement } from '../types'
+
+import type { UIElement } from '../types'
 import { signJwt } from '../middleware/auth'
 import { waitForOpen, waitForType } from '@tapflowio/test-utils'
+import type { AgentRegistered, BrowserToRelay, RelayToAgent } from '@tapflowio/protocol'
+
+/** What an agent socket actually receives. `RelayToAgent` is only the half the relay
+ *  originates or rebuilds; browser commands it forwards verbatim (`app:clear-state`,
+ *  `clipboard:*`, `input:*`) arrive unchanged and are declared in `BrowserToRelay`. The
+ *  protocol has no single union for this — #557. */
+type AgentSocketInbound = RelayToAgent | BrowserToRelay
 
 const ELEMENTS: UIElement[] = [
   {
@@ -75,11 +83,11 @@ describe('GET /api/v1/sessions/:sessionId/ui-tree', () => {
   async function setupAgent(devices = [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }]) {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
-    agent.send(JSON.stringify({ type: 'agent:register', devices }))
+    agent.send(JSON.stringify({ type: 'agent:register', platform: 'ios', agentName: 'uiTree-1', devices }))
     // Through the shared recorder, not a raw `once`: the recorder queues the frame either way, and
     // consuming it here keeps a later wait on this socket from finding it.
-    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
-    const sessionId = reply.registeredSessions![0]!.sessionId
+    const reply = await waitForType<AgentRegistered>(agent, 'agent:registered')
+    const sessionId = reply.registeredSessions[0]!.sessionId
     return { agent, sessionId }
   }
 
@@ -87,7 +95,7 @@ describe('GET /api/v1/sessions/:sessionId/ui-tree', () => {
     const { agent, sessionId } = await setupAgent()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'ui:tree:request') {
         agent.send(JSON.stringify({
           type: 'ui:tree:response',
@@ -148,7 +156,7 @@ describe('GET /api/v1/sessions/:sessionId/ui-tree', () => {
     const { agent, sessionId } = await setupAgent()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'ui:tree:request') {
         agent.send(JSON.stringify({
           type: 'ui:tree:error',
@@ -189,7 +197,7 @@ describe('GET /api/v1/sessions/:sessionId/ui-tree', () => {
     const { agent, sessionId } = await setupAgent()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'ui:tree:request') agent.close()
     })
 
@@ -207,7 +215,7 @@ describe('GET /api/v1/sessions/:sessionId/ui-tree', () => {
     const { agent, sessionId } = await setupAgent()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'ui:tree:request') {
         agent.send(JSON.stringify({
           type: 'ui:tree:response',
@@ -254,7 +262,7 @@ describe('GET /api/v1/sessions/:sessionId/ui-tree', () => {
     const { agent, sessionId } = await setupAgent()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'ui:tree:request') {
         agent.send(JSON.stringify({
           type: 'ui:tree:response',
