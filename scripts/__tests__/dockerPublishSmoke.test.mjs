@@ -52,22 +52,44 @@ describe('docker-publish runtime smoke test', () => {
 
   it('waits for a live container and a non-error HTTP response before passing', () => {
     const smoke = stepBlock('Smoke test image runtime')
-    expect(smoke).toContain('for attempt in $(seq 1 60)')
+    expect(smoke).toContain('timeout-minutes: 5')
+    expect(smoke).toContain('for attempt in $(seq 1 20)')
     expect(smoke).toContain("docker inspect -f '{{.State.Running}}' \"$container\"")
     expect(smoke).toContain('http://127.0.0.1:4000/')
     expect(smoke).toContain('http://127.0.0.1:4000/api/v1/auth/status')
+    expect(smoke.match(/curl --connect-timeout 2 --max-time 2/g) ?? []).toHaveLength(2)
     expect(smoke).toContain('[ "$root_status" -ge 200 ] && [ "$root_status" -lt 400 ]')
     expect(smoke).toContain('[ "$api_status" -ge 200 ] && [ "$api_status" -lt 400 ]')
     expect(smoke).toContain("grep -Fq '<title>tapflow</title>' \"$root_body\"")
     expect(smoke).toContain('grep -Eq \'"initialized":(true|false)\' "$api_body"')
   })
 
-  it('reports logs on failure and removes test containers and volumes', () => {
+  it('reports sanitized failure diagnostics and removes test containers and volumes', () => {
     const smoke = stepBlock('Smoke test image runtime')
     expect(smoke).toContain('trap cleanup EXIT')
-    expect(smoke).toContain('docker logs "$container"')
+    expect(smoke).not.toContain('docker logs "$container"')
+    expect(smoke).toContain('diagnose_container >&2')
+    expect(smoke).toContain('State.Status={{.State.Status}}')
+    expect(smoke).toContain('State.ExitCode={{.State.ExitCode}}')
+    expect(smoke).toContain('State.OOMKilled={{.State.OOMKilled}}')
     expect(smoke).toContain('docker rm -f "$container"')
     expect(smoke).toContain('docker volume rm "$volume"')
+  })
+
+  it('recreates the same image with the same volume and checks JWT secret continuity', () => {
+    const smoke = stepBlock('Smoke test image runtime')
+    expect(smoke.match(/start_container/g) ?? []).toHaveLength(3)
+    expect(smoke).toContain('wait_for_ready "first boot"')
+    expect(smoke).toContain('docker rm -f "$container" >/dev/null')
+    expect(smoke).toContain('wait_for_ready "restart"')
+    expect(smoke).toContain('[ ! -s /app/.tapflow/data/jwt-secret ]')
+    expect(smoke).toContain('JWT secret file is missing or empty.')
+    expect(smoke).toContain('sha256sum /app/.tapflow/data/jwt-secret | cut -d " " -f1')
+    expect(smoke).toContain('first_jwt_secret="$(jwt_secret_fingerprint)"')
+    expect(smoke).toContain('second_jwt_secret="$(jwt_secret_fingerprint)"')
+    expect(smoke).toContain('[ "$first_jwt_secret" != "$second_jwt_secret" ]')
+    expect(smoke).toContain('"$SMOKE_IMAGE"')
+    expect(smoke).toContain('-v "$volume:/app/.tapflow/data"')
   })
 
   it('does not copy stale TypeScript build metadata without matching dist output', () => {
