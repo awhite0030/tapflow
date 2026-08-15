@@ -47,8 +47,20 @@ const assertions = assertionsRaw.replace(/^\s*\/\/.*$/gm, '')
  *  `ClipboardWriteDone` as orphans of nothing. A parser that loses a declaration reports a hole that
  *  is not there, which is the same class of failure as one that reports full coverage of nothing. */
 const srcNoComments = src
-  .replace(/[ \t]*\/\*\*[\s\S]*?\*\/\n?/g, '')
-  .split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n')
+  // Every block comment, not only JSDoc, and the whitespace it sat on — see below for why the trailing
+  // `\n?` matters.
+  .replace(/[ \t]*\/\*[\s\S]*?\*\/\n?/g, '')
+  .split('\n')
+  // A comment-only line goes entirely: leaving it blank would terminate the union parser, which stops
+  // at a blank line.
+  .filter((l) => !/^\s*\/\//.test(l))
+  // **And an inline one goes while its line stays.** A first draft stripped only whole-line comments,
+  // and a trailing `// unlike OrphanPing, …` on a union member put `OrphanPing` in that direction's
+  // member list — so a message declared in no direction at all was reported as reachable and the
+  // orphan check stayed green. Measured. Prose read as a value is the shape this repo has now been
+  // bitten by three times.
+  .map((l) => l.replace(/\s*\/\/.*$/, ''))
+  .join('\n')
 
 /** Every `export type X = A | B | …` whose right-hand side is a union of names. */
 function unionMembers(text) {
