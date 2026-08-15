@@ -43,6 +43,16 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
   - **agent → browser: the original frame (`raw`).** `z.object` strips undeclared keys, so forwarding the parse product would delete a field a newer agent added — the one direction where the sender is the more recently updated side.
   - **browser → agent: the parse product (`msg`).** Here the stripping is the point: a key a viewer appended from devtools is gone before any agent sees it.
 
+  **A refused browser request is answered, not just dropped.** The envelope is judged separately from
+  the payload, so a frame whose `sessionId` and `requestId` are good carries everything a reply needs —
+  and `refuseMalformed` sends the error type that request's own waiter reads, with `reason: 'malformed'`
+  on the input pair. Without it this door would have converted an answered failure into silence: a
+  malformed `open-url` used to reach the agent, whose guard answered, and `IOSAgent.ts` names this
+  validation as what takes that over. The cost is worst on the inputs, because `awaitInputAck` reports
+  silence from a never-acked session as **success** (#457). The twelve answerable requests,
+  `ANSWERABLE` in the protocol and the replies in `refuseMalformed` are held to one derived set by
+  `scripts/__tests__/correlatedRequestsGated.test.mjs`.
+
   Agent payloads are **deliberately not validated**, and the reason is not a deferral. `AgentRegister.platform` is `string`, open so a third-party platform can register through `AgentRegistry.register()` (OCP), while `ChromePayload` is a closed two-member union — so a platform this repo promises to support has no valid `session:chrome` variant, and refusing one would cost it bezel and buttons for the life of the session. The six messages the relay *consumes* (`agent:register`, `agent:resources`, the screenshot and ui-tree replies) are validated, with a `.default()` for every field the relay used to read through a `??`.
 - **Clipboard bridge** (`clipboard:*`): browser→agent `clipboard:read` (`payload.press`: `'copy' | 'cut'` presses that chord on the device first) and `clipboard:write` (`payload.text`, `payload.pasteAfter`); agent→browser `clipboard:data` / `clipboard:write-done` / `clipboard:error`, correlated by `requestId`. Unlike the other agent→browser replies these are **bound to the session's own `agentSocket`** — their payload lands on the viewer's host OS clipboard, so a second agent must not be able to address someone else's session. An undeliverable request answers `clipboard:error` immediately rather than letting the caller's deadline expire. Agents advertise `capabilities: ['clipboard']` in `agent:register`; the relay echoes them on `session:joined` so a viewer can tell a capable agent from one that predates the feature instead of inferring it from silence.
 - **An input the relay cannot dispatch is answered here, with a reason.** The four terminal frames get an

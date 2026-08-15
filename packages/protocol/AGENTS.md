@@ -44,6 +44,11 @@ The cost of a broad name is ambiguity about what belongs — answered by the two
   - **`SchemaExact` ties each schema to its interface**, and refuses `z.custom<T>()` and a
     `const s: z.ZodType<T>` annotation by kind, because both produce `T` with no `any` for `IsAny` to
     catch and would compare `T` with itself.
+  - **The envelope is judged before the payload**, so a payload failure on one of the twelve correlated
+    browser requests comes back as `bad-payload` carrying the address and the correlator — which is what
+    lets the relay answer it instead of dropping it. `ANSWERABLE` is that set; keeping it equal to the
+    correlated request set is `scripts/__tests__/correlatedRequestsGated.test.mjs`'s job, because
+    nothing else compares the two.
 
 ## Scope — what does not
 

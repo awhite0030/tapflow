@@ -80,6 +80,14 @@ function correlatedRequestTypes(proto) {
 function correlatorOf(sf) {
   const out = new Map()
   const visit = (node) => {
+    // **Only the inbound maps.** `ANSWERABLE` sits in the same file and is keyed by the same literals,
+    // but its values are `envC('…')` calls rather than `z.object({ … })` — so a walk that read it would
+    // find no `requestId` property and report every correlated request as ungated. Skipping it by name
+    // rather than by shape, because "no shape I recognise" is exactly the answer a broken parser gives.
+    if (
+      ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
+      !['BROWSER_INBOUND', 'AGENT_CONSUMED', 'AGENT_FORWARDED', 'STREAM_INBOUND'].includes(node.name.text)
+    ) return
     // `'app:install': z.object({ … })` — a string-literal key whose value is a call.
     if (!ts.isPropertyAssignment(node) || !ts.isStringLiteral(node.name)) return ts.forEachChild(node, visit)
     const shape = ts.isCallExpression(node.initializer) ? node.initializer.arguments[0] : undefined
@@ -148,6 +156,56 @@ describe('every correlated browser request is gated at the relay door', () => {
       ).toBe(false)
     })
   }
+
+  // ── the three lists that must not drift apart ─────────────────────────────────────────────────
+  //
+  // A correlated browser request is refused at the door when its payload is wrong, and refusing it
+  // without answering turns a diagnosis into a caller waiting out its deadline — which for the acked
+  // inputs is worse than it sounds, since `awaitInputAck` reports silence from a never-acked session
+  // as **success** (#457). So three lists have to agree, and only one of them is derived:
+  //
+  //   1. the correlated request set, from the protocol (above)
+  //   2. `ANSWERABLE` in `protocol/src/validate/index.ts`, which decides what gets a second parse
+  //   3. `refuseMalformed` in the relay, which decides which reply each one gets
+  //
+  // Nothing else compares them: a request missing from (2) is refused with `bad-shape` and dropped, and
+  // one missing from (3) falls to a `default` that answers `input:error` — a reply whose waiter does
+  // not exist for a non-input request.
+
+  /** The literal keys of the `ANSWERABLE` map. */
+  function answerableTypes(src) {
+    const body = src.match(/const ANSWERABLE = \{([\s\S]*?)\n\} as const/)
+    expect(body, 'ANSWERABLE is gone from protocol/src/validate').not.toBeNull()
+    return new Set([...body[1].matchAll(/^\s*'([^']+)':/gm)].map((m) => m[1]))
+  }
+
+  /** The literals `refuseMalformed` names explicitly, i.e. everything not left to its `default`. */
+  function explicitlyAnswered(src) {
+    const body = src.match(/private refuseMalformed\([\s\S]*?\n  \}/)
+    expect(body, 'refuseMalformed is gone from the relay').not.toBeNull()
+    return new Set([...body[0].matchAll(/case '([^']+)':/g)].map((m) => m[1]))
+  }
+
+  it('every correlated request can be answered when its payload is refused', () => {
+    const answerable = answerableTypes(validateSrc)
+    expect([...types].filter((t) => !answerable.has(t)).sort()).toEqual([])
+    expect([...answerable].filter((t) => !types.includes(t)).sort()).toEqual([])
+  })
+
+  it('a non-input request is answered by name, not by the input fallback', () => {
+    // `refuseMalformed`'s `default` sends `input:error`, which is right for the four remaining acked
+    // inputs and wrong for anything else — `mcp-server` and `flow-runner` key their waiters on the
+    // pair each request declares, so an `app:launch` answered with `input:error` is not an answer.
+    const named = explicitlyAnswered(read('packages/relay/src/RelayServer.ts'))
+    const unnamed = [...answerableTypes(validateSrc)].filter((t) => !named.has(t))
+    expect(
+      unnamed.filter((t) => !t.startsWith('input:')).sort(),
+      'these fall to refuseMalformed\'s input:error default and need a case of their own',
+    ).toEqual([])
+    // Non-vacuous: if the parser found no cases at all, everything would look unnamed and the filter
+    // above would still pass for the inputs alone.
+    expect(named.size).toBeGreaterThanOrEqual(7)
+  })
 
   it('the shared constants carry the non-empty half', () => {
     // The per-type assertions above accept the shared constant by name, so this is what gives that name

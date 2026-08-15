@@ -18,13 +18,17 @@ into an invisible `msg.payload`, with the compiler vouching for JSON that arrive
 
 What a user can observe:
 
-- **A malformed command is refused where it used to be forwarded.** A `device:boot` with no payload, a
-  `session:start` whose `sessionId` is the empty string, an `app:install` whose `buildId` is an object
-  — these reached an agent before, or produced a reply whose own required field was missing. The frame
-  is now dropped and the log names the field that failed, instead of the command silently doing
-  nothing. `app:install` and `app:launch` are the exception and still answer `Build not found`, because
-  that answer already existed and is worth more than the refusal. No client shipped here can produce
-  any of these; a third-party one can.
+- **A malformed command is refused before it reaches a device, and the caller is told which field was
+  wrong.** A `device:boot` with no payload, an `open-url` with no URL, an `app:install` whose `buildId`
+  is an object — these were forwarded to an agent before, and the agent's own guard answered if it had
+  one. The relay answers now, in the shape that request's waiter reads, so the diagnosis arrives sooner
+  and does not depend on which agent is on the other end. A request that has no reply at all is dropped
+  and logged with the field that failed. No client shipped here can produce any of these; a third-party
+  one can.
+- **A command with no usable session id or request id is refused outright**, including the empty
+  string, which type-checks and which an LLM driving the MCP tools could produce. Answering one is not
+  possible — the reply's own required fields would be missing, and every client discards such a frame —
+  so it is dropped with a log rather than turned into a caller waiting out its deadline.
 - **A key appended to a browser message no longer reaches a device.** Browser-origin frames are
   forwarded as the parse product, so anything the contract does not declare is gone before an agent
   sees it. Agent-origin frames are forwarded unchanged, so a field a newer agent adds still survives a

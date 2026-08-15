@@ -125,24 +125,13 @@ const BROWSER_INBOUND = {
     requestId: requestId.optional(),
     payload: z.object({ deviceId: z.string() }),
   }),
-  // **`.catch(NaN)` rather than a plain `z.number().int()`, and the reason is a measured regression.**
-  //
-  // A bad `buildId` is the one browser-side shape failure the relay *answers* today: the handler checks
-  // `Number.isInteger` and replies `Build not found`, so a caller learns why instead of waiting out its
-  // deadline. Rejecting the frame at the door deleted that answer — the parse fails, `route` never runs,
-  // and six tests that assert "answers … without going silent" went silent. The door has no socket and
-  // no correlator policy, so it cannot answer in the handler's place.
-  //
-  // So the schema carries the value through as `NaN` and the handler keeps answering. `z.output` is
-  // still `number`, which is what the tier assertion compares, and better-sqlite3 never sees the
-  // object or array that made it throw — that exception, swallowed by the message-loop catch, is the
-  // silence `Number.isInteger` was added to remove in the first place.
-  'app:install': z.object({
-    type: z.literal('app:install'), sessionId, requestId, buildId: z.number().int().catch(Number.NaN),
-  }),
-  'app:launch': z.object({
-    type: z.literal('app:launch'), sessionId, requestId, buildId: z.number().int().catch(Number.NaN),
-  }),
+  // Strict, because `ANSWERABLE` below answers a bad one rather than dropping it. A draft carried it
+  // through as `NaN` so the handler's `Number.isInteger` could keep replying `Build not found` — which
+  // worked, and left this message as the single special case in a class the door now handles uniformly.
+  // It was also the wrong diagnosis: nothing was looked up, so "not found" describes a query that never
+  // ran.
+  'app:install': z.object({ type: z.literal('app:install'), sessionId, requestId, buildId: z.number().int() }),
+  'app:launch': z.object({ type: z.literal('app:launch'), sessionId, requestId, buildId: z.number().int() }),
   'app:clear-state': z.object({
     type: z.literal('app:clear-state'), sessionId, requestId,
     payload: z.object({ bundleId: z.string() }),
@@ -304,6 +293,39 @@ const STREAM_INBOUND = {
 
 const INBOUND = { ...BROWSER_INBOUND, ...AGENT_INBOUND, ...STREAM_INBOUND } as const
 
+// ── the requests whose payload failure can be answered ───────────────────────
+//
+// **The envelope is judged separately from the payload, and that is what makes an answer possible.**
+// A frame whose `sessionId` and `requestId` are both good and whose payload is not carries everything
+// a reply needs: an address and a correlator. Refusing it wholesale would be the regression this door
+// otherwise ships — today a malformed `open-url` reaches the agent, which answers `open-url:error`
+// from its own guard (`IOSAgent.ts` says so in writing: "validating third-party frames at the relay's
+// door is #444, which will take this over"). Taking it over must not mean losing the answer.
+//
+// The cost of losing it is worst on the inputs, and not obviously: `awaitInputAck` reports silence
+// from a session that has never acked as **success** (#457), so a dropped `input:key` would be
+// reported to an MCP caller as an input that landed.
+//
+// Exactly the twelve browser requests that declare a required `requestId`. The relay maps each to the
+// reply its own waiter reads; `scripts/__tests__/correlatedRequestsGated.test.mjs` derives that set
+// from the protocol and holds all three lists to it.
+const ANSWERABLE = {
+  'device:boot': envC('device:boot'),
+  'app:install': envC('app:install'),
+  'app:launch': envC('app:launch'),
+  'app:clear-state': envC('app:clear-state'),
+  'open-url': envC('open-url'),
+  'input:touch:end': envC('input:touch:end'),
+  'input:pinch:end': envC('input:pinch:end'),
+  'input:key': envC('input:key'),
+  'input:button': envC('input:button'),
+  'input:type': envC('input:type'),
+  'clipboard:read': envC('clipboard:read'),
+  'clipboard:write': envC('clipboard:write'),
+} as const
+
+export type AnswerableType = keyof typeof ANSWERABLE
+
 // ── what the door proved ─────────────────────────────────────────────────────
 
 /**
@@ -325,6 +347,8 @@ export type ParseFailure =
   | { ok: false; reason: 'not-an-object' }
   | { ok: false; reason: 'unknown-type'; type: string }
   | { ok: false; reason: 'bad-shape'; type: InboundType; detail: string }
+  /** The payload is wrong but the envelope is not, so the caller can be told. */
+  | { ok: false; reason: 'bad-payload'; type: AnswerableType; sessionId: string; requestId: string; detail: string }
 
 export type ParseResult =
   | {
@@ -396,7 +420,18 @@ export function parseInbound(raw: unknown): ParseResult {
   // inert today.
   const result = INBOUND[known].safeParse(frame)
   if (!result.success) {
-    return { ok: false, reason: 'bad-shape', type: known, detail: z.prettifyError(result.error) }
+    const detail = z.prettifyError(result.error)
+    // Second stage, and only for the twelve. If the envelope stands on its own, the failure is in the
+    // payload and the relay has an address and a correlator to answer with — see `ANSWERABLE`.
+    if (Object.hasOwn(ANSWERABLE, known)) {
+      const answerable = known as AnswerableType
+      const envelope = ANSWERABLE[answerable].safeParse(frame)
+      if (envelope.success) {
+        const { sessionId: s, requestId: r } = envelope.data
+        return { ok: false, reason: 'bad-payload', type: answerable, sessionId: s, requestId: r, detail }
+      }
+    }
+    return { ok: false, reason: 'bad-shape', type: known, detail }
   }
   return { ok: true, msg: result.data as ParsedInbound, raw: frame }
 }
@@ -426,6 +461,9 @@ type _AgentCovers = Assert<
 type _AgentInventsNothing = Assert<
   IsEmpty<Exclude<AgentKeys, (import('../index.js').AgentToRelay | import('../index.js').AgentToBrowser)['type']>>
 >
+/** Every answerable request is a browser request. An agent reply is not something the relay answers. */
+type _AnswerableIsBrowser = Assert<IsEmpty<Exclude<AnswerableType, BrowserKeys>>>
+
 type _StreamCovers = Assert<IsEmpty<Exclude<import('../index.js').StreamToRelay['type'], StreamKeys>>>
 type _StreamInventsNothing = Assert<IsEmpty<Exclude<StreamKeys, import('../index.js').StreamToRelay['type']>>>
 

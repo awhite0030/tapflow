@@ -50,9 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   break it.** Until now it checked only what it *sent*. A command with a missing payload, an empty
   session id, or a build id that was not a number was forwarded to a device anyway — or answered with a
   reply whose own required field was missing, which every client discards, turning a diagnosis into a
-  caller waiting out its deadline. Where a request has an error reply the caller still gets one; where
-  it has none the frame is dropped and the log names the field that failed, instead of the command
-  silently doing nothing. Well-formed messages are unaffected.
+  caller waiting out its deadline. A refused command is now answered where the request has a reply, so
+  the caller is told which field was wrong instead of waiting; where it has none, the frame is dropped
+  and the log names the field. Well-formed messages are unaffected.
 - **A field appended to a browser message no longer reaches a device.** Anything the contract does not
   declare is removed before the relay forwards it on. Messages coming *from* an agent are forwarded
   untouched, so an agent newer than its relay does not lose fields it adds.

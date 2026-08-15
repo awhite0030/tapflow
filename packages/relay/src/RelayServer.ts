@@ -141,7 +141,8 @@ function logInboundRejection(failure: ParseFailure): void {
     logger.debug(`[tapflow] inbound frame of unknown type ${failure.type} — dropped`)
     return
   }
-  logger.warn(`[tapflow] inbound ${failure.type} does not match the contract — dropped:\n${failure.detail}`)
+  const outcome = failure.reason === 'bad-payload' ? 'refused, and the sender told' : 'dropped'
+  logger.warn(`[tapflow] inbound ${failure.type} does not match the contract — ${outcome}:\n${failure.detail}`)
 }
 /** One member of the parse product, by literal. `route` narrows to these; a handler that takes one
  *  gets exactly what the door proved for that type and nothing else. */
@@ -570,7 +571,12 @@ export class RelayServer {
       // exists to make visible.
       if (!inbound.ok) logInboundRejection(inbound)
       if (!this.settleRole(ws, inbound)) return
-      if (!inbound.ok) return
+      if (!inbound.ok) {
+        // **After the role gate, never before it.** A browser spoofing an agent-only type gets 1008
+        // and no reply; only a request this socket is allowed to send earns an answer.
+        if (inbound.reason === 'bad-payload') this.refuseMalformed(ws, inbound)
+        return
+      }
       try {
         this.route(ws, inbound.msg, inbound.raw)
       } catch (e) {
@@ -630,7 +636,13 @@ export class RelayServer {
    *          handshake that must not confer a role.
    */
   private settleRole(ws: WebSocket, inbound: ParseResult): boolean {
-    const type = inbound.ok ? inbound.msg.type : inbound.reason === 'bad-shape' ? inbound.type : undefined
+    // Every reason that carries a type, which is all of them but the two that have none to carry.
+    // Missing `bad-payload` here returned `false` before the caller could answer, so the twelve
+    // answerable requests were classified correctly and then dropped anyway — the regression this
+    // whole path exists to prevent, reintroduced one line above it.
+    const type = inbound.ok ? inbound.msg.type
+      : inbound.reason === 'bad-shape' || inbound.reason === 'bad-payload' ? inbound.type
+      : undefined
     if (type === undefined) return false
 
     // **The role comes from the two handshake literals, deliberately not from `directionOf`.** Reading
@@ -1427,6 +1439,49 @@ export class RelayServer {
     this.refuseInput(ws, msg, session ? 'agent offline' : 'Session not found', 'channel-unavailable')
   }
 
+  /**
+   * Tells the sender its payload was refused, in the shape that request's own waiter reads.
+   *
+   * **This is what keeps the door from turning an answered failure into silence.** Before it, a
+   * malformed `open-url` reached the agent and the agent's own guard answered `open-url:error`;
+   * `IOSAgent.ts` says so beside that guard, and names this validation as what would take it over.
+   * Taking the responsibility without taking the answer would have been a regression — worst on the
+   * inputs, and not obviously: `awaitInputAck` reports silence from a session that has never acked as
+   * **success** (#457), so a dropped `input:key` reads to an MCP caller as an input that landed.
+   *
+   * The address and the correlator come from the envelope, which `parseInbound` judges separately from
+   * the payload for exactly this reason — a frame with a good envelope carries everything a reply
+   * needs. `reason: 'malformed'` is not a new member; the input vocabulary already had it, and until
+   * now only agents produced it.
+   *
+   * No ownership check, deliberately: the reply goes to the socket that sent the frame and says only
+   * that its own message was malformed, so it discloses nothing about the session. Every other refusal
+   * in this file answers a question about the session's state and is gated for that reason.
+   */
+  private refuseMalformed(ws: WebSocket, f: Extract<ParseFailure, { reason: 'bad-payload' }>): void {
+    if (ws.readyState !== WebSocket.OPEN) return
+    const { sessionId, requestId } = f
+    const message = `malformed ${f.type} payload`
+    switch (f.type) {
+      case 'device:boot':     this.sendTo(ws, { type: 'device:boot-error', sessionId, requestId, message }); break
+      case 'app:install':     this.sendTo(ws, { type: 'app:install-error', sessionId, requestId, message }); break
+      case 'app:launch':      this.sendTo(ws, { type: 'app:launch-error', sessionId, requestId, message }); break
+      case 'app:clear-state': this.sendTo(ws, { type: 'app:clear-state-error', sessionId, requestId, message }); break
+      case 'open-url':        this.sendTo(ws, { type: 'open-url:error', sessionId, requestId, message }); break
+      // Its waiters key on the `input:type-*` pair and ignore an `input:error` entirely — the same
+      // reason `refuseInput` below splits these two.
+      case 'input:type':
+        this.sendTo(ws, { type: 'input:type-error', sessionId, requestId, message, reason: 'malformed' }); break
+      case 'clipboard:read':
+      case 'clipboard:write': this.sendTo(ws, { type: 'clipboard:error', sessionId, requestId, message }); break
+      // The four remaining acked inputs. A `default` rather than four labels because the union is
+      // closed and exhaustive: adding a thirteenth answerable request without a case here would land
+      // it on `input:error`, which `answerableRequestsAnswered` is what stops.
+      default:
+        this.sendTo(ws, { type: 'input:error', sessionId, requestId, message, reason: 'malformed' })
+    }
+  }
+
   /** Answers the sender in the shape its waiter is keyed on.
    *
    *  `input:type` needs `input:type-error`, not `input:error` — its waiters in `mcp-server` and
@@ -1474,16 +1529,14 @@ export class RelayServer {
 
     // The schema already refused a non-integer `buildId`, so this is now belt-and-braces rather than
     // the only guard. Kept because it is also the *answer*: the parser drops a bad frame silently and
-    // this tells the caller `Build not found` instead of leaving it on its deadline.
-    // better-sqlite3 binds a missing value as NULL but *throws* on an object or array — and that
-    // exception is swallowed by the message-loop catch, which is the silence this PR exists to
-    // remove. The schema refuses the object and array outright; this catches the `NaN` it carries
-    // through for the rest, which is what keeps the caller answered instead of silently dropped.
-    if (!Number.isInteger(msg.buildId)) return fail('Build not found')
-
+    // No `Number.isInteger` guard here any more: `buildId` is `z.number().int()` at the door, and a bad
+    // one is answered there by `refuseMalformed` with a diagnosis this branch could not give — "not
+    // found" describes a lookup, and for a malformed id no lookup ran. The guard existed because
+    // better-sqlite3 binds a missing value as NULL but **throws** on an object or array, and that
+    // exception was swallowed by the message-loop catch; the door makes both unreachable.
     const build = getDb()
       .prepare('SELECT file_path, bundle_id FROM builds WHERE id = ?')
-      .get(msg.buildId!) as { file_path: string; bundle_id: string | null } | undefined
+      .get(msg.buildId) as { file_path: string; bundle_id: string | null } | undefined
     if (!build) return fail('Build not found')
 
     // Answer now rather than letting the caller time out — the same shape as `open-url` above.
@@ -1521,12 +1574,10 @@ export class RelayServer {
     // someone else was testing, with the reply going to that session's browser rather than to it.
     if (!this.ownsSession(ws, session)) return fail(ownershipRefusal(session))
 
-    // See `handleBrowserAppInstall` — the schema refuses it first; this is what answers the caller.
-    if (!Number.isInteger(msg.buildId)) return fail('Bundle ID not available for this build')
-
+    // See `handleBrowserAppInstall` — the door refuses a malformed id and answers it.
     const build = getDb()
       .prepare('SELECT bundle_id FROM builds WHERE id = ?')
-      .get(msg.buildId!) as { bundle_id: string | null } | undefined
+      .get(msg.buildId) as { bundle_id: string | null } | undefined
     if (!build?.bundle_id) return fail('Bundle ID not available for this build')
 
     if (session.agentSocket.readyState !== WebSocket.OPEN) return fail('agent offline')

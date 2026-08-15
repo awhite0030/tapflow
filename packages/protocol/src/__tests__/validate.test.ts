@@ -59,12 +59,14 @@ describe('the door rejects what it cannot name', () => {
     },
   )
 
+  // `session:chrome` rather than a browser request: the twelve answerable ones report `bad-payload`
+  // instead, which carries its own type and is covered below.
   it('reports the type it refused on a shape failure, so a log can name it', () => {
-    const r = fail({ type: 'device:boot', sessionId: 's', requestId: 'r' })
+    const r = fail({ type: 'session:chrome' })
     expect(r.reason).toBe('bad-shape')
     if (r.reason === 'bad-shape') {
-      expect(r.type).toBe('device:boot')
-      expect(r.detail).toMatch(/payload/i)
+      expect(r.type).toBe('session:chrome')
+      expect(r.detail).toMatch(/sessionId/i)
     }
   })
 })
@@ -195,20 +197,9 @@ describe('a browser frame is stripped, because its product is what gets forwarde
     expect(r.msg).toEqual({ type: 'input:touch:end', sessionId: 's', requestId: 'r' })
   })
 
-  // **`buildId` is carried through as `NaN` rather than refused, and that is deliberate.** It is the one
-  // browser-side shape failure the relay *answers*: the handler checks `Number.isInteger` and replies
-  // `Build not found`, so a caller learns why instead of waiting out its deadline. Refusing the frame
-  // here deleted that answer — the door has no socket and no correlator policy, so it cannot answer in
-  // the handler's place, and six relay tests asserting "answers … without going silent" went silent.
-  //
-  // What the schema still buys is that better-sqlite3 never sees the object or array that made it
-  // *throw* — an exception the message loop swallowed, which is the silence `Number.isInteger` was
-  // added to remove in the first place.
-  it('turns an unusable buildId into NaN rather than refusing the frame', () => {
+  it('refuses a buildId that is not an integer, answerably', () => {
     for (const buildId of [{}, [], '3', 1.5, null, undefined]) {
-      const r = ok({ type: 'app:install', sessionId: 's', requestId: 'r', buildId })
-      expect(r.msg).toMatchObject({ type: 'app:install' })
-      expect(Number.isInteger((r.msg as { buildId: number }).buildId)).toBe(false)
+      expect(fail({ type: 'app:install', sessionId: 's', requestId: 'r', buildId }).reason).toBe('bad-payload')
     }
   })
 
@@ -240,5 +231,63 @@ describe('directionOf replaces the hand-written agent list', () => {
   it('answers for a type parsed before any role exists', () => {
     const r = ok({ type: 'agent:register', platform: 'ios', agentName: 'm', capabilities: [], devices: [] })
     expect(directionOf(r.msg.type)).toBe('agent')
+  })
+})
+
+describe('a payload failure the caller can be told about', () => {
+  // **The regression this exists to prevent, and it is one the door itself would have shipped.** Today
+  // a malformed `open-url` reaches the agent and the agent answers `open-url:error` from its own
+  // guard — `IOSAgent.ts` says so beside that guard and names this validation as what takes it over.
+  // Taking it over without taking the answer over turns an answered failure into silence.
+  //
+  // Worst on the inputs, and not obviously: `awaitInputAck` reports silence from a session that has
+  // never acked as **success** (#457), so a dropped `input:key` would be reported to an MCP caller as
+  // an input that landed.
+  it.each([
+    ['open-url', { payload: {} }],
+    ['app:clear-state', { payload: { bundleId: 7 } }],
+    ['clipboard:write', { payload: {} }],
+    ['input:key', { payload: { modifiers: 1 } }],
+    ['input:button', { payload: {} }],
+    ['input:type', { payload: { text: null } }],
+    ['device:boot', {}],
+    ['app:install', { buildId: {} }],
+  ] as const)('reports %s as answerable, carrying the address and the correlator', (type, rest) => {
+    const r = fail({ type, sessionId: 'sess-1', requestId: 'rq-1', ...rest })
+    expect(r.reason).toBe('bad-payload')
+    if (r.reason === 'bad-payload') {
+      expect(r.type).toBe(type)
+      expect(r.sessionId).toBe('sess-1')
+      expect(r.requestId).toBe('rq-1')
+    }
+  })
+
+  // The mirror, and why the envelope is judged first rather than the payload being retried leniently:
+  // with no usable correlator there is nothing to answer *with*. A reply carrying an empty `requestId`
+  // is discarded by every correlating consumer, which is the deadline-burning non-answer this whole
+  // door exists to stop shipping.
+  it.each([
+    ['no requestId', { type: 'open-url', sessionId: 's', payload: {} }],
+    ['an empty requestId', { type: 'open-url', sessionId: 's', requestId: '', payload: {} }],
+    ['an empty sessionId', { type: 'open-url', sessionId: '', requestId: 'r', payload: {} }],
+  ])('refuses %s outright rather than answerably', (_name, raw) => {
+    expect(fail(raw).reason).toBe('bad-shape')
+  })
+
+  // A request with no error reply must not be reported as answerable — the relay would have nothing
+  // to send, and a `bad-payload` that cannot be answered is a lie about what the door achieved.
+  //
+  // Broken through `sessionId` rather than `payload`, and that is not incidental: `session:leave`
+  // declares no payload, so an undeclared key there is *stripped* and the frame parses. Which is the
+  // right answer — the tier only ever promises what it declares — and a first draft of this test
+  // asserted a rejection that never happens.
+  it.each(['session:leave', 'input:touch:move'])('leaves %s unanswerable', (type) => {
+    expect(fail({ type, sessionId: 7 }).reason).toBe('bad-shape')
+  })
+
+  // A well-formed frame is untouched by the second stage.
+  it('does not report a valid request as anything', () => {
+    const raw = { type: 'open-url', sessionId: 's', requestId: 'r', payload: { url: 'x://y' } }
+    expect(ok(raw).msg).toEqual(raw)
   })
 })
