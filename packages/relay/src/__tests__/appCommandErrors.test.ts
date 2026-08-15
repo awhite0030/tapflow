@@ -200,8 +200,10 @@ describe('app command failures reach the caller (#445)', () => {
     browser.close()
   })
 
-  // A missing or non-numeric buildId reaches the DB query unvalidated (#444 is open on inbound
-  // validation generally). better-sqlite3 treats both as "no row" rather than throwing, so the
+  // A missing or non-numeric buildId no longer reaches the DB query at all: `buildId` is
+  // `z.number().int()` at the door, so the frame is refused there and answered by `refuseMalformed`.
+  // These assert that an answer still arrives — the property they were written for — rather than
+  // which prose it carries. Historically better-sqlite3 treated both as "no row" rather than throwing, so the
   // caller still gets a correlated answer instead of an exception killing the handler — which is
   // the property this PR is about. The message is imprecise, not absent.
   it.each([
@@ -220,8 +222,10 @@ describe('app command failures reach the caller (#445)', () => {
     agent.close(); browser.close()
   })
 
-  // The schema refuses a non-integer `buildId` at the door now, so this asserts the *answer* the
-  // handler gives rather than the parse — the caller gets `Build not found` instead of silence.
+  // Answered by the door rather than by the handler, and with a different diagnosis: `malformed
+  // app:install payload` rather than `Build not found`, because no lookup ran. These assert the
+  // correlation and the type, which is the property that matters — a caller that gets *some* addressed,
+  // correlated reply stops waiting.
   // An object or array makes better-sqlite3 throw, and that exception used to be caught by the
   // message loop alongside genuine parse failures — the caller got nothing at all. This is the
   // same silence the rest of the file is about, reached through the type system's blind spot.

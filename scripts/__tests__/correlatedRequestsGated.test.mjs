@@ -111,7 +111,6 @@ function correlatorOf(sf) {
   return out
 }
 
-describe('every correlated browser request is gated at the relay door', () => {
   const proto = read('packages/protocol/src/index.ts')
   const validatePath = 'packages/protocol/src/validate/index.ts'
   const validateSrc = read(validatePath)
@@ -179,11 +178,59 @@ describe('every correlated browser request is gated at the relay door', () => {
     return new Set([...body[1].matchAll(/^\s*'([^']+)':/gm)].map((m) => m[1]))
   }
 
-  /** The literals `refuseMalformed` names explicitly, i.e. everything not left to its `default`. */
-  function explicitlyAnswered(src) {
+/**
+ * Which reply each answerable request must be refused with.
+ *
+ * **Listed, where the keys above are derived, and the asymmetry is the point.** The set of answerable
+ * requests is a fact about the protocol and derives from it; *which reply answers which request* is a
+ * fact about consumers' waiters and derives from nothing — `mcp-server` and `flow-runner` key on the
+ * pair each request declares, and the naming is not uniform enough to compute (`open-url` answers
+ * `open-url:error`, not `open-url-error`; both clipboard requests answer one `clipboard:error`; the
+ * four remaining inputs share `input:error`). So the keys catch a new request and this catches a
+ * wrong reply, and the two assertions below need both.
+ */
+const EXPECTED_REPLY = {
+  'device:boot': 'device:boot-error',
+  'app:install': 'app:install-error',
+  'app:launch': 'app:launch-error',
+  'app:clear-state': 'app:clear-state-error',
+  'open-url': 'open-url:error',
+  'input:type': 'input:type-error',
+  'clipboard:read': 'clipboard:error',
+  'clipboard:write': 'clipboard:error',
+  'input:touch:end': 'input:error',
+  'input:pinch:end': 'input:error',
+  'input:key': 'input:error',
+  'input:button': 'input:error',
+}
+
+describe('every correlated browser request is gated at the relay door', () => {
+  /**
+   * `case '<type>':` → the reply literal the branch sends, or `null` for a bare `default`.
+   *
+   * **Pairs them, where a first draft collected labels alone** — and a label proves nothing, because
+   * `sendTo` takes `RelayOutbound` and every `*-error` literal is a valid member, so the compiler is
+   * indifferent to which one a case sends. Substituting `input:error` for `open-url:error`, or leaving
+   * a case empty, passed that draft and every other check: `flow-runner`'s waiter keys on the
+   * `open-url:*` pair, so the caller would burn its full deadline — the regression `refuseMalformed`
+   * exists to prevent, reintroduced inside it.
+   */
+  function repliesByCase(src) {
     const body = src.match(/private refuseMalformed\([\s\S]*?\n  \}/)
     expect(body, 'refuseMalformed is gone from the relay').not.toBeNull()
-    return new Set([...body[0].matchAll(/case '([^']+)':/g)].map((m) => m[1]))
+    const out = new Map()
+    let pending = []
+    for (const line of body[0].split('\n')) {
+      const label = line.match(/case '([^']+)':/)
+      if (label) pending.push(label[1])
+      const reply = line.match(/type: '([^']+)'/)
+      if (reply) {
+        // A `default:` sends without a pending label; record it under the sentinel.
+        for (const l of pending.length > 0 ? pending : ['*']) out.set(l, reply[1])
+        pending = []
+      }
+    }
+    return out
   }
 
   it('every correlated request can be answered when its payload is refused', () => {
@@ -192,19 +239,23 @@ describe('every correlated browser request is gated at the relay door', () => {
     expect([...answerable].filter((t) => !types.includes(t)).sort()).toEqual([])
   })
 
-  it('a non-input request is answered by name, not by the input fallback', () => {
-    // `refuseMalformed`'s `default` sends `input:error`, which is right for the four remaining acked
-    // inputs and wrong for anything else — `mcp-server` and `flow-runner` key their waiters on the
-    // pair each request declares, so an `app:launch` answered with `input:error` is not an answer.
-    const named = explicitlyAnswered(read('packages/relay/src/RelayServer.ts'))
-    const unnamed = [...answerableTypes(validateSrc)].filter((t) => !named.has(t))
-    expect(
-      unnamed.filter((t) => !t.startsWith('input:')).sort(),
-      'these fall to refuseMalformed\'s input:error default and need a case of their own',
-    ).toEqual([])
-    // Non-vacuous: if the parser found no cases at all, everything would look unnamed and the filter
-    // above would still pass for the inputs alone.
-    expect(named.size).toBeGreaterThanOrEqual(7)
+  it('each request is refused with the reply its own waiter reads', () => {
+    const replies = repliesByCase(read('packages/relay/src/RelayServer.ts'))
+    // The `default` arm covers whatever has no case of its own; it must be the input reply, since that
+    // is the only one shared by more than one request without being named.
+    expect(replies.get('*'), 'refuseMalformed has no default arm').toBe('input:error')
+    for (const type of types) {
+      expect(replies.get(type) ?? replies.get('*'), `${type} is refused with the wrong reply`)
+        .toBe(EXPECTED_REPLY[type])
+    }
+    // Non-vacuous: an empty parse would make every lookup fall to the default and agree with the four
+    // inputs by accident.
+    expect(replies.size).toBeGreaterThanOrEqual(9)
+  })
+
+  it('the reply table covers exactly the correlated set', () => {
+    expect([...types].filter((t) => !(t in EXPECTED_REPLY)).sort()).toEqual([])
+    expect(Object.keys(EXPECTED_REPLY).filter((t) => !types.includes(t)).sort()).toEqual([])
   })
 
   it('the shared constants carry the non-empty half', () => {
