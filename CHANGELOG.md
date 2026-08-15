@@ -9,12 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- **Requires Node.js ≥ 22.** Node 20 reached end of life on 2026-04-30 and no longer receives security
+  patches.
+  `Migrate:` upgrade the Node on the Mac running the agent and on whatever runs the relay. `nvm install 22`
+  or the installer from nodejs.org; `tapflow doctor` reports the version it finds.
+- **Update your agents and your relay together.** Requests now carry an identifier the reply echoes, so
+  the relay can tell which answer belongs to which request. An agent from before this release does not
+  echo it, and the reply is then discarded rather than misattributed — safer, and still a failure: an app
+  install started from the dashboard sits on "Installing…" with no Launch control, and a deep link opened
+  through `open_url` does nothing. A client newer than its relay has the mirror problem on a refused
+  session join, which runs to its deadline instead of saying why.
+  `Migrate:` upgrade every device agent to this release at the same time as the relay. Packages are
+  versioned together, but nothing installs them together — this is the case where a Mac left on the
+  previous agent is the one that breaks.
 - **An agent must now send a machine-readable `reason` when it refuses an input.** `input:error` used
   to guarantee only `message`, the human-readable prose each agent writes for itself, while `reason` —
   the closed set a caller actually branches on — was optional. That is backwards: the field you were
   guaranteed was the one you must not depend on. `reason` is required now and `message` is optional.
-  Every agent shipped with tapflow already sends one, so nothing in this repo changed behaviour; this
-  affects a third-party or self-modified agent built against an older contract.
+  Every agent shipped with tapflow already sends one, so no producer here had to change; what this
+  affects is a third-party or self-modified agent built against an older contract.
   `Migrate:` add `reason` to every `input:error` your agent sends, choosing from `not-booted`,
   `channel-starting`, `channel-unavailable`, `no-gesture`, `dispatch-failed`, `unsupported` or
   `malformed`. Pick by what the caller should do differently, not by which of your internal states
@@ -25,8 +38,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Split stable dashboard vendor dependencies into smaller chunks to reduce maximum bundle size and improve cache reuse across releases.
+- **A refused session now says which session it refused and why.** Opening a device someone else already
+  has open, or one whose Mac is under load, used to produce a generic failure the dashboard could not
+  attribute — with two tabs opening at once it could even be shown against the wrong one. The refusal now
+  names the session and carries one of three reasons, so the second tester is told the device is in use
+  rather than that something went wrong.
 
 ### Fixed
+
+- **An input that never reached the device was reported as having landed.** Every path that could refuse
+  or drop an input — a simulator that is not booted, an input channel still starting, an agent that went
+  away, a helper process that died — either said nothing or said success. An LLM driving the device through
+  MCP moved on as though the tap had happened; a `tapflow flow` run failed several steps later with
+  "selector not found", which is the worst place to lose a cause; and the dashboard showed nothing at all.
+  Every one of those now answers, and says which of the two it is: the input was refused, with the reason,
+  or it could not be confirmed — which is not the same as saying it did not happen, because an
+  acknowledgement can arrive after the wait for it has ended. Repeating an input that did land would
+  duplicate it, so the message says to check the device rather than to retry.
+- **A reply could be attributed to the wrong request.** Boots, shutdowns, app installs and launches, URL
+  opens and input acknowledgements carried nothing tying a reply to the request that asked. Two overlapping
+  requests on one session and the first answer settled the wrong one — so a boot that failed could be
+  reported as the one that succeeded, and an acknowledgement that arrived late was read as the next input's.
+  Each of those now carries a correlator the reply echoes.
+- **A dead session hung until the deadline instead of saying so.** When an agent went away mid-command, the
+  relay said so on the wire, and the MCP server and flow runner ignored it — an app
+  install waited out its full two minutes and reported a timeout. They read those messages now and fail with
+  the reason. A device whose agent reconnected is reported as needing a boot rather than as a reset device,
+  because the app is still running.
+- **An app install could fail with "No devices are booted" on a device that was starting up.** Booting a
+  simulator was announced as finished when the command to boot it returned, which is 7.6 seconds before the
+  device is actually ready. Anything issued in that window — an install, a launch, an input — hit a device
+  that was still coming up. The agent now waits for the device to report itself booted before saying so.
+- **A JPEG screenshot could come back as PNG bytes labelled JPEG.** Android always produces PNG whatever is
+  asked for, and the label was taken from the request. The MCP server picks its image parser by that label,
+  so it measured PNG bytes with a JPEG parser and handed the model a wrong screen size — which the model then
+  used as the divisor for every tap coordinate. The format is read from the bytes now.
+- **`tapflow flow` reported an environment failure as a product failure.** A step whose input the relay or
+  the agent refused failed with the selector error from the next step rather than the refusal, so a CI run
+  showed a broken assertion where the device had simply not been reachable.
+- The iOS fallback video path emitted PNG frames under a JPEG label. No entrypoint shipped with tapflow
+  selects it; it affects a consumer of `@tapflowio/ios-agent` that sets `intervalMs` itself.
 
 - **A scrcpy server process error could take down every Android device the agent manages, not just the one session.** The scrcpy server process spawned for a real-device session had no error handler; an unhandled error on it (e.g. the server process failing to spawn, or a permission error on kill) crashed the whole android-agent process, ending every session it was managing. It's now logged instead.
 - `TouchHelper` and `KeyboardHelperDaemon` could leave a wedged helper process running after `stop()` — only `SIGTERM` was sent, with no fallback. Both now escalate to `SIGKILL` after 1s if the process hasn't exited, matching `ScreenCaptureStreamer` and `XCUITreeReader`.

@@ -59,6 +59,127 @@ afterEach(() => rmSync(repo, { recursive: true, force: true }))
 
 const CHANGESET = (body) => `---\n"@tapflowio/relay": patch\n---\n\n${body}\n`
 
+/**
+ * Runs the **PR gate** — the same script with no `--audit` — against a base ref in the throwaway repo.
+ *
+ * The audit is what this file was built for, and the gate had no integration coverage at all: its
+ * branches are unit-tested as pure functions and nothing drove the wiring. That is the half this file's
+ * own header says broke twice.
+ */
+function gate(base = 'main') {
+  const opts = { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PR_BODY: '' } }
+  try {
+    const stdout = execFileSync('node', [SCRIPT, base], opts)
+    return { code: 0, out: stdout }
+  } catch (e) {
+    return { code: e.status, out: (e.stdout ?? '') + (e.stderr ?? '') }
+  }
+}
+
+/** Commit `files` on a branch off main and leave HEAD there — the shape the gate sees on a PR. */
+function branchWith(files) {
+  git('checkout', '-q', '-b', 'feature')
+  for (const [path, body] of Object.entries(files)) {
+    mkdirSync(join(repo, dirname(path)), { recursive: true })
+    writeFileSync(join(repo, path), body)
+  }
+  git('add', '-A')
+  git('commit', '-q', '-m', 'work')
+}
+
+const SHIPPED = 'packages/relay/src/thing.ts'
+
+describe('the PR gate asks for a root CHANGELOG entry', () => {
+  // The root CHANGELOG is hand-written and had nothing enforcing it, so it went four days and 22
+  // merged PRs stale while every one of those PRs carried a changeset. The rule was in CONTRIBUTING
+  // and the enforcement was in neither place.
+  it('fails a changeset that leaves the root CHANGELOG untouched', () => {
+    branchWith({ [SHIPPED]: 'export const a = 1\n', '.changeset/x.md': CHANGESET('a fix') })
+    const r = gate()
+    expect(r.code).toBe(1)
+    expect(r.out).toMatch(/no entry in the root CHANGELOG/i)
+    expect(r.out).toContain('.changeset/x.md')
+  })
+
+  it('passes when the branch also writes the entry', () => {
+    branchWith({
+      [SHIPPED]: 'export const a = 1\n',
+      '.changeset/x.md': CHANGESET('a fix'),
+      'CHANGELOG.md': '## [Unreleased]\n\n### Fixed\n\n- a fix\n',
+    })
+    expect(gate().code).toBe(0)
+  })
+
+  // Not every changeset earns an entry — half a typing cycle is invisible to a user, and forcing a line
+  // for each would fill the file with noise nobody can act on. Opting out is a written decision.
+  it('passes when the changeset says it is internal', () => {
+    branchWith({
+      [SHIPPED]: 'export const a = 1\n',
+      '.changeset/x.md': `${CHANGESET('typing only')}\n<!-- changelog: internal — no observable behaviour -->\n`,
+    })
+    expect(gate().code).toBe(0)
+  })
+
+  // **Not an ordering claim, and a first draft said it was.** There is no gate "ahead of" this one — the
+  // changelog block runs *before* the missing-changeset error, and this passes because a branch with no
+  // changeset has nothing to owe an entry for. Stating the wrong mechanism is worse than stating none: it
+  // reads as covering an ordering that a later edit could break silently. The assertion that matters is
+  // that this branch prints the *changeset* instruction and not the changelog one, since a contributor
+  // told to write a CHANGELOG entry when what they are missing is a changeset goes to the wrong file.
+  it('tells a branch with no changeset to add one, not to write a changelog entry', () => {
+    branchWith({ [SHIPPED]: 'export const a = 1\n' })
+    const r = gate()
+    expect(r.code).toBe(1)
+    expect(r.out).toMatch(/adds no changeset/i)
+    expect(r.out).not.toMatch(/no entry in the root CHANGELOG/i)
+  })
+
+  // Deleting the file is not writing in it. `changed` comes from a bare `--name-only`, which lists a
+  // deletion like any other path, so the first draft of the demand was satisfied by removing the file.
+  it('does not accept deleting the CHANGELOG as writing an entry', () => {
+    writeFileSync(join(repo, 'CHANGELOG.md'), '## [Unreleased]\n')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'a changelog to delete')
+    git('checkout', '-q', '-b', 'feature')
+    mkdirSync(join(repo, dirname(SHIPPED)), { recursive: true })
+    writeFileSync(join(repo, SHIPPED), 'export const a = 1\n')
+    writeFileSync(join(repo, '.changeset', 'x.md'), CHANGESET('a fix'))
+    rmSync(join(repo, 'CHANGELOG.md'))
+    git('add', '-A')
+    git('commit', '-q', '-m', 'work')
+    const r = gate()
+    expect(r.code).toBe(1)
+    expect(r.out).toMatch(/no entry in the root CHANGELOG/i)
+  })
+
+  // The mirror of the amended case: satisfying the demand must actually pass. Widening the demand to
+  // `AMR` while the success path still counted only `added` made this a false failure.
+  it('passes an amended changeset that does write its entry', () => {
+    writeFileSync(join(repo, '.changeset', 'existing.md'), CHANGESET('first pass'))
+    git('add', '-A')
+    git('commit', '-q', '-m', 'earlier changeset')
+    branchWith({
+      [SHIPPED]: 'export const a = 1\n',
+      '.changeset/existing.md': CHANGESET('first pass, now also this'),
+      'CHANGELOG.md': '## [Unreleased]\n\n### Fixed\n\n- also this\n',
+    })
+    expect(gate().code).toBe(0)
+  })
+
+  // The amended and renamed cases, which keying on `--diff-filter=A` let through. A follow-up that
+  // extends an existing unconsumed changeset with new behaviour is the ordinary shape of a second PR on
+  // one subject, and it was invisible.
+  it('demands an entry for an amended changeset, not only a new one', () => {
+    writeFileSync(join(repo, '.changeset', 'existing.md'), CHANGESET('first pass'))
+    git('add', '-A')
+    git('commit', '-q', '-m', 'earlier changeset')
+    branchWith({ [SHIPPED]: 'export const a = 1\n', '.changeset/existing.md': CHANGESET('first pass, now also this') })
+    const r = gate()
+    expect(r.code).toBe(1)
+    expect(r.out).toMatch(/no entry in the root CHANGELOG/i)
+  })
+})
+
 describe('audit --audit against real git history', () => {
   it('reports a merge that shipped code without a changeset', () => {
     mergePr(101, 'fix-a', { 'packages/relay/src/a.ts': 'export const a = 1\n' })

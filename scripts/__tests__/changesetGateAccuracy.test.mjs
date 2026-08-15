@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { packagesNamedIn, mixedChangesets, ignoredOnlyChangesets, manifestChangeShips, shipsToUsers, packagePublishesAt } from '../check-changeset.mjs'
+import { packagesNamedIn, mixedChangesets, ignoredOnlyChangesets, changelogEntryOwed, manifestChangeShips, shipsToUsers, packagePublishesAt } from '../check-changeset.mjs'
 
 const IGNORED = new Set(['@tapflowio/dashboard', '@tapflowio/playground'])
 const cs = (body) => `---\n${body}\n---\n\nsome note.\n`
@@ -70,6 +70,34 @@ describe('a changeset that names only ignored packages', () => {
   // `[].every(...)` is true, which would make this the one input that fails for being empty.
   it('leaves a changeset with no frontmatter alone', () => {
     expect(ignoredOnlyChangesets(['no-frontmatter.md'], IGNORED, read)).toEqual([])
+  })
+})
+
+describe('a changeset that owes the root CHANGELOG an entry', () => {
+  // The root CHANGELOG is hand-written and had no gate, so it went four days and 22 merged PRs stale
+  // while every one of those PRs carried a changeset. Opting out is a written decision, not a silence.
+  const read = (f) => ({
+    'plain.md': cs('"@tapflowio/relay": patch'),
+    'internal.md': `${cs('"@tapflowio/protocol": patch')}\n<!-- changelog: internal — protocol typing, nothing observable -->\n`,
+    'no-reason.md': `${cs('"@tapflowio/protocol": patch')}\n<!-- changelog: internal -->\n`,
+    'mentions-it.md': `${cs('"@tapflowio/relay": patch')}\n\nSee the changelog: internal notes are not a marker.\n`,
+  })[f]
+
+  it('owes one for a plain changeset', () => {
+    expect(changelogEntryOwed(['plain.md'], read)).toEqual(['plain.md'])
+  })
+  it('is released by the marker', () => {
+    expect(changelogEntryOwed(['internal.md'], read)).toEqual([])
+  })
+  // `internal` alone with no reason still opts out — the word is the marker and a bare one is a
+  // decision someone typed. Requiring prose here would be a second, unstated rule.
+  it('accepts the marker with no reason after it', () => {
+    expect(changelogEntryOwed(['no-reason.md'], read)).toEqual([])
+  })
+  // Anchored to a line of its own, like `no-changeset`. Prose that happens to contain the words is not
+  // an opt-out -- the shape this repo has been bitten by twice, where a comment was read as a value.
+  it('is not released by prose that merely says the words', () => {
+    expect(changelogEntryOwed(['mentions-it.md'], read)).toEqual(['mentions-it.md'])
   })
 })
 
