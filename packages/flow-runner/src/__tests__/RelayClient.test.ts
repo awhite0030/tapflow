@@ -177,6 +177,20 @@ describe('RelayClient — the input senders mint a correlator and await the ack'
       .rejects.toThrow(/pressKey Enter was refused by the device \(channel-unavailable\): no channel/)
   })
 
+  // **The other half of the same rule, which the code did not have until CodeRabbit asked for it.** The
+  // comment above the branch claimed absence *and a member this build does not know* both read as
+  // `channel-unavailable`; the code tested `typeof === 'string'` and passed anything else through, so a
+  // reason added to the union after this build shipped reached the step's message verbatim.
+  it('reads a reason it does not know as channel-unavailable too', async () => {
+    const { client } = await capture((m) => ({
+      type: 'input:error', sessionId: m['sessionId'], requestId: m['requestId'],
+      reason: 'invented-in-a-later-release', message: 'no channel',
+    }))
+    const err = await client.pressKey('s1', 'Enter').catch((e: unknown) => e) as Error
+    expect(err.message).toMatch(/\(channel-unavailable\)/)
+    expect(err.message).not.toMatch(/invented-in-a-later-release/)
+  })
+
   it('reports a lost relay as unconfirmed, and does not blame the agent for it', async () => {
     // `IOSAgent.ackInput` awaits an untimed `simctl list` on the first input after a boot, on the same Mac
     // the relay gates at 80% CPU — so an ack that never reaches this waiter can still belong to an input

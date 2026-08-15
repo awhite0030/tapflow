@@ -20,10 +20,11 @@ producer sending prose alone.
 
 ## What it costs
 
-**Nothing inside this repo.** All six production sites already send a reason, two of them with
-`satisfies InputErrorReason` on the literal, and the two clients that read it type inbound as
-`Record<string, unknown>` deliberately, so the declaration obliges producers and changes no call site.
-Exactly one thing in the tree needed editing: the assertion that pinned the old shape.
+**No producer had to change.** All six production sites already send a reason, two of them with
+`satisfies InputErrorReason` on the literal. The clients that read it through
+`Record<string, unknown>` are unaffected by the declaration — but the dashboard is a *typed* consumer
+and did need editing: `message` becoming optional meant it rendered `(undefined)` into a toast, which
+is fixed here with a test on it.
 
 **What it buys** is an agent outside this repo, which can no longer omit the field, and a consumer
 written tomorrow, which cannot be handed a failure it has no way to branch on. Both absence branches
@@ -33,7 +34,7 @@ declaration corrects going forward and cannot retroactively fix.
 `message` is optional rather than removed — it still carries parameterised detail a closed union
 cannot (`unknown key code: KeyFoo`), which is a debug and forward-compatibility field. A structured
 `params` is the honest way to keep that once prose is demoted and is deliberately **not** added here:
-#485 is what will say whether a rendered UI misses the variable.
+issue #485 is what will say whether a rendered UI misses the variable.
 
 `InputTypeError` keeps `reason?`, and that asymmetry is deliberate. Its agent-side producers answer
 with prose from a rejected `adb` or pasteboard write and have no reason to give; only the relay sets one.

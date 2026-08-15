@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import type { BrowserToRelay, DeviceSummary, SessionStartFailure, SessionTerminatedReason } from '@tapflowio/protocol'
+import type {
+  BrowserToRelay, DeviceSummary, InputErrorReason, SessionStartFailure, SessionTerminatedReason,
+} from '@tapflowio/protocol'
 import { WebSocket } from 'ws'
 import type { UIElement } from '@tapflowio/agent-core'
 import { PlatformError } from '@tapflowio/agent-core'
@@ -109,6 +111,34 @@ const SESSION_START_FAILURES: Record<SessionStartFailure, true> = {
 // member would otherwise pass. The agents narrow key codes the same way for the same reason.
 function isSessionStartFailure(v: unknown): v is SessionStartFailure {
   return typeof v === 'string' && Object.hasOwn(SESSION_START_FAILURES, v)
+}
+
+/**
+ * The same mirror for `InputErrorReason`, and it exists because the comment below it was describing
+ * behaviour this file did not have.
+ *
+ * That comment said absence **and a member this build does not know** both read as
+ * `channel-unavailable`, the conservative reading protocol/AGENTS.md makes the contract. The code
+ * tested `typeof === 'string'` and passed anything else straight through, so a reason added to the
+ * union after this build shipped reached the step's message verbatim and any caller branching on it
+ * got a value it could not act on. `mcp-server` had it right — `Object.hasOwn(REASON_ADVICE, …)`.
+ *
+ * `Record<InputErrorReason, true>` rather than a `string[]`, for the reason stated on the twin above:
+ * the array form degrades silently when the union grows, and this makes that a compile error here.
+ */
+const INPUT_ERROR_REASONS: Record<InputErrorReason, true> = {
+  'not-booted': true,
+  'channel-unavailable': true,
+  'channel-starting': true,
+  'dispatch-failed': true,
+  unsupported: true,
+  malformed: true,
+  'no-gesture': true,
+  'not-session-owner': true,
+}
+
+function asInputErrorReason(v: unknown): InputErrorReason {
+  return typeof v === 'string' && Object.hasOwn(INPUT_ERROR_REASONS, v) ? (v as InputErrorReason) : 'channel-unavailable'
 }
 
 /**
@@ -652,7 +682,7 @@ export class RelayClient {
     // outside this repo that predates the field — the population the required declaration exists to correct
     // and cannot retroactively fix. Absent, or a member this build does not know, both read as
     // `channel-unavailable`, which is the conservative one (protocol/AGENTS.md).
-    const reason = typeof msg['reason'] === 'string' ? msg['reason'] : 'channel-unavailable'
+    const reason = asInputErrorReason(msg['reason'])
     throw this.failed(sessionId, `${what} was refused by the device (${reason}): ${(msg['message'] as string) ?? 'no detail'}`)
   }
 
