@@ -5,8 +5,15 @@ import path from 'path'
 import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
-import type { RelayMessage } from '../types'
 import { waitForOpen, waitForType } from '@tapflowio/test-utils'
+
+import type { AgentRegistered, BrowserToRelay, RelayToAgent } from '@tapflowio/protocol'
+
+/** What an agent socket actually receives. `RelayToAgent` is only the half the relay
+ *  originates or rebuilds; browser commands it forwards verbatim (`app:clear-state`,
+ *  `clipboard:*`, `input:*`) arrive unchanged and are declared in `BrowserToRelay`. The
+ *  protocol has no single union for this — #557. */
+type AgentSocketInbound = RelayToAgent | BrowserToRelay
 
 
 describe('app:clear-state relay routing', () => {
@@ -38,11 +45,11 @@ describe('app:clear-state relay routing', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({
-      type: 'agent:register',
+      type: 'agent:register', platform: 'ios', agentName: 'clearState-1',
       devices: [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }],
     }))
-    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
-    const sessionId = reply.registeredSessions![0].sessionId
+    const reply = await waitForType<AgentRegistered>(agent, 'agent:registered')
+    const sessionId = reply.registeredSessions[0]!.sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
@@ -55,10 +62,10 @@ describe('app:clear-state relay routing', () => {
     const { agent, browser, sessionId } = await setup()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'app:clear-state') {
         expect((msg.payload as { bundleId: string }).bundleId).toBe('com.example.app')
-        agent.send(JSON.stringify({ type: 'app:clear-state-done', sessionId: msg.sessionId }))
+        agent.send(JSON.stringify({ type: 'app:clear-state-done', sessionId: msg.sessionId, requestId: msg.requestId }))
       }
     })
 
@@ -88,9 +95,9 @@ describe('app:clear-state relay routing', () => {
     const { agent, browser, sessionId } = await setup()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'app:clear-state') {
-        agent.send(JSON.stringify({ type: 'app:clear-state-error', sessionId: msg.sessionId, message: 'pm clear failed' }))
+        agent.send(JSON.stringify({ type: 'app:clear-state-error', sessionId: msg.sessionId, requestId: msg.requestId, message: 'pm clear failed' }))
       }
     })
 
@@ -123,7 +130,7 @@ describe('app:clear-state relay routing', () => {
     const { agent, browser, sessionId } = await setup()
 
     const closed = new Promise<number>((resolve) => browser.on('close', (code) => resolve(code)))
-    browser.send(JSON.stringify({ type: 'app:clear-state-done', sessionId }))
+    browser.send(JSON.stringify({ type: 'app:clear-state-done', sessionId, requestId: 'rq-clear' }))
     expect(await closed).toBe(1008)
 
     agent.close()
@@ -133,9 +140,9 @@ describe('app:clear-state relay routing', () => {
     const { agent, browser, sessionId } = await setup()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'input:type') {
-        agent.send(JSON.stringify({ type: 'input:type-done', sessionId: msg.sessionId }))
+        agent.send(JSON.stringify({ type: 'input:type-done', sessionId: msg.sessionId, requestId: msg.requestId }))
       }
     })
 
@@ -151,7 +158,7 @@ describe('app:clear-state relay routing', () => {
     const { agent, browser, sessionId } = await setup()
 
     const closed = new Promise<number>((resolve) => browser.on('close', (code) => resolve(code)))
-    browser.send(JSON.stringify({ type: 'input:type-done', sessionId }))
+    browser.send(JSON.stringify({ type: 'input:type-done', sessionId, requestId: 'rq-type' }))
     expect(await closed).toBe(1008)
 
     agent.close()

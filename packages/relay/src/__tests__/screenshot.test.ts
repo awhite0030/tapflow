@@ -6,9 +6,16 @@ import path from 'path'
 import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
-import type { RelayMessage } from '../types'
 import { signJwt } from '../middleware/auth'
 import { waitForOpen, waitForType } from '@tapflowio/test-utils'
+
+import type { AgentRegistered, BrowserToRelay, RelayToAgent } from '@tapflowio/protocol'
+
+/** What an agent socket actually receives. `RelayToAgent` is only the half the relay
+ *  originates or rebuilds; browser commands it forwards verbatim (`app:clear-state`,
+ *  `clipboard:*`, `input:*`) arrive unchanged and are declared in `BrowserToRelay`. The
+ *  protocol has no single union for this — #557. */
+type AgentSocketInbound = RelayToAgent | BrowserToRelay
 
 const FAKE_PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) // PNG magic bytes
 const FAKE_JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0]) // JPEG magic bytes
@@ -67,11 +74,11 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
   async function setupAgent(devices = [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }]) {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
-    agent.send(JSON.stringify({ type: 'agent:register', devices }))
-    const reply = await new Promise<RelayMessage>((resolve) =>
+    agent.send(JSON.stringify({ type: 'agent:register', platform: 'ios', agentName: 'screenshot-1', devices }))
+    const reply = await new Promise<AgentRegistered>((resolve) =>
       agent.once('message', (d) => resolve(JSON.parse(d.toString()))),
     )
-    const sessionId = reply.registeredSessions![0].sessionId
+    const sessionId = reply.registeredSessions[0]!.sessionId
     return { agent, sessionId }
   }
 
@@ -80,7 +87,7 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
 
     // Agent: screenshot:request를 수신하면 즉시 screenshot:done 응답
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'screenshot:request') {
         agent.send(JSON.stringify({
           type: 'screenshot:done',
@@ -117,7 +124,7 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     try {
       const { agent, sessionId } = await setupAgent()
       agent.on('message', (data) => {
-        const msg = JSON.parse(data.toString()) as RelayMessage
+        const msg = JSON.parse(data.toString()) as AgentSocketInbound
         if (msg.type === 'screenshot:request') {
           agent.send(JSON.stringify({
             type: 'screenshot:done',
@@ -151,7 +158,7 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     try {
       const { agent, sessionId } = await setupAgent()
       agent.on('message', (data) => {
-        const msg = JSON.parse(data.toString()) as RelayMessage
+        const msg = JSON.parse(data.toString()) as AgentSocketInbound
         if (msg.type === 'screenshot:request') {
           agent.send(JSON.stringify({
             type: 'screenshot:done',
@@ -180,7 +187,7 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     const { agent, sessionId } = await setupAgent()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'screenshot:request') {
         expect(msg.format).toBe('jpeg')
         agent.send(JSON.stringify({
@@ -231,7 +238,7 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
 
     // agent는 screenshot:request를 받으면 즉시 종료 (응답 없이)
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'screenshot:request') agent.close()
     })
 
@@ -263,7 +270,7 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     const { agent, sessionId } = await setupAgent()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'screenshot:request') {
         agent.send(JSON.stringify({
           type: 'screenshot:error',
@@ -307,7 +314,7 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     const { agent, sessionId } = await setupAgent()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'screenshot:request') {
         agent.send(JSON.stringify({
           type: 'screenshot:done',
@@ -336,7 +343,7 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     // 잘못된 requestId로 응답 먼저 보내고, 올바른 requestId로 나중에 응답
     let correctRequestId: string | undefined
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'screenshot:request') {
         correctRequestId = msg.requestId
         // 잘못된 requestId 먼저
@@ -380,12 +387,17 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
 
     let browserGotScreenshotRequest = false
     browser.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      // **Deliberately not `BrowserInbound`.** This assertion exists to catch the relay putting an
+      // agent-bound frame on a browser socket, and `screenshot:request` is not a member of that union
+      // — so typing it by the direction makes the comparison provably false and the compiler says so.
+      // Assuming the property under test is what the test is for. The relay serializes raw JSON, so a
+      // routing bug produces this frame here whatever the declarations say.
+      const msg = JSON.parse(data.toString()) as { type: string }
       if (msg.type === 'screenshot:request') browserGotScreenshotRequest = true
     })
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'screenshot:request') {
         agent.send(JSON.stringify({
           type: 'screenshot:done',
@@ -410,18 +422,18 @@ describe('GET /api/v1/sessions/:sessionId/screenshot', () => {
     const devices = [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }]
     const agent1 = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent1)
-    agent1.send(JSON.stringify({ type: 'agent:register', agentId: 'uuid-1', platform: 'ios', devices }))
-    const reply = await waitForType<RelayMessage>(agent1, 'agent:registered')
-    const sessionId = reply.registeredSessions![0].sessionId
+    agent1.send(JSON.stringify({ type: 'agent:register', agentName: 'screenshot-1', agentId: 'uuid-1', platform: 'ios', devices }))
+    const reply = await waitForType<AgentRegistered>(agent1, 'agent:registered')
+    const sessionId = reply.registeredSessions[0]!.sessionId
 
     // On the screenshot request, the same Mac reconnects on a fresh socket → evicts agent1.
     let agent2: WebSocket | undefined
     agent1.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'screenshot:request') {
         agent2 = new WebSocket(`ws://localhost:${port}`)
         agent2.on('open', () =>
-          agent2!.send(JSON.stringify({ type: 'agent:register', agentId: 'uuid-1', platform: 'ios', devices })),
+          agent2!.send(JSON.stringify({ type: 'agent:register', agentName: 'screenshot-2', agentId: 'uuid-1', platform: 'ios', devices })),
         )
       }
     })

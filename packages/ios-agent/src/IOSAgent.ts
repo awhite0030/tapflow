@@ -762,7 +762,8 @@ export class IOSAgent implements DeviceAgent {
    *  hands back a `string` the case can close over.
    *
    *  It is unvalidated JSON, so the check is real work rather than ceremony: the declaration is required and
-   *  every in-repo sender is typed against it, but nothing validates inbound (#444), and `mcp-server`'s tool
+   *  every in-repo sender is typed against it, and #444 made the relay refuse an empty one — but this agent may
+   *  be talking to a relay older than that, and `mcp-server`'s tool
    *  schemas are bare `z.string()` so a model can produce `''`. */
   private correlatorOf(msg: { type: string; requestId?: string }): string | null {
     if (typeof msg.requestId === 'string' && msg.requestId !== '') return msg.requestId

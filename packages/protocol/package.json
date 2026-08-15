@@ -28,6 +28,13 @@
       "tsx": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./validate": {
+      "types": "./dist/validate/index.d.ts",
+      "source": "./src/validate/index.ts",
+      "tsx": "./src/validate/index.ts",
+      "import": "./dist/validate/index.js",
+      "default": "./dist/validate/index.js"
     }
   },
   "files": [
@@ -43,10 +50,15 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b && tsc -p tsconfig.assertions.json",
+    "typecheck": "tsc -b && tsc -p tsconfig.assertions.json && tsc -p src/__tests__/tsconfig.json",
+    "test": "vitest run",
     "lint": "eslint src"
   },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
   "devDependencies": {
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.10"
   }
 }

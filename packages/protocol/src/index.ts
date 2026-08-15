@@ -344,7 +344,7 @@ export type InputErrorReason =
 // `stream:registered` goes to a stream socket rather than a viewer. It is grouped here because the
 // relay treats "everything that is not an agent" alike on the way out; splitting the outbound union
 // by socket role is a later refinement, and the roles are already distinguished at runtime
-// (`wsRoles`, `AGENT_MSG_TYPES`).
+// (`wsRoles`, and `directionOf` from this package's `validate` entry).
 
 /** Browser-inbound messages with **two** producers: an agent sends it and the relay also originates
  *  its own copy — replaying session state to a re-joining viewer, or failing fast when it cannot
@@ -414,32 +414,29 @@ export interface DeviceReady {
  * `sessionId` is what makes a failure findable. An MCP caller waits for the reply that carries its own
  * sessionId, and without one it waits out the deadline instead (#445).
  *
- * Required here is a **specification the relay does not yet meet**, not a description of the wire.
- * Nothing validates inbound messages, so a client that sends `{"type":"input:touch:end"}` with no
- * sessionId reaches `sessions.get(undefined)`, misses, and the relay answers through `msg.sessionId!` —
- * `JSON.stringify` then drops the key, shipping a frame whose required field this declaration says is there.
- * No in-repo client omits a sessionId, so the gap is reachable only from a third-party one — with one
- * exception measured since: `sessionId: ''` type-checks and `mcp-server`'s tools take `z.string()`, so an LLM
- * can produce it.
+ * **This is now a description of the wire, and for two releases it was a specification the relay did not
+ * meet.** Nothing validated inbound messages, so a client sending `{"type":"input:touch:end"}` with no
+ * sessionId reached `sessions.get(undefined)`, missed, and was answered through `msg.sessionId!` —
+ * `JSON.stringify` then dropped the key, shipping a frame whose required field this declaration claimed
+ * was there. `sessionId: ''` was the sharper half: it type-checks, and `mcp-server`'s tool schemas are
+ * bare `z.string()`, so an LLM could produce one.
  *
- * **The request side is closed and the count below is not the one it used to be.** L5c's door predicates
- * (`isCorrelated`, `isAddressed`) narrowed the handlers, which removed the seven reply sites this note used
- * to enumerate; the line numbers it carried outlived them and pointed at unrelated code for one release. What
- * is left is eleven `sessions.get(msg.sessionId!)` in `RelayServer.ts`, and it is **not** uniformly one kind:
- * eight are agent→browser forwards (`session:chrome`, `session:deviceInfo`, `device:booting`,
- * `device:boot-error`, `device:shutdown-done`, `device:ready`, `keyboard:toggled`, `clipboard:error`), and
- * three are request-side paths that deliberately carry no address gate — `stream:register` on a stream-role
- * socket, `device:shutdown` (whose gate a mutation showed nothing could hold, since an unaddressed shutdown
- * is dropped by the session miss anyway), and `forwardUnacked`. Count them by reading the sites, not by
- * trusting this sentence: a stale number here is what taught the lesson.
+ * #444 closed it at the door. `@tapflowio/protocol/validate` parses an inbound frame against these
+ * declarations before the relay routes it, with `.min(1)` on this field so the empty string is refused
+ * too — and **`RelayServer.ts` now contains no `msg.sessionId!` at all**, where it once held eleven.
+ * There is no count left to keep current here, which is the point: the assertion is gone rather than
+ * enumerated, and a stale number in this paragraph is what taught that lesson.
  *
- * Optional would describe that wire accurately and still be the wrong contract: an MCP caller that
- * receives an uncorrelatable `input:error` has nothing it can do with it — it waits out the deadline either
- * way. The producer is what has to change, and #444 is the validator that makes it. An earlier version of
- * this note said the producer should "send `error` instead", pointing at `GenericError` below as an escape
- * hatch for a failure with no session. **That escape is gone**: `GenericError` requires `sessionId` since
- * L5d, and the door predicates drop such a request rather than answering it, because a reply carrying no
- * `requestId` cannot be attributed and costs the caller the same deadline silence would.
+ * One member still declares `sessionId?` — `DeviceReady`, and its own note says why. That is a reasoned
+ * deferral about a correlator, not a gap in this one.
+ *
+ * Optional would have described the old wire accurately and still been the wrong contract: an MCP caller
+ * that receives an uncorrelatable `input:error` has nothing it can do with it and waits out the deadline
+ * either way. An earlier version of this note said the producer should "send `error` instead", pointing at
+ * `GenericError` below as an escape hatch for a failure with no session. **That escape is gone**:
+ * `GenericError` requires `sessionId` since L5d, and a request naming no session is refused at the door
+ * rather than answered, because a reply carrying no `requestId` cannot be attributed and costs the caller
+ * the same deadline silence would.
  */
 export interface SessionScoped {
   sessionId: string
@@ -619,7 +616,7 @@ export type SessionStartFailure =
  * the reason has a single producer inside `handleSessionStart`. Both were in HEAD at once for two months.
  *
  * L5c settled it by removing the general role rather than the specific one: a request that names no session
- * is now **dropped at the relay's door** (`isAddressed`), because answering it would ship a frame whose own
+ * is now **dropped at the relay's door** — by the inbound schema since #444 — because answering it would ship a frame whose own
  * required `sessionId` `JSON.stringify` erases, and `error` has no `requestId` either — so a caller could not
  * attribute the answer and would wait out the same deadline silence costs. With nothing left needing an
  * unaddressed failure, every producer of this message answers one specific join.
@@ -750,12 +747,13 @@ export interface ClipboardWriteDone {
   requestId: string
 }
 
-/** Messages an agent produces. The relay forwards them byte-for-byte (`JSON.stringify(msg)`) rather
+/** Messages an agent produces. The relay forwards them byte-for-byte (`JSON.stringify(raw)`, the frame
+ *  exactly as it arrived, so a field a newer agent adds is not stripped by a relay that does not know it) rather
  *  than re-creating them, so it never constructs one — which is exactly why they were missing from
  *  this file until L3: nothing on the relay's own send path referenced them.
  *
  *  The twelve declared below carry `sessionId` as required, on two independent grounds: both agents
- *  include it in every send literal, and the relay's forward gate resolves `sessions.get(msg.sessionId!)`
+ *  include it in every send literal, and the relay's forward gate resolves `sessions.get(msg.sessionId)`
  *  before forwarding, so a message with no sessionId never reaches a browser by this path.
  *
  *  Nine of the ten inherited from `RelayOrAgentToBrowser` now carry it too. Three of them
@@ -1106,7 +1104,8 @@ export interface AppLaunchToRelay {
  *  describes a message nobody sends.
  *
  *  What required buys is a **compile error for a future sender**, no more. The agents keep that branch and
- *  should: `bundleId: ''` type-checks, and nothing here validates inbound JSON (#444). So this is the same
+ *  should: `bundleId: ''` type-checks — the door checks the *shape*, and an empty string is a valid one
+ *  everywhere but the two correlation fields, which carry `.min(1)`. So this is the same
  *  argument as `sessionId` below, not a stronger one.
  *
  *  Unlike `app:install` / `app:launch`, which carry a `buildId` the relay resolves into a bundle id from the

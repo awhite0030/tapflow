@@ -5,8 +5,8 @@ import path from 'path'
 import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
-import type { RelayMessage } from '../types'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
+import type { AgentRegistered, AppInstallError, GenericError, InputError, InputTouchEnd, InputTypeError } from '@tapflowio/protocol'
 
 // #492. The relay answers a terminal input it cannot dispatch, and it was the last producer of
 // `input:error` sending no `reason` — while being the one that knows the answer with the most
@@ -44,11 +44,11 @@ describe('input:error from the relay carries a reason (#492)', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({
-      type: 'agent:register',
+      type: 'agent:register', platform: 'ios', agentName: 'inputErrorReason-1',
       devices: [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }],
     }))
-    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
-    const sessionId = reply.registeredSessions![0].sessionId
+    const reply = await waitForType<AgentRegistered>(agent, 'agent:registered')
+    const sessionId = reply.registeredSessions[0]!.sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
@@ -150,11 +150,11 @@ describe('input:error from the relay carries a reason (#492)', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({
-      type: 'agent:register',
+      type: 'agent:register', platform: 'ios', agentName: 'inputErrorReason-1',
       devices: [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }],
     }))
-    const reg = await waitForType<RelayMessage>(agent, 'agent:registered')
-    const sessionId = reg.registeredSessions![0]!.sessionId
+    const reg = await waitForType<AgentRegistered>(agent, 'agent:registered')
+    const sessionId = reg.registeredSessions[0]!.sessionId
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
@@ -188,7 +188,7 @@ describe('input:error from the relay carries a reason (#492)', () => {
     // The control for the two below: the ownership check must not refuse the normal path.
     const { agent, browser, sessionId } = await live()
 
-    const fwd = waitForType<RelayMessage>(agent, 'input:touch:end')
+    const fwd = waitForType<InputTouchEnd>(agent, 'input:touch:end')
     browser.send(JSON.stringify({
       type: 'input:touch:end', sessionId, requestId: 'rq-own', payload: { x: 0.5, y: 0.5 },
     }))
@@ -208,7 +208,7 @@ describe('input:error from the relay carries a reason (#492)', () => {
     other.send(JSON.stringify({
       type: 'input:touch:end', sessionId, requestId: 'rq-inject', payload: { x: 0.5, y: 0.5 },
     }))
-    const err = await waitForType<RelayMessage>(other, 'input:error')
+    const err = await waitForType<InputError>(other, 'input:error')
 
     expect(err.reason).toBe('not-session-owner')
     expect(err.requestId).toBe('rq-inject')
@@ -239,7 +239,7 @@ describe('input:error from the relay carries a reason (#492)', () => {
     other.send(JSON.stringify({
       type: 'input:touch:end', sessionId, requestId: 'rq-unheld', payload: { x: 0.5, y: 0.5 },
     }))
-    const err = await waitForType<RelayMessage>(other, 'input:error')
+    const err = await waitForType<InputError>(other, 'input:error')
 
     expect(err.reason).toBe('not-session-owner')
     expect(err.message).toBe('session not joined')
@@ -256,7 +256,7 @@ describe('input:error from the relay carries a reason (#492)', () => {
     other.send(JSON.stringify({
       type: 'input:key', sessionId, requestId: 'rq-held-prose', payload: { code: 'KeyA' },
     }))
-    const err = await waitForType<RelayMessage>(other, 'input:error')
+    const err = await waitForType<InputError>(other, 'input:error')
 
     expect(err.reason).toBe('not-session-owner')
     expect(err.message).toBe('session held by another client')
@@ -269,7 +269,7 @@ describe('input:error from the relay carries a reason (#492)', () => {
     const other = await outsider()
 
     other.send(JSON.stringify({ type: 'input:type', sessionId, requestId: 'rq-t', payload: { text: 'hi' } }))
-    const err = await waitForType<RelayMessage>(other, 'input:type-error')
+    const err = await waitForType<InputTypeError>(other, 'input:type-error')
 
     expect(err.requestId).toBe('rq-t')
     // The reason rides this shape too. Without it, `not-session-owner` was unreachable for one of the five
@@ -374,7 +374,7 @@ describe('input:error from the relay carries a reason (#492)', () => {
       const other = await outsider()
 
       other.send(JSON.stringify({ type, sessionId, requestId: `rq-${type}`, ...extra }))
-      const err = await waitForType<RelayMessage>(other, errType)
+      const err = await waitForType<InputError | InputTypeError>(other, errType)
 
       expect(err.message).toBe('session held by another client')
       // The correlator rides the refusal, or the caller cannot attribute it and waits out its deadline —
@@ -397,7 +397,7 @@ describe('input:error from the relay carries a reason (#492)', () => {
     const other = await outsider()
 
     other.send(JSON.stringify({ type: 'app:install', sessionId, requestId: 'rq-inst', buildId: 999999 }))
-    const err = await waitForType<RelayMessage>(other, 'app:install-error')
+    const err = await waitForType<AppInstallError>(other, 'app:install-error')
 
     // Not `Build not found`, which is what an owner would get for this buildId.
     expect(err.message).toBe('session held by another client')
@@ -419,8 +419,8 @@ describe('input:error from the relay carries a reason (#492)', () => {
     await barrier(other)
 
     // Nothing answered, and the session still works for the socket that holds it.
-    expect(await waitForTypeOrNull<RelayMessage>(other, 'error', 0)).toBeNull()
-    const fwd = waitForType<RelayMessage>(agent, 'input:touch:end')
+    expect(await waitForTypeOrNull<GenericError>(other, 'error', 0)).toBeNull()
+    const fwd = waitForType<InputTouchEnd>(agent, 'input:touch:end')
     browser.send(JSON.stringify({
       type: 'input:touch:end', sessionId, requestId: 'rq-survived', payload: { x: 0.5, y: 0.5 },
     }))
@@ -440,7 +440,7 @@ describe('input:error from the relay carries a reason (#492)', () => {
     browser.send(JSON.stringify({
       type: 'input:touch:end', sessionId, requestId: 'rq-after-leave', payload: { x: 0.5, y: 0.5 },
     }))
-    const err = await waitForType<RelayMessage>(browser, 'input:error')
+    const err = await waitForType<InputError>(browser, 'input:error')
     expect(err.message).toBe('session not joined')
 
     agent.close(); browser.close()

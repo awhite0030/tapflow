@@ -6,7 +6,7 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
-import type { RelayMessage } from '../types'
+import type { AgentRegistered, DeviceBoot, DeviceBootError, DeviceReady, DeviceShutdown, DeviceShutdownDone } from '@tapflowio/protocol'
 
 // L5b′. `device:boot` / `device:shutdown` correlate by `requestId`, and unlike the app commands the
 // correlator on every reply is **optional** — `device:ready`, `device:boot-error` and
@@ -42,11 +42,11 @@ describe('lifecycle correlation (device:boot / device:shutdown)', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({
-      type: 'agent:register',
+      type: 'agent:register', platform: 'ios', agentName: 'lifecycleCorrelation-1',
       devices: [{ id: 'devA', name: 'iPhone A', platform: 'ios', status }],
     }))
-    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
-    return { agent, sessionId: reply.registeredSessions![0]!.sessionId }
+    const reply = await waitForType<AgentRegistered>(agent, 'agent:registered')
+    return { agent, sessionId: reply.registeredSessions[0]!.sessionId }
   }
 
   async function joinAs(sessionId: string) {
@@ -75,7 +75,7 @@ describe('lifecycle correlation (device:boot / device:shutdown)', () => {
       type: 'device:boot', sessionId: 'no-such-session', requestId: 'rq-unknown',
       payload: { deviceId: 'devA' },
     }))
-    const err = await waitForType<RelayMessage>(browser, 'device:boot-error')
+    const err = await waitForType<DeviceBootError>(browser, 'device:boot-error')
 
     expect(err.message).toBe('Session not found')
     expect(err.requestId).toBe('rq-unknown')
@@ -94,7 +94,7 @@ describe('lifecycle correlation (device:boot / device:shutdown)', () => {
     browser.send(JSON.stringify({
       type: 'device:boot', sessionId, requestId: 'rq-offline', payload: { deviceId: 'devA' },
     }))
-    const err = await waitForType<RelayMessage>(browser, 'device:boot-error')
+    const err = await waitForType<DeviceBootError>(browser, 'device:boot-error')
 
     // The two diagnoses are deliberately different — reporting a stale session id as a dead Mac sends
     // the reader after the wrong problem — so both exits need the echo, not just one.
@@ -108,7 +108,7 @@ describe('lifecycle correlation (device:boot / device:shutdown)', () => {
     const { agent, sessionId } = await registerAgent()
     const browser = await joinAs(sessionId)
 
-    const forwarded = waitForType<RelayMessage>(agent, 'device:boot')
+    const forwarded = waitForType<DeviceBoot>(agent, 'device:boot')
     browser.send(JSON.stringify({
       type: 'device:boot', sessionId, requestId: 'rq-fwd', payload: { deviceId: 'devA' },
     }))
@@ -124,7 +124,7 @@ describe('lifecycle correlation (device:boot / device:shutdown)', () => {
     const { agent, sessionId } = await registerAgent()
     const browser = await joinAs(sessionId)
 
-    const forwarded = waitForType<RelayMessage>(agent, 'device:shutdown')
+    const forwarded = waitForType<DeviceShutdown>(agent, 'device:shutdown')
     browser.send(JSON.stringify({
       type: 'device:shutdown', sessionId, requestId: 'rq-down', payload: { deviceId: 'devA' },
     }))
@@ -161,8 +161,8 @@ describe('lifecycle correlation (device:boot / device:shutdown)', () => {
     await barrier(browser)
     await barrier(agent)
 
-    const forwarded = await waitForTypeOrNull<RelayMessage>(agent, 'device:boot', 0)
-    const answered = await waitForTypeOrNull<RelayMessage>(browser, 'device:boot-error', 0)
+    const forwarded = await waitForTypeOrNull<DeviceBoot>(agent, 'device:boot', 0)
+    const answered = await waitForTypeOrNull<DeviceBootError>(browser, 'device:boot-error', 0)
     agent.close(); browser.close()
     return { forwarded, answered }
   }
@@ -198,7 +198,7 @@ describe('lifecycle correlation (device:boot / device:shutdown)', () => {
     const { agent, sessionId } = await registerAgent()
     const browser = await joinAs(sessionId)
 
-    const forwarded = waitForType<RelayMessage>(agent, 'device:shutdown')
+    const forwarded = waitForType<DeviceShutdown>(agent, 'device:shutdown')
     browser.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'devA' } }))
 
     const msg = await forwarded
@@ -234,7 +234,7 @@ describe('lifecycle correlation (device:boot / device:shutdown)', () => {
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
     await waitForType(browser, 'session:joined')
     await barrier(browser)
-    const ready = await waitForTypeOrNull<RelayMessage>(browser, 'device:ready', 0)
+    const ready = await waitForTypeOrNull<DeviceReady>(browser, 'device:ready', 0)
 
     expect(ready).not.toBeNull()
     expect('sessionId' in ready!).toBe(false)
@@ -251,13 +251,13 @@ describe('lifecycle correlation (device:boot / device:shutdown)', () => {
     const { agent, sessionId } = await registerAgent()
     const browser = await joinAs(sessionId)
 
-    const ready = waitForType<RelayMessage>(browser, 'device:ready')
+    const ready = waitForType<DeviceReady>(browser, 'device:ready')
     agent.send(JSON.stringify({
       type: 'device:ready', sessionId, requestId: 'rq-echoed', payload: { deviceId: 'devA' },
     }))
     expect((await ready).requestId).toBe('rq-echoed')
 
-    const done = waitForType<RelayMessage>(browser, 'device:shutdown-done')
+    const done = waitForType<DeviceShutdownDone>(browser, 'device:shutdown-done')
     agent.send(JSON.stringify({
       type: 'device:shutdown-done', sessionId, payload: { deviceId: 'devA' },
     }))

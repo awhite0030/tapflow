@@ -37,7 +37,7 @@ function forwardedToBrowser(src) {
       body += line + '\n'
       depth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
       if (depth <= 0) {
-        if (/browserSocket\.send\(JSON\.stringify\(msg\)\)/.test(body)) {
+        if (FORWARD_TO_BROWSER.test(body)) {
           for (const l of blockLabels) found.add(l)
         }
         blockLabels = null
@@ -61,6 +61,20 @@ function forwardedToBrowser(src) {
   }
   return found
 }
+
+/**
+ * A browser-bound forward, and it must serialise **`raw`** — the frame as it arrived.
+ *
+ * It was `JSON.stringify(msg)` until #444 made the inbound frame a parse product. `z.object` strips
+ * keys it does not declare, so forwarding the product here would silently delete a field a newer agent
+ * added, in the one direction where the sender is the more recently updated side. The browser→agent
+ * forwards are the mirror and deliberately send `msg`: there the stripping is the point, because the
+ * sender may be an attacker with devtools open.
+ *
+ * Anchored on `raw` rather than accepting either, so a forward that goes back to the product fails
+ * here instead of shipping a compatibility break nothing else would report.
+ */
+const FORWARD_TO_BROWSER = /browserSocket\.send\(JSON\.stringify\(raw\)\)/
 
 /** `export interface Name { … }` bodies, by name. L1 moved every message out of its union and into one
  *  of these, so a parser that reads only union bodies now finds nothing — it did, and this file's
@@ -157,8 +171,16 @@ describe('browser-inbound routing matches the protocol union', () => {
   // nested literal to 6 of 11 fields and the by-name assertion passed anyway.
   it('the parser reached every forward site', () => {
     expect(forwarded.size).toBe(22)
-    const sends = (relaySrc.match(/browserSocket\.send\(JSON\.stringify\(msg\)\)/g) ?? []).length
+    const sends = (relaySrc.match(/browserSocket\.send\(JSON\.stringify\(raw\)\)/g) ?? []).length
     expect(sends).toBe(8) // 6 single-label blocks + the 13-label block + the clipboard block
+  })
+
+  // The other half of the rule above, and the one a count cannot see: a forward that switched back to
+  // the parse product would keep the count at 8 while stripping every field the schemas do not declare
+  // — which for the Envelope tier is *every* payload. The symptom would be a viewer that renders
+  // nothing, from a change that looks like a rename.
+  it('no browser-bound forward serialises the parse product', () => {
+    expect(relaySrc).not.toMatch(/browserSocket\.send\(JSON\.stringify\(msg\)\)/)
   })
 
   it('RelayOrAgentToBrowser is shared by both directions rather than copied', () => {

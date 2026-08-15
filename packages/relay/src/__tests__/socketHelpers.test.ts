@@ -133,7 +133,7 @@ describe('socket test helpers are order-proof (#452)', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({
-      type: 'agent:register',
+      type: 'agent:register', platform: 'ios', agentName: 'socketHelpers-1',
       devices: [{ id: 'devA', name: 'iPhone A', platform: 'ios', status: 'shutdown' }],
     }))
     await waitForType(agent, 'agent:registered')

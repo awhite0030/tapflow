@@ -6,7 +6,7 @@ import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
-import type { RelayMessage } from '../types'
+import type { AgentRegistered, AgentsListed, DeviceBootError, SessionAgentAway, SessionJoined, SessionRebound, SessionTerminated } from '@tapflowio/protocol'
 
 // #426 stage 3. Stage 2 taught the relay to re-point a session at a restarted agent's socket, and
 // it worked — but only while the old socket was still open. On a real restart it never was: the
@@ -54,8 +54,8 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
       type: 'agent:register', agentId, agentName: 'the-mac', platform: 'ios',
       devices, capabilities: ['clipboard'],
     }))
-    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
-    const byDevice = new Map(reply.registeredSessions!.map((r) => [r.deviceId, r.sessionId]))
+    const reply = await waitForType<AgentRegistered>(agent, 'agent:registered')
+    const byDevice = new Map(reply.registeredSessions.map((r) => [r.deviceId, r.sessionId]))
     return { agent, byDevice }
   }
 
@@ -63,7 +63,7 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
     browser.send(JSON.stringify({ type: 'session:start', sessionId }))
-    const joined = await waitForType<RelayMessage>(browser, 'session:joined')
+    const joined = await waitForType<SessionJoined>(browser, 'session:joined')
     return Object.assign(browser, { joined })
   }
 
@@ -97,7 +97,7 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
 
   async function devices(ws: WebSocket) {
     ws.send(JSON.stringify({ type: 'agents:list' }))
-    const listed = await waitForType<RelayMessage>(ws, 'agents:listed')
+    const listed = await waitForType<AgentsListed>(ws, 'agents:listed')
     return (listed.sessions ?? []).flatMap((s) => s.devices)
   }
 
@@ -114,7 +114,7 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
     await closeAndHeld(first.agent, browser)
     const second = await register()
 
-    const rebound = await waitForType<RelayMessage>(browser, 'session:rebound')
+    const rebound = await waitForType<SessionRebound>(browser, 'session:rebound')
     expect(rebound.sessionId).toBe(sessionId)
     expect(second.byDevice.get('devA')).toBe(sessionId)
 
@@ -127,7 +127,7 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
 
     await closeAndSettle(first.agent)
 
-    const away = await waitForType<RelayMessage>(browser, 'session:agent-away')
+    const away = await waitForType<SessionAgentAway>(browser, 'session:agent-away')
     expect(away.sessionId).toBe(first.byDevice.get('devA'))
     // Nothing has been decided yet — the frozen frame is explained, not resolved. Only
     // `session:terminated` is worth asserting: no second agent registers here, so `session:rebound`
@@ -144,7 +144,7 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
     await closeAndSettle(first.agent)
     await waitForType(browser, 'session:agent-away')
 
-    const ended = await waitForType<RelayMessage>(browser, 'session:terminated')
+    const ended = await waitForType<SessionTerminated>(browser, 'session:terminated')
     expect(ended.reason).toBe('agent-disconnected')
 
     browser.close()
@@ -183,7 +183,7 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
 
     const second = await register()
 
-    expect((await waitForType<RelayMessage>(browserB, 'session:rebound')).sessionId).toBe(sessionId)
+    expect((await waitForType<SessionRebound>(browserB, 'session:rebound')).sessionId).toBe(sessionId)
 
     second.agent.close(); browserB.close()
   })
@@ -225,7 +225,7 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
 
     browser.send(JSON.stringify({ type: 'device:boot', sessionId, requestId: 'rq-grace', payload: { deviceId: 'devA' } }))
 
-    expect((await waitForType<RelayMessage>(browser, 'device:boot-error')).message).toBe('Session not found')
+    expect((await waitForType<DeviceBootError>(browser, 'device:boot-error')).message).toBe('Session not found')
 
     browser.close()
   })
@@ -322,7 +322,7 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
 
     const second = await register([DEV_A], 'a-different-machine-id')
 
-    expect((await waitForType<RelayMessage>(browser, 'session:terminated')).reason).toBe('agent-disconnected')
+    expect((await waitForType<SessionTerminated>(browser, 'session:terminated')).reason).toBe('agent-disconnected')
     expect((await devices(second.agent)).map((d) => d.id)).toEqual(['devA'])
 
     second.agent.close(); browser.close()
@@ -363,7 +363,7 @@ describe('a session outlives its agent socket long enough to be reclaimed (#426)
     const agent = new WebSocket(`ws://localhost:${ownPort}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({
-      type: 'agent:register', agentId: 'mac-1', platform: 'ios', devices: [DEV_A],
+      type: 'agent:register', agentName: 'agentReconnectGrace-1', agentId: 'mac-1', platform: 'ios', devices: [DEV_A],
     }))
     await waitForType(agent, 'agent:registered')
 

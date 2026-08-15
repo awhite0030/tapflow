@@ -5,8 +5,15 @@ import path from 'path'
 import { WebSocket } from 'ws'
 import { RelayServer } from '../RelayServer'
 import { initDb, closeDb } from '../db'
-import type { RelayMessage } from '../types'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
+
+import type { AgentRegistered, BrowserInbound, BrowserToRelay, RelayToAgent } from '@tapflowio/protocol'
+
+/** What an agent socket actually receives. `RelayToAgent` is only the half the relay
+ *  originates or rebuilds; browser commands it forwards verbatim (`app:clear-state`,
+ *  `clipboard:*`, `input:*`) arrive unchanged and are declared in `BrowserToRelay`. The
+ *  protocol has no single union for this — #557. */
+type AgentSocketInbound = RelayToAgent | BrowserToRelay
 
 
 describe('clipboard bridge relay routing', () => {
@@ -38,11 +45,11 @@ describe('clipboard bridge relay routing', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({
-      type: 'agent:register',
+      type: 'agent:register', platform: 'ios', agentName: 'clipboard-1',
       devices: [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }],
     }))
-    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
-    const sessionId = reply.registeredSessions![0].sessionId
+    const reply = await waitForType<AgentRegistered>(agent, 'agent:registered')
+    const sessionId = reply.registeredSessions[0]!.sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
@@ -58,12 +65,12 @@ describe('clipboard bridge relay routing', () => {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({
-      type: 'agent:register',
+      type: 'agent:register', platform: 'ios', agentName: 'clipboard-1',
       capabilities: ['clipboard'],
       devices: [{ id: 'dev-1', name: 'iPhone', platform: 'ios', status: 'booted' }],
     }))
-    const reply = await waitForType<RelayMessage>(agent, 'agent:registered')
-    const sessionId = reply.registeredSessions![0].sessionId
+    const reply = await waitForType<AgentRegistered>(agent, 'agent:registered')
+    const sessionId = reply.registeredSessions[0]!.sessionId
 
     const browser = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(browser)
@@ -93,7 +100,7 @@ describe('clipboard bridge relay routing', () => {
     const { agent, browser, sessionId } = await setup()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'clipboard:read') {
         agent.send(JSON.stringify({
           type: 'clipboard:data',
@@ -119,7 +126,7 @@ describe('clipboard bridge relay routing', () => {
     // Unicode must survive the JSON round trip untouched — the whole point of the bridge.
     const text = '한글 テスト 🎉\nline2\ttab'
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'clipboard:write') {
         expect((msg.payload as { text: string }).text).toBe(text)
         agent.send(JSON.stringify({ type: 'clipboard:write-done', sessionId: msg.sessionId, requestId: msg.requestId }))
@@ -138,7 +145,7 @@ describe('clipboard bridge relay routing', () => {
     const { agent, browser, sessionId } = await setup()
 
     agent.on('message', (data) => {
-      const msg = JSON.parse(data.toString()) as RelayMessage
+      const msg = JSON.parse(data.toString()) as AgentSocketInbound
       if (msg.type === 'clipboard:read') {
         agent.send(JSON.stringify({
           type: 'clipboard:error', sessionId: msg.sessionId, requestId: msg.requestId, message: 'no booted device',
@@ -198,8 +205,8 @@ describe('clipboard bridge relay routing', () => {
   it('a browser socket cannot inject clipboard:data into its own viewer', async () => {
     const { agent, browser, sessionId } = await setup()
 
-    const got: RelayMessage[] = []
-    browser.on('message', (d) => got.push(JSON.parse(d.toString()) as RelayMessage))
+    const got: BrowserInbound[] = []
+    browser.on('message', (d) => got.push(JSON.parse(d.toString()) as BrowserInbound))
     const closed = new Promise<number>((r) => browser.on('close', (code) => r(code)))
 
     browser.send(JSON.stringify({
@@ -221,13 +228,13 @@ describe('clipboard bridge relay routing', () => {
     const rogue = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(rogue)
     rogue.send(JSON.stringify({
-      type: 'agent:register',
+      type: 'agent:register', platform: 'ios', agentName: 'clipboard-2',
       devices: [{ id: 'rogue-1', name: 'Rogue', platform: 'ios', status: 'booted' }],
     }))
     await waitForType(rogue, 'agent:registered')
 
-    const got: RelayMessage[] = []
-    browser.on('message', (d) => got.push(JSON.parse(d.toString()) as RelayMessage))
+    const got: BrowserInbound[] = []
+    browser.on('message', (d) => got.push(JSON.parse(d.toString()) as BrowserInbound))
 
     rogue.send(JSON.stringify({
       type: 'clipboard:data', sessionId, requestId: 'clip-1', payload: { text: 'ATTACKER' },
