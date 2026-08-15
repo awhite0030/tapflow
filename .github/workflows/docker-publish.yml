@@ -70,9 +70,74 @@ jobs:
           cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
           # Publish: push a per-architecture image by digest (merged into a manifest
-          # list in the merge job). Otherwise (PR / no credentials): build for
-          # validation only, keeping just the cache.
-          outputs: ${{ (github.event_name != 'pull_request' && env.HAS_DOCKERHUB == 'true') && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || 'type=cacheonly' }}
+          # list in the merge job). Otherwise (PR / no credentials): load the
+          # built image into Docker so the runtime smoke test exercises it.
+          outputs: ${{ (github.event_name != 'pull_request' && env.HAS_DOCKERHUB == 'true') && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || format('type=docker,name=tapflow-smoke:{0}', env.PLATFORM_PAIR) }}
+
+      - name: Select image for smoke test
+        run: |
+          if [ "${HAS_DOCKERHUB}" = "true" ] && [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
+            echo "SMOKE_IMAGE=${IMAGE}@${{ steps.build.outputs.digest }}" >> "$GITHUB_ENV"
+          else
+            echo "SMOKE_IMAGE=tapflow-smoke:${PLATFORM_PAIR}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Smoke test image runtime
+        run: |
+          set -euo pipefail
+
+          container="tapflow-smoke-${PLATFORM_PAIR}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          volume="${container}-data"
+          root_body="${RUNNER_TEMP}/tapflow-smoke-root.txt"
+          api_body="${RUNNER_TEMP}/tapflow-smoke-auth-status.txt"
+
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              docker logs "$container" 2>/dev/null || true
+            fi
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          docker volume create "$volume" >/dev/null
+          docker run -d \
+            --name "$container" \
+            -p 127.0.0.1:4000:4000 \
+            -v "$volume:/app/.tapflow/data" \
+            "$SMOKE_IMAGE" >/dev/null
+
+          for attempt in $(seq 1 60); do
+            if [ "$(docker inspect -f '{{.State.Running}}' "$container")" != "true" ]; then
+              echo "Container exited before readiness (attempt ${attempt})." >&2
+              exit 1
+            fi
+
+            root_status="$(curl -sS -o "$root_body" -w '%{http_code}' http://127.0.0.1:4000/ || true)"
+            api_status="$(curl -sS -o "$api_body" -w '%{http_code}' http://127.0.0.1:4000/api/v1/auth/status || true)"
+            if [ "$root_status" -ge 200 ] && [ "$root_status" -lt 400 ] \
+              && [ "$api_status" -ge 200 ] && [ "$api_status" -lt 400 ] \
+              && grep -Fq '<title>tapflow</title>' "$root_body" \
+              && grep -Eq '"initialized":(true|false)' "$api_body"; then
+              echo "Smoke test passed with HTTP /=${root_status} and /api/v1/auth/status=${api_status}."
+              exit 0
+            fi
+
+            sleep 2
+          done
+
+          echo "Relay did not return a non-error HTTP response on :4000." >&2
+          if [ -s "$root_body" ]; then
+            echo "--- / response body ---" >&2
+            sed -n '1,80p' "$root_body" >&2
+          fi
+          if [ -s "$api_body" ]; then
+            echo "--- /api/v1/auth/status response body ---" >&2
+            sed -n '1,80p' "$api_body" >&2
+          fi
+          exit 1
 
       - name: Export digest
         if: github.event_name != 'pull_request' && env.HAS_DOCKERHUB == 'true'
