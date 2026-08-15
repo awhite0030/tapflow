@@ -932,6 +932,27 @@ export type AppClearStateReplyBody<T = AppClearStateReply> = T extends unknown ?
  *  at its own send site in `agent-core/src/utils/stream.ts`. */
 export type AgentControlOutbound = AgentToRelay | AgentToBrowser
 
+/**
+ * Every message this protocol declares, reached through the seven directions.
+ *
+ * Not a fourteenth union for its own sake: it is what lets a consumer assert that its own list of
+ * literals is *complete* rather than merely correct so far. `relay/src/types.ts` keeps such a list —
+ * hand-maintained, 62 entries, and missing `stream:request-idr` until this change, which is the exact
+ * drift this package was created to end (see AGENTS.md).
+ *
+ * The fact it restates is small and stable — **which directions exist** — not the 63 literals inside
+ * them. A message added to a direction flows in here for free; a message added to *no* direction does
+ * not, and nothing here can see that. That gap is real and is not this union's to close.
+ */
+export type AnyWireMessage =
+  | BrowserToRelay
+  | RelayToBrowser
+  | AgentToRelay
+  | AgentToBrowser
+  | RelayToAgent
+  | StreamToRelay
+  | RelayToStream
+
 // ── browser → relay ──────────────────────────────────────────────────────────
 
 /** Key input. The payload carries `code` — a `KeyboardEvent.code` name — and `modifiers` as a

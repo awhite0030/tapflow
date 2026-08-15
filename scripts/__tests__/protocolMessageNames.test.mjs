@@ -32,24 +32,100 @@ const assertionsRaw = readFileSync(join(root, 'packages/protocol/src/typeAsserti
 // was counted as an eleventh union member.
 const assertions = assertionsRaw.replace(/^\s*\/\/.*$/gm, '')
 
+/** `index.ts` with comments removed, for the union parser below.
+ *
+ *  **The line filter is the load-bearing half, and the first draft credited the wrong one.** That
+ *  draft said removing comment lines rather than blanking them was what mattered, because blanking
+ *  leaves an empty line the parser stops at. Review measured both variants over the real file and
+ *  found no difference in any of the nineteen unions. What actually broke was leaving `//` lines in:
+ *  `unionMembers` then reads their prose as members, so `RelayOrAgentToBrowser` came back with
+ *  `Moved`, `L5c`, `An` and `TERMINAL_INPUT_TYPES` among its members.
+ *
+ *  The trailing `[ \t]*` and `\n?` are not cosmetic either. Without them a docblock between two union
+ *  members leaves its indentation behind as a whitespace-only line, and `unionMembers` stops at one —
+ *  measured: a `/** … *\/` inserted inside `AgentToBrowser` reported `ClipboardData` and
+ *  `ClipboardWriteDone` as orphans of nothing. A parser that loses a declaration reports a hole that
+ *  is not there, which is the same class of failure as one that reports full coverage of nothing. */
+const srcNoComments = src
+  // Every block comment, not only JSDoc, and the whitespace it sat on — see below for why the trailing
+  // `\n?` matters.
+  .replace(/[ \t]*\/\*[\s\S]*?\*\/\n?/g, '')
+  .split('\n')
+  // A comment-only line goes entirely: leaving it blank would terminate the union parser, which stops
+  // at a blank line.
+  .filter((l) => !/^\s*\/\//.test(l))
+  // **And an inline one goes while its line stays.** A first draft stripped only whole-line comments,
+  // and a trailing `// unlike OrphanPing, …` on a union member put `OrphanPing` in that direction's
+  // member list — so a message declared in no direction at all was reported as reachable and the
+  // orphan check stayed green. Measured. Prose read as a value is the shape this repo has now been
+  // bitten by three times.
+  .map((l) => l.replace(/\s*\/\/.*$/, ''))
+  .join('\n')
+
+/** Every `export type X = A | B | …` whose right-hand side is a union of names. */
+function unionMembers(text) {
+  const out = new Map()
+  for (const m of text.matchAll(/export type (\w+)\s*=([\s\S]*?)(?=\n\s*\n|\nexport |\n\/\*)/g)) {
+    // Skip object and string-literal types (`SessionTerminatedReason`, `ChromePayload`): only unions
+    // of interface names can carry a message into a direction.
+    if (/[{'"]/.test(m[2])) continue
+    const names = [...m[2].matchAll(/\b([A-Z]\w+)\b/g)].map((x) => x[1])
+    if (names.length) out.set(m[1], names)
+  }
+  return out
+}
+
+/** The seven directions a message can travel. Every declared message must be reachable from one.
+ *
+ *  This list is the one thing here that is restated rather than derived, and it is the small stable
+ *  half: directions are added once a year, messages weekly. A renamed or deleted root is caught by the
+ *  assertion that every name in it parses. */
+const DIRECTIONS = [
+  'BrowserToRelay', 'RelayToBrowser', 'AgentToRelay', 'AgentToBrowser',
+  'RelayToAgent', 'StreamToRelay', 'RelayToStream',
+]
+
 /** Every `export interface` that declares a `type: '<literal>'` — i.e. every wire message.
  *
  *  Bodies are found by counting braces, not by matching a run of two-space lines. The regex version
  *  skipped any interface with a blank line in its body — and `expect(messages.size).toBe(65)` was then
  *  satisfied *because* of the skip, so a new message with no binding passed all seventeen assertions.
  *  A count is only coverage if the parser cannot lose a declaration. */
-function messageInterfaces(text) {
-  const out = new Map()
-  for (const m of text.matchAll(/export interface (\w+)(?: extends (\w+))? \{/g)) {
+function interfaceBlocks(text) {
+  const out = []
+  // Tolerant on purpose, and each allowance is a measured escape: a generic parameter list, and an
+  // `extends` wrapped onto its own line, each made a declaration invisible to the strict form — and
+  // invisible means exempt from every assertion in this file *and* from `AnyWireMessage`, which is
+  // the hole this file's direction check exists to close.
+  for (const m of text.matchAll(/export interface (\w+)\s*(?:<[^>]*>)?\s*(?:extends\s+(\w+)[^{]*)?\{/g)) {
     let depth = 0
     let end = m.index + m[0].length - 1
     for (; end < text.length; end++) {
       if (text[end] === '{') depth++
       else if (text[end] === '}' && --depth === 0) break
     }
-    const body = text.slice(m.index + m[0].length, end)
-    const lit = body.match(/^ {2}type: '([^']+)';?$/m)
-    if (lit) out.set(m[1], { literal: lit[1], extends: m[2] ?? null, body })
+    out.push({ name: m[1], extends: m[2] ?? null, body: text.slice(m.index + m[0].length, end) })
+  }
+  return out
+}
+
+/** Every `export interface` that declares a `type: '<literal>'` — i.e. every wire message.
+ *
+ *  Bodies are found by counting braces, not by matching a run of two-space lines. The regex version
+ *  skipped any interface with a blank line in its body — and `expect(messages.size).toBe(65)` was then
+ *  satisfied *because* of the skip, so a new message with no binding passed all seventeen assertions.
+ *  A count is only coverage if the parser cannot lose a declaration.
+ *
+ *  Which is why the count is no longer the only thing holding that. Review measured four further ways
+ *  to be dropped — a trailing `//` after the literal, `type:'x'` with no space, a generic parameter
+ *  list, a wrapped `extends` — and every one of them kept the size at exactly 65, so the pin was
+ *  satisfied by the loss in each case. `everyDeclaredLiteralWasCaptured` below audits the capture with
+ *  a looser pattern than the capture itself uses; a pin cannot audit the parser that feeds it. */
+function messageInterfaces(text) {
+  const out = new Map()
+  for (const b of interfaceBlocks(text)) {
+    const lit = b.body.match(/^\s*type\s*:\s*'([^']+)'\s*;?\s*(?:\/\/.*)?$/m)
+    if (lit) out.set(b.name, { literal: lit[1], extends: b.extends, body: b.body })
   }
   return out
 }
@@ -95,6 +171,62 @@ describe('protocol message interfaces', () => {
     expect(messages.size).toBe(65)
     // `InputKey` predates L1 and has always been named; it must be in here too.
     expect(messages.has('InputKey')).toBe(true)
+  })
+
+  // The pin above cannot audit the parser that feeds it: every measured way to lose a declaration kept
+  // the size at 65, so the floor was satisfied by the loss. This asks the question the other way round
+  // — with a pattern loose enough to find a literal the capture would miss — so a declaration the
+  // capture drops is named rather than counted as absent.
+  it('captured every interface that declares a literal', () => {
+    const dropped = interfaceBlocks(src)
+      .filter((b) => /^\s*type\s*:\s*'/m.test(b.body))
+      .map((b) => b.name)
+      .filter((n) => !messages.has(n))
+    expect(dropped, `declares a type literal but the parser dropped it: ${dropped.join(', ')}`).toEqual([])
+  })
+
+  // **The half `AnyWireMessage` cannot state about itself.** `relay/src/types.ts` asserts its literal
+  // list against `AnyWireMessage`, which is the seven directions unioned — so a message added to a
+  // direction reaches the relay's check for free. A message added to **no** direction reaches nothing:
+  // it is absent from `AnyWireMessage`, so the relay is never obliged to know it, and every type-level
+  // assertion stays green while a declared message travels on no declared path.
+  //
+  // Types cannot enumerate their own declarations, which is why this is here and not there — the same
+  // reason the two facts at the top of this file are checked as source text.
+  it('every message interface belongs to a direction', () => {
+    const unions = unionMembers(srcNoComments)
+
+    // Anti-vacuity first, and in the specific way this check can go quiet: if a direction is renamed
+    // and this list is not, its members vanish from `reachable` and every message in it is reported as
+    // an orphan — loud. If the *parser* stops matching, `reachable` is empty and the orphan list is
+    // everything — also loud. The dangerous direction is a root silently resolving to nothing, so each
+    // one is required to have parsed.
+    for (const d of DIRECTIONS) {
+      expect(unions.get(d), `direction ${d} did not parse — renamed, or the parser stopped matching`).toBeDefined()
+    }
+
+    const seen = new Set()
+    const stack = [...DIRECTIONS]
+    while (stack.length) {
+      const name = stack.pop()
+      if (seen.has(name)) continue
+      seen.add(name)
+      for (const member of unions.get(name) ?? []) stack.push(member)
+    }
+
+    const orphans = [...messages.keys()].filter((n) => !seen.has(n))
+    expect(orphans, `declared but in no direction: ${orphans.join(', ')}`).toEqual([])
+  })
+
+  // `DIRECTIONS` above and `AnyWireMessage` in the protocol are two copies of one list, and only one
+  // divergence is loud. A direction added to `AnyWireMessage` alone orphans its members — safe. A
+  // direction added to `DIRECTIONS` alone is **green everywhere**: the orphan check is satisfied while
+  // every literal in that direction stays exempt from the relay's `_MessageTypeCoversProtocol`, and if
+  // it is agent-produced, from `_AgentSetCoversProtocol` too — so the door would let a browser send it.
+  it('the direction list matches AnyWireMessage', () => {
+    const declared = unionMembers(srcNoComments).get('AnyWireMessage')
+    expect(declared, 'AnyWireMessage did not parse').toBeDefined()
+    expect([...declared].sort()).toEqual([...DIRECTIONS].sort())
   })
 
   it('every message interface has a name↔literal binding', () => {

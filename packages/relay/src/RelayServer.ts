@@ -7,8 +7,10 @@ import { randomUUID } from 'crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import { SessionManager } from './SessionManager.js'
 import type { Session } from './SessionManager.js'
-import type { DeviceDetails, RelayMessage, UIElement } from './types.js'
-import type { ChromePayload, InputErrorReason, RelayOutbound } from '@tapflowio/protocol'
+import type { Assert, DeviceDetails, IsEmpty, RelayMessage, UIElement } from './types.js'
+import type {
+  AgentControlOutbound, ChromePayload, InputErrorReason, RelayOutbound, StreamToRelay,
+} from '@tapflowio/protocol'
 import { Router, json } from './router.js'
 import { requireViewAuth, requireAuth, getAuth, verifyPat } from './middleware/auth.js'
 import { classifyConnection } from './lib/connectionAuth.js'
@@ -168,7 +170,7 @@ function isCorrelated(msg: RelayMessage): msg is RelayMessage & { requestId: str
   return false
 }
 
-const AGENT_MSG_TYPES = new Set([
+const AGENT_MSG_TYPE_LIST = [
   'agent:register', 'agent:resources', 'screenshot:done', 'screenshot:error',
   'ui:tree:response', 'ui:tree:error',
   'app:clear-state-done', 'app:clear-state-error',
@@ -183,7 +185,44 @@ const AGENT_MSG_TYPES = new Set([
   // stream:register binds a session's stream socket — agent-only, or a browser
   // (view PAT / cookie) could hijack an existing session's video feed.
   'stream:register',
-])
+] as const
+
+/** Typed `ReadonlySet<string>`, deliberately: the door below tests a `MessageType`, which is wider
+ *  than the literals above, and `Set<T>.has` takes a `T`. The literal union stays reachable through
+ *  the array, which is where the assertions read it from. */
+const AGENT_MSG_TYPES: ReadonlySet<string> = new Set(AGENT_MSG_TYPE_LIST)
+
+// ── the list above is checked against the protocol, both ways (#532) ─────────────────────────────
+//
+// It is a hand-maintained second copy of "what an agent produces", and it is the copy with the
+// security consequence: the door below closes a `browser`-role socket with 1008 for any member. The
+// forwards it guards mostly resolve a session from the message and send to *that session's* browser
+// with no check that the sender is that session's agent — `clipboard:*` is the deliberate exception.
+// So an agent→browser message added to the protocol and forgotten here makes a viewer drivable by
+// anyone who knows a session id, with the type union claiming otherwise.
+//
+// Measured before this change: dropping `keyboard:toggled` from the set left the static suite and
+// the relay suite green. `clipboard:data` was held only because somebody wrote that one test by
+// hand. The other 28 entries were held by nothing.
+//
+// Derivation is not available — types erase, so no runtime array can come out of a union. What is
+// available is the compiler checking two lists against each other, which is what these two lines do.
+type AgentProduced = (AgentControlOutbound | StreamToRelay)['type']
+type Listed = (typeof AGENT_MSG_TYPE_LIST)[number]
+// **`satisfies` first, and it is the security direction's real floor.** `Exclude<AgentProduced, string>`
+// is `never`, so if the list ever widens past its literals — dropping `as const`, or one non-literal
+// element — the covering assertion below passes while checking nothing. Only its sibling would fail,
+// and that sibling's own comment calls its direction the one that "gates nothing", so an author
+// trusting the comment could delete the wrong one. This line fails first and names the list.
+AGENT_MSG_TYPE_LIST satisfies readonly AgentProduced[]
+type _AgentSetCoversProtocol = Assert<IsEmpty<Exclude<AgentProduced, Listed>>>
+type _AgentSetInventsNothing = Assert<IsEmpty<Exclude<Listed, AgentProduced>>>
+
+// The invariant the door *enforces* — that nothing a browser may send is something an agent produces
+// — is asserted in `protocol/src/typeAssertions.ts` instead. It is a claim about the protocol's own
+// directions, not about this file, and naming `BrowserToRelay` here made `clientOutboundTyped` read
+// the relay as a browser-role sender. That guard was right to say so.
+
 
 export class RelayServer {
   private httpServer: http.Server | https.Server
