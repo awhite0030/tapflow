@@ -120,8 +120,9 @@ const protoDecls = interfaces(protoSrc)
 // wire-contract program), and L1 turned 58 of them into interfaces — many sharing a low-arity set like
 // `{type, sessionId}`.
 //
-// **Bases that messages inherit.** `SessionError` carries no `type`, so the first rule keeps it, and
-// its shape `{sessionId, message}` is the most common local error DTO in this repo. Measured: a plain
+// **Bases that messages inherit.** `SessionScoped` carries no `type`, so the first rule keeps it. Its
+// shape was `{sessionId, message}` until #491 moved the prose onto each member; the reasoning below was
+// measured against that pair and holds the same way for the field it kept. Measured: a plain
 // `interface RelayFailure { sessionId: string; message: string }` in `mcp-server` was reported as
 // re-declaring a protocol payload — and the advice this check gives ("import it from protocol instead")
 // is wrong for that case. A message base is a structural fragment of the message family, not a shape a

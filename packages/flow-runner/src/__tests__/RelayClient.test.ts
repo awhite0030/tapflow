@@ -167,7 +167,7 @@ describe('RelayClient — the input senders mint a correlator and await the ack'
   })
 
   it('reads an ack with no reason as channel-unavailable, not as fine', async () => {
-    // `reason` is optional on the wire — an agent predating the field omits it — and absence means
+    // `reason` is required on the wire as of #491; what still omits it is an agent outside this repo predating that — and absence means
     // *unknown*. protocol/AGENTS.md makes the conservative reading the contract, and the failure still has
     // to name something rather than an empty parenthesis.
     const { client } = await capture((m) => ({
@@ -175,6 +175,20 @@ describe('RelayClient — the input senders mint a correlator and await the ack'
     }))
     await expect(client.pressKey('s1', 'Enter'))
       .rejects.toThrow(/pressKey Enter was refused by the device \(channel-unavailable\): no channel/)
+  })
+
+  // **The other half of the same rule, which the code did not have until CodeRabbit asked for it.** The
+  // comment above the branch claimed absence *and a member this build does not know* both read as
+  // `channel-unavailable`; the code tested `typeof === 'string'` and passed anything else through, so a
+  // reason added to the union after this build shipped reached the step's message verbatim.
+  it('reads a reason it does not know as channel-unavailable too', async () => {
+    const { client } = await capture((m) => ({
+      type: 'input:error', sessionId: m['sessionId'], requestId: m['requestId'],
+      reason: 'invented-in-a-later-release', message: 'no channel',
+    }))
+    const err = await client.pressKey('s1', 'Enter').catch((e: unknown) => e) as Error
+    expect(err.message).toMatch(/\(channel-unavailable\)/)
+    expect(err.message).not.toMatch(/invented-in-a-later-release/)
   })
 
   it('reports a lost relay as unconfirmed, and does not blame the agent for it', async () => {

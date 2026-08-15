@@ -16,8 +16,9 @@ import { join } from 'node:path'
 // are what catch it, and this file asserts every message interface has one — a guard you can forget an
 // entry of is a guard with 57-of-58 coverage, and the missing one is invisible.
 //
-// **2. That a session-scoped failure declares `extends SessionError`.** This cannot be asserted with a
-// type: every object with `{ sessionId, message }` is assignable to `SessionError`, so the assignment
+// **2. That a session-scoped failure declares `extends SessionScoped`.** This cannot be asserted with a
+// type: every object with `{ sessionId }` is assignable to `SessionScoped` — a weaker bar than the
+// `{ sessionId, message }` pair this argued from before #491, so the assignment
 // succeeds whether or not the interface declares the inheritance. And `extends` is transparent to
 // `Equals` — inherited members arrive in the resolved member set, so an error written inline instead
 // passes every type-level check. The inheritance exists for the family relation, which is source text,
@@ -261,28 +262,35 @@ describe('protocol message interfaces', () => {
   })
 
   // Failures addressed to a *request*, not to a session: the relay resolves both by `requestId` alone
-  // (`RelayServer.ts:1293-1312`). Listing them draws the boundary of `SessionError` rather than widening it —
+  // (`RelayServer.ts:1293-1312`). Listing them draws the boundary of the family rather than widening it —
   // the base is for a failure a session is waiting on.
   const REQUEST_SCOPED = new Set(['screenshot:error', 'ui:tree:error'])
 
-  it('a session-scoped failure declares extends SessionError', () => {
+  it('a session-scoped failure declares extends SessionScoped', () => {
     const offenders = []
     for (const [name, { literal, extends: base, body }] of messages) {
       const isFailure = /error$/.test(literal) && !REQUEST_SCOPED.has(literal)
-      const hasSession = /^ {2}sessionId[?]?:/m.test(body) || base === 'SessionError'
+      const hasSession = /^ {2}sessionId[?]?:/m.test(body) || base === 'SessionScoped'
       // `error` used to be excluded here, on the grounds that it was the escape hatch for a failure that
       // could not be attributed to a session — "the member's nature, not an exception". L5d replaced that
       // nature: a request naming no session is dropped at the relay's door, so every producer of `error`
       // answers one specific join, and it joins the family like every other session-scoped failure. The
       // predicate needed no change; what changed is that `error` now satisfies it.
       if (!isFailure || !hasSession) continue
-      if (base !== 'SessionError') offenders.push(`${name} ('${literal}')`)
+      if (base !== 'SessionScoped') offenders.push(`${name} ('${literal}')`)
     }
     expect(offenders).toEqual([])
-    expect([...messages].filter(([, m]) => m.extends === 'SessionError')).toHaveLength(9)
+    expect([...messages].filter(([, m]) => m.extends === 'SessionScoped')).toHaveLength(9)
     // `error` is the ninth, as of L5d. Pinned by name rather than only by the count, because the count alone
     // would be satisfied by any new member and this is the one whose membership was argued.
-    expect(messages.get('GenericError')).toMatchObject({ literal: 'error', extends: 'SessionError' })
+    expect(messages.get('GenericError')).toMatchObject({ literal: 'error', extends: 'SessionScoped' })
+    // #491 moved `message` off the base onto each member that requires it, so the family relation is no
+    // longer implied by the shared pair — the `extends` is the only thing left saying these nine are one
+    // kind. That makes this assertion load-bearing in a way it was not when the base carried two fields.
+    for (const [name, { body, extends: base }] of messages) {
+      if (base !== 'SessionScoped' || name === 'InputError') continue
+      expect(/^ {2}message: string$/m.test(body), `${name} lost its message declaration`).toBe(true)
+    }
     expect(REQUEST_SCOPED.size).toBe(2)
     for (const literal of REQUEST_SCOPED) {
       const entry = [...messages].find(([, m]) => m.literal === literal)
@@ -296,12 +304,16 @@ describe('protocol message interfaces', () => {
     }
     // What the base carries, pinned. `browserInboundRouting`'s signatures resolve `extends` and sort,
     // so they cannot tell an inherited field from an own-declared one: moving `sessionId` out of the
-    // base and into all eight subclasses leaves every signature identical and every check green.
+    // base and into all nine subclasses leaves every signature identical and every check green.
     // Measured. This line is what makes the inheritance mean something.
+    //
+    // It carried `message` too until #491, which demoted prose to optional on `input:error` alone —
+    // TypeScript cannot narrow an inherited required member, so the field moved onto each of the nine.
+    // That left the base with the one thing all nine actually share, and the name followed the shape.
     const base = readFileSync(join(root, 'packages/protocol/src/index.ts'), 'utf8')
-      .match(/export interface SessionError \{([^}]*)\}/)
-    expect(base, 'SessionError is gone').not.toBeNull()
-    expect([...base[1].matchAll(/^ {2}(\w+)(\??):/gm)].map((m) => m[1] + m[2]).sort()).toEqual(['message', 'sessionId'])
+      .match(/export interface SessionScoped \{([^}]*)\}/)
+    expect(base, 'SessionScoped is gone').not.toBeNull()
+    expect([...base[1].matchAll(/^ {2}(\w+)(\??):/gm)].map((m) => m[1] + m[2]).sort()).toEqual(['sessionId'])
   })
 
   it('the L1 conversion net is gone', () => {

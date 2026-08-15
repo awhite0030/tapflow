@@ -93,11 +93,17 @@ export const streamRegistered: RelayOutbound = { type: 'stream:registered' }
 export const streamIsNotBrowserInbound: BrowserInbound = { type: 'stream:registered' }
 
 // ── input:error reason ───────────────────────────────────────────────────────
-// The field is optional on purpose: an agent that predates it omits it, and a consumer must read
-// absence as "unknown" rather than "fine". Making it required is the breaking step.
+// The field was optional so an agent predating it could omit one, and a consumer had to read absence
+// as "unknown" rather than "fine". #491 took the breaking step: all six in-repo producers already sent
+// a reason, so what this closes is an agent outside the repo omitting it, and a consumer being handed a
+// failure it cannot branch on.
 
+// @ts-expect-error - reason is required as of #491; prose alone is not an answer a caller can act on
 export const errorWithoutReason: RelayOutbound = { type: 'input:error', sessionId: 's', requestId: 'rq', message: 'agent offline' }
 export const errorWithReason: RelayOutbound = { type: 'input:error', sessionId: 's', requestId: 'rq', message: 'agent offline', reason: 'channel-unavailable' }
+// The other half of the inversion: prose is now the optional one, and a producer with nothing
+// parameterised to add may leave it out.
+export const errorWithoutMessage: RelayOutbound = { type: 'input:error', sessionId: 's', requestId: 'rq', reason: 'channel-unavailable' }
 
 // @ts-expect-error - the reason set is closed; a free string would let each agent invent its own
 export const errorWithFreeReason: RelayOutbound = { type: 'input:error', sessionId: 's', message: 'x', reason: 'something-else' }

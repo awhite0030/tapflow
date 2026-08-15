@@ -281,14 +281,20 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
         // refreshed by a failure in the next one.
         toast.error(notice.title, {
           id: `input:${sessionId}:${key}`,
-          description: `${notice.action} (${msg.message})`,
+          // **The parenthetical is dropped when there is no prose**, not filled with a placeholder.
+          // `message` became optional in #491 — the closed `reason` is the contract now and prose is
+          // the producer's own — so an agent that sends only a reason is legal, and this is the one
+          // place its text reaches a person. A template literal accepts `string | undefined` and
+          // `restrict-template-expressions` is configured nowhere here, so nothing would have caught
+          // "(undefined)" appearing in a toast read by a PO or a designer.
+          description: msg.message ? `${notice.action} (${msg.message})` : notice.action,
           // The only "state" this design has. A finite lifetime is what makes the toast disappear
           // when inputs stop failing, with no clear signal — set explicitly and above sonner's
           // 4000ms default, which is short enough to lapse between two unhurried taps.
           duration: 6000,
         });
       } else {
-        console.debug(`[tapflow] input refused, shown nowhere: ${key} — ${msg.message}`);
+        console.debug(`[tapflow] input refused, shown nowhere: ${key}${msg.message ? ` — ${msg.message}` : ''}`);
       }
     }
     // `input:done` is deliberately not handled. It was only ever needed to release the latch above,
