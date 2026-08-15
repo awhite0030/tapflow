@@ -3,7 +3,7 @@
 '@tapflowio/relay': minor
 ---
 
-Validate every message the relay receives, and make the inbound frame a discriminated union
+Check every message the relay receives against the contract, and make the inbound frame a discriminated union
 
 The outbound direction has been compile-checked since #419 — `sendTo` refuses a message outside its
 union. Nothing checked the inbound direction: the relay's `RelayMessage` was a flat interface where

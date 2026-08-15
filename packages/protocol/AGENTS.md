@@ -358,8 +358,8 @@ type-check that message could take over the session's video path. The stream soc
 own send site in `agent-core/src/utils/stream.ts`.
 
 That mattered because an agent's literal was the one thing no compiler saw — the relay forwards replies with
-`JSON.stringify(raw)` — the frame exactly as it arrived — so nothing typed re-creates them. #489 and
-#490 are what the gap cost, and
+`JSON.stringify(raw)` — the frame exactly as it arrived — so nothing typed re-creates them.
+#489 and #490 are what the gap cost, and
 `inputErrorReason.test.mjs` exists because a script had to stand in for a compiler.
 
 **The browser side is the same rule and the same check shape.** All three browser-role producers — the dashboard's

@@ -119,30 +119,19 @@ function ownershipRefusal(session: Session): string {
   return session.browserSocket ? 'session held by another client' : 'session not joined'
 }
 
-/**
- * What the door refused, said once and in a form an operator can act on.
- *
- * This is where `isAddressed` and `isCorrelated` ended up. Both were predicates whose whole
- * observable output was a `console.warn` — an id-less request resolved no session and was dropped by
- * the miss anyway — and the schemas now reject the same frames earlier, including the empty-string
- * case a bare `z.string()` would have let through. What is new is that the log names the *field*:
- * "requestId: Too small" instead of "dropped, cannot correlate a reply".
- *
- * Worth logging at all for the reason `isCorrelated` gave: the three places a bad frame can be
- * dropped are otherwise silent, and an operator who upgrades the relay but not an independently
- * installed `mcp-server` would watch commands do nothing with no trace.
- *
- * `unknown-type` stays at debug: eleven relay-produced literals land here whenever a client echoes
- * one back, and none of them is a defect.
- */
-function logInboundRejection(failure: ParseFailure): void {
-  if (failure.reason === 'not-an-object') return
+/** One line per rejecting socket per second, at most. See `RelayServer.logInboundRejection`. */
+const REJECT_LOG_INTERVAL_MS = 1_000
+
+/** What the door refused, as one line. The throttling that decides whether to write it is the
+ *  caller's, because it is per socket and this function has no state. */
+function describeRejection(failure: ParseFailure, suppressed: number): string | null {
+  if (failure.reason === 'not-an-object') return null
+  const also = suppressed > 0 ? ` (+${suppressed} more from this socket in the last second)` : ''
   if (failure.reason === 'unknown-type') {
-    logger.debug(`[tapflow] inbound frame of unknown type ${failure.type} — dropped`)
-    return
+    return `[tapflow] inbound frame of unknown type ${failure.type} — dropped${also}`
   }
   const outcome = failure.reason === 'bad-payload' ? 'refused, and the sender told' : 'dropped'
-  logger.warn(`[tapflow] inbound ${failure.type} does not match the contract — ${outcome}:\n${failure.detail}`)
+  return `[tapflow] inbound ${failure.type} does not match the contract — ${outcome}${also}:\n${failure.detail}`
 }
 /** One member of the parse product, by literal. `route` narrows to these; a handler that takes one
  *  gets exactly what the door proved for that type and nothing else. */
@@ -183,6 +172,9 @@ export class RelayServer {
   // Per-session throttled "request an IDR from the agent" callbacks (drop recovery).
   private idrRequesters = new Map<string, () => void>()
   private wsRoles = new Map<WebSocket, 'agent' | 'browser' | 'stream'>()
+  /** Per-socket throttle state for `logInboundRejection`. A `WeakMap` so a closed socket's entry goes
+   *  with the socket — there is no cleanup to forget, unlike the maps keyed by session id nearby. */
+  private readonly rejectionLog = new WeakMap<WebSocket, { at: number; suppressed: number }>()
   // Agent sockets whose sessions are being held open, and the timer that gives up on each.
   // Keyed by the dead socket, never by session id: a rebind moves sessions off that socket, so an
   // expiry that fires late has nothing left to evict. That is the invariant — releasing the hold
@@ -569,7 +561,7 @@ export class RelayServer {
       // `settleRole` returns `false` for them. The case that mattered was a malformed handshake on a
       // role-less socket: dropped in silence, which is precisely the agent-registration skew this log
       // exists to make visible.
-      if (!inbound.ok) logInboundRejection(inbound)
+      if (!inbound.ok) this.logInboundRejection(ws, inbound)
       if (!this.settleRole(ws, inbound)) return
       if (!inbound.ok) {
         // **After the role gate, never before it**, so a browser spoofing an agent-only type gets 1008
@@ -677,6 +669,49 @@ export class RelayServer {
       return false
     }
     return true
+  }
+
+  /**
+   * What the door refused, said once and in a form an operator can act on.
+   *
+   * This is where `isAddressed` and `isCorrelated` ended up. Both were predicates whose whole
+   * observable output was a `console.warn` — an id-less request resolved no session and was dropped by
+   * the miss anyway — and the schemas now reject the same frames earlier, including the empty-string
+   * case a bare `z.string()` would have let through. What is new is that the log names the *field*:
+   * "requestId: Too small" instead of "dropped, cannot correlate a reply".
+   *
+   * Worth logging at all for the reason `isCorrelated` gave: the three places a bad frame can be
+   * dropped are otherwise silent, and an operator who upgrades the relay but not an independently
+   * installed `mcp-server` would watch commands do nothing with no trace.
+   *
+   * **Throttled per socket, and the "per socket" is the whole design.** A first draft wrote one line
+   * per rejected frame, on the direction a viewer with devtools controls and at the rate a gesture
+   * produces — the unbounded, attacker-driven log volume this file already refuses at
+   * `forwardUnacked`, with the reason written beside it. A single module-level timestamp would fix the
+   * volume and break the diagnostic: one noisy socket would silence the *other* socket's first bad
+   * frame, which is the skewed-client case the log exists for. So the state is keyed by socket, in a
+   * `WeakMap` that needs no cleanup, and **the first rejection from any socket is always written** —
+   * the one that names the skew is never the hundredth. What is dropped is only repetition, and the
+   * next line says how much.
+   *
+   * `unknown-type` stays at debug: eleven relay-produced literals land here whenever a client echoes
+   * one back, and none of them is a defect. It shares the throttle so turning debug on cannot
+   * reintroduce the volume.
+   */
+  private logInboundRejection(ws: WebSocket, failure: ParseFailure): void {
+    const now = Date.now()
+    const state = this.rejectionLog.get(ws)
+    if (state && now - state.at < REJECT_LOG_INTERVAL_MS) {
+      state.suppressed++
+      return
+    }
+    const line = describeRejection(failure, state?.suppressed ?? 0)
+    // Recorded even when there is nothing to write, so a burst of `not-an-object` frames cannot reset
+    // the window for the reasons that do write.
+    this.rejectionLog.set(ws, { at: now, suppressed: 0 })
+    if (line === null) return
+    if (failure.reason === 'unknown-type') logger.debug(line)
+    else logger.warn(line)
   }
 
   private route(ws: WebSocket, msg: ParsedInbound, raw: Readonly<Record<string, unknown>>): void {

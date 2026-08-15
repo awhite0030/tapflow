@@ -47,7 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The relay now checks every message it receives against the contract, and refuses the ones that
-  break it.** Until now it checked only what it *sent*. A command with a missing payload, an empty
+  break it.** Every frame is checked for its type, its address and its correlator; a command sent by a
+  browser is checked in full, down to its payload. Until now it checked only what it *sent*. A command with a missing payload, an empty
   session id, or a build id that was not a number was forwarded to a device anyway — or answered with a
   reply whose own required field was missing, which every client discards, turning a diagnosis into a
   caller waiting out its deadline. A refused command is now answered where the request has a reply, so
