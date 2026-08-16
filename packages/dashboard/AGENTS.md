@@ -56,6 +56,9 @@ files handle it or why it is deliberately ignored. It is written with
 `satisfies Record<BrowserInbound['type'], Disposition>`, so **a message added to the wire breaks that file**
 until someone picks a category.
 
+`mcp-server` and `flow-runner` have the same table as of #544, with their own categories and a check that
+also holds an `ignored` entry to the absence of a handler.
+
 It exists because "handled elsewhere", "deliberately ignored" and "nobody wrote it" all look like an absent
 branch. Six messages were being dropped and the three reasons were indistinguishable — one of them turned
 out to be a real bug hiding inside a *handled* type (`error`, whose meaning was carried in free prose).

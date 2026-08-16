@@ -547,7 +547,24 @@ export class TapflowClient {
       5_000,
       sessionId,
     )
-    if (msg['type'] === 'error') throw new Error((msg['message'] as string) ?? 'Connect failed')
+    if (msg['type'] === 'error') {
+      // **The reason, not just the prose** — the same shape `typeText` uses below, and for the same reason:
+      // `SessionStartFailure` is closed and says what to do, while `message` is the relay's wording. A
+      // caller told only "Session busy" cannot tell it apart from a Mac over its resource ceiling.
+      //
+      // The note, but **only for a terminated session.** `sessionNote` is the one thing that can say *this
+      // id was terminated in this process* — a cause the relay's reply cannot carry, since by the time it
+      // answers the session is gone. Its other two answers must not be appended here: they can only be
+      // reached on a re-join, and a re-join is refused precisely when this client no longer holds the
+      // session, so `away` and `needsReboot` stopped being updated at the leave. Appending one produced
+      // `Session busy (session-busy) — … needs boot_device again`: the relay saying another client has it,
+      // and this client advising a call on a session it does not hold, from a record frozen minutes ago.
+      const reason = msg['reason'] as string | undefined
+      const prose = (msg['message'] as string) ?? 'Connect failed'
+      const ended = this.lifecycle.get(sessionId)?.terminated
+      const detail = reason ? `${prose} (${reason})` : prose
+      throw new Error(ended ? `${detail} — the relay ended this session (${ended})` : detail)
+    }
   }
 
   /**
@@ -911,7 +928,7 @@ export class TapflowClient {
         const body = JSON.parse(text) as { error?: string }
         if (body.error) message = body.error
       } catch { /* keep the raw text */ }
-      throw new Error(message)
+      throw this.failed(sessionId, message)
     }
     return Buffer.from(await res.arrayBuffer())
   }
@@ -931,7 +948,9 @@ export class TapflowClient {
         const body = JSON.parse(text) as { error?: string }
         if (body.error) message = body.error
       } catch { /* keep the raw text */ }
-      throw new Error(message)
+      // The note only. Whether a ui-tree failure is retryable is #572 — this path has no poll loop of its
+      // own, and classifying it means deciding where `TransientQueryError` lives.
+      throw this.failed(sessionId, message)
     }
     const body = (await res.json()) as { elements?: UIElement[] }
     return body.elements ?? []

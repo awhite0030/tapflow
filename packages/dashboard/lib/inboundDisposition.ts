@@ -30,6 +30,12 @@ import type { BrowserInbound } from '@tapflowio/protocol'
  *
  * Any browser socket can receive any of the 29. That is why every entry is present and `ignored` says
  * *why* rather than *cannot happen*.
+ *
+ * **Two siblings exist now** — `mcp-server/src/inboundDisposition.ts` and
+ * `flow-runner/src/inboundDisposition.ts` (#544). They categorise as `settles` / `does` / `ignored` rather
+ * than `at`, because each has one file rather than five, and their check holds an `ignored` entry to the
+ * *absence* of a handler as well — the half this one does not have. The key set is the same and comes from
+ * the same place, so a message added to the wire breaks all three.
  */
 type Disposition =
   /** Handled. The value names the files, and `scripts/__tests__/inboundDisposition.test.mjs` checks each
