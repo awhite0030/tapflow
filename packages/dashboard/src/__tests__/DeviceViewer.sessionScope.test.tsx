@@ -75,7 +75,7 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
     //
     // The consequence is not reachable today, and that is a property of the dashboard rather than of this
     // line. `useRelay` opens a socket per hook instance, so this viewer's socket sends exactly one
-    // `session:start` — for the session it holds — and all four producers answer `sendTo(ws, …)` to that
+    // `session:start` — for the session it holds — and all five producers answer `sendTo(ws, …)` to that
     // socket. So no foreign refusal can arrive here now.
     //
     // It is tested anyway because the unreachability **expires**, and the thing that expires it is already

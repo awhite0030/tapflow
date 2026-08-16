@@ -51,7 +51,10 @@ export function isExternalAddress(addr: string): boolean {
 }
 // Min gap between IDR requests per session — one IDR resyncs the stream, so avoid
 // spamming the agent in the frames between request and the IDR arriving.
-const IDR_REQUEST_THROTTLE_MS = 500
+/** Exported for the re-join test, which pins both edges of this window rather than hardcoding 500 —
+ *  a test carrying its own copy of the number passes when the constant moves, which is the drift the
+ *  wire-contract work keeps finding. Not re-exported from the package index. */
+export const IDR_REQUEST_THROTTLE_MS = 500
 // Ping every socket each interval; a missed pong window (~2× this) terminates the dead socket.
 const HEARTBEAT_MS = 30_000
 // How long a session outlives its agent's socket, waiting for that agent to come back (#426).
@@ -426,10 +429,41 @@ export class RelayServer {
     }
   }
 
-  // Throttled callback asking the session's agent for an on-demand IDR (fast drop recovery); ignored by agents that don't support it.
-  private makeIdrRequester(sessionId: string): () => void {
+  /**
+   * Drop every per-session stream record keyed by this id.
+   *
+   * **Four maps that have to move together, called from four places that did not.** They were deleted
+   * inline in `session:end` and `session:leave` and nowhere else, so a session ending any other way —
+   * the agent going away, the idle timer, a device disappearing from a re-register — left all four
+   * behind for the life of the process.
+   *
+   * Pre-existing, and this slice is what makes it worth fixing here rather than filing: `idrRequesters`
+   * used to be populated only by the binary drop path, i.e. only under backpressure, and a re-join now
+   * creates an entry for any streaming session (#515). The leak went from rare to ordinary.
+   */
+  private forgetSessionStreamState(sessionId: string): void {
+    this.dropHandlers.delete(sessionId)
+    this.audioDropHandlers.delete(sessionId)
+    this.droppers.delete(sessionId)
+    this.idrRequesters.delete(sessionId)
+  }
+
+  /**
+   * Throttled callback asking the session's agent for an on-demand IDR (fast drop recovery); ignored by
+   * agents that don't support it.
+   *
+   * **One per session, and the construction is folded in here on purpose.** The throttle is `lastAt` in
+   * the closure, so a second requester for the same session is a second budget — which is what the
+   * `idrRequesters` map exists to prevent, and it prevented it only as long as every caller remembered
+   * to look the session up first. There are two callers now (the drop path and the re-join in
+   * `handleSessionStart`), and a separate `makeIdrRequester` was a factory either of them could reach
+   * past the map. Measured: calling it directly from one caller left every test green.
+   */
+  private idrRequester(sessionId: string): () => void {
+    const existing = this.idrRequesters.get(sessionId)
+    if (existing) return existing
     let lastAt = 0
-    return () => {
+    const requester = () => {
       const now = Date.now()
       if (now - lastAt < IDR_REQUEST_THROTTLE_MS) return
       lastAt = now
@@ -438,6 +472,8 @@ export class RelayServer {
         this.sendTo(session.agentSocket, { type: 'stream:request-idr', sessionId })
       }
     }
+    this.idrRequesters.set(sessionId, requester)
+    return requester
   }
 
   // Extracted so tests can simulate non-loopback origins (all test traffic is loopback).
@@ -520,11 +556,7 @@ export class RelayServer {
             dropper = createKeyframeAwareSender()
             this.droppers.set(session.id, dropper)
           }
-          let requestIdr = this.idrRequesters.get(session.id)
-          if (!requestIdr) {
-            requestIdr = this.makeIdrRequester(session.id)
-            this.idrRequesters.set(session.id, requestIdr)
-          }
+          const requestIdr = this.idrRequester(session.id)
           // JPEG and H.264 IDRs are resync points; only P-frames must wait for a keyframe after a drop.
           let isKeyframe = true
           if (hasEnvelope(frameBuf)) {
@@ -590,26 +622,28 @@ export class RelayServer {
       // coming back (#426), rather than ending them where they stand.
       if (this.holdAgentSocket(ws)) return
 
-      // Stream socket disconnected → clear the streamSocket reference
+      // Stream socket disconnected → clear the streamSocket reference.
+      //
+      // **No `return`.** One socket can be both: the role gate refuses a `browser`-role socket sending a
+      // non-browser type, and says nothing about a `stream`-role one sending `session:start` — so a
+      // socket that registered a stream first can go on to hold sessions. Returning here skipped the
+      // release below for exactly those, which is the state the loop exists to end.
       const streamSession = this.sessions.getByStreamSocket(ws)
-      if (streamSession) {
-        this.sessions.clearStreamSocket(streamSession.id)
-        return
-      }
+      if (streamSession) this.sessions.clearStreamSocket(streamSession.id)
 
-      // Browser socket disconnected → clear browserSocket, start idle timer
-      const browserSession = this.sessions.getByBrowserSocket(ws)
-      if (browserSession) {
-        this.sessions.clearBrowser(browserSession.id, () => {
-          const session = this.sessions.get(browserSession.id)
-          if (session?.agentSocket.readyState === WebSocket.OPEN) {
-            this.sendTo(session.agentSocket, {
-              type: 'device:shutdown',
-              sessionId: session.id,
-              payload: { deviceId: session.deviceId },
-            })
-          }
-        })
+      // Browser socket disconnected → release **every** session it held, each with its own idle timer.
+      //
+      // `getByBrowserSocket` used to answer with one session because the index held one, and a socket
+      // holding several is not exotic: `mcp-server` runs one socket for the whole process and joins a
+      // session per device. So closing it released the last join and left the rest bound to a dead
+      // socket — `busy: true` forever, no timer, and their devices booted with nobody watching (#507).
+      //
+      // The `stopping` guard is `holdAgentSocket`'s, for its stated reason: `stop()` terminates every
+      // client, and a timer armed on the way out survives the promise `stop()` resolves. That was one
+      // stray timer per relay before this loop and is one per held session after it.
+      if (this.stopping) return
+      for (const held of this.sessions.getByBrowserSocket(ws)) {
+        this.sessions.clearBrowser(held.id, () => this.idleShutdown(held.id))
       }
     })
   }
@@ -751,20 +785,14 @@ export class RelayServer {
       case 'session:end': {
         if (this.ownsSession(ws, this.sessions.get(msg.sessionId))) {
           this.sessions.remove(msg.sessionId)
-          this.dropHandlers.delete(msg.sessionId)
-          this.audioDropHandlers.delete(msg.sessionId)
-          this.droppers.delete(msg.sessionId)
-          this.idrRequesters.delete(msg.sessionId)
+          this.forgetSessionStreamState(msg.sessionId)
         }
         break
       }
       case 'session:leave': {
         if (this.ownsSession(ws, this.sessions.get(msg.sessionId))) {
           this.sessions.clearBrowser(msg.sessionId)
-          this.dropHandlers.delete(msg.sessionId)
-          this.audioDropHandlers.delete(msg.sessionId)
-          this.droppers.delete(msg.sessionId)
-          this.idrRequesters.delete(msg.sessionId)
+          this.forgetSessionStreamState(msg.sessionId)
         }
         break
       }
@@ -938,11 +966,28 @@ export class RelayServer {
         // Addressing used to have no gate either, on the grounds that an unaddressed shutdown resolves no
         // session and is dropped by the miss, so a gate would buy only its log. That reasoning is now moot
         // rather than wrong: the schema declares `sessionId` required, so the parser refuses the frame and
-        // the log it would have bought is the one `logInboundRejection` writes. Ownership is #527.
-        const session = this.sessions.get(msg.sessionId)
-        if (session?.agentSocket.readyState === WebSocket.OPEN) {
-          session.agentSocket.send(JSON.stringify(msg))
+        // the log it would have bought is the one `logInboundRejection` writes.
+        //
+        // **`reachableTargetWithoutOwnership`, not `dispatchTarget`** — that clause is #527, and its blocker is in
+        // the dashboard, not here. What this fixes is the other half: until #542 this case resolved the
+        // session inline and dropped the frame when it could not, making it the only browser-originated
+        // command the relay never answers. `mcp-server`'s `shutdownDevice` waits 30s on `device:shutdown-done`
+        // and then reports `Request timed out` with no cause, which is the silence, not a diagnosis.
+        const target = this.reachableTargetWithoutOwnership(msg.sessionId)
+        if (!target.ok) {
+          // Echoed, and the relay is the producer — the same obligation `device:boot-error` carries and for
+          // the same reason: an MCP caller that receives a diagnosis uncorrelated reads it as unsolicited
+          // and waits out the deadline anyway, so the answer arrives and is discarded. `requestId` is
+          // optional on both sides here, so an absent one stays absent rather than being invented.
+          this.sendTo(ws, {
+            type: 'device:shutdown-error',
+            sessionId: msg.sessionId,
+            ...(msg.requestId === undefined ? {} : { requestId: msg.requestId }),
+            message: target.message,
+          })
+          break
         }
+        target.session.agentSocket.send(JSON.stringify(msg))
         break
       }
       // Door checks, one policy per request: an uncorrelatable request is not forwarded, not rebuilt and
@@ -1187,7 +1232,10 @@ export class RelayServer {
         })
       }
     }
-    for (const s of agentSessions) this.sessions.remove(s.id)
+    for (const s of agentSessions) {
+      this.sessions.remove(s.id)
+      this.forgetSessionStreamState(s.id)
+    }
     this.sessions.removeResources(ws)
     logger.info(cause === 'replaced'
       ? `agent re-registered — ${agentSessions.length} previous session(s) replaced`
@@ -1258,6 +1306,7 @@ export class RelayServer {
           this.sendTo(s.browserSocket, { type: 'session:terminated', sessionId: s.id, reason: 'agent-disconnected' })
         }
         this.sessions.remove(s.id)
+        this.forgetSessionStreamState(s.id)
       }
     }
 
@@ -1289,7 +1338,7 @@ export class RelayServer {
     logger.info(`agent connected: ${msg.agentName || msg.agentId || 'unknown'} (${msg.platform || 'unknown'}) — ${registeredSessions.length} device(s)`)
   }
 
-  /** The only producer of `error` — all four exits below, and nothing else in the repo sends that message.
+  /** The only producer of `error` — all five exits below, and nothing else in the repo sends that message.
    *
    *  That is what makes the address possible rather than aspirational: `msg.sessionId` is narrowed to a
    *  non-empty `string` by the door — the inbound schema, `isAddressed` before it — so every refusal can
@@ -1326,15 +1375,29 @@ export class RelayServer {
       }
     }
     try {
-      this.sessions.join(msg.sessionId, ws)
+      const joined = this.sessions.join(msg.sessionId, ws)
+      if (!joined.ok) {
+        // Both of these are answered above, so arriving here means the state moved between that check and
+        // this call. They are **values now rather than throws** (#515), and that is what fixes the defect:
+        // the most common way into the old `catch` was a socket re-joining the session it already holds —
+        // exempted by the `!== ws` check above, then refused by `join()`, then reported as
+        // `session-not-found` for a live session the caller was holding.
+        const reason = joined.failure === 'held-by-another' ? 'session-busy' : 'session-not-found'
+        const message = joined.failure === 'held-by-another' ? 'Session busy' : 'Session not found'
+        this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message, reason })
+        return
+      }
     } catch (e) {
-      // `join()` throws for not-found as well as busy, and the check above already answered busy — so
-      // reaching here means something this handler did not anticipate. Reporting it as `session-busy`
-      // would put a specific claim on an unknown cause, which is what `reason` exists to stop. Bare
-      // `catch {}` also discarded the error entirely: nothing reached the route-level handler, because
-      // this swallowed it first.
+      // Only a bug reaches here now — the two expected failures return above instead of throwing, which is
+      // what stops this arm from having to guess. It still answers rather than dropping: both clients await
+      // `session:joined | error` on this request, so silence costs them a full deadline.
+      //
+      // `session-not-found` is chosen for **the action it names**, not as a diagnosis. Its own declaration
+      // says "nothing else is ever coming for it", and that half is true of any failed join — no
+      // `session:joined` will follow. `session-busy` would be the wrong action: it tells a viewer the
+      // session is alive and someone else has it. The prose carries what is actually known.
       logger.error(`session:start could not join ${msg.sessionId}:`, e)
-      this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message: 'Session not found', reason: 'session-not-found' })
+      this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message: 'Session could not be joined', reason: 'session-not-found' })
       return
     }
     // Include the agent's capabilities so the viewer knows up front what is implemented on
@@ -1375,10 +1438,28 @@ export class RelayServer {
       // keyframe immediately, instead of waiting for the next periodic one — and so it isn't
       // left blank when the encoder is static-skipping an unchanged screen. Agents that don't
       // support on-demand IDR ignore the message.
-      if (session.agentSocket.readyState === WebSocket.OPEN) {
-        this.sendTo(session.agentSocket, { type: 'stream:request-idr', sessionId: session.id })
-      }
+      //
+      // **Through the session's throttled requester, not a bare `sendTo`.** This was unreachable for a
+      // socket that already held the session — `join()` threw and the handler answered above this line —
+      // and #515 made a re-join run the whole body. A client re-sending `session:start` therefore drives
+      // one forced keyframe per frame it sends, and a 1080p IDR is two orders of magnitude larger than
+      // the P-frames around it, so the amplification lands on the tester who is actually watching. The
+      // backpressure path already throttles this exact message per session; sharing that requester is
+      // what keeps the two callers from having two policies.
+      this.idrRequester(session.id)()
     }
+  }
+
+  /** Shut the device down because nobody is watching it any more. The idle timer's payload, hoisted out
+   *  of the close handler so the release loop there reads as one line per session. */
+  private idleShutdown(sessionId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (session?.agentSocket.readyState !== WebSocket.OPEN) return
+    this.sendTo(session.agentSocket, {
+      type: 'device:shutdown',
+      sessionId: session.id,
+      payload: { deviceId: session.deviceId },
+    })
   }
 
   /** Where a browser-role command can be dispatched, or what its sender needs to be told instead.
@@ -1395,9 +1476,37 @@ export class RelayServer {
     ws: WebSocket,
     sessionId: string,
   ): { ok: true; session: Session } | { ok: false; message: string } {
+    // Ownership first and liveness second, which is the order the refusals were written in and worth
+    // keeping: a non-owner is told it does not hold the session rather than being handed the agent's
+    // state. Composed rather than inlined so `device:shutdown` can take the other two checks alone.
+    const session = this.sessions.get(sessionId)
+    if (session && !this.ownsSession(ws, session)) return { ok: false, message: ownershipRefusal(session) }
+    return this.reachableTargetWithoutOwnership(sessionId)
+  }
+
+  /** `dispatchTarget` without the ownership clause: is there a session here, and is its agent listening?
+   *
+   *  **The name carries the omission because a doc block does not reach an autocomplete.** This is the
+   *  resolver a future handler must not pick by accident — it is the general-looking one and the unsafe
+   *  one at the same time, which is the pairing worth spelling out.
+   *
+   *  **Exists for `device:shutdown` alone, and only until #527.** That command cannot take the ownership
+   *  check yet — three of the dashboard's four senders come from `useAgentSession`, whose socket never
+   *  joins, so gating it would break going back and the unmount teardown, the two paths that stop a device
+   *  costing money when a tester walks away. It still needs the other two, because without them a shutdown
+   *  addressed to a missing session or a closed agent socket was dropped in silence and `mcp-server`'s
+   *  caller burned a 30s deadline for it (#542).
+   *
+   *  So the split is the seam: when #527 answers who may shut a device down, `device:shutdown` moves up to
+   *  `dispatchTarget` and this method goes away. The cost of the seam is that a non-owner now learns
+   *  whether a session id exists and whether its agent is up — recorded rather than waved past, and small
+   *  against what it can already do, which is shut that device down.
+   */
+  private reachableTargetWithoutOwnership(
+    sessionId: string,
+  ): { ok: true; session: Session } | { ok: false; message: string } {
     const session = this.sessions.get(sessionId)
     if (!session) return { ok: false, message: 'Session not found' }
-    if (!this.ownsSession(ws, session)) return { ok: false, message: ownershipRefusal(session) }
     if (session.agentSocket.readyState !== WebSocket.OPEN) return { ok: false, message: 'agent offline' }
     return { ok: true, session }
   }

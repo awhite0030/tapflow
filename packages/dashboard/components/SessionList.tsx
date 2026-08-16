@@ -23,6 +23,11 @@ export function SessionList({ onSelect }: Props) {
   // The shutdown whose `session:start` has not been answered yet. A ref, not state: the relay's reply
   // lands in a handler that must read the current value, and a re-render is neither needed nor wanted.
   const pendingRef = useRef<{ deviceId: string; sessionId: string } | null>(null)
+  // Shutdowns that have been sent and not yet answered, `sessionId → deviceId`. `device:shutdown-error`
+  // is addressed to the session and carries no `payload`, while `shutting` is keyed by device — so
+  // without this the failure could clear the spinner for a device that is still shutting down: the
+  // inert row's mirror image, a row that says it is done when it is not.
+  const inFlightRef = useRef(new Map<string, string>())
   // `send` is what `useRelay` returns, so the handler passed *into* it cannot name it directly. Same
   // indirection `DeviceViewer` uses (`sendRef`), for the same reason.
   const sendRef = useRef<(msg: BrowserToRelay) => void>(() => {})
@@ -49,8 +54,23 @@ export function SessionList({ onSelect }: Props) {
         for (const k of Object.keys(prev)) next[k] = 'error'
         return next
       })
+    } else if (msg.type === 'device:shutdown-error') {
+      // The relay could not deliver the shutdown — no such session, or its agent is gone (#542). Before
+      // that message existed this arrived as nothing at all, and `device:shutdown-done` is the only thing
+      // that clears `shutting`, so the row sat on "Shutting down…" with both buttons hidden for good. The
+      // same inert row the `error` branch below was written for, reached by the other door.
+      const deviceId = inFlightRef.current.get(msg.sessionId)
+      if (deviceId === undefined) return
+      inFlightRef.current.delete(msg.sessionId)
+      setShutting((prev) => {
+        const next = { ...prev }
+        delete next[deviceId]
+        return next
+      })
+      toast.error('Could not shut that device down.', { description: msg.message })
     } else if (msg.type === 'device:shutdown-done') {
       const { deviceId } = msg.payload
+      inFlightRef.current.delete(msg.sessionId)
       setShutting((prev) => {
         const next = { ...prev }
         delete next[deviceId]
@@ -76,6 +96,7 @@ export function SessionList({ onSelect }: Props) {
       const pending = pendingRef.current
       if (pending && msg.sessionId === pending.sessionId) {
         pendingRef.current = null
+        inFlightRef.current.set(pending.sessionId, pending.deviceId)
         sendRef.current({ type: 'device:shutdown', sessionId: pending.sessionId, payload: { deviceId: pending.deviceId } })
       }
     } else if (msg.type === 'error') {

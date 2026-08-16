@@ -644,6 +644,32 @@ export interface GenericError extends SessionScoped {
   reason: SessionStartFailure
 }
 
+/**
+ * A `device:shutdown` the relay could not deliver.
+ *
+ * **The pair's error member, added late and by a different producer than its `-done`.** Every other
+ * browser-originated command answers when the relay cannot dispatch it; this one resolved its session
+ * inline and dropped the frame in silence, so `mcp-server`'s `shutdownDevice` burned a 30s deadline and
+ * reported `Request timed out` with no cause (#542). There was no shape to answer *with*, which is why
+ * fixing it was a protocol change rather than a relay one.
+ *
+ * **`RelayToBrowser`, not `RelayOrAgentToBrowser`**, unlike `DeviceBootError` beside it. Both agents ack
+ * a shutdown they cannot perform by simply not sending `device:shutdown-done`; neither has a failure
+ * path that produces a message. Declaring it in the shared union would claim a producer that does not
+ * exist, and would add an `AgentToBrowser` member with no forwarding case — which is exactly what
+ * `browserInboundRouting.test.mjs`'s second assertion exists to report. If an agent later grows one,
+ * moving the member is one line and that check enforces the case at the same time.
+ *
+ * `requestId` is optional because **the request's is** — the relay originates `device:shutdown` from its
+ * own idle timer, so a reply cannot demand a field the request need not carry. Absent here means the
+ * same thing it means on `DeviceShutdownDone`: this frame answers no request.
+ */
+export interface DeviceShutdownError extends SessionScoped {
+  type: 'device:shutdown-error'
+  message: string
+  requestId?: string
+}
+
 /** Messages the relay originates and no agent sends. */
 export type RelayToBrowser =
   | RelayOrAgentToBrowser
@@ -652,6 +678,7 @@ export type RelayToBrowser =
   | SessionTerminated
   | SessionAgentAway
   | SessionRebound
+  | DeviceShutdownError
   | GenericError
 
 export interface DeviceBooting {

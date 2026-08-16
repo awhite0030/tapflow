@@ -75,7 +75,8 @@ differently — and it is the only member that can promise nothing reached the d
 says "retry after joining" without a hedge (#491). Two prose strings behind it (`ownershipRefusal`), because
 telling a caller the session is in use when it is idle steers it off a device it could have had.
 
-**`device:shutdown` is the one command left out**, and the blocker is the dashboard rather than the relay:
+**`device:shutdown` is the one command left out of the ownership gate**, and the blocker is the dashboard
+rather than the relay:
 three of its four senders come from `useAgentSession`, whose socket never joins, so the gate would break going
 back and the unmount teardown. The question is whether that hook should join — #527.
 

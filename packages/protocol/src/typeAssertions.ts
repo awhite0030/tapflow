@@ -11,7 +11,8 @@ import type {
   AppClearState, AppClearStateDone, AppClearStateError, AppInstallDone, AppInstallError, AppInstallToAgent,
   AppInstallToRelay, AppLaunchDone, AppLaunchError, AppLaunchToAgent, AppLaunchToRelay, BrowserInbound,
   BrowserToRelay, ClipboardData, ClipboardError, ClipboardRead, ClipboardWrite, ClipboardWriteDone,
-  DeviceBoot, DeviceBootError, DeviceBooting, DeviceReady, DeviceShutdown, DeviceShutdownDone, GenericError,
+  DeviceBoot, DeviceBootError, DeviceBooting, DeviceReady, DeviceShutdown, DeviceShutdownDone,
+  DeviceShutdownError, GenericError,
   InputButton, InputDone, InputError, InputKey, InputKeyboardToggle, InputPinchEnd, InputPinchMove,
   InputPinchStart, InputRotate, InputTouchEnd, InputTouchMove, InputTouchStart, InputType, InputTypeDone,
   InputTypeError, KeyboardToggled, OpenUrl, OpenUrlDone, OpenUrlError, RelayOutbound, ScreenshotDone,
@@ -144,6 +145,7 @@ export const _DeviceBooting: DeviceBooting['type'] = 'device:booting'
 export const _DeviceReady: DeviceReady['type'] = 'device:ready'
 export const _DeviceShutdown: DeviceShutdown['type'] = 'device:shutdown'
 export const _DeviceShutdownDone: DeviceShutdownDone['type'] = 'device:shutdown-done'
+export const _DeviceShutdownError: DeviceShutdownError['type'] = 'device:shutdown-error'
 export const _GenericError: GenericError['type'] = 'error'
 export const _InputButton: InputButton['type'] = 'input:button'
 export const _InputDone: InputDone['type'] = 'input:done'
@@ -199,7 +201,10 @@ export const _UiTreeError: UiTreeError['type'] = 'ui:tree:error'
 // **Not blanket disjointness between directions.** `device:shutdown` is deliberately a member of both
 // `RelayToAgent` and `BrowserToRelay`, identical in both; it is not agent-produced, so it is not here.
 // And a *relay*-produced message added to `BrowserToRelay` is outside this claim — `route()` has no
-// case for one, and #557 is where the forwarding half is tracked.
+// case for one. The forwarding half is `browserInboundRouting.test.mjs`, which asserts both that every
+// forward is declared in `AgentToBrowser` and that no literal is in `BrowserToRelay` **and** forwarded.
+// #557 asked for that against `AGENT_MSG_TYPE_LIST`, which no longer exists — #444 replaced it with
+// `directionOf`, derived from the schema maps.
 type AgentProduced = (AgentControlOutbound | StreamToRelay)['type']
 type AssertTrue<T extends true> = T
 type NoOverlap<A, B> = [Extract<A, B>] extends [never] ? true : false

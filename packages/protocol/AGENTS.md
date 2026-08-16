@@ -186,6 +186,14 @@ is required and every reply is `requestId?`. Absence has exactly one meaning, an
 at each declaration: **this frame is not the answer to a request.** Not "an old agent" — that reading is what
 made the first draft of this pair wrong.
 
+**The shutdown half had no failure member until #542, and that absence was doing work.** The relay resolved
+that one command's session inline instead of through the shared resolver, so a shutdown it could not deliver
+was dropped in silence — and there was no shape to answer with, which is what kept it a protocol change
+rather than a relay one. `device:shutdown-error` is that shape: relay-produced only, because neither agent
+has a failure path that emits a message, and `requestId?` because the request's own correlator is optional.
+It is the one member of this pair a consumer **should** correlate — `shutdownDevice` awaits both halves on
+one predicate, since matching only `-done` would leave the fix invisible to the caller it was written for.
+
 **Optional means the reply's echo is enforced by tests alone.** `<Pair>ReplyBody` cannot be built for an
 optional field — `Omit<T,'sessionId'|'requestId'>` is satisfied by an object that simply has no correlator, so
 the excess-property trick that catches a freshly minted id has nothing to bite on. Everything the compiler does
@@ -277,10 +285,16 @@ another tester was looking at, and the reply routed to that session's browser ra
 
 Every branch that can take the check now has it: the five acked inputs, `device:boot`, `open-url`,
 `app:install`, `app:launch`, `app:clear-state`, `clipboard:read`, `clipboard:write`, `session:leave`,
-`session:end`. **`device:shutdown` is the exception**, and the blocker is in the dashboard rather than the
-relay — three of its four senders never join the session. #527.
+`session:end`. **`device:shutdown` is the exception to the *ownership* clause**, and the blocker is in the
+dashboard rather than the relay — three of its four senders never join the session. #527. It is no longer an
+exception to being *answered*: #542 gave the pair a failure member and the relay routes the command through
+the same resolver minus that one clause.
 
-A refusal is **answered where a waiter exists** and dropped where none does. Answering matters more than it
+A refusal is **answered where a waiter exists** and dropped where none does — with `device:shutdown-error`
+as the deliberate loosening, answered to the sender whether or not one is waiting. The relay cannot tell
+which of the dashboard's four senders asked, three of them wait on nothing, and the fourth
+(`SessionList`) is left with an inert row without it. Sending to a socket that ignores it costs one frame;
+withholding it costs that row. Answering matters more than it
 looks: `awaitInputAck` reports silence from a session that has never acked as *success* — unless the relay
 has already said the session's agent went away — so a silent refusal would report a command that never left
 the relay as landed, worse than the misrouting it replaced. The two
@@ -317,7 +331,7 @@ dropped at the relay's door — by the schema in `src/validate/` since #444, and
 predicate before that — because answering it would ship a frame whose own required
 `sessionId` `JSON.stringify` erases — and `error` has no `requestId` either, so a caller could not attribute
 the answer and would wait out the same deadline silence costs. With nothing left needing an unaddressed
-failure, all four producers answer one specific join, and `error` **extends `SessionScoped`**: the shape is the
+failure, all five producers answer one specific join, and `error` **extends `SessionScoped`**: the shape is the
 base verbatim, and the base's own definition — a failure a *session* is waiting on — is now exactly what it is.
 
 **What the address buys.** The join waiters in `mcp-server` and `flow-runner` matched
@@ -386,7 +400,7 @@ verify `session.agentSocket === ws` before resolving, and these two do not.
 
 ## Browser-inbound messages are split by producer, and one union is shared
 
-A browser receives 28 message types. They come from two producers, and the difference matters to the
+A browser receives 29 message types. They come from two producers, and the difference matters to the
 **relay**, not to the consumer:
 
 - **`RelayToBrowser`** — the relay builds these itself, so `sendTo(socket, msg: RelayOutbound)` holds

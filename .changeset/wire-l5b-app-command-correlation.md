@@ -37,8 +37,8 @@ worse than the literal it replaces since a literal at least gets its whole shape
 keeps its `<Pair>ReplyBody` — worth it there, with ~20 literal sites — and the request side is held by
 tests, one per handler, asserting the forwarded id is the one that came in.
 
-**`device:shutdown` was in this slice and came out.** It has no error type, and two properties this shape
-cannot express: the relay **originates** one itself when a browser socket closes (`DeviceShutdown` is a
+**`device:shutdown` was in this slice and came out.** It had no error type at the time (#542 added one
+later in the same release), and two properties this shape cannot express: the relay **originates** one itself when a browser socket closes (`DeviceShutdown` is a
 single interface shared by both directions, so a required correlator would force the relay to invent an id
 for a request nobody made — exactly what the door checks exist to prevent), and `device:shutdown-done` is
 consumed by `SessionList` as a **device-status broadcast** rather than as a reply to its own request. That

@@ -15,7 +15,7 @@ be true.
 The correlation work settled it by removing the general role rather than the specific one. A request naming no
 session is dropped at the relay's door, because answering it would ship a frame whose own required `sessionId`
 `JSON.stringify` erases — and `error` has no `requestId` either, so a caller could not attribute the answer and
-would wait out the same deadline silence costs. With nothing left needing an unaddressed failure, all four
+would wait out the same deadline silence costs. With nothing left needing an unaddressed failure, all five
 producers answer one specific join.
 
 ## What the address buys

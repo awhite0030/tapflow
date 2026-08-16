@@ -554,33 +554,40 @@ export class TapflowClient {
   }
 
   // Powers the session's booted device down (agent runs simctl/adb shutdown, replies device:shutdown-done).
-  // payload carries deviceId, matching the agent handler and the relay's own shutdown path. There is no
-  // shutdown-error message: Android replies done regardless, iOS surfaces a failed shutdown as a wait timeout.
+  // payload carries deviceId, matching the agent handler and the relay's own shutdown path. **The agent has
+  // no failure reply**: Android replies done regardless, iOS surfaces a failed shutdown as a wait timeout.
+  // `device:shutdown-error` is the relay's, and only the relay's — see its declaration.
   async shutdownDevice(sessionId: string, deviceId: string): Promise<void> {
-    // **The one command the relay does not answer when it cannot dispatch it.** `device:shutdown` resolves
-    // its session inline rather than through `dispatchTarget`, so a message addressed to a session that no
-    // longer exists is dropped in silence — and there is no `device:shutdown-error` on the wire to answer
-    // with, which is why fixing it there is a protocol change (#542). Every other command in this file has
-    // the relay refusing it within a round trip; this waiter's silence is the only one nothing explains, so
-    // the case we can rule out from here is worth ruling out: 30s of nothing, versus saying why.
+    // Kept after #542, with a different job. The relay answers an undispatchable shutdown now, so this is no
+    // longer the difference between a diagnosis and 30s of nothing — it saves a round trip and says more
+    // than the relay can: the relay's answer for a session it has dropped is `Session not found`, while this
+    // names *why* it was dropped. The sentence that used to justify it — that no `device:shutdown-error`
+    // exists on the wire — is what this change made false.
     const terminated = this.lifecycle.get(sessionId)?.terminated
     if (terminated) {
       throw new SessionEndedError(
-        `The relay ended session ${sessionId} (${terminated}), so a shutdown addressed to it would be ` +
-        'dropped with no reply at all. Call list_devices to see which sessions are live.',
+        `The relay ended session ${sessionId} (${terminated}), so a shutdown addressed to it cannot reach a ` +
+        'device. Call list_devices to see which sessions are live.',
         terminated,
       )
     }
     const requestId = randomUUID()
     this.send({ type: 'device:shutdown', sessionId, requestId, payload: { deviceId } })
-    await this.waitFor(
+    // **Both members of the pair, or the fix does not reach this caller.** The relay gaining an error reply
+    // changes nothing here on its own: this predicate would ignore it and the deadline would run exactly as
+    // before. Nothing would report that either — inbound is `Record<string, unknown>` (#512), so no compiler
+    // sees the omission, and the symptom is identical to the bug being fixed.
+    const reply = await this.waitFor(
       (m) =>
-        m['type'] === 'device:shutdown-done' &&
+        (m['type'] === 'device:shutdown-done' || m['type'] === 'device:shutdown-error') &&
         m['sessionId'] === sessionId &&
         correlatesWith(m, requestId),
       30_000,
       sessionId,
     )
+    if (reply['type'] === 'device:shutdown-error') {
+      throw this.failed(sessionId, (reply['message'] as string | undefined) ?? 'Shutdown failed')
+    }
   }
 
   /**

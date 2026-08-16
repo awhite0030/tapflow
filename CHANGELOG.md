@@ -70,6 +70,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Shutting a device down through an MCP client fails in a second instead of half a minute.**
+  `device:shutdown` was the one command from a browser that the relay never answered when it could not
+  deliver it — a stale session id or an agent that had gone away produced no reply at all, so
+  `shutdown_device` reported "Request timed out" with no cause after 30 seconds. It now says which of the
+  two happened. The device list had the other half of the same silence: a row stuck on "Shutting down…"
+  with both its buttons hidden for the rest of the page's life.
+- **A tester whose browser reconnects lands back in their session instead of being thrown out of it.**
+  Re-joining a session the tab already held was refused as "session not found" — for a live session, held
+  by that tab, which the device list reported as theirs. The viewer reads that as the agent having
+  disconnected, so a two-second Wi-Fi blip ended a session that was fine. Re-joining is now the same as
+  joining, cached screen state included.
+- **Devices no longer stay booted with nobody watching them.** The relay tracked one session per browser
+  connection, but one connection can hold several — an AI agent driving two devices uses a single one. When
+  it went away only the most recent session was released; the rest stayed marked in use for as long as the
+  relay ran, with no idle timeout, so their simulators kept running. Every session a connection held is
+  released now, each with its own timeout.
 - **An input that never reached the device was reported as having landed.** Every path that could refuse
   or drop an input — a simulator that is not booted, an input channel still starting, an agent that went
   away, a helper process that died — either said nothing or said success. An LLM driving the device through

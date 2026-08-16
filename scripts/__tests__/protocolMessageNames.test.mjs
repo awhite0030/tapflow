@@ -168,8 +168,9 @@ describe('protocol message interfaces', () => {
     // derived so that a parser that stops matching says so, instead of reporting full coverage of
     // nothing. L2 shipped that exact failure in the other direction. 58 is 57 from L1's conversion plus
     // `InputKey`, which was already named and is a message like any other. L4a added the seven agent→relay
-    // messages, the last direction that had none.
-    expect(messages.size).toBe(65)
+    // messages, the last direction that had none. 66 is `DeviceShutdownError`, #542 — the shutdown pair had
+    // no failure member, so an undeliverable shutdown had nothing to be answered with.
+    expect(messages.size).toBe(66)
     // `InputKey` predates L1 and has always been named; it must be in here too.
     expect(messages.has('InputKey')).toBe(true)
   })
@@ -280,12 +281,17 @@ describe('protocol message interfaces', () => {
       if (base !== 'SessionScoped') offenders.push(`${name} ('${literal}')`)
     }
     expect(offenders).toEqual([])
-    expect([...messages].filter(([, m]) => m.extends === 'SessionScoped')).toHaveLength(9)
+    expect([...messages].filter(([, m]) => m.extends === 'SessionScoped')).toHaveLength(10)
     // `error` is the ninth, as of L5d. Pinned by name rather than only by the count, because the count alone
     // would be satisfied by any new member and this is the one whose membership was argued.
     expect(messages.get('GenericError')).toMatchObject({ literal: 'error', extends: 'SessionScoped' })
+    // `device:shutdown-error` is the tenth (#542), and it reached the family through the predicate above
+    // rather than by being added to a list — it ends in `error`, it is not request-scoped, and it names a
+    // session. Pinned by name for the same reason as `error`: a count alone cannot say *which* member.
+    expect(messages.get('DeviceShutdownError'))
+      .toMatchObject({ literal: 'device:shutdown-error', extends: 'SessionScoped' })
     // #491 moved `message` off the base onto each member that requires it, so the family relation is no
-    // longer implied by the shared pair — the `extends` is the only thing left saying these nine are one
+    // longer implied by the shared pair — the `extends` is the only thing left saying these ten are one
     // kind. That makes this assertion load-bearing in a way it was not when the base carried two fields.
     for (const [name, { body, extends: base }] of messages) {
       if (base !== 'SessionScoped' || name === 'InputError') continue
