@@ -3,7 +3,8 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { WebSocket } from 'ws'
-import { RelayServer } from '../RelayServer'
+import { RelayServer, IDR_REQUEST_THROTTLE_MS } from '../RelayServer'
+import type { JoinResult } from '../SessionManager'
 import { initDb, closeDb } from '../db'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 import type {
@@ -150,13 +151,15 @@ describe('session ownership seam', () => {
   it.each([
     ['not-found', 'session-not-found', 'Session not found'],
     ['held-by-another', 'session-busy', 'Session busy'],
-  ])('maps a %s from join() to %s', async (failure, reason, message) => {
+  ] as const)('maps a %s from join() to %s', async (failure, reason, message) => {
     const { agent, sessionIds } = await registerAgent(`seam-map-${failure}`)
     const sessionId = sessionIds[0]!
+    // Typed against the exported result rather than a local shape plus `as never`: the mocked value is
+    // then checked, so widening the failure union without widening this mapping fails here.
     const sessions = (server as unknown as {
-      sessions: { join(id: string, ws: WebSocket): { ok: boolean } }
+      sessions: { join(id: string, ws: WebSocket): JoinResult }
     }).sessions
-    const spy = vi.spyOn(sessions, 'join').mockReturnValue({ ok: false, failure } as never)
+    const spy = vi.spyOn(sessions, 'join').mockReturnValue({ ok: false, failure })
     try {
       const browser = await browserSocket()
       browser.send(JSON.stringify({ type: 'session:start', sessionId }))
@@ -300,6 +303,22 @@ describe('session ownership seam', () => {
     //
     // Counted rather than sampled: the assertion that discriminates a throttled call from a bare
     // `sendTo` is **how many** arrive, and no shape of "did one arrive" can see the difference.
+    //
+    // **Time is frozen rather than the count loosened.** Review proposed `< 5`, on the grounds that five
+    // round trips could cross the 500ms window on a loaded runner — a real risk, and a fix that spends
+    // the assertion to buy it: `< 5` passes on four, so a throttle shortened to 1ms would survive, and
+    // that mutation is the one this test exists for. Faking `Date` alone removes the dependency instead
+    // of trading it away. `setTimeout` stays real, so the sockets and the relay's own timers are
+    // untouched — it is only `Date.now()` that the throttle reads.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      await runIdrCount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  async function runIdrCount() {
     const { agent, sessionIds } = await registerAgent('seam-idr')
     const sessionId = sessionIds[0]!
     const idrs: unknown[] = []
@@ -325,7 +344,120 @@ describe('session ownership seam', () => {
 
     expect(idrs).toHaveLength(1)
 
+    // **The window's size, not just its existence.** With `Date.now()` frozen, `now - lastAt` is always
+    // zero, so *any* positive threshold coalesces the burst — a throttle shortened to 1ms would pass the
+    // assertion above, and that mutation survived until these two steps existed. Moving the clock inside
+    // the window and then past it pins both edges against the constant rather than against wall time.
+    vi.setSystemTime(Date.now() + Math.floor(IDR_REQUEST_THROTTLE_MS / 5))
+    browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(browser, 'session:joined')
+    await barrier(agent)
+    expect(idrs, 'the throttle window is shorter than it declares').toHaveLength(1)
+
+    vi.setSystemTime(Date.now() + IDR_REQUEST_THROTTLE_MS)
+    browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(browser, 'session:joined')
+    await barrier(agent)
+    // And it does reopen — a throttle that never lets a second one through would starve a viewer that
+    // re-joins minutes later, which is the case the IDR exists for.
+    expect(idrs, 'the throttle window never reopens').toHaveLength(2)
+
     agent.close(); browser.close()
+  }
+
+  it('forgets a session\'s stream state when the session is evicted, not only on end/leave', async () => {
+    // The four per-session maps were emptied inline in `session:end` and `session:leave` and nowhere
+    // else, so a session ending any other way left all four behind for the life of the process.
+    // Pre-existing — and this slice is why it is fixed here rather than filed: `idrRequesters` used to
+    // be populated only by the binary drop path, i.e. only under backpressure, and the re-join above
+    // now creates an entry for any streaming session. The leak went from rare to ordinary.
+    //
+    // Eviction is reached the way a restarted agent reaches it: the same identity registering a
+    // *different* device list, so nothing is rebound and the old session is replaced outright.
+    const { agent, sessionIds } = await registerAgent('seam-evict')
+    const sessionId = sessionIds[0]!
+    const browser = await browserSocket()
+    browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(browser, 'session:joined')
+    agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'dev0' } }))
+    await waitForType(browser, 'device:ready')
+    // The re-join is what creates the entry — the premise, asserted rather than assumed.
+    browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(browser, 'session:joined')
+
+    // **All three maps have to be populated or the assertion below cannot see them.** A first version
+    // checked four empty maps and passed against a helper that deleted only one of them — the vacuity
+    // that mutation testing keeps finding in this slice. `droppers` and `dropHandlers` are created by
+    // the binary path, which reads the *stream* socket, so the frame has to come from one.
+    const stream = await browserSocket()
+    stream.send(JSON.stringify({ type: 'stream:register', sessionId }))
+    await waitForType(stream, 'stream:registered')
+    stream.send(Buffer.from([0x01, 0x02, 0x03]), { binary: true })
+    await barrier(browser)
+
+    const maps = server as unknown as Record<string, Map<string, unknown>>
+    for (const name of ['idrRequesters', 'droppers', 'dropHandlers']) {
+      expect(maps[name]!.has(sessionId), `${name} has no entry, so clearing it proves nothing`).toBe(true)
+    }
+
+    const replacement = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(replacement)
+    replacement.send(JSON.stringify({
+      type: 'agent:register', platform: 'ios', agentName: 'seam-evict',
+      devices: [{ id: 'devZ', name: 'iPhone Z', platform: 'ios', status: 'shutdown' }],
+    }))
+    await waitForType(replacement, 'agent:registered')
+    await waitForType(browser, 'session:terminated')
+
+    for (const name of ['idrRequesters', 'droppers', 'dropHandlers']) {
+      expect(maps[name]!.has(sessionId), `${name} kept the evicted session`).toBe(false)
+    }
+    // `audioDropHandlers` is the fourth and is **not** asserted: populating it needs an audio-tagged
+    // envelope, which is a frame-format fixture this file has no other use for. It is cleared by the
+    // same line as the three above, so what is unheld here is one map's membership in a four-line
+    // helper rather than a behaviour of its own. Said plainly instead of asserted vacuously.
+
+    agent.close(); browser.close(); stream.close(); replacement.close()
+  })
+
+  it('forgets stream state when a session is dropped by the device relist, not the eviction path', async () => {
+    // The *other* new call site. `evictAgentSocket` covers a restarting agent that keeps its identity;
+    // this loop covers a device that turns up under a **different** agent while its old session sits on
+    // a socket that has gone. One line apart in the source and reached by different inputs, so the
+    // mutation that deletes this one survives the test above.
+    const { agent, sessionIds } = await registerAgent('seam-relist-a')
+    const sessionId = sessionIds[0]!
+    const browser = await browserSocket()
+    browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(browser, 'session:joined')
+    agent.send(JSON.stringify({ type: 'device:ready', sessionId, payload: { deviceId: 'dev0' } }))
+    await waitForType(browser, 'device:ready')
+    browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(browser, 'session:joined')
+
+    const maps = server as unknown as Record<string, Map<string, unknown>>
+    expect(maps['idrRequesters']!.has(sessionId), 'the re-join created no entry').toBe(true)
+
+    const closed = new Promise<void>((r) => agent.on('close', () => r()))
+    agent.close()
+    await closed
+    await waitForType(browser, 'session:agent-away')
+
+    // A different name, so the rebind block finds no socket for this identity and nothing is rebound —
+    // the device is then picked up by the relist loop instead.
+    const other = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(other)
+    other.send(JSON.stringify({
+      type: 'agent:register', platform: 'ios', agentName: 'seam-relist-b',
+      devices: [{ id: 'dev0', name: 'iPhone 0', platform: 'ios', status: 'shutdown' }],
+    }))
+    await waitForType(other, 'agent:registered')
+    await waitForType(browser, 'session:terminated')
+
+    expect(maps['idrRequesters']!.has(sessionId), 'the relist path kept the session\'s stream state')
+      .toBe(false)
+
+    browser.close(); other.close()
   })
 
   it('releases the sessions a socket that also registered a stream was holding', async () => {

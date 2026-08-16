@@ -51,7 +51,10 @@ export function isExternalAddress(addr: string): boolean {
 }
 // Min gap between IDR requests per session — one IDR resyncs the stream, so avoid
 // spamming the agent in the frames between request and the IDR arriving.
-const IDR_REQUEST_THROTTLE_MS = 500
+/** Exported for the re-join test, which pins both edges of this window rather than hardcoding 500 —
+ *  a test carrying its own copy of the number passes when the constant moves, which is the drift the
+ *  wire-contract work keeps finding. Not re-exported from the package index. */
+export const IDR_REQUEST_THROTTLE_MS = 500
 // Ping every socket each interval; a missed pong window (~2× this) terminates the dead socket.
 const HEARTBEAT_MS = 30_000
 // How long a session outlives its agent's socket, waiting for that agent to come back (#426).
@@ -427,6 +430,25 @@ export class RelayServer {
   }
 
   /**
+   * Drop every per-session stream record keyed by this id.
+   *
+   * **Four maps that have to move together, called from four places that did not.** They were deleted
+   * inline in `session:end` and `session:leave` and nowhere else, so a session ending any other way —
+   * the agent going away, the idle timer, a device disappearing from a re-register — left all four
+   * behind for the life of the process.
+   *
+   * Pre-existing, and this slice is what makes it worth fixing here rather than filing: `idrRequesters`
+   * used to be populated only by the binary drop path, i.e. only under backpressure, and a re-join now
+   * creates an entry for any streaming session (#515). The leak went from rare to ordinary.
+   */
+  private forgetSessionStreamState(sessionId: string): void {
+    this.dropHandlers.delete(sessionId)
+    this.audioDropHandlers.delete(sessionId)
+    this.droppers.delete(sessionId)
+    this.idrRequesters.delete(sessionId)
+  }
+
+  /**
    * Throttled callback asking the session's agent for an on-demand IDR (fast drop recovery); ignored by
    * agents that don't support it.
    *
@@ -763,20 +785,14 @@ export class RelayServer {
       case 'session:end': {
         if (this.ownsSession(ws, this.sessions.get(msg.sessionId))) {
           this.sessions.remove(msg.sessionId)
-          this.dropHandlers.delete(msg.sessionId)
-          this.audioDropHandlers.delete(msg.sessionId)
-          this.droppers.delete(msg.sessionId)
-          this.idrRequesters.delete(msg.sessionId)
+          this.forgetSessionStreamState(msg.sessionId)
         }
         break
       }
       case 'session:leave': {
         if (this.ownsSession(ws, this.sessions.get(msg.sessionId))) {
           this.sessions.clearBrowser(msg.sessionId)
-          this.dropHandlers.delete(msg.sessionId)
-          this.audioDropHandlers.delete(msg.sessionId)
-          this.droppers.delete(msg.sessionId)
-          this.idrRequesters.delete(msg.sessionId)
+          this.forgetSessionStreamState(msg.sessionId)
         }
         break
       }
@@ -952,12 +968,12 @@ export class RelayServer {
         // rather than wrong: the schema declares `sessionId` required, so the parser refuses the frame and
         // the log it would have bought is the one `logInboundRejection` writes.
         //
-        // **`reachableTarget`, not `dispatchTarget`** — the ownership clause is #527 and its blocker is in
+        // **`reachableTargetWithoutOwnership`, not `dispatchTarget`** — that clause is #527, and its blocker is in
         // the dashboard, not here. What this fixes is the other half: until #542 this case resolved the
         // session inline and dropped the frame when it could not, making it the only browser-originated
         // command the relay never answers. `mcp-server`'s `shutdownDevice` waits 30s on `device:shutdown-done`
         // and then reports `Request timed out` with no cause, which is the silence, not a diagnosis.
-        const target = this.reachableTarget(msg.sessionId)
+        const target = this.reachableTargetWithoutOwnership(msg.sessionId)
         if (!target.ok) {
           // Echoed, and the relay is the producer — the same obligation `device:boot-error` carries and for
           // the same reason: an MCP caller that receives a diagnosis uncorrelated reads it as unsolicited
@@ -1216,7 +1232,10 @@ export class RelayServer {
         })
       }
     }
-    for (const s of agentSessions) this.sessions.remove(s.id)
+    for (const s of agentSessions) {
+      this.sessions.remove(s.id)
+      this.forgetSessionStreamState(s.id)
+    }
     this.sessions.removeResources(ws)
     logger.info(cause === 'replaced'
       ? `agent re-registered — ${agentSessions.length} previous session(s) replaced`
@@ -1287,6 +1306,7 @@ export class RelayServer {
           this.sendTo(s.browserSocket, { type: 'session:terminated', sessionId: s.id, reason: 'agent-disconnected' })
         }
         this.sessions.remove(s.id)
+        this.forgetSessionStreamState(s.id)
       }
     }
 
@@ -1461,10 +1481,14 @@ export class RelayServer {
     // state. Composed rather than inlined so `device:shutdown` can take the other two checks alone.
     const session = this.sessions.get(sessionId)
     if (session && !this.ownsSession(ws, session)) return { ok: false, message: ownershipRefusal(session) }
-    return this.reachableTarget(sessionId)
+    return this.reachableTargetWithoutOwnership(sessionId)
   }
 
   /** `dispatchTarget` without the ownership clause: is there a session here, and is its agent listening?
+   *
+   *  **The name carries the omission because a doc block does not reach an autocomplete.** This is the
+   *  resolver a future handler must not pick by accident — it is the general-looking one and the unsafe
+   *  one at the same time, which is the pairing worth spelling out.
    *
    *  **Exists for `device:shutdown` alone, and only until #527.** That command cannot take the ownership
    *  check yet — three of the dashboard's four senders come from `useAgentSession`, whose socket never
@@ -1478,7 +1502,7 @@ export class RelayServer {
    *  whether a session id exists and whether its agent is up — recorded rather than waved past, and small
    *  against what it can already do, which is shut that device down.
    */
-  private reachableTarget(
+  private reachableTargetWithoutOwnership(
     sessionId: string,
   ): { ok: true; session: Session } | { ok: false; message: string } {
     const session = this.sessions.get(sessionId)

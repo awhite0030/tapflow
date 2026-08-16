@@ -134,7 +134,8 @@ describe('SessionList when a shutdown is refused', () => {
     expect(vi.mocked(toast.error).mock.calls[0][1]).toMatchObject({ description: 'agent offline' })
   })
 
-  it('ignores a shutdown-error for a session it never shut down', () => {
+  it('ignores a shutdown-error for a session it never shut down', async () => {
+    const { toast } = await import('sonner')
     // The reply is addressed to a session and carries no `payload`, while `shutting` is keyed by device —
     // so the deviceId comes from what this list actually sent. Without that lookup the handler would have
     // to clear something, and the honest options are "nothing" or "the wrong row". This pins the first:
@@ -151,6 +152,10 @@ describe('SessionList when a shutdown is refused', () => {
     })
 
     expect(screen.getByText(/shutting down/i)).toBeInTheDocument()
+    // And it stays quiet. Correlating before clearing the badge but not before toasting would leave this
+    // tester reading someone else's failure — a second reply routed to a socket that did not ask, which
+    // is the class the correlation work exists to close.
+    expect(vi.mocked(toast.error)).not.toHaveBeenCalled()
   })
 
   it('refuses a second shutdown while one is still unanswered', () => {
