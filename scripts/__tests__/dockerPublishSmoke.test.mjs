@@ -1,6 +1,7 @@
 // The Docker workflow itself exercises normal runtime behavior on PRs. These checks only guard
-// regressions CI cannot otherwise expose: required platform coverage and the credentialed digest
-// smoke path, which PR CI cannot run without maintainer registry credentials.
+// regressions CI cannot otherwise expose: CI could stay green while accidentally publishing a
+// single-architecture image, and the digest smoke path cannot run in PR CI without maintainer
+// registry credentials.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
@@ -40,7 +41,7 @@ describe('docker-publish runtime smoke test', () => {
     expect(select).toContain('SMOKE_IMAGE=${IMAGE}@${{ steps.build.outputs.digest }}')
   })
 
-  it('does not copy stale TypeScript build metadata without matching dist output', () => {
+  it('excludes stale TypeScript incremental build metadata from Docker context', () => {
     expect(DOCKERIGNORE).toContain('**/*.tsbuildinfo')
   })
 })
