@@ -87,6 +87,23 @@ interface Waiter {
 }
 
 /**
+ * The caller left this session while a request was still in flight (#514).
+ *
+ * **Not `SessionEndedError`, and not a subclass of it.** That one's content is *the relay ended this and
+ * that much is certain*, carried in a `reason` this case has no value for — nobody terminated anything,
+ * the caller walked away from a session that is still there. The next move differs too: that one says
+ * call `list_devices` and `connect_device` for a live session, this one says re-join if you still want
+ * this one.
+ *
+ * **The prose carries the uncertainty itself**, and that is load-bearing rather than stylistic.
+ * `awaitInputAck` branches on class: a class it does not know falls through `if (!timedOut &&
+ * !disconnected) throw e` and its `Could not confirm … do not repeat` wording never runs. Wrapping this
+ * error instead would bury the cause. Both are needed, so the message states both — the same shape
+ * `SessionEndedError` has, and the reason its guard is a bare rethrow.
+ */
+export class SessionLeftError extends Error {}
+
+/**
  * The relay said this session ended while a request was still in flight (#512, finding 4).
  *
  * Its own class because it carries a certainty a timeout does not. `Request timed out` says no reply
@@ -358,20 +375,31 @@ export class TapflowClient {
     return new Error(note ? `${message} — ${note}` : message)
   }
 
-  /** Settle the waiters of a session the relay has just removed. Reverse order because it splices. */
-  private rejectSession(sessionId: string, reason: SessionTerminatedReason | 'unknown'): void {
+  /** Settle every waiter tagged with this session, backwards so the splice cannot skip one.
+   *
+   *  `make` takes the **waiter** rather than just the id, which this package does not need today and its
+   *  twin does: `flow-runner`'s rejection names the request from `Waiter.what`. One signature across both
+   *  is what keeps a change to either from having to be made twice and remembered once. */
+  private settleSessionWaiters(sessionId: string, make: (w: Waiter) => Error): void {
     for (let i = this.waiters.length - 1; i >= 0; i--) {
       const w = this.waiters[i]
       if (w.sessionId !== sessionId) continue
       this.waiters.splice(i, 1)
       clearTimeout(w.timer)
-      w.reject(new SessionEndedError(
+      w.reject(make(w))
+    }
+  }
+
+  /** Settle the waiters of a session the relay has just removed. */
+  private rejectSession(sessionId: string, reason: SessionTerminatedReason | 'unknown'): void {
+    this.settleSessionWaiters(sessionId, () => (
+      new SessionEndedError(
         `The relay ended session ${sessionId} (${reason}) while this request was in flight. That the session ` +
         'is gone is certain; whether the request reached the device is not, so check device state rather ' +
         'than assuming it did nothing. Call list_devices and connect_device to get a live session.',
         reason,
-      ))
-    }
+      )
+    ))
   }
 
   private dispatch(msg: RelayMsg): void {
@@ -522,8 +550,27 @@ export class TapflowClient {
     if (msg['type'] === 'error') throw new Error((msg['message'] as string) ?? 'Connect failed')
   }
 
+  /**
+   * Leave the session, and settle anything still waiting on it.
+   *
+   * **After the send, not before.** `send` throws when the socket is not open, and a leave that never left
+   * must not take the waiters with it. Not because they are already gone — `disconnect()` nulls the socket
+   * synchronously while the `close` event is still queued, so at that instant they are all still there —
+   * but because the socket dying is not a leave, and `RelayClosedError` is the truthful diagnosis for it.
+   *
+   * Nothing arrives to settle them otherwise: `session:leave` has no reply by design, and the relay nulls
+   * the session's `browserSocket` as it processes one, so every later reply for that session is dropped
+   * before it reaches the wire. Without this a `boot_device` in flight simply runs to its 30s deadline and
+   * reports a timeout for a session the caller itself abandoned (#514). The MCP SDK dispatches each tool
+   * call detached, so a model holding both calls open at once is ordinary rather than exotic.
+   */
   disconnectDevice(sessionId: string): void {
     this.send({ type: 'session:leave', sessionId })
+    this.settleSessionWaiters(sessionId, () => new SessionLeftError(
+      `This client left session ${sessionId} while the request was in flight. Whether it reached the ` +
+      'device is unknown, so check device state rather than assuming it did nothing, and do not repeat ' +
+      'the request blindly. Call connect_device again if you still want this session.',
+    ))
   }
 
   // Correlated by `requestId` when the reply carries one, and by `sessionId` + type when it does not.
@@ -617,10 +664,10 @@ export class TapflowClient {
    * once, silence after that is reported. Closing the rest needs something that distinguishes "does not
    * ack" from "did not ack this time", which per-input acks cannot express on their own.
    *
-   * One thing this does **not** fix: an ack carries no correlation id, so the predicate below matches
-   * any ack for the session. An ack that arrives after its own input timed out is consumed by the next
-   * input's waiter, which then reports the previous input's outcome. Recorded as a known gap rather than
-   * papered over — see the issue linked from `AGENTS.md`.
+   * That gap is **closed** (#499), and this paragraph recorded it as open for a slice after it was not.
+   * The ack carried no correlator, so this predicate matched any ack for the session and one arriving after
+   * its own input had timed out was consumed by the next input's waiter — which then reported the previous
+   * input's outcome. The predicate below now requires the id, with no fallback for an absent one.
    */
   private async awaitInputAck(sessionId: string, requestId: string): Promise<void> {
     const strict = this.ackedSessions.has(sessionId)
@@ -642,6 +689,18 @@ export class TapflowClient {
       if (!(e instanceof Error)) throw e
       // Already the most specific thing anyone can say about this input, and it names the session. Wrapping
       // it in "could not confirm" would bury the certain half under the uncertain one.
+      //
+      // **`SessionLeftError` deliberately has no entry here**, and it was written with one until mutation
+      // testing showed the line was dead: the fall-through below (`if (!timedOut && !disconnected) throw e`)
+      // already rethrows an unknown class untouched, so adding this one changed nothing an assertion could
+      // see. `flow-runner`'s twin is the opposite — it *wraps* everything that is not `SessionEndedError`,
+      // so there the entry is load-bearing and it has one. The asymmetry is in the two methods, and mirroring
+      // a no-op here to hide it would be a guard whose comment claims a protection it does not provide.
+      //
+      // What actually keeps the warning on a leave is the error's own prose, in both clients: it says the
+      // request may have reached the device. That is why this rethrow is safe for either class, and it is
+      // the thing a test can hold. If the fall-through below ever wraps instead of rethrowing, this line
+      // becomes the protection and needs the entry back.
       if (e instanceof SessionEndedError) throw e
       const timedOut = e instanceof RequestTimeoutError
       // A dropped connection is *also* unconfirmed, not undispatched. Every caller sends its input

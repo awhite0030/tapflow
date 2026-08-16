@@ -62,6 +62,21 @@ export class SessionEndedError extends PlatformError {
 }
 
 /**
+ * The caller left this session while a request was still in flight (#514).
+ *
+ * **Not `SessionEndedError`, and not a subclass of it.** That one's content is *the relay ended this and
+ * that much is certain*, carried in a `reason` this case has no value for — nobody terminated anything,
+ * the caller walked away from a session that is still there. The next move differs too: that one says get
+ * a live session, this one says re-join if you still want this one.
+ *
+ * **The prose carries the uncertainty itself**, which is what lets `awaitInputAck` rethrow it untouched.
+ * Wrapping it would bury the cause; rethrowing a message that did not mention the device would drop the
+ * warning. Both are needed, so the message states both — the same shape `SessionEndedError` already has,
+ * and the reason its own guard is a bare rethrow.
+ */
+export class SessionLeftError extends PlatformError {}
+
+/**
  * What the relay has told us about a session, for the three messages this client used to drop.
  *
  * **Only `terminated` licenses a rejection**, and the other two are the whole reason this is state rather
@@ -349,19 +364,29 @@ export class RelayClient {
     return new PlatformError(note ? `${message} — ${note}` : message)
   }
 
-  /** Settle the waiters of a session the relay has just removed. Reverse order because it splices. */
-  private rejectSession(sessionId: string, reason: SessionTerminatedReason | 'unknown'): void {
+  /** Settle every waiter tagged with this session, backwards so the splice cannot skip one.
+   *
+   *  `make` takes the **waiter**, not just the id: the terminate message below names the request
+   *  (`${w.what} failed: …`) and that field lives nowhere else. A version of this taking only `sessionId`
+   *  would have quietly dropped the request's name from every terminate rejection, which is the whole of
+   *  what `runFlow` puts in front of an operator. */
+  private settleSessionWaiters(sessionId: string, make: (w: Waiter) => Error): void {
     for (let i = this.waiters.length - 1; i >= 0; i--) {
       const w = this.waiters[i]
       if (w.sessionId !== sessionId) continue
       this.waiters.splice(i, 1)
       clearTimeout(w.timer)
-      w.reject(new SessionEndedError(
-        `${w.what} failed: the relay ended session ${sessionId} (${reason}) while it was in flight. That the ` +
-        'session is gone is certain; whether the request reached the device is not, so do not repeat it blindly',
-        reason,
-      ))
+      w.reject(make(w))
     }
+  }
+
+  /** Settle the waiters of a session the relay has just removed. */
+  private rejectSession(sessionId: string, reason: SessionTerminatedReason | 'unknown'): void {
+    this.settleSessionWaiters(sessionId, (w) => new SessionEndedError(
+      `${w.what} failed: the relay ended session ${sessionId} (${reason}) while it was in flight. That the ` +
+      'session is gone is certain; whether the request reached the device is not, so do not repeat it blindly',
+      reason,
+    ))
   }
 
   private dispatch(msg: RelayMsg): void {
@@ -503,8 +528,24 @@ export class RelayClient {
     )
   }
 
+  /**
+   * Leave the session, and settle anything still waiting on it.
+   *
+   * **After the send, not before.** `send` throws when the socket is not open, and a leave that never left
+   * must not take the waiters with it. Not because they are already gone — `disconnect()` nulls the socket
+   * synchronously while the `close` event is still queued, so at that instant they are all still there —
+   * but because the socket dying is not a leave, and `RelayClosedError` is the truthful diagnosis for it.
+   *
+   * Nothing arrives to settle them otherwise: `session:leave` has no reply by design, and the relay nulls
+   * the session's `browserSocket` as it processes one, so every later reply for that session is dropped
+   * before it reaches the wire. Without this the request simply runs to its deadline (#514).
+   */
   leaveSession(sessionId: string): void {
     this.send({ type: 'session:leave', sessionId })
+    this.settleSessionWaiters(sessionId, (w) => new SessionLeftError(
+      `${w.what} failed: this client left session ${sessionId} while the request was in flight. Whether it ` +
+      'reached the device is unknown, so do not repeat it blindly — re-join the session if you still want it',
+    ))
   }
 
   async bootDevice(sessionId: string, deviceId: string): Promise<void> {
@@ -653,7 +694,13 @@ export class RelayClient {
     } catch (e) {
       // Already the most specific thing anyone can say about this input: the session it was addressed to is
       // gone, and by name. Re-wrapping would bury that a `cause` deeper and add nothing.
-      if (e instanceof SessionEndedError) throw e
+      //
+      // `SessionLeftError` joins it for the same reason and **only because its prose already carries the
+      // warning below**. Wrapping it would say the request was "not confirmed" without saying the caller
+      // is what ended it; rethrowing a message that did not mention the device would drop "may have
+      // reached the device". The class is rethrown here because the message does both jobs, not because
+      // the cause outranks the warning.
+      if (e instanceof SessionEndedError || e instanceof SessionLeftError) throw e
       // The step fails either way and for the same reason — the reply is unconfirmed — but only a
       // deadline is evidence about the *agent*. A closed relay says nothing about whether it acks,
       // so accusing it of being old or slow there would be a false diagnosis in the one place an
@@ -727,11 +774,48 @@ export class RelayClient {
     return (await res.json()) as T
   }
 
+  /**
+   * Poll the session's UI tree.
+   *
+   * **What decides retryability is this client's own record of the session, and only then the status
+   * code.** The status alone cannot tell a blip from a session that will never answer again, because the
+   * relay does not know which it is either — it returns 502 while an agent is away and 504 when one is
+   * connected but not answering, and both of those are the same code before and after the thing that
+   * settles the question.
+   *
+   * - `terminated` — the relay removed the session as it sent the message, so the next poll gets a 404 and
+   *   the step already fails. What this adds is the *cause*: `Session not found` names the symptom of a
+   *   session that ended a second ago for a reason this client was told (#545).
+   * - `needsReboot` — a rebound session has no device binding, and **the engine has no boot step**: the CLI
+   *   boots once before `runFlow`, so nothing can restore it mid-run. Every remaining poll returns 504,
+   *   which is *not* in the permanent set, so each remaining step used to burn its whole timeout and fail
+   *   as `no element matched` — naming the selector when the cause is the binding (#573). Failing here is
+   *   what this package's own contract asks for: replay is deterministic, and a run that repaired itself
+   *   by rebooting would not be the same execution as one that did not.
+   * - `away` — **unchanged, and deliberately.** That is the relay's 15s hold, and polling through it is the
+   *   case the retry exists for.
+   * - no record — unchanged: the status decides, as before.
+   */
   async queryUITree(sessionId: string, signal?: AbortSignal): Promise<UIElement[]> {
     try {
       const body = await this.getJson<{ elements?: UIElement[] }>(`/api/v1/sessions/${sessionId}/ui-tree`, 'ui-tree query', signal)
       return body.elements ?? []
     } catch (e) {
+      const s = this.lifecycle.get(sessionId)
+      if (s && (s.terminated || s.needsReboot)) {
+        // **The note is built from the field this branched on, not from `sessionNote`.** The two disagree on
+        // one state and it is reachable: a flapping agent — away, back, away again — carries `needsReboot`
+        // *and* `away` at once, because only a boot clears the first and nothing in a flow boots.
+        // `sessionNote` ranks `away` above `needsReboot`, deliberately, since for a caller that can still
+        // act the away-ness is what is current. Here the caller cannot act — the step is being failed — so
+        // taking that precedence would report a permanent failure in the sentence for a transient one, and
+        // never mention the binding. That is #573's mis-blame, one layer up.
+        const why = s.terminated
+          ? `the relay ended this session (${s.terminated})`
+          : 'the agent reconnected and cleared its device binding, so this session needs booting again ' +
+            'and nothing in a flow can (the app itself is still running)'
+        throw new PlatformError(`ui-tree query failed — ${why}`, { cause: e })
+      }
       // A retryable condition (foreground race, idle timeout, agent blip, network) → let the runner
       // poll again until the step deadline. Permanent failures keep their type and fail the step now.
       if (e instanceof RelayHttpError && !PERMANENT_QUERY_STATUSES.has(e.status)) {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
-import { TapflowClient, REASON_ADVICE, SessionEndedError, reasonAdvice } from '../client.js'
+import { TapflowClient, REASON_ADVICE, SessionEndedError, SessionLeftError, reasonAdvice } from '../client.js'
 
 // inputAck models the agent's terminal-input ack: 'done' = new agent (booted), 'error' = rejects with prose only, 'error-with-reason' = rejects with the machine-readable reason too, 'none' = older agent that never acks (degradation).
 function createMockRelay(): {
@@ -1271,5 +1271,143 @@ describe('REASON_ADVICE', () => {
   // And the two that must not be confusable: one says send it again, the other says never.
   it('does not tell the caller to repeat an input that may have doubled', () => {
     expect(REASON_ADVICE['dispatch-failed']).not.toMatch(/safe to send again|try it again/i)
+  })
+})
+
+describe('disconnect_device settles what was waiting on the session (#514)', () => {
+  let relay: ReturnType<typeof createMockRelay>
+  let client: TapflowClient
+
+  beforeEach(async () => {
+    relay = createMockRelay()
+    // Nothing acks here: every request has to run to its 30s deadline unless something else settles it,
+    // which is the point — a test that waited for one would take half a minute.
+    relay.setInputAck('none')
+    client = new TapflowClient(`ws://localhost:${relay.port}`, '')
+    await client.connect()
+  })
+
+  afterEach(async () => { client.disconnect(); await relay.close() })
+
+  it('rejects a request that was in flight, instead of leaving it on its deadline', async () => {
+    const boot = client.bootDevice('sess-1', 'dev-1').catch((e: unknown) => e)
+    await waitForMessage(relay, 'device:boot')
+    client.disconnectDevice('sess-1')
+    expect(await boot).toBeInstanceOf(SessionLeftError)
+  })
+
+  it('names the caller as the cause, not the relay', async () => {
+    const boot = client.bootDevice('sess-1', 'dev-1').catch((e: unknown) => e) as Promise<Error>
+    await waitForMessage(relay, 'device:boot')
+    client.disconnectDevice('sess-1')
+    const err = await boot
+    // Not `SessionEndedError`: nothing was terminated, and the two advise different next calls.
+    expect(err).not.toBeInstanceOf(SessionEndedError)
+    expect(err.message).toMatch(/left session sess-1/)
+    expect(err.message).toMatch(/connect_device again/)
+  })
+
+  it("leaves another session's waiters alone", async () => {
+    const a = client.bootDevice('sess-1', 'dev-1').catch(() => 'rejected')
+    const b = client.bootDevice('sess-2', 'dev-2').catch(() => 'rejected')
+    await waitForMessage(relay, 'device:boot')
+    client.disconnectDevice('sess-1')
+    expect(await a).toBe('rejected')
+    // `sess-2` must still be pending. A leave that emptied the array would settle it too, and every other
+    // assertion in this block would still pass.
+    const outcome = await Promise.race([b, new Promise((r) => setTimeout(() => r('pending'), 60))])
+    expect(outcome).toBe('pending')
+  })
+
+  it('a reply for the same session arriving after the leave settles nothing', async () => {
+    // #514's measured defect: re-joining reproduces the `sessionId`, so the relay's replayed session state
+    // could satisfy a predicate registered before the leave — `boot_device` answering success for a boot
+    // the agent never performed. With the waiter gone there is nothing left to satisfy.
+    const boot = client.bootDevice('sess-1', 'dev-1').catch((e: unknown) => e) as Promise<Error>
+    await waitForMessage(relay, 'device:boot')
+    client.disconnectDevice('sess-1')
+    expect(await boot).toBeInstanceOf(SessionLeftError)
+
+    // **Asserted on the waiter list, not on the promise.** A first version re-asserted the boot after the
+    // late reply, which cannot fail: that promise settled two lines earlier, so a waiter left in the array
+    // would `resolve` it to no observable effect. Deleting the `splice` and keeping the `reject` passed it
+    // — the one behaviour in this change with the largest consequence, held by nothing.
+    const waiters = (client as unknown as { waiters: unknown[] }).waiters
+    expect(waiters, 'the leave left a waiter behind for a session it left').toHaveLength(0)
+
+    relay.send({ type: 'device:ready', sessionId: 'sess-1', payload: { deviceId: 'dev-1' } })
+    await new Promise((r) => setTimeout(r, 30))
+    expect(waiters).toHaveLength(0)
+  })
+
+  it('keeps the "may have landed, do not repeat" warning on an input killed by the leave', async () => {
+    // **The safety half, and the one a new error class silently removes.** `awaitInputAck` branches on
+    // class: an unknown one falls through `if (!timedOut && !disconnected) throw e` and never reaches the
+    // "Could not confirm" wording. A model told only that it left the session repeats the tap — the report
+    // this package's AGENTS.md forbids, reached by adding a rejection source rather than editing a message.
+    const tap = client.tap('sess-1', 100, 200).catch((e: unknown) => e) as Promise<Error>
+    await waitForMessage(relay, 'input:touch:end')
+    client.disconnectDevice('sess-1')
+    const err = await tap
+    expect(err.message).toMatch(/reached the device is unknown/)
+    expect(err.message).toMatch(/do not repeat/)
+    expect(err.message).toMatch(/left session sess-1/)
+  })
+
+  it('settles every waiter on the session, not every other one', async () => {
+    // The walk splices while iterating, so it runs backwards. Forwards it would skip the element that
+    // slides into the index it just removed — with one waiter per session every other test here passes
+    // either way, and this is the shape that does not.
+    const boot = client.bootDevice('sess-1', 'dev-1').catch(() => 'rejected')
+    const url = client.openUrl('sess-1', 'https://example.test').catch(() => 'rejected')
+    const clear = client.clearState('sess-1', 'com.example').catch(() => 'rejected')
+    await waitForMessage(relay, 'app:clear-state')
+    client.disconnectDevice('sess-1')
+    expect(await Promise.all([boot, url, clear])).toEqual(['rejected', 'rejected', 'rejected'])
+  })
+
+  it('leaves an untagged waiter alone', async () => {
+    // `agents:list` registers with no session tag, because it carries none on the wire. A filter widened
+    // to `w.sessionId !== undefined && w.sessionId !== sessionId` sweeps it up, and every other test here
+    // passes either way because they all use a second *tagged* session.
+    const list = client.listDevices().catch(() => 'rejected')
+    const boot = client.bootDevice('sess-1', 'dev-1').catch(() => 'rejected')
+    await waitForMessage(relay, 'device:boot')
+    client.disconnectDevice('sess-1')
+    expect(await boot).toBe('rejected')
+    const outcome = await Promise.race([list, new Promise((r) => setTimeout(() => r('pending'), 60))])
+    expect(outcome).toBe('pending')
+  })
+
+  it('a leave that cannot be sent settles nothing, so the close handler still owns those waiters', async () => {
+    // **The ordering, made observable.** The `disconnect()` test below cannot see it: the close handler has
+    // already emptied the array by then, so both orders look identical. A socket in CLOSING is the state
+    // that separates them — `send` throws, the close event has not fired, and the waiters are still there.
+    //
+    // Settling first would report a leave for a request the socket killed. The relay never saw the leave,
+    // and `RelayClosedError` is the truthful diagnosis, so this waiter has to survive for the close
+    // handler that is about to run.
+    const boot = client.bootDevice('sess-1', 'dev-1').catch(() => 'rejected')
+    await waitForMessage(relay, 'device:boot')
+    const holder = client as unknown as { ws: { readyState: number } | null }
+    const real = holder.ws!
+    holder.ws = { readyState: WebSocket.CLOSING }
+    try {
+      expect(() => client.disconnectDevice('sess-1')).toThrow(/not connected/i)
+      const outcome = await Promise.race([boot, new Promise((r) => setTimeout(() => r('pending'), 60))])
+      expect(outcome, 'the failed leave settled a waiter it never left').toBe('pending')
+    } finally {
+      holder.ws = real
+    }
+  })
+
+  it('a leave on a closed socket throws and settles nothing itself', async () => {
+    const boot = client.bootDevice('sess-1', 'dev-1').catch(() => 'rejected')
+    await waitForMessage(relay, 'device:boot')
+    client.disconnect()
+    // The close handler has already cleared every waiter, so `send` throwing must not be what settles
+    // them — a leave that never left would otherwise take the waiters of a session it never left.
+    expect(() => client.disconnectDevice('sess-1')).toThrow(/not connected/i)
+    expect(await boot).toBe('rejected')
   })
 })

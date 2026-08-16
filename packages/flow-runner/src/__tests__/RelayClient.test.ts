@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
-import { RelayClient, SessionEndedError, SessionJoinError } from '../RelayClient.js'
+import { RelayClient, SessionEndedError, SessionJoinError, SessionLeftError } from '../RelayClient.js'
 import { TransientQueryError } from '../errors.js'
 
 // Minimal Response stub for the ui-tree GET.
@@ -845,4 +845,249 @@ describe('RelayClient — session lifecycle (#512, finding 4)', () => {
     expect(err.message).toMatch(/session join timed out/)
     expect(err.message).toMatch(/went away/i)
   }, 15_000)
+})
+
+describe('RelayClient — leaving a session settles what was waiting on it (#514)', () => {
+  let wss: WebSocketServer | null = null
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    const s = wss
+    wss = null
+    if (!s) return
+    for (const c of s.clients) c.terminate()
+    await new Promise<void>((r) => s.close(() => r()))
+  })
+
+  /** A relay that answers a join and then says nothing, so every request runs to its deadline unless
+   *  something else settles it. The deadline here is 120s, which is exactly why nothing may wait for it. */
+  async function silent(): Promise<{ client: RelayClient; ack: (m: Record<string, unknown>) => void }> {
+    let conn: WebSocket | null = null
+    wss = new WebSocketServer({ port: 0 })
+    wss.on('connection', (ws) => {
+      conn = ws
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] === 'session:start') {
+          ws.send(JSON.stringify({ type: 'session:joined', sessionId: msg['sessionId'], capabilities: [] }))
+        }
+      })
+    })
+    const port = (wss.address() as { port: number }).port
+    const client = new RelayClient(`ws://localhost:${port}`, '')
+    await client.connect()
+    await client.joinSession('s1')
+    await client.joinSession('s2')
+    return { client, ack: (m) => conn?.send(JSON.stringify(m)) }
+  }
+
+  it('rejects a request that was in flight, instead of leaving it on its deadline', async () => {
+    const { client } = await silent()
+    const boot = client.bootDevice('s1', 'dev-1').catch((e: unknown) => e)
+    // Give the send a tick so the waiter is registered before the leave.
+    await new Promise((r) => setTimeout(r, 10))
+    client.leaveSession('s1')
+    const err = await boot
+    expect(err).toBeInstanceOf(SessionLeftError)
+  })
+
+  it('names the caller as the cause, not the relay', async () => {
+    const { client } = await silent()
+    const boot = client.bootDevice('s1', 'dev-1').catch((e: unknown) => e) as Promise<Error>
+    await new Promise((r) => setTimeout(r, 10))
+    client.leaveSession('s1')
+    const err = await boot
+    // Not `SessionEndedError`: nobody terminated anything. The two want different next moves, and this
+    // one is the caller's own doing.
+    expect(err).not.toBeInstanceOf(SessionEndedError)
+    expect(err.message).toMatch(/left session s1/)
+    // And it names the request, which is what `settleSessionWaiters` taking the waiter is for — a version
+    // taking only the session id would have dropped this from the terminate path too.
+    expect(err.message).toMatch(/^device boot failed:/)
+  })
+
+  it('leaves another session\'s waiters alone', async () => {
+    const { client } = await silent()
+    const a = client.bootDevice('s1', 'dev-1').catch(() => 'rejected')
+    const b = client.bootDevice('s2', 'dev-2').catch(() => 'rejected')
+    await new Promise((r) => setTimeout(r, 10))
+    client.leaveSession('s1')
+    expect(await a).toBe('rejected')
+    // `s2` must still be pending — a leave that emptied the array would settle it too, and nothing else
+    // in this suite would say so.
+    const outcome = await Promise.race([b, new Promise((r) => setTimeout(() => r('pending'), 60))])
+    expect(outcome).toBe('pending')
+  })
+
+  it('a reply arriving for the same session after the leave settles nothing', async () => {
+    // The defect #514 measured: re-joining reproduces the same `sessionId`, so a reply for the *new* join
+    // could satisfy a predicate registered before the leave. With the waiter gone there is nothing to satisfy.
+    const { client, ack } = await silent()
+    const boot = client.bootDevice('s1', 'dev-1').catch((e: unknown) => e) as Promise<Error>
+    await new Promise((r) => setTimeout(r, 10))
+    client.leaveSession('s1')
+    await boot
+
+    // **Asserted on the waiter list, not on the promise.** A first version awaited the boot and then
+    // re-asserted it after the late reply, which cannot fail: a settled promise is settled, so a waiter
+    // left in the array would `resolve` it to no observable effect and the test stayed green against the
+    // very defect it names. Deleting the `splice` and keeping the `reject` passed it.
+    const waiters = (client as unknown as { waiters: unknown[] }).waiters
+    expect(waiters, 'the leave left a waiter behind for a session it left').toHaveLength(0)
+
+    // And the late reply lands on nothing. This is the frame #514 measured — re-joining reuses the id, so
+    // the relay's replayed session state could satisfy a predicate registered before the leave.
+    ack({ type: 'device:ready', sessionId: 's1', payload: { deviceId: 'dev-1' } })
+    await new Promise((r) => setTimeout(r, 30))
+    expect(waiters).toHaveLength(0)
+  })
+
+  it('keeps the "may have reached the device" warning on an input killed by the leave', async () => {
+    // The safety half. `awaitInputAck` branches on class, so an error class it does not know falls
+    // through to a wrapper — or past every branch — and the warning never runs. A model told only that it
+    // left the session will repeat the tap.
+    const { client } = await silent()
+    const tap = client.tap('s1', 0.5, 0.5).catch((e: unknown) => e) as Promise<Error>
+    await new Promise((r) => setTimeout(r, 10))
+    client.leaveSession('s1')
+    const err = await tap
+    expect(err.message).toMatch(/reached the device is unknown/)
+    expect(err.message).toMatch(/do not repeat/)
+    // **And the class survives**, which is the half the wording cannot show. Without the guard this is
+    // wrapped in a bare `PlatformError`: the message would still read correctly — the wrapper adds its own
+    // copy of the same warning — while a caller lost every way to tell a leave from anything else.
+    expect(err).toBeInstanceOf(SessionLeftError)
+  })
+
+  it('a leave that cannot be sent settles nothing, so the close handler still owns those waiters', async () => {
+    // **The class is the assertion.** A first version caught to a string, which erased it — with the settle
+    // moved ahead of the send, the waiter rejects with `SessionLeftError`, `send` still throws, and both
+    // of that version's assertions still passed. `disconnect()` nulls the socket synchronously while the
+    // `close` event is still queued, so at this instant the waiter is very much still there, and the
+    // truthful diagnosis for a socket that died is the close handler's, not a leave's.
+    const { client } = await silent()
+    const boot = client.bootDevice('s1', 'dev-1').catch((e: unknown) => e) as Promise<Error>
+    await new Promise((r) => setTimeout(r, 10))
+    client.disconnect()
+    expect(() => client.leaveSession('s1')).toThrow(/not connected/i)
+    expect(await boot).not.toBeInstanceOf(SessionLeftError)
+  })
+})
+
+describe('RelayClient.queryUITree — the session record decides retryability (#545, #573)', () => {
+  let wss: WebSocketServer | null = null
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    const s = wss
+    wss = null
+    if (!s) return
+    for (const c of s.clients) c.terminate()
+    await new Promise<void>((r) => s.close(() => r()))
+  })
+
+  /** A client that has joined `s1` and been told `msg` about it. */
+  async function told(msg: Record<string, unknown> | null): Promise<RelayClient> {
+    let conn: WebSocket | null = null
+    wss = new WebSocketServer({ port: 0 })
+    wss.on('connection', (ws) => {
+      conn = ws
+      ws.on('message', (data) => {
+        const m = JSON.parse(String(data)) as Record<string, unknown>
+        if (m['type'] === 'session:start') {
+          ws.send(JSON.stringify({ type: 'session:joined', sessionId: m['sessionId'], capabilities: [] }))
+        }
+      })
+    })
+    const port = (wss.address() as { port: number }).port
+    const client = new RelayClient(`ws://localhost:${port}`, '')
+    await client.connect()
+    await client.joinSession('s1')
+    if (msg) { conn!.send(JSON.stringify(msg)); await new Promise((r) => setTimeout(r, 20)) }
+    return client
+  }
+
+  it('a terminated session fails now, and says why', async () => {
+    // The relay removes the session as it sends this, so the next poll gets 404 `Session not found` —
+    // already permanent. What changes is the *cause*: the symptom named a missing session, not a session
+    // that ended a moment ago for a reason this client was told.
+    const c = await told({ type: 'session:terminated', sessionId: 's1', reason: 'agent-disconnected' })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(404, { error: 'Session not found' }))
+    const err = await c.queryUITree('s1').catch((e: unknown) => e) as Error
+    expect(err).not.toBeInstanceOf(TransientQueryError)
+    expect(err.message).toMatch(/the relay ended this session \(agent-disconnected\)/)
+  })
+
+  it('a rebound session fails now, and blames the binding rather than the selector', async () => {
+    // #573. `session:rebound` clears the agent's device binding and only a boot restores it — the CLI
+    // boots once before `runFlow` and the engine has no boot step, so every remaining poll returns 504.
+    // 504 is not in the permanent set, so each remaining step used to burn its whole timeout and fail as
+    // `no element matched`, naming the selector.
+    const c = await told({ type: 'session:rebound', sessionId: 's1', capabilities: [] })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(504, { error: 'ui-tree query timed out' }))
+    const err = await c.queryUITree('s1').catch((e: unknown) => e) as Error
+    expect(err).not.toBeInstanceOf(TransientQueryError)
+    expect(err.message).toMatch(/needs booting again/)
+  })
+
+  it('a flapping agent is reported by the binding, not by the away-ness', async () => {
+    // `away` and `needsReboot` can both be set at once — away, back, away again — because only a boot
+    // clears the second and nothing in a flow boots. `sessionNote` ranks `away` first, deliberately: for a
+    // caller that can still act, the away-ness is what is current. Here the caller cannot act, the step is
+    // being failed permanently, and taking that precedence would print the sentence for a transient
+    // condition on a permanent failure and never mention the binding — #573's mis-blame, one layer up.
+    let conn: WebSocket | null = null
+    wss = new WebSocketServer({ port: 0 })
+    wss.on('connection', (ws) => {
+      conn = ws
+      ws.on('message', (data) => {
+        const m = JSON.parse(String(data)) as Record<string, unknown>
+        if (m['type'] === 'session:start') {
+          ws.send(JSON.stringify({ type: 'session:joined', sessionId: m['sessionId'], capabilities: [] }))
+        }
+      })
+    })
+    const port = (wss.address() as { port: number }).port
+    const c = new RelayClient(`ws://localhost:${port}`, '')
+    await c.connect()
+    await c.joinSession('s1')
+    for (const m of [
+      { type: 'session:agent-away', sessionId: 's1' },
+      { type: 'session:rebound', sessionId: 's1', capabilities: [] },
+      { type: 'session:agent-away', sessionId: 's1' },
+    ]) { conn!.send(JSON.stringify(m)); await new Promise((r) => setTimeout(r, 20)) }
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(502, { error: 'Agent offline' }))
+    const err = await c.queryUITree('s1').catch((e: unknown) => e) as Error
+    expect(err).not.toBeInstanceOf(TransientQueryError)
+    expect(err.message).toMatch(/needs booting again/)
+    expect(err.message).not.toMatch(/went away/)
+  })
+
+  it('an away session keeps polling — that is what the retry is for', async () => {
+    // The relay's 15s hold. Cutting here would kill a session a `session:rebound` was about to restore,
+    // which is the opposite defect and the one this rule must not cause.
+    const c = await told({ type: 'session:agent-away', sessionId: 's1' })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(502, { error: 'Agent offline' }))
+    await expect(c.queryUITree('s1')).rejects.toBeInstanceOf(TransientQueryError)
+  })
+
+  it('a session with no record is classified by status, exactly as before', async () => {
+    const c = await told(null)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(502, { error: 'Agent offline' }))
+    await expect(c.queryUITree('s1')).rejects.toBeInstanceOf(TransientQueryError)
+  })
+
+  it('a permanent status on a session with no record still fails now', async () => {
+    const c = await told(null)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(409, { error: 'Device is not booted' }))
+    const err = await c.queryUITree('s1').catch((e: unknown) => e)
+    expect(err).not.toBeInstanceOf(TransientQueryError)
+  })
+
+  it('a successful query is untouched by any record', async () => {
+    const c = await told({ type: 'session:rebound', sessionId: 's1', capabilities: [] })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(200, { elements: [] }))
+    await expect(c.queryUITree('s1')).resolves.toEqual([])
+  })
 })
