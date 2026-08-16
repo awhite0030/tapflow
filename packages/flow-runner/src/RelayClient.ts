@@ -829,7 +829,9 @@ export class RelayClient {
     const res = await fetch(new URL(`/api/v1/sessions/${sessionId}/screenshot`, this.httpBase()).toString(), {
       headers: this.token ? { Authorization: `Bearer ${this.token}` } : undefined,
     })
-    if (!res.ok) throw new PlatformError(`screenshot failed: ${res.status}`)
+    // Through `failed()` like every other session-scoped failure here. A screenshot is taken to explain a
+    // step that already failed, so arriving with no cause is the worst moment for it.
+    if (!res.ok) throw this.failed(sessionId, `screenshot failed: ${res.status}`)
     return Buffer.from(await res.arrayBuffer())
   }
 }

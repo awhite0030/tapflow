@@ -70,6 +70,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A refused `connect_device` says which of the three refusals it was.** It reported the relay's prose
+  alone, so "the device is open in another browser session" and "this Mac is over its resource ceiling"
+  arrived as sentences a model had to guess at rather than the closed reason it can act on. A failed
+  screenshot or UI-tree query likewise says what is wrong with the *session* now, not only what the relay
+  said about the request — so one failing because the agent dropped its device binding no longer reads as a
+  bare status code. That is the least useful moment for it, since a screenshot is usually being taken to
+  explain a step that already failed.
 - **Disconnecting from a session no longer leaves a request hanging for its full deadline.** An AI agent
   that disconnects while a boot is still in flight — ordinary, since tool calls run in parallel — used to
   get a bare timeout thirty seconds later. It fails immediately now and says the disconnect is what ended
