@@ -70,6 +70,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Disconnecting from a session no longer leaves a request hanging for its full deadline.** An AI agent
+  that disconnects while a boot is still in flight — ordinary, since tool calls run in parallel — used to
+  get a bare timeout thirty seconds later. It fails immediately now and says the disconnect is what ended
+  it, while still warning that the request may have reached the device anyway. A worse version of the same
+  gap could have reported a boot that never happened as success, after re-joining the same session.
+- **A flow run whose device dies stops blaming the selector.** When the agent restarts mid-run its device
+  binding is gone, and nothing in a flow can restore it — flows boot once, before the first step. Every
+  remaining step used to poll for its full timeout and fail with "no element matched", so a restart three
+  steps into a ten-step flow spent eighty seconds pointing at the wrong thing. They now fail as soon as the query does and say the
+  session needs booting again. The relay's fifteen-second grace for an agent that may come back is
+  untouched: queries keep retrying through it exactly as before.
 - **Shutting a device down through an MCP client fails in a second instead of half a minute.**
   `device:shutdown` was the one command from a browser that the relay never answered when it could not
   deliver it — a stale session id or an agent that had gone away produced no reply at all, so
