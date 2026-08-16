@@ -7,6 +7,8 @@
 node_modules
 **/node_modules
 **/dist
+# Package-root tsconfig.tsbuildinfo sits outside **/dist; stale incremental metadata
+# can make a local pnpm build -> docker build skip required emits.
 **/*.tsbuildinfo
 **/.tapflow
 playground

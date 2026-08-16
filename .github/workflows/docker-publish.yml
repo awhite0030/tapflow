@@ -108,6 +108,7 @@ jobs:
             if [ "$status" -ne 0 ]; then
               echo "Smoke container diagnostics:" >&2
               diagnose_container >&2
+              docker logs --tail 50 "$container" 2>/dev/null || true
             fi
             docker rm -f "$container" >/dev/null 2>&1 || true
             docker volume rm "$volume" >/dev/null 2>&1 || true
