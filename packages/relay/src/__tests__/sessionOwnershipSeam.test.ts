@@ -393,7 +393,11 @@ describe('session ownership seam', () => {
     stream.send(JSON.stringify({ type: 'stream:register', sessionId }))
     await waitForType(stream, 'stream:registered')
     stream.send(Buffer.from([0x01, 0x02, 0x03]), { binary: true })
-    await barrier(browser)
+    // **On `stream`, not on `browser`.** A barrier only orders against traffic on its own socket —
+    // WebSocket guarantees ordering within a connection and says nothing across two. Barriering the
+    // browser here proved the relay had handled a frame *that socket* sent, which is not the frame the
+    // assertions below depend on, so they could run before the binary handler had written the maps.
+    await barrier(stream)
 
     const maps = server as unknown as Record<string, Map<string, unknown>>
     for (const name of ['idrRequesters', 'droppers', 'dropHandlers']) {
