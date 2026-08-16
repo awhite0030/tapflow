@@ -70,9 +70,110 @@ jobs:
           cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
           # Publish: push a per-architecture image by digest (merged into a manifest
-          # list in the merge job). Otherwise (PR / no credentials): build for
-          # validation only, keeping just the cache.
-          outputs: ${{ (github.event_name != 'pull_request' && env.HAS_DOCKERHUB == 'true') && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || 'type=cacheonly' }}
+          # list in the merge job). Otherwise (PR / no credentials): load the
+          # built image into Docker so the runtime smoke test exercises it.
+          outputs: ${{ (github.event_name != 'pull_request' && env.HAS_DOCKERHUB == 'true') && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || format('type=docker,name=tapflow-smoke:{0}', env.PLATFORM_PAIR) }}
+
+      - name: Select image for smoke test
+        run: |
+          if [ "${HAS_DOCKERHUB}" = "true" ] && [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
+            echo "SMOKE_IMAGE=${IMAGE}@${{ steps.build.outputs.digest }}" >> "$GITHUB_ENV"
+          else
+            echo "SMOKE_IMAGE=tapflow-smoke:${PLATFORM_PAIR}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Smoke test image runtime
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+
+          container="tapflow-smoke-${PLATFORM_PAIR}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          volume="${container}-data"
+          root_body="${RUNNER_TEMP}/tapflow-smoke-root.txt"
+          api_body="${RUNNER_TEMP}/tapflow-smoke-auth-status.txt"
+
+          diagnose_container() {
+            if docker inspect "$container" >/dev/null 2>&1; then
+              docker inspect -f 'Container exists: true
+          State.Status={{.State.Status}}
+          State.ExitCode={{.State.ExitCode}}
+          State.OOMKilled={{.State.OOMKilled}}' "$container" 2>/dev/null || true
+            else
+              echo "Container exists: false"
+            fi
+          }
+
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "Smoke container diagnostics:" >&2
+              diagnose_container >&2
+              docker logs --tail 50 "$container" || true
+            fi
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          start_container() {
+            docker run -d \
+              --name "$container" \
+              -p 127.0.0.1:4000:4000 \
+              -v "$volume:/app/.tapflow/data" \
+              "$SMOKE_IMAGE" >/dev/null
+          }
+
+          wait_for_ready() {
+            phase="$1"
+            for attempt in $(seq 1 20); do
+              if [ "$(docker inspect -f '{{.State.Running}}' "$container")" != "true" ]; then
+                echo "Container exited before readiness during ${phase} (attempt ${attempt})." >&2
+                return 1
+              fi
+
+              root_status="$(curl --connect-timeout 2 --max-time 2 -sS -o "$root_body" -w '%{http_code}' http://127.0.0.1:4000/ || true)"
+              api_status="$(curl --connect-timeout 2 --max-time 2 -sS -o "$api_body" -w '%{http_code}' http://127.0.0.1:4000/api/v1/auth/status || true)"
+              if [ "$root_status" -ge 200 ] && [ "$root_status" -lt 400 ] \
+                && [ "$api_status" -ge 200 ] && [ "$api_status" -lt 400 ] \
+                && grep -Fq '<title>tapflow</title>' "$root_body" \
+                && grep -Eq '"initialized":(true|false)' "$api_body"; then
+                echo "Smoke test ${phase} passed with HTTP /=${root_status} and /api/v1/auth/status=${api_status}."
+                return 0
+              fi
+
+              sleep 2
+            done
+
+            echo "Relay did not return the expected HTTP responses on :4000 during ${phase}." >&2
+            echo "Last observed HTTP statuses: /=${root_status:-none}, /api/v1/auth/status=${api_status:-none}." >&2
+            return 1
+          }
+
+          jwt_secret_fingerprint() {
+            docker exec "$container" sh -eu -c \
+              'if [ ! -s /app/.tapflow/data/jwt-secret ]; then
+                echo "JWT secret file is missing or empty." >&2
+                exit 1
+              fi
+              sha256sum /app/.tapflow/data/jwt-secret | cut -d " " -f1'
+          }
+
+          docker volume create "$volume" >/dev/null
+          start_container
+          wait_for_ready "first boot"
+          first_jwt_secret="$(jwt_secret_fingerprint)"
+
+          docker rm -f "$container" >/dev/null
+          start_container
+          wait_for_ready "restart"
+          second_jwt_secret="$(jwt_secret_fingerprint)"
+
+          if [ "$first_jwt_secret" != "$second_jwt_secret" ]; then
+            echo "JWT secret did not persist across container recreation." >&2
+            exit 1
+          fi
+          echo "JWT secret persisted across container recreation."
 
       - name: Export digest
         if: github.event_name != 'pull_request' && env.HAS_DOCKERHUB == 'true'
