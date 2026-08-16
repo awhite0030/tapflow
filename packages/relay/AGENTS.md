@@ -89,11 +89,17 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
   has never acked as *success*, so a silent refusal would report a command that never left the relay as
   having landed. `session:leave` and `session:end` are dropped, because neither has a reply and inventing
   one would grow the wire for a message no consumer reads.
-  **`device:shutdown` is the one exception, and the blocker is not here** — three of the dashboard's four
-  senders come from `useAgentSession`, whose socket never joins, so the gate would break going back and the
-  unmount teardown. `SessionList` joins before shutting down and documents why, so the dashboard already
-  carries two conventions for this message. Tracked in #527; the question there is whether
-  `useAgentSession` should join, not whether the relay should check.
+  **`device:shutdown` is the one exception to the *ownership* clause, and the blocker is not here** — three
+  of the dashboard's four senders come from `useAgentSession`, whose socket never joins, so the gate would
+  break going back and the unmount teardown. `SessionList` joins before shutting down and documents why, so
+  the dashboard already carries two conventions for this message. Tracked in #527; the question there is
+  whether `useAgentSession` should join, not whether the relay should check.
+  It is **not** an exception to being answered, and used to be both. `reachableTarget` is `dispatchTarget`
+  minus the ownership clause, so the other two refusals — no such session, agent gone — come back as
+  `device:shutdown-error` instead of the silence that burned `shutdownDevice`'s 30s deadline with no cause
+  (#542). Splitting the resolver rather than inlining two checks is what makes closing #527 a one-line
+  move to `dispatchTarget`; the cost, written down rather than waved past, is that a non-owner now learns
+  whether a session id exists — small against being able to shut that device down, which it still can.
   The app-command handlers check ownership **after** the session lookup and **before** the build lookup,
   deliberately not through `dispatchTarget`: that resolver also decides agent liveness, and using it there
   would move `agent offline` ahead of `Build not found`, changing which of two simultaneous problems the

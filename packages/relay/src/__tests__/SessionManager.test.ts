@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { ValidationError } from '@tapflowio/agent-core'
 import { SessionManager } from '../SessionManager'
 import type { WebSocket } from 'ws'
 
@@ -187,31 +186,90 @@ describe('SessionManager', () => {
       expect(sm.get(id)?.browserSocket).toBe(browserWs)
     })
 
-    it('throws when session is not found', () => {
+    // The two expected failures are **returned**, not thrown, as of #515. Both used to be
+    // `ValidationError`s, and the handler's single `catch` could not tell them from a bug — so it
+    // guessed a `reason`, and guessed wrong for the most common case (see the re-join tests below).
+    it('reports a session that is not there', () => {
       const sm = new SessionManager()
-      let thrown: unknown
-      try {
-        sm.join('bad-id', mockSocket())
-      } catch (error) {
-        thrown = error
-      }
-      expect(thrown).toBeInstanceOf(ValidationError)
-      expect((thrown as Error).message).toBe('Session not found: bad-id')
+      expect(sm.join('bad-id', mockSocket())).toEqual({ ok: false, failure: 'not-found' })
     })
 
-    it('throws when session is busy (browserSocket is OPEN)', () => {
+    it('reports a session another OPEN socket holds', () => {
       const sm = new SessionManager()
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
       const busyWs = { readyState: OPEN } as WebSocket
       sm.join(id, busyWs)
-      let thrown: unknown
-      try {
-        sm.join(id, mockSocket())
-      } catch (error) {
-        thrown = error
-      }
-      expect(thrown).toBeInstanceOf(ValidationError)
-      expect((thrown as Error).message).toContain('Session busy')
+      expect(sm.join(id, mockSocket())).toEqual({ ok: false, failure: 'held-by-another' })
+      // The refusal must not have moved the binding — a rejected join that stole the session would be
+      // the defect this check exists to prevent, wearing a refusal's clothes.
+      expect(sm.get(id)?.browserSocket).toBe(busyWs)
+    })
+
+    it('a re-join by the owning socket succeeds and keeps the binding (#515)', () => {
+      const sm = new SessionManager()
+      const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
+      const owner = { readyState: OPEN } as WebSocket
+      sm.join(id, owner)
+      expect(sm.join(id, owner)).toEqual({ ok: true })
+      expect(sm.get(id)?.browserSocket).toBe(owner)
+      // And the socket still holds it exactly once. `unindexBrowser` reads `session.browserSocket`, so a
+      // re-join that ran it would drop the entry this join is re-establishing — leaving the session bound
+      // for commands while invisible to the close handler, which is #507 rebuilt one method over.
+      expect(sm.getByBrowserSocket(owner).map((s) => s.id)).toEqual([id])
+    })
+
+    it('one socket holds several sessions at once', () => {
+      // `mcp-server` runs a single WebSocket for the whole process and joins a session per device. The
+      // index was `Map<WebSocket, Session>` until #507, so the second join here evicted the first from the
+      // reverse lookup — and the close handler, which resolves through it, then released only one.
+      const sm = new SessionManager()
+      const agent = mockSocket()
+      const [a, b] = sm.create(agent, [
+        { id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' },
+        { id: 'd2', name: 'Y', platform: 'ios', status: 'shutdown' },
+      ])
+      const ws = { readyState: OPEN } as WebSocket
+      sm.join(a!, ws)
+      sm.join(b!, ws)
+      expect(sm.getByBrowserSocket(ws).map((s) => s.id).sort()).toEqual([a, b].sort())
+      expect(sm.get(a!)?.browserSocket).toBe(ws)
+      expect(sm.get(b!)?.browserSocket).toBe(ws)
+    })
+
+    it('releasing one of several leaves the others held, and empties the key at the end', () => {
+      const sm = new SessionManager()
+      const [a, b] = sm.create(mockSocket(), [
+        { id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' },
+        { id: 'd2', name: 'Y', platform: 'ios', status: 'shutdown' },
+      ])
+      const ws = { readyState: OPEN } as WebSocket
+      sm.join(a!, ws)
+      sm.join(b!, ws)
+      sm.clearBrowser(a!)
+      expect(sm.getByBrowserSocket(ws).map((s) => s.id)).toEqual([b])
+      sm.clearBrowser(b!)
+      expect(sm.getByBrowserSocket(ws)).toEqual([])
+      // **The key is gone, not merely empty.** `getByBrowserSocket` spreads the set, so it answers `[]`
+      // either way — the assertion above cannot see the difference, and a first version of this test
+      // claimed it could. The index is a `Map` keyed by socket, so a leftover entry pins a closed socket
+      // for the life of the relay: a leak the old one-slot index could not have, introduced by the fix
+      // for it. Reaching the private field is the only way to state it, and it is what mutation testing
+      // said was missing.
+      const index = (sm as unknown as { browserSocketIndex: Map<WebSocket, unknown> }).browserSocketIndex
+      expect(index.has(ws)).toBe(false)
+    })
+
+    it('remove() takes the session out of its socket set', () => {
+      const sm = new SessionManager()
+      const [a, b] = sm.create(mockSocket(), [
+        { id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' },
+        { id: 'd2', name: 'Y', platform: 'ios', status: 'shutdown' },
+      ])
+      const ws = { readyState: OPEN } as WebSocket
+      sm.join(a!, ws)
+      sm.join(b!, ws)
+      sm.remove(a!)
+      expect(sm.getByBrowserSocket(ws).map((s) => s.id)).toEqual([b])
     })
   })
 

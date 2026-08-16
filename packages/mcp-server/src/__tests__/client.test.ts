@@ -290,6 +290,43 @@ describe('TapflowClient', () => {
       relay.send({ type: 'device:shutdown-done', sessionId: 'sess-1' })
       await expect(p).resolves.toBeUndefined()
     })
+
+    it('fails on device:shutdown-error instead of waiting out the 30s deadline', async () => {
+      // #542. The relay used to resolve this command's session inline and drop the frame when it could
+      // not — the only browser command it never answered — so a shutdown addressed to a dead session
+      // reported `Request timed out` with no cause, half a minute later.
+      //
+      // **The relay half alone would not have fixed this caller.** The predicate matched
+      // `device:shutdown-done` only, so the new reply would have been ignored and the deadline would run
+      // exactly as before — and nothing would say so, because inbound here is `Record<string, unknown>`
+      // (#512) and the symptom is identical to the bug.
+      const p = client.shutdownDevice('sess-1', 'dev-1')
+      const sent = await waitForMessage(relay, 'device:shutdown')
+      relay.send({
+        type: 'device:shutdown-error', sessionId: 'sess-1',
+        requestId: sent['requestId'], message: 'agent offline',
+      })
+      await expect(p).rejects.toThrow(/agent offline/)
+    })
+
+    it('does not take another request\'s shutdown-error as its own answer', async () => {
+      // The correlator is optional on this pair, so `correlatesWith` falls back to the session when the
+      // reply carries none — but a reply that carries a *different* id is another request's, and taking
+      // it would resolve one shutdown with another's outcome. Same shape as the `-done` guard below.
+      const p = client.shutdownDevice('sess-1', 'dev-1')
+      await waitForMessage(relay, 'device:shutdown')
+      relay.send({
+        type: 'device:shutdown-error', sessionId: 'sess-1',
+        requestId: 'someone-elses', message: 'agent offline',
+      })
+      const outcome = await Promise.race([
+        p.then(() => 'settled', () => 'settled'),
+        new Promise<string>((r) => setTimeout(() => r('pending'), 40)),
+      ])
+      expect(outcome).toBe('pending')
+      relay.send({ type: 'device:shutdown-done', sessionId: 'sess-1' })
+      await expect(p).resolves.toBeUndefined()
+    })
   })
 
   describe('tap', () => {
@@ -1024,10 +1061,10 @@ describe('TapflowClient', () => {
       expect(err.message).not.toMatch(/reset/i)
     })
 
-    // `device:shutdown` is the one command the relay drops in silence when it cannot dispatch it — it
-    // resolves its session inline rather than through `dispatchTarget`, and there is no
-    // `device:shutdown-error` to answer with (#542). So this is the one waiter whose silence nothing else
-    // explains, and a terminated session is the case that can be ruled out from here.
+    // The relay answers an undispatchable shutdown as of #542, so this check is no longer the difference
+    // between a diagnosis and 30s of nothing. What it still buys is a round trip and a better cause: the
+    // relay's answer for a session it has dropped is `Session not found`, while this names *why* it was
+    // dropped and throws the type the tool layer branches on.
     it('refuses a shutdown on a terminated session instead of waiting out 30s of silence', async () => {
       relay.send(terminated('sess-1'))
       await settle(relay, client)

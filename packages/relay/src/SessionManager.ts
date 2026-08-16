@@ -1,7 +1,6 @@
 import { randomUUID } from 'crypto'
 import { WebSocket } from 'ws'
 import type { DeviceStatus } from '@tapflowio/agent-core'
-import { ValidationError } from '@tapflowio/agent-core'
 import type { AgentResources, SessionInfo } from './types.js'
 import type { ChromePayload, DeviceDetails, DeviceReport } from '@tapflowio/protocol'
 
@@ -31,6 +30,15 @@ export interface Session {
   idleTimer: ReturnType<typeof setTimeout> | null
 }
 
+/**
+ * Why a `session:start` could not bind, or that it did.
+ *
+ * The two failures are the ones a caller can be told about truthfully, and they are values rather than
+ * exceptions for that reason — see `join()`. Anything else that goes wrong in there is a bug and still
+ * throws, which keeps the two apart at the call site instead of at a `catch`.
+ */
+export type JoinResult = { ok: true } | { ok: false; failure: 'not-found' | 'held-by-another' }
+
 /** What an `agent:register` says about the agent itself, as opposed to its devices. */
 export type AgentIdentity = {
   agentId?: string
@@ -46,7 +54,21 @@ export class SessionManager {
   private agentResources = new Map<WebSocket, AgentResources>()
   private agentSocketIndex = new Map<WebSocket, Set<string>>()
   private streamSocketIndex = new Map<WebSocket, Session>()
-  private browserSocketIndex = new Map<WebSocket, Session>()
+  /**
+   * Which sessions a browser socket holds. **A set, because the relation is one-to-many** — and it was a
+   * single `Session` until #507 was diagnosed, which is the whole of that defect.
+   *
+   * `mcp-server` opens exactly one socket (`client.ts`, one `new WebSocket`) and sends a `session:start`
+   * per device, because an LLM can hold several sessions at once and its waiters are keyed per session.
+   * With one slot per socket, the second join silently overwrote the first — `A.browserSocket` still
+   * pointed at the socket, so *commands* kept working, and only the reverse lookup lost A. The close
+   * handler resolves through that lookup, so **A was never released**: `busy: true` for the life of the
+   * relay, no idle timer, and a device left booted with nobody watching it.
+   *
+   * That is also why the obvious reading of #507 — "release the previous session when a socket joins
+   * another" — is a regression rather than a fix. Two independent design reviews reached it separately.
+   */
+  private browserSocketIndex = new Map<WebSocket, Set<Session>>()
   private readonly idleTimeoutMs: number
 
   constructor(options: { idleTimeoutMs?: number } = {}) {
@@ -135,20 +157,60 @@ export class SessionManager {
     return this.streamSocketIndex.get(ws)
   }
 
-  getByBrowserSocket(ws: WebSocket): Session | undefined {
-    return this.browserSocketIndex.get(ws)
+  /** Every session this socket holds. **Plural**, and the caller must treat it as such — the close
+   *  handler releasing only the first is the defect the index comment above describes. */
+  getByBrowserSocket(ws: WebSocket): Session[] {
+    return [...(this.browserSocketIndex.get(ws) ?? [])]
   }
 
-  join(sessionId: string, browserSocket: WebSocket): void {
+  /** Drop `session` from its browser socket's set, and the key with it when the set empties. Leaving an
+   *  empty `Set` behind would keep a closed socket referenced for the life of the relay. */
+  private unindexBrowser(session: Session): void {
+    const ws = session.browserSocket
+    if (!ws) return
+    const held = this.browserSocketIndex.get(ws)
+    if (!held) return
+    held.delete(session)
+    if (held.size === 0) this.browserSocketIndex.delete(ws)
+  }
+
+  /**
+   * @returns `not-found` and `held-by-another` rather than throwing them, **so an unexpected failure and
+   *          an expected one stop sharing a channel.** `session:start` answered both from one `catch`, and
+   *          the comment there said reaching it meant something the handler did not anticipate — while the
+   *          most common way to reach it was a socket re-joining the session it already holds (#515). An
+   *          expected failure that travels as an exception is indistinguishable from a bug by the time it
+   *          is caught, and the handler then has to guess a `reason`.
+   */
+  join(sessionId: string, browserSocket: WebSocket): JoinResult {
     const session = this.sessions.get(sessionId)
-    if (!session) throw new ValidationError(`Session not found: ${sessionId}`)
-    if (session.browserSocket?.readyState === WebSocket.OPEN) {
-      throw new ValidationError(`Session busy: ${sessionId}`)
+    if (!session) return { ok: false, failure: 'not-found' }
+    // `!== browserSocket` is #515. The relay's handler already exempts the owning socket from the
+    // occupancy refusal one layer up, and this line not matching it is what made that exemption fall
+    // through to a `Session busy` throw — reported to the caller as `session-not-found`, for a live
+    // session it was holding. A re-join is now idempotent: it keeps the binding, cancels the idle timer
+    // below, and the handler replays the session's cached state exactly as it does for a fresh join.
+    if (
+      session.browserSocket &&
+      session.browserSocket !== browserSocket &&
+      session.browserSocket.readyState === WebSocket.OPEN
+    ) {
+      return { ok: false, failure: 'held-by-another' }
     }
     if (session.idleTimer) { clearTimeout(session.idleTimer); session.idleTimer = null }
-    if (session.browserSocket) this.browserSocketIndex.delete(session.browserSocket)
+    // Unconditional, and **the order is what makes it safe**: this releases the session from whichever
+    // socket held it, which on a re-join is the socket joining. Removing and re-adding the same entry is a
+    // no-op; doing it *after* the add below would delete the entry this join just made, leaving the
+    // session bound for commands and invisible to the close handler — #507 rebuilt one method over.
+    //
+    // A guard reading `!== browserSocket` stood here with that reasoning written as its justification. It
+    // was dead: mutation testing removed the guard and every test still passed, because the add follows.
+    this.unindexBrowser(session)
     session.browserSocket = browserSocket
-    this.browserSocketIndex.set(browserSocket, session)
+    let held = this.browserSocketIndex.get(browserSocket)
+    if (!held) { held = new Set(); this.browserSocketIndex.set(browserSocket, held) }
+    held.add(session)
+    return { ok: true }
   }
 
   remove(sessionId: string): void {
@@ -156,7 +218,7 @@ export class SessionManager {
     if (!session) return
     if (session.idleTimer) { clearTimeout(session.idleTimer); session.idleTimer = null }
     if (session.streamSocket) this.streamSocketIndex.delete(session.streamSocket)
-    if (session.browserSocket) this.browserSocketIndex.delete(session.browserSocket)
+    this.unindexBrowser(session)
     const agentIds = this.agentSocketIndex.get(session.agentSocket)
     agentIds?.delete(sessionId)
     if (agentIds?.size === 0) this.agentSocketIndex.delete(session.agentSocket)
@@ -167,7 +229,7 @@ export class SessionManager {
     const session = this.sessions.get(sessionId)
     if (!session) return
     if (session.browserSocket) {
-      this.browserSocketIndex.delete(session.browserSocket)
+      this.unindexBrowser(session)
       session.browserSocket = null
     }
     if (session.idleTimer) { clearTimeout(session.idleTimer); session.idleTimer = null }

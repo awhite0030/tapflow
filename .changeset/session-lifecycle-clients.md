@@ -45,10 +45,11 @@ so the advice says so rather than sending a caller at a reinstall it does not ne
 
 - Waiters now carry their session, so one session ending settles that session's requests and no others.
   `agents:list` carries no session on the wire and is explicitly unaffected.
-- `mcp-server` refuses a `shutdown_device` on a terminated session locally. It is the one command the
-  relay drops in silence when it cannot dispatch it — there is no `device:shutdown-error` on the wire to
-  answer with — so it was the only waiter whose 30 seconds of nothing had no explanation. The relay half
-  is tracked in #542.
+- `mcp-server` refuses a `shutdown_device` on a terminated session locally, saving a round trip and
+  naming *why* the session was dropped — which the relay's generic "session not found" cannot. It was
+  written when this was the one command the relay dropped in silence; #542, in this same release, gave the
+  pair a `device:shutdown-error`, so the local refusal is now an improvement on an answer rather than a
+  stand-in for none.
 - `mcp-server`'s timeout and disconnect branches are distinguished by error class rather than by
   comparing the message string, which stopped being reliable the moment a deadline started carrying why
   it expired.

@@ -51,7 +51,7 @@ The audience is the whole team (PO, PM, designers, backend, QA) — not just QA.
 
 ### Every browser-inbound message has a declared disposition
 
-`lib/inboundDisposition.ts` says, for each of the 28 messages a browser socket can receive, either which
+`lib/inboundDisposition.ts` says, for each of the 29 messages a browser socket can receive, either which
 files handle it or why it is deliberately ignored. It is written with
 `satisfies Record<BrowserInbound['type'], Disposition>`, so **a message added to the wire breaks that file**
 until someone picks a category.

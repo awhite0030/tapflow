@@ -61,10 +61,11 @@ function entries(src) {
 const table_entries = entries(table)
 
 describe('inbound disposition', () => {
-  it('parsed every entry — 28, the browser-inbound surface', () => {
+  it('parsed every entry — 29, the browser-inbound surface', () => {
     // The compiler already refuses a missing key, so this is not the coverage assertion; it is the
     // parser's own honesty check. Without it the two assertions below pass on an empty map.
-    expect(table_entries.size).toBe(28)
+    // 29 as of #542: `device:shutdown-error` gave the shutdown pair the failure member it lacked.
+    expect(table_entries.size).toBe(29)
   })
 
   it('every entry is exactly one of at / ignored', () => {

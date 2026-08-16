@@ -5,8 +5,9 @@ import type { BrowserInbound } from '@tapflowio/protocol'
  *
  * The bug class this whole wire-contract program started from was **a reply arriving and nobody
  * answering** (#489, #485, #492, #457). L1–L3 made the declarations honest; a declared message with no
- * handler is still silent. Measured when this file was written: the dashboard handled 22 of the 28 and
- * dropped 6 — and the three reasons those 6 were dropped for are *indistinguishable in code*, because
+ * handler is still silent. Measured when this file was written: of the 28 messages then on the wire the
+ * dashboard handled 22 and dropped 6 — and the three reasons those 6 were dropped for are
+ * *indistinguishable in code*, because
  * "handled elsewhere", "deliberately ignored" and "nobody ever wrote it" all look like an absent branch.
  *
  * `satisfies Record<BrowserInbound['type'], …>` is what makes that a decision instead of an oversight:
@@ -27,7 +28,7 @@ import type { BrowserInbound } from '@tapflowio/protocol'
  *    relay, so a reply to its request lands on the dashboard once the dashboard joins. "We never send
  *    `input:type`, so its replies cannot arrive" is true per *session*, not per socket.
  *
- * Any browser socket can receive any of the 28. That is why every entry is present and `ignored` says
+ * Any browser socket can receive any of the 29. That is why every entry is present and `ignored` says
  * *why* rather than *cannot happen*.
  */
 type Disposition =
@@ -51,7 +52,12 @@ export const INBOUND_DISPOSITION = {
   'device:booting': { at: 'DeviceViewer' },
   'device:ready': { at: 'DeviceViewer, SessionList' },
   'device:shutdown-done': { at: 'SessionList' },
-  // **`useAgentSession`'s branch cannot fire, and it is still named here.** L5d measured it: all four
+  // The relay's half of the pair (#542), so it reaches whichever socket asked — which for this app is
+  // `SessionList` or `useAgentSession`. Only the first is named because `at` answers *which files compare
+  // `.type` against this literal*, and only `SessionList` does — the other hook receives it and has no
+  // branch, which is right: its three senders fire on the way out of a view and nothing there waits.
+  'device:shutdown-error': { at: 'SessionList' },
+  // **`useAgentSession`'s branch cannot fire, and it is still named here.** L5d measured it: all five
   // producers are `sendTo(ws, …)` to the socket that sent `session:start`, and that hook's socket only ever
   // sends `agents:list` and `device:shutdown`. So relay failures do **not** surface in the device list, which
   // naming three files here implies.

@@ -183,6 +183,30 @@ describe('browser-inbound routing matches the protocol union', () => {
     expect(relaySrc).not.toMatch(/browserSocket\.send\(JSON\.stringify\(msg\)\)/)
   })
 
+  // #557, restated for the door that exists now. The issue asks that `AGENT_MSG_TYPE_LIST` be tied to
+  // `route()`'s forwarding cases rather than to a proxy type — and that list is gone: #444 replaced it
+  // with `directionOf`, derived from the inbound schema maps. Its worked example is already caught, too,
+  // by the first assertion in this file: `session:terminated` lives in `RelayToBrowser` and not in
+  // `AgentToBrowser`, so a forwarding case for it fails there.
+  //
+  // What survives is the property underneath, which nothing states. A forward resolves the session from
+  // the message and sends to *that session's* browser without checking that the sender is that session's
+  // agent — `clipboard:*` is the deliberate exception, bound to `session.agentSocket` with the reason
+  // beside it. The door is what makes that safe, and it is safe only while the two sets are disjoint: a
+  // literal that is **both** browser-sendable and browser-forwardable passes the role gate and is then
+  // injected into another tester's viewer, which acts on it.
+  //
+  // Derived from `BrowserToRelay` rather than from the schema map, and they are the same set by
+  // construction: `_BrowserCovers` and `_BrowserInventsNothing` in `protocol/src/validate/index.ts` make
+  // a divergence a compile error. So this reads the union the door is held to, not a second copy of it.
+  it('no literal is both browser-sendable and browser-forwardable', () => {
+    const sendable = unionMembers(protocolSrc, 'BrowserToRelay')
+    // Anti-vacuity on both operands. `forwarded` is pinned at 22 above; this one has no other pin, and an
+    // empty set would make the intersection empty for the wrong reason.
+    expect(sendable.size).toBeGreaterThanOrEqual(20)
+    expect([...forwarded].filter((t) => sendable.has(t)).sort()).toEqual([])
+  })
+
   it('RelayOrAgentToBrowser is shared by both directions rather than copied', () => {
     const shared = unionMembers(protocolSrc, 'RelayOrAgentToBrowser')
     expect(shared.size).toBe(11)
@@ -283,6 +307,11 @@ describe('browser-inbound routing matches the protocol union', () => {
       'session:terminated': 'reason sessionId',
       'session:agent-away': 'sessionId',
       'session:rebound': 'capabilities sessionId',
+      // Added with the member (#542). The loop below iterates *this map's* keys, so a union member absent
+      // here is field-checked by nothing — and `message` turning optional would then pass the whole suite,
+      // leaving a diagnosis with no cause, which is the failure #542 was opened for wearing a fix's
+      // clothes. That the map is not held to the union is its own gap, tracked separately.
+      'device:shutdown-error': 'message requestId? sessionId',
       error: 'message reason sessionId',
     },
   }
