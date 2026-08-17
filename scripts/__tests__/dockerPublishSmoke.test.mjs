@@ -41,6 +41,15 @@ describe('docker-publish runtime smoke test', () => {
     expect(select).toContain('SMOKE_IMAGE=${IMAGE}@${{ steps.build.outputs.digest }}')
   })
 
+  it('smoke tests WebSocket upgrade and unauthenticated close behavior', () => {
+    const smoke = stepBlock('Smoke test image runtime')
+    expect(smoke).toContain("request.on('upgrade', (res, upgradedSocket, head) => {")
+    expect(smoke).toContain('consume(head)')
+    expect(smoke).toContain('opcode 0x8 (close)')
+    expect(smoke).toContain('const expectedCode = 1008')
+    expect(smoke).toContain('closeCode !== expectedCode')
+  })
+
   it('excludes stale TypeScript incremental build metadata from Docker context', () => {
     expect(DOCKERIGNORE).toContain('**/*.tsbuildinfo')
   })
