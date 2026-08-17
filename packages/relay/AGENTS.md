@@ -73,14 +73,14 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
   The eleven `input:*` cases are **two clauses**, split by whether an ack answers them, and the split is
   load-bearing rather than tidy — the correlator gate belongs on the answered five, and written into the
   shared body it would have dropped every opening and move frame with it.
-- **A browser-role command is acted on only from the socket the session is bound to.** The mirror of the
+- **A browser-role command is acted on only from the client the session is bound to** — one client's several sockets are one holder, which is what a browser tab needs and what a socket could not express. The mirror of the
   clipboard rule above, and it was missing until L5c on **every** branch: the relay resolved the session and
   forwarded without asking who was asking, so any authenticated client that knew a session id could drive a
   device another tester was looking at — `clipboard:write` pasting its text into that device,
   `clipboard:read` pressing copy or cut on it with the payload landing on *that* tester's host OS clipboard,
   `session:end` deleting their session. The reply then routed to the session's own browser, never to the
   injector.
-  `dispatchTarget` decides it once for all of them — session exists, **this socket holds it**, agent
+  `dispatchTarget` decides it once for all of them — session exists, **this client owns it**, agent
   connected — and each case wraps the prose it returns in the reply type its own waiter reads. The two
   ownership strings are one reason with different prose (`ownershipRefusal`), the treatment #492 settled:
   telling a caller the session is in use when it is idle steers it off a device it could have had.
@@ -89,11 +89,17 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
   has never acked as *success*, so a silent refusal would report a command that never left the relay as
   having landed. `session:leave` and `session:end` are dropped, because neither has a reply and inventing
   one would grow the wire for a message no consumer reads.
-  **`device:shutdown` is the one exception to the *ownership* clause, and the blocker is not here** — three
-  of the dashboard's four senders come from `useAgentSession`, whose socket never joins, so the gate would
-  break going back and the unmount teardown. `SessionList` joins before shutting down and documents why, so
-  the dashboard already carries two conventions for this message. Tracked in #527; the question there is
-  whether `useAgentSession` should join, not whether the relay should check.
+  **A session is owned by a *client*, not by a socket** (#527). The owner is `<userId>:<clientId>`, taken
+  from the `?client=` query parameter at the handshake and minted per connection when absent — so there is
+  no fallback branch, and a caller that identifies itself gets an identity spanning its sockets while one
+  that does not gets the per-socket identity ownership used to have. The dashboard sends one value per
+  *document*, deliberately not `sessionStorage`: that store is copied into a tab opened from another, and
+  two tabs sharing an identity would silently take each other's devices.
+  **`device:shutdown` has its own, weaker gate** — refused when another client holds the session, permitted
+  when nobody does. Not "owned by me", because the unmount teardown races its own viewer socket's close on
+  a different connection: if the close lands first the session is unheld, and an owns-it gate would refuse
+  the very teardown that stops a device costing money. The residual surface — a device between owners — is
+  the price, and it is unchanged from before, when this command had no gate at all.
   It is **not** an exception to being answered, and used to be both. `reachableTarget` is `dispatchTarget`
   minus the ownership clause, so the other two refusals — no such session, agent gone — come back as
   `device:shutdown-error` instead of the silence that burned `shutdownDevice`'s 30s deadline with no cause
@@ -108,7 +114,8 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
 - Serves the `public/` directory as HTTP static files (dashboard build output).
 - The relay does not buffer stream data — it forwards immediately on arrival.
 - WebSocket upgrade requests and regular HTTP requests are split on the same port.
-- A heartbeat (`runHeartbeat`, every `HEARTBEAT_MS`=30s) pings every socket (agent/browser/stream); one missed pong window → `ws.terminate()`, which fires the existing `close` cleanup — detects dead sockets without waiting for TCP timeout.
+- A heartbeat (`runHeartbeat`, every `HEARTBEAT_MS`=30s) pings every socket (agent/browser/stream); a socket that has not answered for 1.5 intervals → `ws.terminate()`, which fires the existing `close` cleanup — detects dead sockets without waiting for TCP timeout.
+  **Liveness is a pong timestamp, not a swept flag**, and the difference matters beyond termination. The flag was set `false` for every socket at the start of a sweep and back to `true` when the pong returned, so a healthy socket read as dead for a whole round trip — harmless while it only decided termination, and not once session occupancy and `busy` read it. The window was longest for the holder: video goes out on that socket and the ping is queued behind it. Occupancy and `busy` take the same predicate; two that disagreed would show a device as free while a join for it was refused (#579).
 
 ### API Endpoints (builds / apps)
 

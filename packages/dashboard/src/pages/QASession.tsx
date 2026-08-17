@@ -41,15 +41,20 @@ const SESSION_ENDED_NOTICE: Record<ViewerStoppedReason, { title: string; descrip
     title: 'The agent disconnected — this session ended.',
     description: 'Pick the Mac again to start a new session.',
   },
-  // Deliberately does not say *who*. The relay answers `session-busy` whenever the session's browser
-  // socket still reads OPEN, and the commonest cause is the tester's own previous socket: a sleeping
-  // laptop or a Wi-Fi blip reconnects in 2s while the relay takes up to a heartbeat (30s) to notice the
-  // old one died. Claiming "someone else is testing this" would be false in exactly the case
-  // `DeviceViewer`'s own comment calls routine, and it would send them to look for a colleague who does
-  // not exist. So it names the situation and gives the wait that actually resolves it.
+  // **This copy used to lead with "it is probably your own tab", and that stopped being the common case.**
+  // The relay answered `session-busy` whenever the browser socket still read OPEN, so an automatic
+  // reconnect after a Wi-Fi blip collided with its own predecessor — routine, and the reason the wording
+  // hedged. A session belongs to a client now (#527), and the reconnect runs inside the same document, so
+  // it is recognised and handed back rather than refused.
+  //
+  // What still self-collides is a **reload** during a blip: a new document is a new identity, and the old
+  // socket has not been noticed as gone. So the hedge stays, second rather than first, and names the
+  // window that actually applies — the relay stops treating a holder as present about 45 seconds after it
+  // last answered, not the 30 this used to quote.
   'busy-elsewhere': {
     title: 'This device is already open in another browser session.',
-    description: 'That may be your own tab from before a reconnect — wait about a minute and try again.',
+    description: 'Someone else may be testing it. If you reloaded while your connection was down it is '
+      + 'your own tab, and that clears within about 45 seconds.',
   },
   // The Mac is over its ceiling, so a different Mac is the actionable move — and unlike the other two
   // this one is about the machine, not the session.

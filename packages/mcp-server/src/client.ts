@@ -213,6 +213,9 @@ export function reasonAdvice(reason: string | undefined): string {
 
 export class TapflowClient {
   private ws: WebSocket | null = null
+  /** One identity per process, so a reconnect re-joins its own sessions instead of contending with the
+   *  socket it replaces. Minted here rather than supplied: nothing outside this process shares it. */
+  private readonly clientId = randomUUID()
   private waiters: Waiter[] = []
   /** Sessions that have answered at least one input **in a form this client's waiter can match**.
    *
@@ -283,7 +286,17 @@ export class TapflowClient {
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.relayUrl)
+      // One identity for the process, so a reconnect re-joins its own sessions rather than contending
+      // with the socket it is replacing. The relay mints one per connection when this is absent, which is
+      // the same behaviour a socket had before ownership moved off it.
+      //
+      // **This socket carries no `Authorization`** — the token is REST-only here — so the relay pairs the
+      // claim with no user and the owner key is `anon:<clientId>`. The user half of its forgery protection
+      // does not apply to this client; what protects the id is that it never leaves this process except in
+      // its own handshake.
+      const url = new URL(this.relayUrl)
+      url.searchParams.set('client', this.clientId)
+      const ws = new WebSocket(url.toString())
       ws.once('open', () => {
         this.ws = ws
         resolve()

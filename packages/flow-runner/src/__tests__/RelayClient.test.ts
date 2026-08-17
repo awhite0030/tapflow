@@ -847,6 +847,36 @@ describe('RelayClient — session lifecycle (#512, finding 4)', () => {
   }, 15_000)
 })
 
+describe('RelayClient — the socket identifies its client to the relay (#527, #579)', () => {
+  let wss: WebSocketServer | null = null
+  afterEach(async () => {
+    const s = wss
+    wss = null
+    if (!s) return
+    for (const c of s.clients) c.terminate()
+    await new Promise<void>((r) => s.close(() => r()))
+  })
+
+  // The twin of `mcp-server`'s, and here for the same reason: the ownership change touched this file and
+  // no test in this package, so removing the parameter would be silent.
+  it('sends a stable client id on the handshake, and the same one after a reconnect', async () => {
+    const seen: string[] = []
+    wss = new WebSocketServer({ port: 0 })
+    wss.on('connection', (_ws, req) => {
+      seen.push(new URL(req.url ?? '/', 'http://x').searchParams.get('client') ?? '')
+    })
+    const port = (wss.address() as { port: number }).port
+    const client = new RelayClient(`ws://localhost:${port}`, '')
+    await client.connect()
+    await client.connect()
+    client.disconnect()
+
+    expect(seen).toHaveLength(2)
+    expect(seen[0], 'no client id was sent').not.toBe('')
+    expect(seen[1], 'a reconnect introduced itself as a different client').toBe(seen[0])
+  })
+})
+
 describe('RelayClient — leaving a session settles what was waiting on it (#514)', () => {
   let wss: WebSocketServer | null = null
 
