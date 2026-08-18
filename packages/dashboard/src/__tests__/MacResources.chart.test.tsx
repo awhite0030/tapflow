@@ -152,6 +152,24 @@ describe('the chart can be read without a mouse', () => {
     expect(after.getAttribute('aria-valuetext'), 'the reading went missing').toMatch(/CPU %/)
   })
 
+  it('returns focus to where the reader left the cursor, not to the end', () => {
+    // Focus used to select the newest sample every time, so Escape (or tabbing away) and coming back moved
+    // the reader to the other end of the series without a keypress — and the next arrow stepped from there.
+    const { container } = setup()
+    const surface = surfaceOf(container)
+
+    fireEvent.focus(surface)
+    expect(surface.getAttribute('aria-valuenow'), 'the first focus should open at the newest sample')
+      .toBe(String(series.length - 1))
+    fireEvent.keyDown(surface, { key: 'Home' })
+    fireEvent.keyDown(surface, { key: 'ArrowRight' })
+    expect(surface.getAttribute('aria-valuenow')).toBe('1')
+
+    fireEvent.blur(surface)
+    fireEvent.focus(surface)
+    expect(surface.getAttribute('aria-valuenow'), 'refocus jumped the reader to the end').toBe('1')
+  })
+
   it('does not paint an outline until focus asks for one', () => {
     // `outline-none` is a *transparent* 2px outline, so colouring it inline drew a black box around every
     // plot at rest — reported from a screenshot, not by any gate.

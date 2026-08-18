@@ -247,11 +247,16 @@ export function AreaChartInner({
   // **Its own state, not a view of `tooltipData`.** Derived, every path that hides the reading — Escape,
   // blur — snapped the announced value back to the last sample: a change the user never made, and the next
   // arrow key resumed from the end rather than where they were reading.
-  const [cursor, setCursor] = useState(0)
+  // `null` until the reader places it, which is not the same as 0: an unplaced cursor should open at the
+  // newest sample, and a placed one should still be there after Escape or a blur. Focus used to jump to
+  // the end unconditionally, so leaving and returning silently moved the reader to the other end of the
+  // series and the next arrow key stepped from there.
+  const [cursor, setCursor] = useState<number | null>(null)
   // Clamped on render: switching 7d → 1h shrinks `data` under a cursor that was valid, which left
   // `aria-valuenow` above `aria-valuemax` and `aria-valuetext` undefined — a slider announcing a bare
   // out-of-range index instead of a reading.
-  const idx = Math.min(cursor, Math.max(0, data.length - 1))
+  const last = Math.max(0, data.length - 1)
+  const idx = cursor === null ? last : Math.min(cursor, last)
 
   const innerW = width - MARGIN.left - MARGIN.right
   const innerH = height - MARGIN.top - MARGIN.bottom
@@ -417,7 +422,7 @@ export function AreaChartInner({
             // No inline `outlineColor`: `outline-none` is a *transparent* 2px outline, so colouring it
             // here painted a black box around the plot at rest. The colour belongs in the focus variant.
             className="outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-            onFocus={() => showAt(data.length - 1)}
+            onFocus={() => showAt(idx)}
             onBlur={hideTooltip}
             onKeyDown={handleKey}
             onMouseMove={handleMove}
