@@ -136,16 +136,20 @@ function ownershipRefusal(session: Session): string {
  * Exported for the test that holds the pairing. Inline in the handler it was unreachable without standing
  * up an authenticated handshake, and a mutation dropping the user id survived the whole suite.
  */
-export function ownerKeyFor(userId: number | string | undefined, claimed: string | null): string {
-  // The mint is prefixed so the relay can tell an identity a client *claimed* from one it was *given*.
-  // That distinction is what keeps the shutdown gate from breaking a client that predates it: a minted
-  // owner is per-socket, so gating on it would refuse a multi-socket client's own teardown — every time,
-  // not as a race. See `mayShutDown`.
-  return `${userId ?? 'anon'}:${claimed || `${MINTED_PREFIX}${randomUUID()}`}`
+export function ownerKeyFor(
+  userId: number | string | undefined,
+  claimed: string | null,
+): { key: string; user: string; minted: boolean } {
+  const user = String(userId ?? 'anon')
+  // **Mintedness is a separate field, not a marker inside the key.** A first version prefixed the mint
+  // with `minted-` and had `mayShutDown` recover the fact with `includes(':minted-')` — which the client
+  // controls, because `claimed` comes straight off the handshake query and is never validated. Connecting
+  // as `?client=minted-1` produced `anon:minted-1` and silently disabled the shutdown gate for that
+  // holder; `?client=x:minted-y` did it while keeping a real user id, so a *different* user could then
+  // power the device off. Encoding a security-relevant fact in a caller-supplied string is the forgery
+  // this whole key was introduced to avoid, reintroduced one layer down.
+  return { key: `${user}:${claimed || randomUUID()}`, user, minted: !claimed }
 }
-
-/** Marks an owner key the relay generated because the connection claimed none. */
-const MINTED_PREFIX = 'minted-'
 
 /** One line per rejecting socket per second, at most. See `RelayServer.logInboundRejection`. */
 const REJECT_LOG_INTERVAL_MS = 1_000
@@ -219,7 +223,7 @@ export class RelayServer {
    * There is deliberately no fallback branch: one model, and a client that does not identify itself gets an
    * identity that happens to be per-socket, which is exactly today's behaviour.
    */
-  private ownerKey = new WeakMap<WebSocket, string>()
+  private ownerKey = new WeakMap<WebSocket, { key: string; user: string; minted: boolean }>()
   private dropHandlers = new Map<string, () => void>()
   // Per-session throttled drop-warn for audio (kept separate so audio drops don't mask video drops in logs).
   private audioDropHandlers = new Map<string, () => void>()
@@ -602,6 +606,7 @@ export class RelayServer {
     // processes on the same PAT are the same principal, which is right; two on different PATs are not,
     // which is what this restores. `pat` is already resolved above and was being discarded.
     this.ownerKey.set(ws, ownerKeyFor(getAuth(request)?.userId ?? pat?.userId, claimed))
+
     // Heartbeat liveness: a fresh socket counts as having just answered, and each pong renews it.
     this.lastPongAt.set(ws, Date.now())
     ws.on('pong', () => this.lastPongAt.set(ws, Date.now()))
@@ -1478,7 +1483,7 @@ export class RelayServer {
       }
     }
     try {
-      const joined = this.sessions.join(msg.sessionId, ws, this.ownerOf(ws), (h) => this.isAlive(h))
+      const joined = this.sessions.join(msg.sessionId, ws, this.ownerRecord(ws), (h) => this.isAlive(h))
       if (!joined.ok) {
         // Both of these are answered above, so arriving here means the state moved between that check and
         // this call. They are **values now rather than throws** (#515), and that is what fixes the defect:
@@ -1634,7 +1639,17 @@ export class RelayServer {
   /** Which owner this socket speaks for. Every connection has one — supplied or minted — so this never
    *  answers `undefined` and two anonymous sockets can never match by both lacking an identity. */
   private ownerOf(ws: WebSocket): string {
-    return this.ownerKey.get(ws) ?? 'unidentified'
+    return this.ownerKey.get(ws)?.key ?? 'unidentified'
+  }
+
+  /** The principal behind a socket — a user id, or `anon` for a connection carrying no cookie and no PAT. */
+  private userOf(ws: WebSocket): string {
+    return this.ownerKey.get(ws)?.user ?? 'unidentified'
+  }
+
+  /** Everything the bind needs to record about who is joining. */
+  private ownerRecord(ws: WebSocket): { key: string; user: string; minted: boolean } {
+    return this.ownerKey.get(ws) ?? { key: 'unidentified', user: 'unidentified', minted: false }
   }
 
   /**
@@ -1659,9 +1674,12 @@ export class RelayServer {
     // upgraded relay is exactly that, and refusing it would leave a device booted until the idle timer on
     // every Back press: the cost #527 was filed to avoid, reintroduced by #527's fix.
     //
-    // So the gate holds between clients that say who they are, and everyone else keeps the behaviour this
-    // command had before it existed — which is what the release note promises.
-    return session.owner.includes(`:${MINTED_PREFIX}`)
+    // **Scoped to the same principal, though.** The exemption exists so a legacy client's own teardown
+    // works, and its own teardown is by definition the same signed-in user — so extending it across users
+    // buys nothing and would leave one tester able to power off another's device for as long as anyone is
+    // running an older build. That is unchanged from before this gate existed, but "unchanged" is not a
+    // reason to carry it forward when the narrower rule costs one comparison.
+    return session.ownerMinted && session.ownerUser === this.userOf(ws)
   }
 
   /** Input that no ack answers: opening and move frames, rotation, the keyboard-forwarding toggle.

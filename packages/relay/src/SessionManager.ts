@@ -26,6 +26,12 @@ export interface Session {
    * nobody is watching.
    */
   owner: string | null
+  /** Whether that owner is an identity the relay minted because the connection claimed none, and the
+   *  principal behind it. Recorded as facts rather than recovered from `owner`'s text: the client half of
+   *  that string comes off the handshake query unvalidated, so a caller could otherwise hand itself the
+   *  legacy exemption by claiming an id that looked minted. */
+  ownerMinted: boolean
+  ownerUser: string | null
   streamSocket: WebSocket | null
   deviceId: string
   deviceName: string
@@ -124,6 +130,8 @@ export class SessionManager {
         agentSocket,
         browserSocket: null,
         owner: null,
+        ownerMinted: false,
+        ownerUser: null,
         streamSocket: null,
         deviceId: d.id,
         readySent: false,
@@ -197,7 +205,12 @@ export class SessionManager {
    *          expected failure that travels as an exception is indistinguishable from a bug by the time it
    *          is caught, and the handler then has to guess a `reason`.
    */
-  join(sessionId: string, browserSocket: WebSocket, owner: string, isAlive: (ws: WebSocket) => boolean): JoinResult {
+  join(
+    sessionId: string,
+    browserSocket: WebSocket,
+    owner: { key: string; user: string; minted: boolean },
+    isAlive: (ws: WebSocket) => boolean,
+  ): JoinResult {
     const session = this.sessions.get(sessionId)
     if (!session) return { ok: false, failure: 'not-found' }
     // **Three conditions, and each one is an issue.** A session is occupied only when someone *else* holds
@@ -215,7 +228,7 @@ export class SessionManager {
     if (
       session.browserSocket &&
       session.owner !== null &&
-      session.owner !== owner &&
+      session.owner !== owner.key &&
       session.browserSocket.readyState === WebSocket.OPEN &&
       isAlive(session.browserSocket)
     ) {
@@ -231,7 +244,9 @@ export class SessionManager {
     // was dead: mutation testing removed the guard and every test still passed, because the add follows.
     this.unindexBrowser(session)
     session.browserSocket = browserSocket
-    session.owner = owner
+    session.owner = owner.key
+    session.ownerMinted = owner.minted
+    session.ownerUser = owner.user
     let held = this.browserSocketIndex.get(browserSocket)
     if (!held) { held = new Set(); this.browserSocketIndex.set(browserSocket, held) }
     held.add(session)
@@ -258,6 +273,8 @@ export class SessionManager {
       session.browserSocket = null
     }
     session.owner = null
+    session.ownerMinted = false
+    session.ownerUser = null
     if (session.idleTimer) { clearTimeout(session.idleTimer); session.idleTimer = null }
     if (onTimeout) {
       session.idleTimer = setTimeout(() => {

@@ -18,8 +18,11 @@ let ownerSeq = 0
 const ownerOf = (ws: object) => {
   let key = owners.get(ws)
   if (!key) { key = `owner-${++ownerSeq}`; owners.set(ws, key) }
-  return key
+  return { key, user: key, minted: false }
 }
+
+/** A named client, for the tests that need two sockets to be one holder. */
+const asClient = (key: string) => ({ key, user: key.split(':')[0]!, minted: false })
 
 describe('SessionManager', () => {
   describe('create()', () => {
@@ -440,7 +443,7 @@ describe('SessionManager', () => {
       const sm = new SessionManager()
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
       const holder = mockSocket()
-      sm.join(id, holder, 'tab-a', () => true)
+      sm.join(id, holder, asClient('tab-a'), () => true)
       expect(sm.list('tab-b', () => true)[0].devices[0]!.busy).toBe(true)
       expect(sm.list('tab-a', () => true)[0].devices[0]!.busy).toBe(false)
     })
@@ -450,7 +453,7 @@ describe('SessionManager', () => {
       // liveness rules that disagreed would show a device as free while a join for it was still refused.
       const sm = new SessionManager()
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
-      sm.join(id, mockSocket(), 'tab-a', () => true)
+      sm.join(id, mockSocket(), asClient('tab-a'), () => true)
       expect(sm.list('tab-b', () => false)[0].devices[0]!.busy).toBe(false)
     })
 

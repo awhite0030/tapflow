@@ -4,8 +4,9 @@ import os from 'os'
 import path from 'path'
 import { WebSocket } from 'ws'
 import { RelayServer, IDR_REQUEST_THROTTLE_MS, ownerKeyFor } from '../RelayServer'
+import { signJwt, hashPat } from '../middleware/auth'
 import type { JoinResult } from '../SessionManager'
-import { initDb, closeDb } from '../db'
+import { initDb, closeDb, getDb } from '../db'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 import type {
   AgentRegistered, AgentsListed, DeviceShutdown, DeviceShutdownError, GenericError, SessionChrome,
@@ -58,10 +59,16 @@ describe('session ownership seam', () => {
   /** A browser socket, optionally speaking for a named client. Omitting the id is what an older build or
    *  a third-party client does, and the relay mints one per connection — so two anonymous sockets are two
    *  owners, which is exactly today's behaviour. */
-  async function browserSocket(client?: string) {
+  async function browserSocket(client?: string, userId?: number) {
     const url = new URL(`ws://localhost:${port}`)
     if (client) url.searchParams.set('client', client)
-    const ws = new WebSocket(url.toString())
+    // A cookie is the only way to give a connection a *principal* here — every socket in this file is
+    // otherwise a localhost connection with no auth, so all of them are `anon` and any rule keyed on the
+    // user is trivially satisfied. Two mutations survived on exactly that before this parameter existed.
+    const headers = userId === undefined
+      ? undefined
+      : { cookie: `tapflow_token=${signJwt({ userId, email: `u${userId}@example.test`, role: 'Admin' })}` }
+    const ws = new WebSocket(url.toString(), { headers })
     await waitForOpen(ws)
     return ws
   }
@@ -690,13 +697,27 @@ describe('session ownership seam', () => {
     // Held here because the handler's inline version was unreachable without an authenticated handshake,
     // and a mutation dropping the user id survived the entire suite. Two accounts claiming the same id is
     // the case the pairing exists for: a leaked client id must be useless to anyone else.
-    expect(ownerKeyFor(7, 'tab-a')).toBe('7:tab-a')
-    expect(ownerKeyFor(7, 'tab-a')).not.toBe(ownerKeyFor(8, 'tab-a'))
+    expect(ownerKeyFor(7, 'tab-a').key).toBe('7:tab-a')
+    expect(ownerKeyFor(7, 'tab-a').key).not.toBe(ownerKeyFor(8, 'tab-a').key)
     // No claim → a fresh identity each time, which is per-socket, which is what it replaced.
-    expect(ownerKeyFor(7, null)).not.toBe(ownerKeyFor(7, null))
-    expect(ownerKeyFor(7, '')).not.toBe(ownerKeyFor(7, ''))
+    expect(ownerKeyFor(7, null).key).not.toBe(ownerKeyFor(7, null).key)
+    expect(ownerKeyFor(7, '').key).not.toBe(ownerKeyFor(7, '').key)
     // Unauthenticated (localhost) connections still differ by their claim.
-    expect(ownerKeyFor(undefined, 'tab-a')).toBe('anon:tab-a')
+    expect(ownerKeyFor(undefined, 'tab-a').key).toBe('anon:tab-a')
+  })
+
+  it('mintedness cannot be claimed, only granted', () => {
+    // **The forgery a first version admitted.** It marked minted keys with a `minted-` prefix and had the
+    // shutdown gate recover the fact with `includes(':minted-')` — but the claim comes off the handshake
+    // query unvalidated, so `?client=minted-1` handed the caller its own exemption, and
+    // `?client=x:minted-y` did it while keeping a real user id, which let a *different* user power the
+    // device off. It is a field now, and a field cannot be spelled into existence.
+    expect(ownerKeyFor(7, 'minted-1').minted, 'a claim named like a mint is still a claim').toBe(false)
+    expect(ownerKeyFor(7, 'x:minted-y').minted).toBe(false)
+    expect(ownerKeyFor(7, null).minted, 'no claim is the only way to be minted').toBe(true)
+    expect(ownerKeyFor(7, '').minted).toBe(true)
+    // And the principal is the part before the first delimiter, whatever the claim contains.
+    expect(ownerKeyFor(7, 'x:minted-y').user).toBe('7')
   })
 
   it('a client that sends no id keeps the behaviour each gate had before it', async () => {
@@ -725,6 +746,118 @@ describe('session ownership seam', () => {
     expect(await waitForTypeOrNull(two, 'device:shutdown-error', 200)).toBeNull()
 
     agent.close(); one.close(); two.close()
+  })
+
+  it('an unidentified holder is exempt only for its own user, not across users', async () => {
+    // The exemption exists so a legacy client's own teardown works, and its own teardown is by definition
+    // the same signed-in user. Extending it further would leave one tester able to power off another's
+    // device for as long as anyone runs an older build — unchanged from before the gate existed, which is
+    // not a reason to carry it forward when the narrower rule costs one comparison.
+    //
+    // Both sockets here are unauthenticated localhost connections, so both are the `anon` principal and
+    // the exemption applies — which is what makes this the *permissive* half. Its restrictive twin is the
+    // unit assertion above: mintedness cannot be claimed, so an identified holder never reaches this path.
+    const { agent, sessionIds } = await registerAgent('owner-minted-same-user')
+    const sessionId = sessionIds[0]!
+    const legacy = await browserSocket()
+    legacy.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(legacy, 'session:joined')
+
+    const sibling = await browserSocket()
+    sibling.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    expect((await waitForType<DeviceShutdown>(agent, 'device:shutdown')).sessionId).toBe(sessionId)
+
+    agent.close(); legacy.close(); sibling.close()
+  })
+
+  it('a claim that looks minted is still a claim, and is gated', async () => {
+    // The forgery in wire form. A first version marked minted keys inside the owner string and recovered
+    // the fact with `includes(':minted-')`, so connecting as this would have handed the caller its own
+    // exemption — the claim comes off the handshake query and is never validated.
+    const { agent, sessionIds } = await registerAgent('owner-fake-mint')
+    const sessionId = sessionIds[0]!
+    const holder = await browserSocket('minted-1')
+    holder.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(holder, 'session:joined')
+
+    const stranger = await browserSocket('tab-b')
+    stranger.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    await waitForType<DeviceShutdownError>(stranger, 'device:shutdown-error')
+    expect(await waitForTypeOrNull(agent, 'device:shutdown', 200)).toBeNull()
+
+    agent.close(); holder.close(); stranger.close()
+  })
+
+  it('a PAT connection gets its own principal, not `anon`', async () => {
+    // `getAuth` reads the cookie only, so a first version made every agent, `mcp-server` and
+    // `flow-runner` connection `anon:` — the whole population whose handshake URL is most likely to end
+    // up in a reverse proxy's access log, and the one the user pairing exists to protect. The handler was
+    // already resolving the PAT and discarding it.
+    const db = getDb()
+    const addUser = db.prepare("INSERT OR IGNORE INTO users (id, email, role) VALUES (?, ?, 'Admin')")
+    addUser.run(41, 'pat41@example.test')
+    addUser.run(42, 'pat42@example.test')
+    const mint = (raw: string, userId: number) =>
+      db.prepare("INSERT INTO personal_access_tokens (user_id, name, token_hash, scope) VALUES (?, ?, ?, ?)")
+        .run(userId, `t${userId}`, hashPat(raw), 'view')
+
+    const rawA = 'tflw_pat_ownerA'
+    const rawB = 'tflw_pat_ownerB'
+    mint(rawA, 41)
+    mint(rawB, 42)
+
+    // **A local connection never reaches the PAT path** — `verifyPat` is consulted only when the caller is
+    // neither local nor cookie-authenticated, so on the default server every socket here would be `anon`
+    // and this test would assert nothing. Trusting the loopback proxy is what lets `x-forwarded-for` make
+    // the connection look remote, which is the state a real PAT client is in.
+    await server.stop()
+    server = new RelayServer({ port: 0, trustedProxies: ['127.0.0.1', '::1'] })
+    await server.start()
+    port = (server.address() as { port: number }).port
+
+    const withPat = async (raw: string) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`, {
+        headers: { authorization: `Bearer ${raw}`, 'x-forwarded-for': '203.0.113.7' },
+      })
+      await waitForOpen(ws)
+      return ws
+    }
+
+    const { agent, sessionIds } = await registerAgent('owner-pat')
+    const sessionId = sessionIds[0]!
+    const holder = await withPat(rawA)
+    holder.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(holder, 'session:joined')
+
+    // A different PAT is a different principal, so it does not inherit the holder's exemption.
+    const other = await withPat(rawB)
+    other.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    await waitForType<DeviceShutdownError>(other, 'device:shutdown-error')
+    expect(await waitForTypeOrNull(agent, 'device:shutdown', 200)).toBeNull()
+
+    agent.close(); holder.close(); other.close()
+  })
+
+  it('the legacy exemption does not reach across users', async () => {
+    // The holder identifies itself with nothing, so it is exempt — but only for its own principal. User 2
+    // must not inherit user 1's exemption, or one tester could power off another's device for as long as
+    // anyone is running a build that predates the `client` parameter.
+    const { agent, sessionIds } = await registerAgent('owner-cross-user')
+    const sessionId = sessionIds[0]!
+    const legacy = await browserSocket(undefined, 1)
+    legacy.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(legacy, 'session:joined')
+
+    const sameUser = await browserSocket(undefined, 1)
+    sameUser.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    expect((await waitForType<DeviceShutdown>(agent, 'device:shutdown')).sessionId).toBe(sessionId)
+
+    const otherUser = await browserSocket(undefined, 2)
+    otherUser.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    await waitForType<DeviceShutdownError>(otherUser, 'device:shutdown-error')
+    expect(await waitForTypeOrNull(agent, 'device:shutdown', 200)).toBeNull()
+
+    agent.close(); legacy.close(); sameUser.close(); otherUser.close()
   })
 
   it('a client that does send an id is gated on shutdown', async () => {

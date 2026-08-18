@@ -100,6 +100,12 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
   a different connection: if the close lands first the session is unheld, and an owns-it gate would refuse
   the very teardown that stops a device costing money. The residual surface — a device between owners — is
   the price, and it is unchanged from before, when this command had no gate at all.
+  A session held by a client that identified itself with **nothing** relaxes the gate further, since each
+  of that client's connections was granted a separate identity and none of them can pass an ownership
+  test — **but only for the same signed-in user**, so a build predating the parameter never becomes a way
+  to power off a colleague's device. Whether an identity was *claimed* or *granted* is a field on the
+  session: a first version recovered it from the identifier, which the caller supplies, so claiming one
+  that looked granted handed the caller its own exemption.
   It is **not** an exception to being answered, and used to be both. `reachableTarget` is `dispatchTarget`
   minus the ownership clause, so the other two refusals — no such session, agent gone — come back as
   `device:shutdown-error` instead of the silence that burned `shutdownDevice`'s 30s deadline with no cause
