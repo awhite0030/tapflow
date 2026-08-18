@@ -105,11 +105,17 @@ export interface IOSAgentOptions {
 
 interface DeviceState {
   sessionId: string
-  /** Why each superseded boot was superseded, keyed by **the seq it lost**. A single slot would tell the
+  /** Why each abandoned boot was abandoned, keyed by **the seq it lost**. A single slot would tell the
    *  wrong story the moment two boots overlap: boot A, boot B, then a shutdown leaves one slot saying
-   *  `shut-down`, which is what B lost to — A lost to B. Each checkpoint reads its own seq and deletes it,
-   *  so the map is empty again as soon as the boots it describes have gone. */
+   *  `shut-down`, which is what B lost to — A lost to B.
+   *
+   *  **Written only while a boot is running to read it**, which is what keeps it from growing. Every
+   *  lifecycle event retires a seq, but the usual one retires a boot that has already answered — an entry
+   *  nothing would ever read or delete, one per boot and one per shutdown, for as long as the agent stays
+   *  connected. `bootsInFlight` is that guard, and each boot clears its own key on the way out. */
   bootAbandon: Map<number, BootAbandonReason>
+  /** Seqs held by a `handleDeviceBoot` that has not returned yet. */
+  bootsInFlight: Set<number>
   deviceId: string
   touchHelper: TouchHelper | null
   // Device-booted flag for truthful input acks — set on device:boot, cleared on shutdown; false after a reconnect until the ack path re-verifies once via simctl.
@@ -339,6 +345,7 @@ export class IOSAgent implements DeviceAgent {
         captureStreamer: null,
         bootSeq: 0,
         bootAbandon: new Map(),
+        bootsInFlight: new Set(),
         orientation: 'portrait',
         loadedChrome: null,
         softKeyboardVisible: false,
@@ -441,7 +448,10 @@ export class IOSAgent implements DeviceAgent {
   }
 
   private sendChromeData(state: DeviceState, device: Device): void {
-    if (!this.ws) return
+    // `readyState`, not presence: this runs mid-boot, and a socket that closed since the entry guard
+    // takes the payload into a buffer nobody flushes while `device:ready` is dropped by `sendMsg`'s own
+    // check — leaving the caller with neither the data nor an answer.
+    if (this.ws?.readyState !== WebSocket.OPEN) return
     // Stop the outgoing helper before dropping the reference. This used to leak a child process;
     // now that a helper revives itself on death, an orphan would also keep respawning with
     // nobody left holding a reference to stop it.
@@ -566,7 +576,7 @@ export class IOSAgent implements DeviceAgent {
    *  (`cleanupDeviceState`'s callers) and is easy to miss when reading `handleDeviceBoot` alone. Spreading
    *  the reason across three `state.bootSeq++` lines makes forgetting one silent; here it is a parameter. */
   private bumpBootSeq(state: DeviceState, reason: BootAbandonReason): number {
-    state.bootAbandon.set(state.bootSeq, reason)
+    if (state.bootsInFlight.has(state.bootSeq)) state.bootAbandon.set(state.bootSeq, reason)
     return ++state.bootSeq
   }
 
@@ -580,6 +590,15 @@ export class IOSAgent implements DeviceAgent {
   private abandonBoot(state: DeviceState, seq: number, sessionId: string, requestId?: string): void {
     const reason = state.bootAbandon.get(seq) ?? 'superseded'
     state.bootAbandon.delete(seq)
+    // **A state the agent has stopped holding cannot be answered, and trying is worse than silence.**
+    // `relay-lost` retires a boot by dropping the whole map, so by the time the parked `await` resumes this
+    // `state` is an object nobody is registered against — and whether the socket is back yet decides
+    // between dropping the reply and sending it to a *new* relay naming a session id it has never heard
+    // of. Neither is an answer, and which one happens is a race between a poll interval and a backoff.
+    if (this.deviceStates.get(sessionId) !== state) {
+      logger.warn(`boot for ${sessionId} abandoned (${reason}) after the session was dropped — nothing to answer`)
+      return
+    }
     if (!requestId) {
       logger.warn(`boot for ${sessionId} abandoned (${reason}) with no requestId — nothing to answer`)
       return
@@ -606,19 +625,24 @@ export class IOSAgent implements DeviceAgent {
     state.acceptH264 = acceptH264
     if (tier) { state.secureContext = tier.secureContext; state.external = tier.external }
     const seq = this.bumpBootSeq(state, 'superseded')
+    state.bootsInFlight.add(seq)
 
-    void state.streamReader?.cancel()
-    state.streamReader = null
-    state.captureStreamer = null // reader.cancel() kills the helper proc; drop the ref so a stale requestKeyframe() no-ops
-    state.touchHelper?.stop()
-    state.touchHelper = null
-    state.booted = false
-    state.streamWs?.close()
-    state.streamWs = null
-
-    this.sendOn(ws, { type: 'device:booting', sessionId })
-
+    // **The teardown runs inside the try, and that is a fix rather than tidying.** It ran before it, so a
+    // throw there rejected this handler into the bare `.catch(logger.error)` at its dispatch site: no
+    // `device:booting`, no ready, no error — and the seq was already bumped, so the boot this one
+    // superseded was gone as well. The caller then waited out the very deadline this change exists to
+    // end. `finally` is what stops `bootAbandon` outliving the boot that would have read it.
     try {
+      void state.streamReader?.cancel()
+      state.streamReader = null
+      state.captureStreamer = null // reader.cancel() kills the helper proc; drop the ref so a stale requestKeyframe() no-ops
+      state.touchHelper?.stop()
+      state.touchHelper = null
+      state.booted = false
+      state.streamWs?.close()
+      state.streamWs = null
+
+      this.sendOn(ws, { type: 'device:booting', sessionId })
       const devices = await this.simctl.listDevices()
       if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
 
@@ -726,6 +750,11 @@ export class IOSAgent implements DeviceAgent {
       // Down` refuses the boot, and refusing is correct (swallowing it would put us back to waiting
       // on a device nobody is bringing up), so the refusal is what the tester reads.
       this.sendMsg({ type: 'device:boot-error', sessionId, requestId, message: firstLine(e) })
+    } finally {
+      state.bootsInFlight.delete(seq)
+      // Its own key, in the one case nothing reads it: a newer boot arriving after this boot's last
+      // checkpoint but before it returns.
+      state.bootAbandon.delete(seq)
     }
   }
 

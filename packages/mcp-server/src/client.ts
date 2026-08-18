@@ -48,9 +48,12 @@ type RelayMsg = Record<string, unknown>
  * dropped. What does **not** arrive here is the relay's replayed `device:ready`: it carries no `sessionId`,
  * so the comparison ahead of this call excludes it — see the "not satisfied by the replay" test. A present
  * one must match, and what that buys is narrower than it looks — worth stating exactly, because the
- * obvious claim ("it tells two concurrent boots apart") is false. The agents answer a **superseded** boot
- * not at all: `bootSeq` makes every checkpoint after a newer boot return silently. So of two overlapping
- * boots only the winner ever replies, and one waiter times out either way. What changes is *which*.
+ * obvious claim ("it tells two concurrent boots apart") used to be false. The agents answered a
+ * **superseded** boot not at all: `bootSeq` made every checkpoint after a newer boot return silently, so of
+ * two overlapping boots only the winner ever replied and one waiter timed out either way — what the
+ * correlator changed was *which*. Since #526 both agents answer the abandoned boot as well, addressed to its
+ * own request, so the claim is now true and the loser fails with a reason instead of running to its
+ * deadline. The correlator is what makes that reply reach the waiter it belongs to.
  * `dispatch` resolves the first waiter whose predicate matches and stops, so on `sessionId` + type alone
  * that single reply went to the boot registered **first** — the superseded one — and the boot that
  * actually happened timed out. The correlator sends it to the request it answers.
@@ -175,8 +178,17 @@ interface SessionLifecycle {
  *
  * This is **not** the backstop for a dead agent, which is the thing it looks like. The relay declares an
  * agent away and terminates the session after its grace window, and `session:terminated` settles every
- * waiter here in ~15s. What this covers is a request that will never be answered by a live relay — after
- * #526 that is the rebound session (a new agent never saw the boot, #583) and whatever is not yet known.
+ * waiter here — in ~15s when the agent process dies and its socket sends a FIN, and in ~60s when the
+ * connection is merely lost, since the relay then has to notice through the heartbeat first (30s interval,
+ * 1.5 of them to declare it dead) before the 15s grace starts. Both clear this deadline with room. What it
+ * actually covers is a request no live relay will ever answer — after #526 that is the rebound session (a
+ * new agent never saw the boot, #583) and whatever is not yet known.
+ *
+ * **The cost is real and belongs here rather than in a changelog.** A wedged relay now blocks a caller for
+ * three minutes where it used to fail in 30 seconds, and an MCP host with its own 60s tool timeout will cut
+ * in first with a message that says nothing about tapflow. That trade is deliberate — the alternative is
+ * the one #549 is about, where a boot that is simply slow reports a failure that never happened — but a
+ * host timeout below this number turns the diagnosis back into silence.
  */
 const BOOT_DEADLINE_MS = 180_000
 
@@ -610,7 +622,7 @@ export class TapflowClient {
    *
    * Nothing arrives to settle them otherwise: `session:leave` has no reply by design, and the relay nulls
    * the session's `browserSocket` as it processes one, so every later reply for that session is dropped
-   * before it reaches the wire. Without this a `boot_device` in flight simply runs to its 30s deadline and
+   * before it reaches the wire. Without this a `boot_device` in flight simply runs to its full deadline and
    * reports a timeout for a session the caller itself abandoned (#514). The MCP SDK dispatches each tool
    * call detached, so a model holding both calls open at once is ordinary rather than exotic.
    */
@@ -628,7 +640,7 @@ export class TapflowClient {
   // have producers that answer no request at all — the relay replays a cached ready to a re-joining
   // viewer, and an Android stream that dies mid-session reports it as a boot error. A strict match
   // would be the wrong shape for those, and dropping them is not free either: this waiter is the only
-  // thing between `boot_device` and its 30s deadline. See 「Lifecycle correlation」 in protocol/AGENTS.md.
+  // thing between `boot_device` and its full deadline. See 「Lifecycle correlation」 in protocol/AGENTS.md.
   async bootDevice(sessionId: string, deviceId: string): Promise<void> {
     const requestId = randomUUID()
     this.send({ type: 'device:boot', sessionId, requestId, payload: { deviceId } })

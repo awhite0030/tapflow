@@ -24,7 +24,9 @@ What you can observe:
   up at 30 — inside both — so a device that was simply slow came back to the model as a bare timeout
   while the explanation was still on its way. `flow-runner` sat at exactly Android's 120, which left no
   room at all. Both now wait past the agent, and a check across the packages keeps them there: the
-  numbers may change, the relationship may not.
+  numbers may change, the relationship may not. The cost of waiting longer is worth knowing: a wedged
+  relay now blocks an MCP caller for three minutes rather than 30 seconds, so a host whose own tool
+  timeout is shorter will cut in first with a message of its own.
 - **A tester is no longer told a boot failed when the failure belongs to a boot they replaced.** The
   viewer reports the failure of the boot it is waiting on, and an uncorrelated one — which is how a dead
   video stream is reported, and has no request behind it — exactly as before.

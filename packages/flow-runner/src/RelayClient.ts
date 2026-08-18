@@ -202,10 +202,12 @@ type RelayMsg = Record<string, unknown>
  * here can only be an agent predating the echo. Both are accepted and logged rather than dropped. The
  * relay's replayed `device:ready` does not arrive here at all — no `sessionId`, so the comparison ahead of
  * this call excludes it, which the "not satisfied by the replay" test pins. A present
- * one must match. Not that it tells two concurrent boots apart — the agents answer a superseded boot not
- * at all (`bootSeq`), so one waiter times out either way. `dispatch` resolves the first matching waiter and
- * stops, so on `sessionId` + type alone the single reply went to whichever boot registered first, and the
- * boot that actually happened was the one that timed out. The correlator fixes the attribution.
+ * one must match. It did not use to tell two concurrent boots apart — the agents answered a superseded boot
+ * not at all (`bootSeq`), so one waiter timed out either way. `dispatch` resolves the first matching waiter
+ * and stops, so on `sessionId` + type alone the single reply went to whichever boot registered first, and
+ * the boot that actually happened was the one that timed out; the correlator fixed that attribution. Since
+ * #526 the abandoned boot is answered too, addressed to its own request, so both waiters now settle and the
+ * correlator is what keeps each reply with the boot it belongs to.
  *
  * Deliberately not used for the app commands, whose correlator is required: lending them this fallback
  * would restore the ambiguity that work removed. See protocol/AGENTS.md.
@@ -249,8 +251,17 @@ interface Waiter {
  *
  * This is **not** the backstop for a dead agent, which is the thing it looks like. The relay declares an
  * agent away and terminates the session after its grace window, and `session:terminated` settles every
- * waiter here in ~15s. What this covers is a request that will never be answered by a live relay — after
- * #526 that is the rebound session (a new agent never saw the boot, #583) and whatever is not yet known.
+ * waiter here — in ~15s when the agent process dies and its socket sends a FIN, and in ~60s when the
+ * connection is merely lost, since the relay then has to notice through the heartbeat first (30s interval,
+ * 1.5 of them to declare it dead) before the 15s grace starts. Both clear this deadline with room. What it
+ * actually covers is a request no live relay will ever answer — after #526 that is the rebound session (a
+ * new agent never saw the boot, #583) and whatever is not yet known.
+ *
+ * **The cost is real and belongs here rather than in a changelog.** A wedged relay now blocks a caller for
+ * three minutes where it used to fail in 30 seconds, and an MCP host with its own 60s tool timeout will cut
+ * in first with a message that says nothing about tapflow. That trade is deliberate — the alternative is
+ * the one #549 is about, where a boot that is simply slow reports a failure that never happened — but a
+ * host timeout below this number turns the diagnosis back into silence.
  */
 const BOOT_DEADLINE_MS = 180_000
 

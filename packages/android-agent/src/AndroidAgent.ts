@@ -140,11 +140,17 @@ const ANDROID_BUTTONS: AndroidButton[] = [
 
 interface DeviceState {
   sessionId: string
-  /** Why each superseded boot was superseded, keyed by **the seq it lost**. A single slot would tell the
+  /** Why each abandoned boot was abandoned, keyed by **the seq it lost**. A single slot would tell the
    *  wrong story the moment two boots overlap: boot A, boot B, then a shutdown leaves one slot saying
-   *  `shut-down`, which is what B lost to — A lost to B. Each checkpoint reads its own seq and deletes it,
-   *  so the map is empty again as soon as the boots it describes have gone. */
+   *  `shut-down`, which is what B lost to — A lost to B.
+   *
+   *  **Written only while a boot is running to read it**, which is what keeps it from growing. Every
+   *  lifecycle event retires a seq, but the usual one retires a boot that has already answered — an entry
+   *  nothing would ever read or delete, one per boot and one per shutdown, for as long as the agent stays
+   *  connected. `bootsInFlight` is that guard, and each boot clears its own key on the way out. */
   bootAbandon: Map<number, BootAbandonReason>
+  /** Seqs held by a `handleDeviceBoot` that has not returned yet. */
+  bootsInFlight: Set<number>
   deviceId: string
   touchHelper: AndroidTouchHelper | null
   // Device-booted flag for truthful input acks — set on device:ready, cleared on shutdown; false after a reconnect until the ack path re-verifies once via adb.
@@ -418,6 +424,7 @@ export class AndroidAgent implements DeviceAgent {
         lastTouchPx: { x: 0, y: 0 },
         bootSeq: 0,
         bootAbandon: new Map(),
+        bootsInFlight: new Set(),
         restarting: false,
       })
     })
@@ -511,7 +518,10 @@ export class AndroidAgent implements DeviceAgent {
   }
 
   private sendDeviceInfo(state: DeviceState, device: Device): void {
-    if (!this.ws) return
+    // `readyState`, not presence: this runs mid-boot, and a socket that closed since the entry guard
+    // takes the payload into a buffer nobody flushes while `device:ready` is dropped by `sendMsg`'s own
+    // check — leaving the caller with neither the data nor an answer.
+    if (this.ws?.readyState !== WebSocket.OPEN) return
     this.sendOn(this.ws, {
       type: 'session:deviceInfo',
       sessionId: state.sessionId,
@@ -883,7 +893,7 @@ export class AndroidAgent implements DeviceAgent {
    *  Deliberately **not** folded into `cleanupDeviceState` the way iOS's bump once was: this agent calls
    *  that cleanup from inside `handleDeviceBoot`, so a bump there would make every boot supersede itself. */
   private bumpBootSeq(state: DeviceState, reason: BootAbandonReason): number {
-    state.bootAbandon.set(state.bootSeq, reason)
+    if (state.bootsInFlight.has(state.bootSeq)) state.bootAbandon.set(state.bootSeq, reason)
     return ++state.bootSeq
   }
 
@@ -897,6 +907,15 @@ export class AndroidAgent implements DeviceAgent {
   private abandonBoot(state: DeviceState, seq: number, sessionId: string, requestId?: string): void {
     const reason = state.bootAbandon.get(seq) ?? 'superseded'
     state.bootAbandon.delete(seq)
+    // **A state the agent has stopped holding cannot be answered, and trying is worse than silence.**
+    // `relay-lost` retires a boot by dropping the whole map, so by the time the parked `await` resumes this
+    // `state` is an object nobody is registered against — and whether the socket is back yet decides
+    // between dropping the reply and sending it to a *new* relay naming a session id it has never heard
+    // of. Neither is an answer, and which one happens is a race between a poll interval and a backoff.
+    if (this.deviceStates.get(sessionId) !== state) {
+      logger.warn(`boot for ${sessionId} abandoned (${reason}) after the session was dropped — nothing to answer`)
+      return
+    }
     if (!requestId) {
       logger.warn(`boot for ${sessionId} abandoned (${reason}) with no requestId — nothing to answer`)
       return
@@ -921,12 +940,18 @@ export class AndroidAgent implements DeviceAgent {
     }
 
     const seq = this.bumpBootSeq(state, 'superseded')
+    state.bootsInFlight.add(seq)
 
-    this.cleanupDeviceState(state)
-    if (tier) { state.secureContext = tier.secureContext; state.external = tier.external }
-    this.sendOn(ws, { type: 'device:booting', sessionId })
-
+    // **The teardown runs inside the try, and that is a fix rather than tidying.** It ran before it, and here it is the
+    // heaviest thing in the handler — stopping a scrcpy session, closing a gRPC client, `pkill`ing the
+    // host-mute tap. A throw there rejected this handler into the bare `.catch(logger.error)` at its dispatch site: no
+    // `device:booting`, no ready, no error — and the seq was already bumped, so the boot this one
+    // superseded was gone as well. The caller then waited out the very deadline this change exists to
+    // end. `finally` is what stops `bootAbandon` outliving the boot that would have read it.
     try {
+      this.cleanupDeviceState(state)
+      if (tier) { state.secureContext = tier.secureContext; state.external = tier.external }
+      this.sendOn(ws, { type: 'device:booting', sessionId })
       const avdName = avdId.replace(/^avd:/, '')
       const devices = await this.adb.listDevices()
       if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
@@ -984,6 +1009,11 @@ export class AndroidAgent implements DeviceAgent {
       const message = e instanceof Error ? e.message : String(e)
       logger.error('boot failed:', message)
       this.sendMsg({ type: 'device:boot-error', sessionId, requestId, message })
+    } finally {
+      state.bootsInFlight.delete(seq)
+      // Its own key, in the one case nothing reads it: a newer boot arriving after this boot's last
+      // checkpoint but before it returns.
+      state.bootAbandon.delete(seq)
     }
   }
 

@@ -389,6 +389,76 @@ describe('AndroidAgent', () => {
       browser.close()
     })
 
+    it('says nothing for an abandoned boot that carried no correlator', async () => {
+      // A reply nobody waits for is not an answer, and worse than nothing here: this viewer reports every
+      // *uncorrelated* `device:boot-error` — deliberately, because `restartVideoStream` reports a dead
+      // stream that way (#426). Driven through the handler because the relay requires a correlator on
+      // `device:boot`; the parameter is optional and an older relay does not enforce it.
+      const { agent, browser } = await joinedAgent(mockAdb(false))
+      const wait = holdingBoot(agent, 1)
+      const handler = agent as unknown as { handleDeviceBoot(s: string, d: string): Promise<void> }
+      void handler.handleDeviceBoot(agent.sessionId!, 'avd:Pixel_8_API_34')
+      await vi.waitFor(() => expect(wait.calls()).toBe(1), { timeout: 2000 })
+
+      browser.send(boot(agent.sessionId, 'rq-live'))
+      await waitForType(browser, 'device:ready')
+      wait.releases[0]!()
+      expect(await waitForTypeOrNull(browser, 'device:boot-error', 150)).toBeNull()
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('sends no device info to a socket that is closing', async () => {
+      // The mid-boot twin of the `sendMsg` guard below: this one gated on the socket being *present*, so a
+      // boot that lost it mid-wait pushed its payload into a buffer nobody flushes while `device:ready` was
+      // dropped by the other guard — the caller getting neither the data nor an answer.
+      const agent = new AndroidAgent({}, mockAdb(false))
+      const reach = agent as unknown as {
+        ws: unknown
+        sendDeviceInfo(state: { sessionId: string }, device: { id: string; name: string }): void
+      }
+      const sent: string[] = []
+      const socket: { readyState: number; send: (d: string) => void } = {
+        readyState: WebSocket.CLOSING,
+        send: (d) => sent.push(d),
+      }
+      reach.ws = socket
+      const device = { id: 'avd:Pixel_8_API_34', name: 'Pixel_8_API_34' }
+
+      reach.sendDeviceInfo({ sessionId: 's1' }, device)
+      expect(sent, 'a closing socket takes it and says nothing').toEqual([])
+
+      socket.readyState = WebSocket.OPEN
+      reach.sendDeviceInfo({ sessionId: 's1' }, device)
+      expect(sent, 'and an open one still gets it').toHaveLength(1)
+    })
+
+    it('drops a reply to a socket that is closing, rather than buffering it in silence', async () => {
+      // `ws.send` on anything but OPEN buffers and neither throws nor emits, so an answer sent there is
+      // indistinguishable from a delivered one. Held on both agents: iOS has the same test, and a guard
+      // present on one platform only is the asymmetry this slice's invariant table exists to catch.
+      const agent = new AndroidAgent({}, mockAdb(false))
+      const reach = agent as unknown as {
+        ws: unknown
+        sendMsg(msg: { type: string; sessionId: string; requestId: string; message: string }): void
+      }
+      const sent: string[] = []
+      const socket: { readyState: number; send: (d: string) => void } = {
+        readyState: WebSocket.CLOSING,
+        send: (d) => sent.push(d),
+      }
+      reach.ws = socket
+      const reply = { type: 'device:boot-error' as const, sessionId: 's1', requestId: 'rq-x', message: 'superseded' }
+
+      reach.sendMsg(reply)
+      expect(sent, 'a closing socket takes it and says nothing').toEqual([])
+
+      socket.readyState = WebSocket.OPEN
+      reach.sendMsg(reply)
+      expect(sent, 'and an open one still gets it').toHaveLength(1)
+    })
+
     it('abandons a boot when the relay goes away mid-boot, instead of finishing it', async () => {
       // **The asymmetry this slice closes.** iOS has invalidated in-flight boots on reconnect since its
       // helper-leak fix; this agent did not, so a boot that outlived the socket ran to completion against

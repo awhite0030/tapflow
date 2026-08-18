@@ -40,14 +40,27 @@ const CEILINGS = [
 ]
 
 const DEADLINES = [
-  { what: 'mcp-server bootDevice', file: 'packages/mcp-server/src/client.ts', pattern: /BOOT_DEADLINE_MS = ([\d_]+)/ },
-  { what: 'flow-runner bootDevice', file: 'packages/flow-runner/src/RelayClient.ts', pattern: /BOOT_DEADLINE_MS = ([\d_]+)/ },
+  {
+    what: 'mcp-server bootDevice',
+    file: 'packages/mcp-server/src/client.ts',
+    pattern: /BOOT_DEADLINE_MS = ([\d_]+)/,
+    // The waiter, not the constant. Reading a declaration says nothing about what `bootDevice` passes.
+    usedBy: /'device:boot-error'[\s\S]{0,240}?\n\s+BOOT_DEADLINE_MS,/,
+  },
+  {
+    what: 'flow-runner bootDevice',
+    file: 'packages/flow-runner/src/RelayClient.ts',
+    pattern: /BOOT_DEADLINE_MS = ([\d_]+)/,
+    usedBy: /'device:boot-error'[\s\S]{0,240}?\n\s+BOOT_DEADLINE_MS,/,
+  },
 ]
 
-const valueOf = ({ file, pattern }) => {
-  const m = pattern.exec(read(file))
-  return m ? Number(m[1].replace(/_/g, '')) : null
-}
+/** All matches, not the first: `exec` stops at match one, so a doc line quoting `BOOT_DEADLINE_MS = 180_000`
+ *  above a real `= 30_000` would satisfy every comparison below. The count is asserted separately. */
+const valuesOf = ({ file, pattern }) =>
+  [...read(file).matchAll(new RegExp(pattern, 'g'))].map((m) => Number(m[1].replace(/_/g, '')))
+
+const valueOf = (c) => valuesOf(c)[0] ?? null
 
 /** The rule itself, as a function, so it can be tested in both directions rather than only asserted. */
 const clears = (deadline, slowestPoll) => deadline - slowestPoll >= MIN_MARGIN_MS
@@ -61,7 +74,23 @@ describe('a relay client outlives the agent boot it is waiting on', () => {
     expect(CEILINGS.length).toBe(2)
     expect(DEADLINES.length).toBe(2)
     for (const c of [...CEILINGS, ...DEADLINES]) {
+      expect(valuesOf(c), `${c.what}: ${c.pattern} matched more or less than once in ${c.file}`).toHaveLength(1)
       expect(valueOf(c), `${c.what}: ${c.pattern} found nothing in ${c.file}`).toBeGreaterThan(0)
+    }
+  })
+
+  it('the waiter is what carries the deadline, not a constant declared beside it', () => {
+    // **The mutation this check was blind to, and it is the state that shipped before this slice.** Reading
+    // the `const` proves a number exists in a file. It proves nothing about `waitFor`'s second argument —
+    // which is where both clients previously had a literal (`30_000`, `120_000`). Declare the constant,
+    // leave the literal at the call site, and every other assertion here stays green while the
+    // relationship they describe is broken. `contributing/test-and-guard-coverage.md` calls this aiming the
+    // mutation at the path that already worked.
+    for (const d of DEADLINES) {
+      expect(
+        read(d.file),
+        `${d.what}: the boot waiter does not pass BOOT_DEADLINE_MS — a literal there defeats this check`,
+      ).toMatch(d.usedBy)
     }
   })
 
@@ -87,15 +116,26 @@ describe('a relay client outlives the agent boot it is waiting on', () => {
     expect(clears(120_000 + MIN_MARGIN_MS, 120_000)).toBe(true)
   })
 
-  it('names what it cannot see', () => {
-    // `waitForBoot` takes its ceiling as a **default parameter**, so a caller may pass its own and this
-    // check would not know. Asserting that the in-repo caller does not is the reachable half; the rest is
-    // written down rather than implied.
-    const android = read('packages/android-agent/src/AndroidAgent.ts')
-    const calls = [...android.matchAll(/waitForBoot\(([^)]*)\)/g)].map((m) => m[1])
-    expect(calls.length, 'no waitForBoot call found — did it move?').toBeGreaterThan(0)
-    for (const args of calls) {
+  it('names what it cannot see, on both platforms', () => {
+    // Both ceilings are **defaults**, so either caller may pass its own and this check would not know. The
+    // reachable half is asserting that the in-repo callers do not — and it has to cover both, since a
+    // one-platform version reads as coverage while leaving the other free to drift. What stays unseen is
+    // written down rather than implied: the stages with no ceiling at all (`listDevices`, `shutdown`,
+    // `erase`, `boot`, opening the stream), which is what `MIN_MARGIN_MS` is the allowance for.
+    const androidCalls = [...read('packages/android-agent/src/AndroidAgent.ts').matchAll(/waitForBoot\(([^)]*)\)/g)]
+      .map((m) => m[1])
+    expect(androidCalls.length, 'no waitForBoot call found — did it move?').toBeGreaterThan(0)
+    for (const args of androidCalls) {
       expect(args.split(',').length, `waitForBoot(${args}) passes its own timeout, which this check cannot see`).toBe(1)
+    }
+
+    // iOS takes its override in an options bag, and the in-repo caller passes that bag — with `isStale` and
+    // no `timeoutMs`. So the assertion is on the key, not on the argument count.
+    const iosCalls = [...read('packages/ios-agent/src/IOSAgent.ts').matchAll(/waitUntilBooted\(([^)]*\})?[^)]*\)/g)]
+      .map((m) => m[0])
+    expect(iosCalls.length, 'no waitUntilBooted call found — did it move?').toBeGreaterThan(0)
+    for (const call of iosCalls) {
+      expect(call, `${call} sets its own timeoutMs, which this check cannot see`).not.toContain('timeoutMs')
     }
   })
 })

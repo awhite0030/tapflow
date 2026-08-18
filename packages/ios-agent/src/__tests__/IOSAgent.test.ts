@@ -1333,6 +1333,98 @@ describe('IOSAgent', () => {
       browser.close()
     })
 
+    it('does not answer a boot whose session the agent has stopped holding', async () => {
+      // **Determinism, not tidiness.** `relay-lost` retires a boot by dropping the whole map, and the answer
+      // is deferred until the parked `await` resumes — so whether it lands was a race between a poll
+      // interval and the reconnect backoff, and when it landed it went to a *new* relay naming a session id
+      // that relay had never heard of. Neither outcome is an answer. Asserted in both directions, because a
+      // check that refused everything would satisfy the first half on its own.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(false))
+      const reach = agent as unknown as {
+        ws: unknown
+        deviceStates: Map<string, unknown>
+        abandonBoot(state: unknown, seq: number, sessionId: string, requestId?: string): void
+      }
+      const sent: string[] = []
+      reach.ws = { readyState: WebSocket.OPEN, send: (d: string) => sent.push(d) }
+      const dropped = { bootAbandon: new Map([[1, 'relay-lost']]), bootsInFlight: new Set([1]) }
+      const held = { bootAbandon: new Map([[1, 'superseded']]), bootsInFlight: new Set([1]) }
+
+      reach.abandonBoot(dropped, 1, 's-dropped', 'rq-1')
+      expect(sent, 'answered a session the agent no longer holds').toEqual([])
+
+      reach.deviceStates.set('s-held', held)
+      reach.abandonBoot(held, 1, 's-held', 'rq-2')
+      expect(sent, 'and a session it does hold gets its answer').toHaveLength(1)
+      expect(JSON.parse(sent[0]!)).toMatchObject({ type: 'device:boot-error', requestId: 'rq-2' })
+    })
+
+    it('sends no chrome to a socket that closed while the boot was waiting', async () => {
+      // `sendChromeData` gated on the socket being *present*, so a boot that lost it mid-wait pushed the
+      // chrome into a buffer nobody flushes — and its `device:ready` was then dropped by `sendMsg`'s own
+      // check, leaving the caller with neither the data nor an answer. Observed through the helper, which
+      // that function builds immediately after the guard.
+      const simctl = mockSimctl(false)
+      const wait = holdingWait(simctl, 1)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-closing', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await vi.waitFor(() => expect(wait.calls()).toBe(1), { timeout: 2000 })
+      expect(MockTouchHelper.mock.results).toHaveLength(0)
+
+      // Swapped whole, not mutated: a real `ws`'s `readyState` is a getter, and the send has to be
+      // observable anyway — this is what proves nothing was handed to a socket in that state.
+      const reach = agent as unknown as { ws: unknown }
+      const buffered: string[] = []
+      reach.ws = { readyState: WebSocket.CLOSING, send: (d: string) => buffered.push(d), close: () => {} }
+      wait.releases[0]!()
+      await new Promise((r) => setImmediate(r))
+      await new Promise((r) => setTimeout(r, 50))
+
+      expect(MockTouchHelper.mock.results, 'built a helper for a boot it could not report').toHaveLength(0)
+      expect(buffered, 'and handed nothing to the closing socket').toEqual([])
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('keeps no record of a boot that already answered', async () => {
+      // **The map is written by every lifecycle event and read only by a boot still running.** Without a
+      // guard, the ordinary case — boot completes, then a shutdown or a later boot retires its seq — leaves
+      // an entry nobody will ever read or delete. One per boot and one per shutdown, for as long as the
+      // agent stays connected, freed only when a reconnect drops the whole state. The comment on the field
+      // claimed it emptied itself, which is the kind of invariant worth an assertion rather than a claim.
+      const simctl = mockSimctl(false)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      const abandon = () => {
+        const state = (agent as unknown as { deviceStates: Map<string, { bootAbandon: Map<number, string> }> })
+          .deviceStates.get(agent.sessionId!)!
+        return state.bootAbandon
+      }
+
+      for (const id of ['rq-1', 'rq-2']) {
+        browser.send(JSON.stringify({ type: 'device:boot', requestId: id, sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+        await waitForType(browser, 'device:ready')
+      }
+      browser.send(JSON.stringify({ type: 'device:shutdown', requestId: 'rq-s', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:shutdown-done')
+
+      expect(abandon().size, 'a reason was kept for a boot that had already answered').toBe(0)
+
+      agent.disconnect()
+      browser.close()
+    })
+
     it('says nothing for an abandoned boot that carried no correlator', async () => {
       // A reply nobody waits for is not an answer — and worse than nothing here, because the dashboard
       // reports every *uncorrelated* `device:boot-error` (deliberately: that is how a dead video stream is
