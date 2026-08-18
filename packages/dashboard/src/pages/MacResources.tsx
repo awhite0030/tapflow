@@ -177,6 +177,19 @@ export function MacResources() {
 type Datum = { time: string; cpu: number; mem: number }
 
 const getTime = (d: Datum) => new Date(d.time).getTime()
+
+/** The sample, in words. **One function, called by the tooltip and by `aria-valuetext`.** They used to
+ *  format separately and diverged twice — a date the axis format had already truncated, then a rounding
+ *  that gave the screen-reader user one digit less than the sighted one from the same cursor. The comment
+ *  claiming the two agreed was the thing that was false.
+ *
+ *  `undefined` locale, not `'ko-KR'`: the document is `lang="en"`, an English synthesizer is handed this
+ *  string, and every other date in the dashboard already follows the reader's own locale. */
+const stampOf = (d: Datum) =>
+  new Date(d.time).toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  })
+const percentOf = (v: number) => `${Math.round(v * 10) / 10}%`
 const bisectTime = bisector<Datum, number>(getTime).left
 
 const MARGIN = { top: 8, right: 24, bottom: 24, left: 40 }
@@ -321,14 +334,9 @@ export function AreaChartInner({
 
   const latest = data[data.length - 1]
   // Named, because the page renders two of these side by side — an unattributed "02:50, 57%" does not say
-  // which chart answered. And its own full timestamp rather than `formatTick`, which is written for axis
-  // labels: on 7d that format is the date alone, so every sample in a day announced identically and
-  // arrowing between neighbours sounded like nothing had moved. This is the only reading AT gets — the
-  // visible tooltip is `aria-hidden` — so it carries what that tooltip draws.
-  const reading = (d: Datum) =>
-    `${label}, ${new Date(d.time).toLocaleString('ko-KR', {
-      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
-    })}, ${Math.round(d[dataKey])}%`
+  // which chart answered. The rest comes from `stampOf`/`percentOf`, which the visible tooltip also calls:
+  // this is the only reading AT gets, since that tooltip is `aria-hidden`, so the two must not drift.
+  const reading = (d: Datum) => `${label}, ${stampOf(d)}, ${percentOf(d[dataKey])}`
 
   return (
     <>
@@ -454,12 +462,10 @@ export function AreaChartInner({
         >
           <p className="mb-1">
             Date:{' '}
-            {new Date(tooltipData.time).toLocaleString('ko-KR', {
-              month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
-            })}
+            {stampOf(tooltipData)}
           </p>
           <p>
-            {label}: {Math.round(tooltipData[dataKey] * 10) / 10}%
+            {label}: {percentOf(tooltipData[dataKey])}
           </p>
         </div>
       )}

@@ -184,6 +184,24 @@ describe('the chart can be read without a mouse', () => {
     expect(surface.getAttribute('aria-valuetext'), 'two samples announce the same thing').not.toBe(first)
   })
 
+  it('announces exactly what it draws', () => {
+    // The tooltip is `aria-hidden`, so `aria-valuetext` is the only reading AT gets — and the two used to
+    // be formatted separately, diverging first on the date and then on precision (57.4% drawn, "57%"
+    // announced). One formatter, asserted against a fractional value so a rounding difference would show.
+    const fractional = [{ time: series[0]!.time, cpu: 57.4, mem: 57.4 }, { time: series[1]!.time, cpu: 12.3, mem: 12.3 }]
+    const { container } = render(
+      <AreaChartInner width={600} height={220} data={fractional} dataKey="cpu" hex="#60a5fa" range="1h" now={AT} label="CPU %" />,
+    )
+    const surface = surfaceOf(container)
+    fireEvent.focus(surface)
+    fireEvent.keyDown(surface, { key: 'Home' })
+
+    const announced = surface.getAttribute('aria-valuetext') ?? ''
+    expect(announced).toContain('57.4%')
+    const drawn = container.querySelector('[aria-hidden="true"]')?.textContent ?? ''
+    expect(drawn, 'the drawn reading disagrees with the announced one').toContain('57.4%')
+  })
+
   it('does not paint an outline until focus asks for one', () => {
     // `outline-none` is a *transparent* 2px outline, so colouring it inline drew a black box around every
     // plot at rest — reported from a screenshot, not by any gate.
