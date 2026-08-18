@@ -103,11 +103,13 @@ export function MacResources() {
 
   return (
     <div className="flex h-full min-h-0">
-      {/* Macs sidebar */}
-      <aside className="w-64 shrink-0 border-r flex flex-col gap-1 p-3 overflow-y-auto">
-        <span className="px-2 pb-1 font-mono text-xs font-medium text-muted-foreground uppercase tracking-wider">
+      {/* Macs sidebar. The title is a heading rather than a styled span for the same reason the chart
+          titles are: with the charts now landmarked by `h2`, this list would be the one region of the page
+          a screen-reader user could not jump to. */}
+      <aside aria-labelledby="macs-heading" className="w-64 shrink-0 border-r flex flex-col gap-1 p-3 overflow-y-auto">
+        <h2 id="macs-heading" className="px-2 pb-1 font-mono text-xs font-medium text-muted-foreground uppercase tracking-wider">
           Macs
-        </span>
+        </h2>
         {allAgents.length === 0 ? (
           <span className="px-2 text-sm text-muted-foreground">
             {connected ? 'No agents yet.' : 'Connecting…'}
@@ -175,6 +177,21 @@ export function MacResources() {
 type Datum = { time: string; cpu: number; mem: number }
 
 const getTime = (d: Datum) => new Date(d.time).getTime()
+
+/** The sample, in words. **One function, called by the tooltip and by `aria-valuetext`.** They used to
+ *  format separately and diverged twice — a date the axis format had already truncated, then a rounding
+ *  that gave the screen-reader user one digit less than the sighted one from the same cursor. The comment
+ *  claiming the two agreed was the thing that was false.
+ *
+ *  `undefined` locale, not `'ko-KR'`: the document is `lang="en"`, an English synthesizer is handed this
+ *  string, and every other date in the dashboard already follows the reader's own locale. */
+const stampOf = (d: Datum) =>
+  new Date(d.time).toLocaleString(undefined, {
+    // `hourCycle`, not `hour12: false`: en-US maps that flag to h24, which speaks midnight as "24:00" —
+    // an hour that is on no axis in this page. h23 is the cycle the axis labels use.
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  })
+const percentOf = (v: number) => `${Math.round(v * 10) / 10}%`
 const bisectTime = bisector<Datum, number>(getTime).left
 
 const MARGIN = { top: 8, right: 24, bottom: 24, left: 40 }
@@ -201,13 +218,16 @@ function ChartCard({
     <div className="rounded-lg border p-4 flex flex-col gap-3">
       <div className="flex items-center gap-2">
         <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: hex }} />
-        <span className="text-sm font-medium">{title}</span>
+        {/* A heading, not a styled span: it is a section title in every respect, and it is what names the
+            chart below it — an outline of one `h1` and nothing else gives a screen-reader user no way to
+            move between the two charts. */}
+        <h2 className="text-sm font-medium">{title}</h2>
       </div>
       <div className="relative h-[220px] w-full">
         <ParentSize>
           {({ width, height }) =>
             width > 0 && height > 0 ? (
-              <AreaChartInner width={width} height={height} data={data} dataKey={dataKey} hex={hex} range={range} now={now} label={chartConfig[dataKey].label} />
+              <AreaChartInner width={width} height={height} data={data} dataKey={dataKey} hex={hex} range={range} now={now} label={title} />
             ) : null
           }
         </ParentSize>
@@ -216,7 +236,9 @@ function ChartCard({
   )
 }
 
-function AreaChartInner({
+/** Exported for `MacResources.chart.test.tsx` only. `ParentSize` measures 0 in jsdom, so the chart never
+ *  renders through the page — and the clip below is the kind of thing that regresses silently. */
+export function AreaChartInner({
   width,
   height,
   data,
@@ -236,6 +258,20 @@ function AreaChartInner({
   label: string
 }) {
   const { showTooltip, hideTooltip, tooltipData, tooltipLeft, tooltipTop } = useTooltip<Datum>()
+  const hintId = `chart-hint-${dataKey}`
+  // **Its own state, not a view of `tooltipData`.** Derived, every path that hides the reading — Escape,
+  // blur — snapped the announced value back to the last sample: a change the user never made, and the next
+  // arrow key resumed from the end rather than where they were reading.
+  // `null` until the reader places it, which is not the same as 0: an unplaced cursor should open at the
+  // newest sample, and a placed one should still be there after Escape or a blur. Focus used to jump to
+  // the end unconditionally, so leaving and returning silently moved the reader to the other end of the
+  // series and the next arrow key stepped from there.
+  const [cursor, setCursor] = useState<number | null>(null)
+  // Clamped on render: switching 7d → 1h shrinks `data` under a cursor that was valid, which left
+  // `aria-valuenow` above `aria-valuemax` and `aria-valuetext` undefined — a slider announcing a bare
+  // out-of-range index instead of a reading.
+  const last = Math.max(0, data.length - 1)
+  const idx = cursor === null ? last : Math.min(cursor, last)
 
   const innerW = width - MARGIN.left - MARGIN.right
   const innerH = height - MARGIN.top - MARGIN.bottom
@@ -250,6 +286,38 @@ function AreaChartInner({
   const ticks = Array.from({ length: RANGE_MS[range] / step + 1 }, (_, i) => new Date(minT + i * step))
 
   const gradId = `fill-${dataKey}`
+  const clipId = `plot-${dataKey}`
+
+  /** Show the sample at `i`, the way a pointer move would. The keyboard path lands here too. */
+  const showAt = (i: number) => {
+    const d = data[i]
+    if (!d) return
+    setCursor(i)
+    showTooltip({ tooltipData: d, tooltipLeft: xScale(getTime(d)), tooltipTop: yScale(d[dataKey]) })
+  }
+
+  // **The values in this chart were mouse-only.** The tooltip is the only place a reading is written down,
+  // and it opened on `mousemove` alone — so a keyboard user could reach the page and read nothing from it.
+  // Arrow keys walk the samples, Home/End jump to the ends, and the focused reading is announced through
+  // the live region below rather than inferred from a tooltip nobody can see.
+  const handleKey = (e: React.KeyboardEvent<SVGRectElement>) => {
+    if (data.length === 0) return
+    // Dismissible without moving focus (WCAG 1.4.13): the reading overlays the plot, and a magnifier user
+    // whose view it covers should not have to tab away to clear it.
+    if (e.key === 'Escape') { hideTooltip(); return }
+    // Vertical arrows too: they are half of the slider pattern's key set, and a screen-reader user in
+    // focus mode reaches for them as readily as the horizontal pair.
+    const current = idx
+    const next =
+      e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? Math.max(0, current - 1)
+      : e.key === 'ArrowRight' || e.key === 'ArrowUp' ? Math.min(data.length - 1, current + 1)
+      : e.key === 'Home' ? 0
+      : e.key === 'End' ? data.length - 1
+      : null
+    if (next === null) return
+    e.preventDefault()
+    showAt(next)
+  }
 
   const handleMove = (e: React.MouseEvent<SVGRectElement> | React.TouchEvent<SVGRectElement>) => {
     const point = localPoint(e)
@@ -260,31 +328,64 @@ function AreaChartInner({
     const hi = data[i]
     const d = lo && hi ? (t0 - getTime(lo) < getTime(hi) - t0 ? lo : hi) : (lo ?? hi)
     if (!d) return
-    showTooltip({ tooltipData: d, tooltipLeft: xScale(getTime(d)), tooltipTop: yScale(d[dataKey]) })
+    // Through `showAt`, so the cursor is the one source of position. Calling `showTooltip` directly here
+    // moved what is drawn while `aria-valuenow` kept reporting the keyboard's index — the slider's state
+    // then described something other than what it was showing.
+    showAt(data.indexOf(d))
   }
+
+  const latest = data[data.length - 1]
+  // Named, because the page renders two of these side by side — an unattributed "02:50, 57%" does not say
+  // which chart answered. The rest comes from `stampOf`/`percentOf`, which the visible tooltip also calls:
+  // this is the only reading AT gets, since that tooltip is `aria-hidden`, so the two must not drift.
+  const reading = (d: Datum) => `${label}, ${stampOf(d)}, ${percentOf(d[dataKey])}`
 
   return (
     <>
-      <svg width={width} height={height}>
+      {/* `group`, not `img`: `img` takes presentational children, and the focusable surface below lives
+          inside this subtree — under `img` the one element the keyboard path depends on is in a subtree
+          AT is told not to expose, so the support would exist and never be advertised. */}
+      <svg
+        width={width}
+        height={height}
+        role="group"
+        aria-label={
+          latest
+            ? `${label}, last ${range}. Latest ${percentOf(latest[dataKey])}.`
+            : `${label}, last ${range}. No samples.`
+        }
+      >
         <LinearGradient id={gradId} from={hex} to={hex} fromOpacity={0.3} toOpacity={0} fromOffset="5%" toOffset="95%" />
+        {/* **The series is clipped to the plot, and the axis labels live outside it.** `maxT` is rounded
+            *up* to a clean step so the tick times stay round, which pushes the window's start up to one
+            step later than the oldest point the API returned — 10 minutes on the 1h range. `scaleTime`
+            does not clamp, so those points map to a negative x and the area painted straight through the
+            y-axis labels, worst on a series sitting where the labels are (RAM at ~57% covers 50% and 25%).
+            Clipping rather than dropping them: a point just off-window still shapes the curve at the edge,
+            which is what an off-screen sample should do. */}
+        <clipPath id={clipId}>
+          <rect x={0} y={0} width={Math.max(0, innerW)} height={Math.max(0, innerH)} />
+        </clipPath>
         <Group left={MARGIN.left} top={MARGIN.top}>
           <GridRows scale={yScale} width={innerW} tickValues={[0, 25, 50, 75, 100]} strokeDasharray="3 3" stroke="hsl(var(--border))" />
-          <AreaClosed<Datum>
-            data={data}
-            x={(d) => xScale(getTime(d))}
-            y={(d) => yScale(d[dataKey])}
-            yScale={yScale}
-            curve={curveMonotoneX}
-            fill={`url(#${gradId})`}
-          />
-          <LinePath<Datum>
-            data={data}
-            x={(d) => xScale(getTime(d))}
-            y={(d) => yScale(d[dataKey])}
-            curve={curveMonotoneX}
-            stroke={hex}
-            strokeWidth={1.5}
-          />
+          <g clipPath={`url(#${clipId})`}>
+            <AreaClosed<Datum>
+              data={data}
+              x={(d) => xScale(getTime(d))}
+              y={(d) => yScale(d[dataKey])}
+              yScale={yScale}
+              curve={curveMonotoneX}
+              fill={`url(#${gradId})`}
+            />
+            <LinePath<Datum>
+              data={data}
+              x={(d) => xScale(getTime(d))}
+              y={(d) => yScale(d[dataKey])}
+              curve={curveMonotoneX}
+              stroke={hex}
+              strokeWidth={1.5}
+            />
+          </g>
           <AxisBottom
             top={innerH}
             scale={xScale}
@@ -321,6 +422,25 @@ function AreaChartInner({
             width={Math.max(0, innerW)}
             height={Math.max(0, innerH)}
             fill="transparent"
+            tabIndex={0}
+            // **`slider`, over the sample index.** `img` was worse than useless here: a non-widget role
+            // leaves NVDA and JAWS in browse mode, where the virtual cursor swallows the arrow keys before
+            // `onKeyDown` sees them — the keyboard path would exist for exactly the users who could not
+            // reach it. A slider's native key model *is* arrow keys, and `aria-valuetext` speaks the
+            // reading on every move, which is why there is no live region here any more.
+            role="slider"
+            aria-label={`${label} samples`}
+            aria-valuemin={0}
+            aria-valuemax={Math.max(0, data.length - 1)}
+            aria-valuenow={idx}
+            aria-valuetext={data[idx] ? reading(data[idx]!) : undefined}
+            aria-describedby={hintId}
+            // No inline `outlineColor`: `outline-none` is a *transparent* 2px outline, so colouring it
+            // here painted a black box around the plot at rest. The colour belongs in the focus variant.
+            className="outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            onFocus={() => showAt(idx)}
+            onBlur={hideTooltip}
+            onKeyDown={handleKey}
             onMouseMove={handleMove}
             onMouseLeave={hideTooltip}
             onTouchMove={handleMove}
@@ -329,8 +449,12 @@ function AreaChartInner({
           />
         </Group>
       </svg>
+      <p id={hintId} className="sr-only">Use the arrow keys to read individual samples. Escape hides the reading.</p>
       {tooltipData && (
         <div
+          // The reading rides on `aria-valuetext`; this is the same value drawn, and exposing both gave a
+          // browse-mode reader two renderings of it that disagreed on date format and rounding.
+          aria-hidden="true"
           className="pointer-events-none absolute top-0 left-0 whitespace-nowrap rounded-lg border bg-background px-3 py-2 text-xs text-foreground shadow-md"
           style={{
             // transform (not left/top) so position eases smoothly like recharts
@@ -340,12 +464,10 @@ function AreaChartInner({
         >
           <p className="mb-1">
             Date:{' '}
-            {new Date(tooltipData.time).toLocaleString('ko-KR', {
-              month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
-            })}
+            {stampOf(tooltipData)}
           </p>
           <p>
-            {label}: {Math.round(tooltipData[dataKey] * 10) / 10}%
+            {label}: {percentOf(tooltipData[dataKey])}
           </p>
         </div>
       )}
