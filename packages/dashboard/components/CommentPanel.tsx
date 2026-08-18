@@ -145,18 +145,33 @@ export function CommentPanel({ buildId }: Props) {
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-4 w-4 ml-0.5 opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+                              className="h-4 w-4 ml-0.5 opacity-0 group-hover:opacity-50 hover:!opacity-100 group-focus-within:opacity-50 focus-visible:!opacity-100 transition-opacity"
+                              aria-label="Copy link to comment"
                               onClick={() => copyLink(c.id)}
                             >
-                              <Link2 className="h-3 w-3" />
+                              <Link2 className="h-3 w-3" aria-hidden="true" />
                             </Button>
                           </div>
                           <p className="text-sm leading-relaxed whitespace-pre-wrap mt-1">{c.body}</p>
-                          {c.attachments.map((a) => (
-                            <a key={a.id} href={a.file_path} target="_blank" rel="noreferrer" className="mt-1.5 block">
-                              <img src={a.file_path} alt="attachment" className="max-h-48 rounded border object-contain" />
-                            </a>
-                          ))}
+                          {c.attachments.map((a) => {
+                            // The stored name, not the word "attachment": the image is the link's only
+                            // content and therefore its whole accessible name, so several attachments on
+                            // one comment all announced identically. `CommentAttachment` carries no
+                            // filename field, so the path's last segment is the description available.
+                            const name = decodeURIComponent(a.file_path.split('/').pop() ?? 'image')
+                            return (
+                              <a
+                                key={a.id}
+                                href={a.file_path}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="mt-1.5 block"
+                                aria-label={`Open ${name} in a new tab`}
+                              >
+                                <img src={a.file_path} alt={name} className="max-h-48 rounded border object-contain" />
+                              </a>
+                            )
+                          })}
                         </div>
                       </div>
                     ))}
@@ -170,8 +185,13 @@ export function CommentPanel({ buildId }: Props) {
 
       <div className="pb-1">
       <form onSubmit={handleSubmit}>
-        <div className="rounded-xl border border-input bg-background ring-offset-background transition-shadow focus-within:outline-none focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+        {/* `rounded-md` (6px), the same as the list above it — `rounded-xl` is 12px and is not on this
+          scale at all, so the two boxes in one column disagreed by 6px. DESIGN.md's md is the form radius. */}
+      <div className="rounded-md border border-input bg-background ring-offset-background transition-shadow focus-within:outline-none focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
           <Textarea
+            // The placeholder is a hint, not a name: it is gone the moment anyone types, leaving an edit
+            // box a screen reader can only call "text area".
+            aria-label="Comment"
             placeholder="Leave a comment…"
             value={body}
             onChange={(e) => setBody(e.target.value)}
@@ -189,9 +209,10 @@ export function CommentPanel({ buildId }: Props) {
               variant="ghost"
               size="icon"
               className="h-7 w-7 text-muted-foreground"
+              aria-label="Attach image"
               onClick={() => fileRef.current?.click()}
             >
-              <ImagePlus className="h-4 w-4" />
+              <ImagePlus className="h-4 w-4" aria-hidden="true" />
             </Button>
             <input
               ref={fileRef}
@@ -205,9 +226,10 @@ export function CommentPanel({ buildId }: Props) {
               type="submit"
               size="icon"
               className="h-7 w-7 rounded-full"
+              aria-label="Post comment"
               disabled={submitting || (!body.trim() && !file)}
             >
-              <ArrowUp className="h-3.5 w-3.5" />
+              <ArrowUp className="h-3.5 w-3.5" aria-hidden="true" />
             </Button>
           </div>
         </div>
