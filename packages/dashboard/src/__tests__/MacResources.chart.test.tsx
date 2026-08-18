@@ -170,6 +170,20 @@ describe('the chart can be read without a mouse', () => {
     expect(surface.getAttribute('aria-valuenow'), 'refocus jumped the reader to the end').toBe('1')
   })
 
+  it('tells adjacent samples apart on every range', () => {
+    // `formatTick` is the axis format: on 7d it is the date alone, so every sample in a day announced
+    // identically and arrowing between neighbours sounded like nothing had moved. The visible tooltip is
+    // `aria-hidden`, so this string is the only reading AT gets.
+    const { container } = render(
+      <AreaChartInner width={600} height={220} data={series} dataKey="cpu" hex="#60a5fa" range="7d" now={AT} label="CPU %" />,
+    )
+    const surface = surfaceOf(container)
+    fireEvent.focus(surface)
+    const first = surface.getAttribute('aria-valuetext')
+    fireEvent.keyDown(surface, { key: 'ArrowLeft' })
+    expect(surface.getAttribute('aria-valuetext'), 'two samples announce the same thing').not.toBe(first)
+  })
+
   it('does not paint an outline until focus asks for one', () => {
     // `outline-none` is a *transparent* 2px outline, so colouring it inline drew a black box around every
     // plot at rest — reported from a screenshot, not by any gate.

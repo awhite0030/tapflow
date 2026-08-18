@@ -320,9 +320,15 @@ export function AreaChartInner({
   }
 
   const latest = data[data.length - 1]
-  // Named, because the page renders two of these side by side and each has its own live region — an
-  // unattributed "02:50, 57%" does not say which chart answered.
-  const reading = (d: Datum) => `${label}, ${formatTick(d.time, range)}, ${Math.round(d[dataKey])}%`
+  // Named, because the page renders two of these side by side — an unattributed "02:50, 57%" does not say
+  // which chart answered. And its own full timestamp rather than `formatTick`, which is written for axis
+  // labels: on 7d that format is the date alone, so every sample in a day announced identically and
+  // arrowing between neighbours sounded like nothing had moved. This is the only reading AT gets — the
+  // visible tooltip is `aria-hidden` — so it carries what that tooltip draws.
+  const reading = (d: Datum) =>
+    `${label}, ${new Date(d.time).toLocaleString('ko-KR', {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+    })}, ${Math.round(d[dataKey])}%`
 
   return (
     <>
