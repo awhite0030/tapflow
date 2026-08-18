@@ -17,8 +17,10 @@ What you can observe:
 - **A boot that gets overtaken fails immediately, with the reason.** Re-pick a device while the first one
   is still starting, or shut it down mid-boot, and the agent used to abandon the earlier boot silently.
   Nothing was sent in either direction, so whoever asked found out by waiting: 30 seconds for an MCP
-  caller, two minutes for a flow run, forever for a spinner. Each abandoned boot now gets an answer
-  addressed to its own request, saying which of the three things happened to it.
+  caller, two minutes for a flow run, forever for a spinner. An abandoned boot is now answered on its own
+  request — as superseded by a newer boot, abandoned by a shutdown, or invalidated by the agent losing the
+  relay — whenever the agent still has an open connection to send that answer on. When it does not, the
+  paragraph at the end of this note applies instead.
 - **A slow cold boot is no longer reported as a failure that never happened.** The agents poll a booting
   device for up to 90 seconds (iOS) or 120 (Android) and then explain what went wrong. `mcp-server` gave
   up at 30 — inside both — so a device that was simply slow came back to the model as a bare timeout

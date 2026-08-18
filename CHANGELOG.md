@@ -73,9 +73,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A boot that will not finish now says so, instead of letting you wait.** Re-pick a device while the
   first one is still starting, or shut it down mid-boot, and the agent abandoned the earlier boot in
   silence — nothing was sent in either direction, so whoever asked found out by waiting: 30 seconds for an
-  MCP caller, two minutes for a flow run, forever for a spinner. Each abandoned boot is now answered,
-  addressed to its own request, saying which of the three things happened to it. A tester sees nothing for
-  the boot they replaced themselves, and the failure of the one they are waiting on exactly as before.
+  MCP caller, two minutes for a flow run, forever for a spinner. An abandoned boot is now answered on its
+  own request — superseded by a newer boot, abandoned by a shutdown, or invalidated by the agent losing
+  the relay — as long as the agent still has an open connection to answer on; when it does not, the relay
+  ends the wait instead by declaring the agent away. A tester sees nothing for the boot they replaced
+  themselves, and the failure of the one they are waiting on exactly as before.
 - **A slow cold boot is no longer reported as a failure that never happened.** The agents poll a booting
   device for up to 90 seconds (iOS) or 120 (Android) before explaining what went wrong; `mcp-server` gave
   up at 30, inside both, so a device that was simply slow came back as a bare timeout while the

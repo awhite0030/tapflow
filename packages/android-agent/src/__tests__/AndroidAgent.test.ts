@@ -487,6 +487,10 @@ describe('AndroidAgent', () => {
       // Drop the relay and bring another up on the same port, so the agent's own reconnect runs and the
       // socket is live again — an `agent.disconnect()` version of this passes with the fix removed,
       // because `ws` then stays null and the send guard covers for it.
+      //
+      // Rebinding `relay` is local in effect even though the binding is the suite's: `beforeEach` mints a
+      // fresh server for every test and `afterEach` stops whichever one this leaves behind, so no
+      // neighbour ever sees the replacement. Same shape as the iOS twin of this test.
       browser.close()
       await relay.stop()
       relay = new RelayServer({ port })
