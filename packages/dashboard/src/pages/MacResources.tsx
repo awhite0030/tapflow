@@ -436,6 +436,9 @@ export function AreaChartInner({
       <p id={hintId} className="sr-only">Use the arrow keys to read individual samples. Escape hides the reading.</p>
       {tooltipData && (
         <div
+          // The reading rides on `aria-valuetext`; this is the same value drawn, and exposing both gave a
+          // browse-mode reader two renderings of it that disagreed on date format and rounding.
+          aria-hidden="true"
           className="pointer-events-none absolute top-0 left-0 whitespace-nowrap rounded-lg border bg-background px-3 py-2 text-xs text-foreground shadow-md"
           style={{
             // transform (not left/top) so position eases smoothly like recharts
