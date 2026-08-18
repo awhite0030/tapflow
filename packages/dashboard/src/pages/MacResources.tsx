@@ -187,7 +187,9 @@ const getTime = (d: Datum) => new Date(d.time).getTime()
  *  string, and every other date in the dashboard already follows the reader's own locale. */
 const stampOf = (d: Datum) =>
   new Date(d.time).toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+    // `hourCycle`, not `hour12: false`: en-US maps that flag to h24, which speaks midnight as "24:00" —
+    // an hour that is on no axis in this page. h23 is the cycle the axis labels use.
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   })
 const percentOf = (v: number) => `${Math.round(v * 10) / 10}%`
 const bisectTime = bisector<Datum, number>(getTime).left
@@ -349,7 +351,7 @@ export function AreaChartInner({
         role="group"
         aria-label={
           latest
-            ? `${label}, last ${range}. Latest ${Math.round(latest[dataKey])} percent.`
+            ? `${label}, last ${range}. Latest ${percentOf(latest[dataKey])}.`
             : `${label}, last ${range}. No samples.`
         }
       >

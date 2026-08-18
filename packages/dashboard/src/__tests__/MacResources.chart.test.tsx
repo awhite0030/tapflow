@@ -200,6 +200,10 @@ describe('the chart can be read without a mouse', () => {
     expect(announced).toContain('57.4%')
     const drawn = container.querySelector('[aria-hidden="true"]')?.textContent ?? ''
     expect(drawn, 'the drawn reading disagrees with the announced one').toContain('57.4%')
+
+    // The third rendering of the same number: the chart's own summary name, which a reader hears on the
+    // way in. It rounded to an integer while both of the above kept a digit.
+    expect(container.querySelector('svg')?.getAttribute('aria-label')).toContain('12.3%')
   })
 
   it('does not paint an outline until focus asks for one', () => {
