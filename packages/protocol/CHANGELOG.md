@@ -1092,9 +1092,9 @@ return`) and are therefore compiler-proven non-null; reading `this.ws` inside a 
     rather than failing, and dropping the optimistic fallback for reasons that say never retry — is
     separate work.
 
-  The field is **optional**, so an agent that predates it omits it and nothing breaks; absence means
+  The field landed **optional**, so an agent that predates it omits it and nothing breaks; absence means
   _unknown_, never _fine_, and a consumer meeting an unfamiliar reason must treat it as
-  `channel-unavailable`. Making it required would be the breaking step and is not taken here. There is
+  `channel-unavailable`. Making it required is the breaking step, and **a later slice in this same release took it**: as of v0.19.0 `reason` is required and `message` is optional. The paragraph above describes the field as it landed, not as it ships — see the root changelog for the upgrade-together note. There is
   deliberately no shared message table: one would be a runtime value, and the protocol entry point has
   to erase under `import type` so it never reaches the dashboard bundle.
 
