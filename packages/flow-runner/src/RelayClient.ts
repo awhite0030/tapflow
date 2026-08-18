@@ -243,11 +243,13 @@ interface Waiter {
  * (`EmulatorLauncher.BOOT_READY_TIMEOUT_MS`) before answering `device:boot-error` themselves. A client
  * that gives up first replaces a reason with a bare timeout — `flow-runner` sat at 120s, inside both (#549).
  *
- * The margin over 120s is not decoration: those constants bound **one poll**, not the request. A boot also
- * runs `listDevices`, possibly `shutdown` and `erase`, the boot itself, then opens a stream — none of which
- * has a named ceiling. The margin is what covers them, and `scripts/__tests__/bootDeadlineOutlivesAgent.test.mjs`
- * requires it to be there rather than checking a bare inequality, which today's flow-runner (120s against
- * Android's 120s) would have passed.
+ * The margin over 120s is not decoration: those constants bound **one stage** of a boot — the wait for the
+ * device to report itself up — and not the request. (Narrower still on iOS, where `BOOT_POLL_READ_TIMEOUT_MS`
+ * is what bounds a single reading inside that wait.) A boot also runs `listDevices`, possibly `shutdown` and
+ * `erase`, the boot itself, then opens a stream, none of which has a named ceiling. The margin is the
+ * allowance for those, and `scripts/__tests__/bootDeadlineOutlivesAgent.test.mjs` requires it to be there
+ * rather than checking a bare inequality, which today's flow-runner (120s against Android's 120s) would
+ * have passed. **A margin is not the same as a ceiling** — nothing enforces a total, which is #588.
  *
  * This is **not** the backstop for a dead agent, which is the thing it looks like. The relay declares an
  * agent away and terminates the session after its grace window, and `session:terminated` settles every

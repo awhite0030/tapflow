@@ -48,10 +48,13 @@ status: living
 
   Closed since, by #549: both relay clients wait `BOOT_DEADLINE_MS`, which clears the slowest agent poll
   (Android's 120s) by a stated margin, and `scripts/__tests__/bootDeadlineOutlivesAgent.test.mjs` holds the
-  relationship rather than the numbers. The margin is not decoration — `BOOT_READY_TIMEOUT_MS` bounds *one
-  poll*, while a boot also lists devices, may shut down and erase, boots, and opens a stream, none of which
-  has a ceiling anywhere. A client inside those was giving the caller a bare timeout for a boot that was
-  proceeding normally, and whose explanation was already on its way.
+  relationship rather than the numbers. The margin is not decoration — `BOOT_READY_TIMEOUT_MS` bounds *the
+  wait for the device to report itself up*, one stage of a boot rather than the request (and
+  `BOOT_POLL_READ_TIMEOUT_MS` is narrower again: one reading inside that wait). A boot also lists devices,
+  may shut down and erase, boots, and opens a stream, none of which has a ceiling anywhere. A client inside
+  those was giving the caller a bare timeout for a boot that was proceeding normally, and whose explanation
+  was already on its way. **The margin is an allowance, not a ceiling** — no total exists to enforce, which
+  is #588.
 
 - **A boot this agent stops running is answered** (#526). Every checkpoint that abandons one —
   superseded by a newer boot, abandoned by a shutdown, invalidated by losing the relay — sends

@@ -12,10 +12,14 @@ import { join } from 'node:path'
 // change any of them — but that the relationship between them survives the change.
 //
 // **The margin is the part that is easy to get wrong, and it is why this is not a bare `<`.** Those agent
-// constants bound *one poll*, not the request. A boot also lists devices, may shut the device down and
-// erase it, boots it, opens a stream — none of which has a named ceiling anywhere. `flow-runner` sat at
-// exactly Android's 120s, which passes an inequality that reads `deadline > ceiling` only if you squint,
-// and buys zero room for any of those stages. So the check requires room, and names how much.
+// constants bound *one stage* — the wait for the device to report itself up — not the request. A boot also
+// lists devices, may shut the device down and erase it, boots it, opens a stream, none of which has a named
+// ceiling anywhere. `flow-runner` sat at exactly Android's 120s, which passes an inequality that reads
+// `deadline > ceiling` only if you squint, and buys zero room for any of those stages. So the check requires
+// room, and names how much.
+//
+// What it therefore does **not** prove: that the agent answers within the deadline. A margin is an
+// allowance, not a ceiling, and no total boot ceiling exists to compare against — #588.
 
 const root = join(import.meta.dirname, '../..')
 const read = (p) => readFileSync(join(root, p), 'utf8')
