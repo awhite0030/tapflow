@@ -20,15 +20,18 @@ const makeSock = (readyState: number = WebSocket.OPEN): MockSocket => ({
 // Internal surface poked by these tests (mirrors the `as unknown as {...}` idiom in RelayServer.test.ts).
 type HeartbeatInternals = {
   wss: WebSocketServer
-  wsAlive: WeakMap<object, boolean>
+  lastPongAt: WeakMap<object, number>
   heartbeatTimer: ReturnType<typeof setInterval> | null
   runHeartbeat: (clients?: Iterable<unknown>) => void
 }
 const internals = (server: RelayServer) => server as unknown as HeartbeatInternals
 
 const sweep = (server: RelayServer, socks: MockSocket[]) => internals(server).runHeartbeat(socks)
+/** Liveness is a pong timestamp now, not a swept flag — "dead" is "answered longer ago than the sweep
+ *  tolerates". The flag it replaced read `false` for every live socket for the length of a ping round
+ *  trip, which was harmless while it only decided termination and is not once occupancy reads it. */
 const setAlive = (server: RelayServer, sock: MockSocket, alive: boolean) =>
-  internals(server).wsAlive.set(sock, alive)
+  internals(server).lastPongAt.set(sock, alive ? Date.now() : Date.now() - 10 * 60_000)
 
 describe('RelayServer — WebSocket heartbeat (#313)', () => {
   let tmpDir: string
@@ -55,19 +58,30 @@ describe('RelayServer — WebSocket heartbeat (#313)', () => {
       await server.stop()
     })
 
-    it('terminates a socket that missed the previous pong window', () => {
-      const sock = makeSock()
-      setAlive(server, sock, true)
+    it('terminates a socket that has not answered for longer than the sweep tolerates', () => {
+      // **The clock is what decides now, not the number of sweeps.** The swept flag encoded "one interval
+      // has passed" structurally, so two back-to-back sweeps were enough; a timestamp encodes it in wall
+      // time, which is the whole point — the flag read every live socket as dead for a ping round trip,
+      // and occupancy cannot be built on a signal like that.
+      vi.useFakeTimers()
+      try {
+        const sock = makeSock()
+        setAlive(server, sock, true)
 
-      // 1st sweep: alive → mark dead, ping (probe).
-      sweep(server, [sock])
-      expect(sock.terminate).not.toHaveBeenCalled()
-      expect(sock.ping).toHaveBeenCalledTimes(1)
+        // Still inside the tolerance: probed, not terminated.
+        vi.setSystemTime(Date.now() + 30_000)
+        sweep(server, [sock])
+        expect(sock.terminate).not.toHaveBeenCalled()
+        expect(sock.ping).toHaveBeenCalledTimes(1)
 
-      // No pong arrived → still marked dead. 2nd sweep: terminate, no further ping.
-      sweep(server, [sock])
-      expect(sock.terminate).toHaveBeenCalledTimes(1)
-      expect(sock.ping).toHaveBeenCalledTimes(1)
+        // Past 1.5 intervals with no pong: terminated, and not probed again.
+        vi.setSystemTime(Date.now() + 30_000)
+        sweep(server, [sock])
+        expect(sock.terminate).toHaveBeenCalledTimes(1)
+        expect(sock.ping).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('keeps a socket that ponged between sweeps', () => {
@@ -142,7 +156,7 @@ describe('RelayServer — WebSocket heartbeat (#313)', () => {
 
       // Force the server-side socket to look dead, then run a real sweep.
       const serverWs = [...internals(server).wss.clients][0]
-      internals(server).wsAlive.set(serverWs, false)
+      internals(server).lastPongAt.set(serverWs, Date.now() - 10 * 60_000)
       internals(server).runHeartbeat()
 
       await closed // terminate() fired the close handler

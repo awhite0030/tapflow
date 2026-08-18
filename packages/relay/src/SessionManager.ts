@@ -12,6 +12,26 @@ export interface Session {
   agentCapabilities?: string[]
   agentSocket: WebSocket
   browserSocket: WebSocket | null
+  /**
+   * Who may command this session — `<userId>:<clientId>`, not a socket.
+   *
+   * Split from `browserSocket` because that one field was answering two questions: *who may command* and
+   * *where do replies go*. Only the first moves. A browser tab holds four sockets (`SessionList`,
+   * `DeviceViewer`, `useAgentSession`, `MacResources`) and the one that holds the session is not the one
+   * that sends the teardown, which is why a socket-shaped answer could not be given to #527.
+   *
+   * Cleared with `browserSocket`, in `clearBrowser` and `remove`. Keeping it past the release would let a
+   * client that has left go on driving the device, and would let input through in the reconnect grace —
+   * a window `ownsSession` deliberately fails fast in, because the alternative is applying it to a device
+   * nobody is watching.
+   */
+  owner: string | null
+  /** Whether that owner is an identity the relay minted because the connection claimed none, and the
+   *  principal behind it. Recorded as facts rather than recovered from `owner`'s text: the client half of
+   *  that string comes off the handshake query unvalidated, so a caller could otherwise hand itself the
+   *  legacy exemption by claiming an id that looked minted. */
+  ownerMinted: boolean
+  ownerUser: string | null
   streamSocket: WebSocket | null
   deviceId: string
   deviceName: string
@@ -109,6 +129,9 @@ export class SessionManager {
         ...SessionManager.agentFields(agent, d),
         agentSocket,
         browserSocket: null,
+        owner: null,
+        ownerMinted: false,
+        ownerUser: null,
         streamSocket: null,
         deviceId: d.id,
         readySent: false,
@@ -182,18 +205,32 @@ export class SessionManager {
    *          expected failure that travels as an exception is indistinguishable from a bug by the time it
    *          is caught, and the handler then has to guess a `reason`.
    */
-  join(sessionId: string, browserSocket: WebSocket): JoinResult {
+  join(
+    sessionId: string,
+    browserSocket: WebSocket,
+    owner: { key: string; user: string; minted: boolean },
+    isAlive: (ws: WebSocket) => boolean,
+  ): JoinResult {
     const session = this.sessions.get(sessionId)
     if (!session) return { ok: false, failure: 'not-found' }
-    // `!== browserSocket` is #515. The relay's handler already exempts the owning socket from the
-    // occupancy refusal one layer up, and this line not matching it is what made that exemption fall
-    // through to a `Session busy` throw — reported to the caller as `session-not-found`, for a live
-    // session it was holding. A re-join is now idempotent: it keeps the binding, cancels the idle timer
-    // below, and the handler replays the session's cached state exactly as it does for a fresh join.
+    // **Three conditions, and each one is an issue.** A session is occupied only when someone *else* holds
+    // it, on a socket that is open, and that socket is answering.
+    //
+    // - `owner !== owner` is #527 and #515: a re-join by the same client is idempotent whether or not the
+    //   socket is the same one, which is what makes a tab's four sockets one holder and an automatic
+    //   reconnect a takeover rather than a refusal.
+    // - `readyState === OPEN` was the whole test, and it is not a liveness signal. A laptop that went to
+    //   sleep leaves it OPEN until TCP or the heartbeat notices.
+    // - `isAlive` is that signal, passed in because liveness lives on the server rather than here — as a
+    //   predicate over the socket rather than a thunk, so it is applied to *this* session's holder and
+    //   cannot be closed over a stale one. `list()` below takes the same shape for the same reason.
+    //   #579 is the gap between `readyState` and this.
     if (
       session.browserSocket &&
-      session.browserSocket !== browserSocket &&
-      session.browserSocket.readyState === WebSocket.OPEN
+      session.owner !== null &&
+      session.owner !== owner.key &&
+      session.browserSocket.readyState === WebSocket.OPEN &&
+      isAlive(session.browserSocket)
     ) {
       return { ok: false, failure: 'held-by-another' }
     }
@@ -207,6 +244,9 @@ export class SessionManager {
     // was dead: mutation testing removed the guard and every test still passed, because the add follows.
     this.unindexBrowser(session)
     session.browserSocket = browserSocket
+    session.owner = owner.key
+    session.ownerMinted = owner.minted
+    session.ownerUser = owner.user
     let held = this.browserSocketIndex.get(browserSocket)
     if (!held) { held = new Set(); this.browserSocketIndex.set(browserSocket, held) }
     held.add(session)
@@ -232,6 +272,9 @@ export class SessionManager {
       this.unindexBrowser(session)
       session.browserSocket = null
     }
+    session.owner = null
+    session.ownerMinted = false
+    session.ownerUser = null
     if (session.idleTimer) { clearTimeout(session.idleTimer); session.idleTimer = null }
     if (onTimeout) {
       session.idleTimer = setTimeout(() => {
@@ -352,7 +395,20 @@ export class SessionManager {
     if (session) session.deviceStatus = status
   }
 
-  list(): SessionInfo[] {
+  /**
+   * @param asker      the owner key of the socket that asked, so `busy` can mean *busy for you*.
+   * @param isAlive    whether a holder's socket is answering — the same predicate occupancy uses.
+   *
+   * **`busy` has to agree with the occupancy test or the UI locks a tester out of their own session.**
+   * `browserSocket !== null` said "someone holds it", which is a different question from "you cannot have
+   * it": `QASession` renders `disabled={isBusy}`, so a tester whose socket reconnected automatically found
+   * their own device greyed out with no way to reach the takeover that would have worked. And a holder
+   * that has stopped answering keeps the card locked for everyone until the sweep notices.
+   *
+   * Passing the same `isAlive` rather than a second liveness rule is the point — two predicates that
+   * disagree would flash a device as free while a join for it is still refused.
+   */
+  list(asker: string, isAlive: (ws: WebSocket) => boolean): SessionInfo[] {
     // Group sessions by agentSocket
     const agentMap = new Map<WebSocket, Session[]>()
     for (const session of this.sessions.values()) {
@@ -380,7 +436,16 @@ export class SessionManager {
         status: s.deviceStatus,
         osVersion: s.deviceOsVersion,
         sessionId: s.id,
-        busy: s.browserSocket !== null,
+        busy:
+          s.owner !== null &&
+          s.owner !== asker &&
+          s.browserSocket !== null &&
+          // The clause that was missing, and its absence was the mirror of the failure the docstring warns
+          // about: a socket in CLOSING has not fired `close` yet, so `isAlive` is still true — the card
+          // read `busy` while a join for it would have succeeded, locking every other tester out of a
+          // device the relay was ready to hand them.
+          s.browserSocket.readyState === WebSocket.OPEN &&
+          isAlive(s.browserSocket),
       })),
     }))
   }

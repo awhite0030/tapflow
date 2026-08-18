@@ -8,6 +8,22 @@ const OPEN = 1
 const mockSocket = () => ({ readyState: OPEN } as WebSocket)
 const closedSocket = () => ({ readyState: 3 } as WebSocket)
 
+/**
+ * A distinct owner per socket, which is what an unidentified connection gets from the relay — so every
+ * pre-existing test here keeps the behaviour it was written for. Ownership by *client* is what the tests
+ * added below exercise, by passing the same key from two sockets.
+ */
+const owners = new WeakMap<object, string>()
+let ownerSeq = 0
+const ownerOf = (ws: object) => {
+  let key = owners.get(ws)
+  if (!key) { key = `owner-${++ownerSeq}`; owners.set(ws, key) }
+  return { key, user: key, minted: false }
+}
+
+/** A named client, for the tests that need two sockets to be one holder. */
+const asClient = (key: string) => ({ key, user: key.split(':')[0]!, minted: false })
+
 describe('SessionManager', () => {
   describe('create()', () => {
     it('returns an empty array when no devices given', () => {
@@ -182,7 +198,7 @@ describe('SessionManager', () => {
       const sm = new SessionManager()
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
       const browserWs = mockSocket()
-      sm.join(id, browserWs)
+      sm.join(id, browserWs, ownerOf(browserWs), () => true)
       expect(sm.get(id)?.browserSocket).toBe(browserWs)
     })
 
@@ -191,15 +207,15 @@ describe('SessionManager', () => {
     // guessed a `reason`, and guessed wrong for the most common case (see the re-join tests below).
     it('reports a session that is not there', () => {
       const sm = new SessionManager()
-      expect(sm.join('bad-id', mockSocket())).toEqual({ ok: false, failure: 'not-found' })
+      expect(sm.join('bad-id', mockSocket(), ownerOf(mockSocket()), () => true)).toEqual({ ok: false, failure: 'not-found' })
     })
 
     it('reports a session another OPEN socket holds', () => {
       const sm = new SessionManager()
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
       const busyWs = { readyState: OPEN } as WebSocket
-      sm.join(id, busyWs)
-      expect(sm.join(id, mockSocket())).toEqual({ ok: false, failure: 'held-by-another' })
+      sm.join(id, busyWs, ownerOf(busyWs), () => true)
+      expect(sm.join(id, mockSocket(), ownerOf(mockSocket()), () => true)).toEqual({ ok: false, failure: 'held-by-another' })
       // The refusal must not have moved the binding — a rejected join that stole the session would be
       // the defect this check exists to prevent, wearing a refusal's clothes.
       expect(sm.get(id)?.browserSocket).toBe(busyWs)
@@ -209,8 +225,8 @@ describe('SessionManager', () => {
       const sm = new SessionManager()
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
       const owner = { readyState: OPEN } as WebSocket
-      sm.join(id, owner)
-      expect(sm.join(id, owner)).toEqual({ ok: true })
+      sm.join(id, owner, ownerOf(owner), () => true)
+      expect(sm.join(id, owner, ownerOf(owner), () => true)).toEqual({ ok: true })
       expect(sm.get(id)?.browserSocket).toBe(owner)
       // And the socket still holds it exactly once. `unindexBrowser` reads `session.browserSocket`, so a
       // re-join that ran it would drop the entry this join is re-establishing — leaving the session bound
@@ -229,8 +245,8 @@ describe('SessionManager', () => {
         { id: 'd2', name: 'Y', platform: 'ios', status: 'shutdown' },
       ])
       const ws = { readyState: OPEN } as WebSocket
-      sm.join(a!, ws)
-      sm.join(b!, ws)
+      sm.join(a!, ws, ownerOf(ws), () => true)
+      sm.join(b!, ws, ownerOf(ws), () => true)
       expect(sm.getByBrowserSocket(ws).map((s) => s.id).sort()).toEqual([a, b].sort())
       expect(sm.get(a!)?.browserSocket).toBe(ws)
       expect(sm.get(b!)?.browserSocket).toBe(ws)
@@ -243,8 +259,8 @@ describe('SessionManager', () => {
         { id: 'd2', name: 'Y', platform: 'ios', status: 'shutdown' },
       ])
       const ws = { readyState: OPEN } as WebSocket
-      sm.join(a!, ws)
-      sm.join(b!, ws)
+      sm.join(a!, ws, ownerOf(ws), () => true)
+      sm.join(b!, ws, ownerOf(ws), () => true)
       sm.clearBrowser(a!)
       expect(sm.getByBrowserSocket(ws).map((s) => s.id)).toEqual([b])
       sm.clearBrowser(b!)
@@ -266,8 +282,8 @@ describe('SessionManager', () => {
         { id: 'd2', name: 'Y', platform: 'ios', status: 'shutdown' },
       ])
       const ws = { readyState: OPEN } as WebSocket
-      sm.join(a!, ws)
-      sm.join(b!, ws)
+      sm.join(a!, ws, ownerOf(ws), () => true)
+      sm.join(b!, ws, ownerOf(ws), () => true)
       sm.remove(a!)
       expect(sm.getByBrowserSocket(ws).map((s) => s.id)).toEqual([b])
     })
@@ -286,7 +302,7 @@ describe('SessionManager', () => {
     it('sets browserSocket to null', () => {
       const sm = new SessionManager()
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
-      sm.join(id, mockSocket())
+      sm.join(id, mockSocket(), ownerOf(mockSocket()), () => true)
       sm.clearBrowser(id)
       expect(sm.get(id)?.browserSocket).toBeNull()
     })
@@ -305,7 +321,7 @@ describe('SessionManager', () => {
     it('list() has undefined resources when none reported', () => {
       const sm = new SessionManager()
       sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }], 'Mac1')
-      expect(sm.list()[0].resources).toBeUndefined()
+      expect(sm.list('asker', () => true)[0].resources).toBeUndefined()
     })
 
     it('setResources() is reflected in list()', () => {
@@ -314,7 +330,7 @@ describe('SessionManager', () => {
       sm.create(ws, [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }], 'Mac1')
       const resources = { cpuPercent: 42, memUsedMB: 8192, memTotalMB: 16384, slotsAvailable: 2, slotsTotal: 3, reportedAt: 1000 }
       sm.setResources(ws, resources)
-      expect(sm.list()[0].resources).toEqual(resources)
+      expect(sm.list('asker', () => true)[0].resources).toEqual(resources)
     })
 
     it('removeResources() clears resources from list()', () => {
@@ -323,7 +339,7 @@ describe('SessionManager', () => {
       sm.create(ws, [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }], 'Mac1')
       sm.setResources(ws, { cpuPercent: 50, memUsedMB: 4096, memTotalMB: 16384, slotsAvailable: 3, slotsTotal: 3, reportedAt: 1000 })
       sm.removeResources(ws)
-      expect(sm.list()[0].resources).toBeUndefined()
+      expect(sm.list('asker', () => true)[0].resources).toBeUndefined()
     })
 
     it('setResources() on unknown socket does not throw', () => {
@@ -338,7 +354,7 @@ describe('SessionManager', () => {
       sm.create(ws1, [{ id: 'd1', name: 'A', platform: 'ios', status: 'shutdown' }], 'Mac1')
       sm.create(ws2, [{ id: 'd2', name: 'B', platform: 'ios', status: 'shutdown' }], 'Mac2')
       sm.setResources(ws1, { cpuPercent: 10, memUsedMB: 1000, memTotalMB: 8000, slotsAvailable: 3, slotsTotal: 3, reportedAt: 1000 })
-      const listed = sm.list()
+      const listed = sm.list('asker', () => true)
       const mac1 = listed.find((g) => g.agentName === 'Mac1')!
       const mac2 = listed.find((g) => g.agentName === 'Mac2')!
       expect(mac1.resources?.cpuPercent).toBe(10)
@@ -353,7 +369,7 @@ describe('SessionManager', () => {
     it('clearBrowser() with onTimeout fires callback after idleTimeoutMs', () => {
       const sm = new SessionManager({ idleTimeoutMs: 1000 })
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
-      sm.join(id, mockSocket())
+      sm.join(id, mockSocket(), ownerOf(mockSocket()), () => true)
       const onTimeout = vi.fn()
       sm.clearBrowser(id, onTimeout)
       expect(onTimeout).not.toHaveBeenCalled()
@@ -364,10 +380,10 @@ describe('SessionManager', () => {
     it('join() cancels a pending idle timer', () => {
       const sm = new SessionManager({ idleTimeoutMs: 1000 })
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
-      sm.join(id, mockSocket())
+      sm.join(id, mockSocket(), ownerOf(mockSocket()), () => true)
       const onTimeout = vi.fn()
       sm.clearBrowser(id, onTimeout)
-      sm.join(id, mockSocket())          // reconnect before timeout
+      sm.join(id, mockSocket(), ownerOf(mockSocket()), () => true)          // reconnect before timeout
       vi.advanceTimersByTime(2000)
       expect(onTimeout).not.toHaveBeenCalled()
     })
@@ -375,7 +391,7 @@ describe('SessionManager', () => {
     it('remove() cancels a pending idle timer', () => {
       const sm = new SessionManager({ idleTimeoutMs: 1000 })
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
-      sm.join(id, mockSocket())
+      sm.join(id, mockSocket(), ownerOf(mockSocket()), () => true)
       const onTimeout = vi.fn()
       sm.clearBrowser(id, onTimeout)
       sm.remove(id)
@@ -386,7 +402,7 @@ describe('SessionManager', () => {
     it('clearBrowser() without onTimeout starts no timer', () => {
       const sm = new SessionManager({ idleTimeoutMs: 1000 })
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
-      sm.join(id, mockSocket())
+      sm.join(id, mockSocket(), ownerOf(mockSocket()), () => true)
       sm.clearBrowser(id)               // no callback
       expect(sm.get(id)?.idleTimer).toBeNull()
     })
@@ -395,7 +411,7 @@ describe('SessionManager', () => {
   describe('list()', () => {
     it('returns empty array when no sessions', () => {
       const sm = new SessionManager()
-      expect(sm.list()).toEqual([])
+      expect(sm.list('asker', () => true)).toEqual([])
     })
 
     it('groups devices by agent into one SessionInfo', () => {
@@ -405,7 +421,7 @@ describe('SessionManager', () => {
         { id: 'devA', name: 'iPhone A', platform: 'ios', status: 'shutdown' },
         { id: 'devB', name: 'iPhone B', platform: 'ios', status: 'shutdown' },
       ], 'MyMac')
-      const listed = sm.list()
+      const listed = sm.list('asker', () => true)
       expect(listed).toHaveLength(1)
       expect(listed[0].agentName).toBe('MyMac')
       expect(listed[0].devices).toHaveLength(2)
@@ -415,21 +431,36 @@ describe('SessionManager', () => {
       const sm = new SessionManager()
       const ws = mockSocket()
       const [idA] = sm.create(ws, [{ id: 'devA', name: 'A', platform: 'ios', status: 'shutdown' }])
-      const listed = sm.list()
+      const listed = sm.list('asker', () => true)
       expect(listed[0].devices[0]!.sessionId).toBe(idA)
     })
 
-    it('reflects busy=true when browserSocket is set', () => {
+    it('is busy for someone else, and not for the holder', () => {
+      // `busy` used to be `browserSocket !== null` — "someone holds it", which is a different question
+      // from "you cannot have it". `QASession` renders `disabled={isBusy}`, so a tester whose socket
+      // reconnected found their own device greyed out with no way to reach the takeover that would have
+      // worked. It answers the asker's question now.
       const sm = new SessionManager()
       const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
-      sm.join(id, mockSocket())
-      expect(sm.list()[0].devices[0]!.busy).toBe(true)
+      const holder = mockSocket()
+      sm.join(id, holder, asClient('tab-a'), () => true)
+      expect(sm.list('tab-b', () => true)[0].devices[0]!.busy).toBe(true)
+      expect(sm.list('tab-a', () => true)[0].devices[0]!.busy).toBe(false)
+    })
+
+    it('is not busy when the holder has stopped answering', () => {
+      // The same predicate occupancy uses, and passing it in rather than reproducing it is the point: two
+      // liveness rules that disagreed would show a device as free while a join for it was still refused.
+      const sm = new SessionManager()
+      const [id] = sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
+      sm.join(id, mockSocket(), asClient('tab-a'), () => true)
+      expect(sm.list('tab-b', () => false)[0].devices[0]!.busy).toBe(false)
     })
 
     it('reflects busy=false when browserSocket is null', () => {
       const sm = new SessionManager()
       sm.create(mockSocket(), [{ id: 'd1', name: 'X', platform: 'ios', status: 'shutdown' }])
-      expect(sm.list()[0].devices[0]!.busy).toBe(false)
+      expect(sm.list('asker', () => true)[0].devices[0]!.busy).toBe(false)
     })
 
   })
@@ -478,7 +509,7 @@ describe('SessionManager', () => {
     const sm = new SessionManager()
     sm.create(mockSocket(), [{ id: 'devA', name: 'A', platform: 'ios', status: 'shutdown' }], 'Mac1')
     sm.create(mockSocket(), [{ id: 'devB', name: 'B', platform: 'ios', status: 'shutdown' }], 'Mac2')
-    const listed = sm.list()
+    const listed = sm.list('asker', () => true)
     expect(listed).toHaveLength(2)
   })
 
@@ -490,7 +521,7 @@ describe('SessionManager', () => {
       const sm = new SessionManager()
       sm.create(closedSocket(), [{ id: 'devA', name: 'A', platform: 'ios', status: 'booted' }])
 
-      expect(sm.list()).toEqual([])
+      expect(sm.list('asker', () => true)).toEqual([])
     })
 
     it('lists it again once it is rebound to a live socket', () => {
@@ -502,8 +533,8 @@ describe('SessionManager', () => {
 
       sm.rebind(id!, live, dev, { agentId: 'mac-1' })
 
-      expect(sm.list()).toHaveLength(1)
-      expect(sm.list()[0]!.devices[0]!.sessionId).toBe(id)
+      expect(sm.list('asker', () => true)).toHaveLength(1)
+      expect(sm.list('asker', () => true)[0]!.devices[0]!.sessionId).toBe(id)
     })
   })
 })

@@ -241,6 +241,9 @@ const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // the dashboard and mcp-server already use.
 export class RelayClient {
   private ws: WebSocket | null = null
+  /** One identity per process, so a reconnect re-joins its own sessions instead of contending with the
+   *  socket it replaces. Minted here rather than supplied: nothing outside this process shares it. */
+  private readonly clientId = randomUUID()
   private waiters: Waiter[] = []
 
   constructor(
@@ -251,7 +254,10 @@ export class RelayClient {
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       const headers = this.token ? { Authorization: `Bearer ${this.token}` } : undefined
-      const ws = new WebSocket(this.relayUrl, { headers })
+      // One identity for the run — see `mcp-server`'s twin.
+      const url = new URL(this.relayUrl)
+      url.searchParams.set('client', this.clientId)
+      const ws = new WebSocket(url.toString(), { headers })
       ws.once('open', () => {
         this.ws = ws
         resolve()

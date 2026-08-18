@@ -7,9 +7,9 @@
 Answer a shutdown the relay cannot deliver, release every session a closing socket held, and let a viewer re-join a session it already holds
 
 Three defects that share a subject — who holds a session — and none of which needed the question that
-sounds like their root. That one is *who should be allowed to*, and it is open: `device:shutdown` still
-has no ownership check, because three of the dashboard's four senders come from a socket that never
-joins the session and gating it there would break going back and the unmount teardown.
+sounds like their root. The root question — **who should be allowed to drive a session** — is answered in this same release; see
+the note titled "A session belongs to whoever opened it". It could not be answered in this slice because the dashboard's four
+senders per tab are four connections, and a socket-shaped owner refuses the tab's own teardown.
 
 What a user can observe:
 

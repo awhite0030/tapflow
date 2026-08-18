@@ -70,6 +70,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Nobody else can power off a device you are using.** Any signed-in client that knew a session id could
+  shut down a colleague's simulator mid-test. The check that stops it could not be added before: the
+  browser tab that holds a session and the one that sends the shutdown when you navigate away are
+  different connections, so refusing "not the holder" would have refused the tab's own cleanup and left
+  devices running. A session now belongs to whoever opened it rather than to one of their connections.
+- **A Wi-Fi blip no longer costs you your session.** The relay treated a connection as present until TCP
+  or a heartbeat noticed otherwise — up to a minute after a laptop went to sleep — so returning inside
+  that window meant being told the device was in use, by yourself. A device whose tester's connection
+  died — a sleeping laptop, a dropped network — frees up in at most 45 seconds rather than up to a minute,
+  and no longer shows as free while it is still in use: "can I take this?" and the
+  "In use" badge read the same signal now.
 - **A refused `connect_device` says which of the three refusals it was.** It reported the relay's prose
   alone, so "the device is open in another browser session" and "this Mac is over its resource ceiling"
   arrived as sentences a model had to guess at rather than the closed reason it can act on. A failed

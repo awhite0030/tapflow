@@ -1274,6 +1274,32 @@ describe('REASON_ADVICE', () => {
   })
 })
 
+describe('the socket identifies its client to the relay (#527, #579)', () => {
+  // **Nothing else holds this.** The diff that added ownership changed no test in this package, so
+  // deleting the `client` parameter — or minting it per `connect()` instead of per instance — passes the
+  // whole suite while costing this client the half of the change it is the beneficiary of: a reconnect
+  // that re-joins its own sessions rather than contending with the socket it is replacing.
+  it('sends a stable client id on the handshake, and the same one after a reconnect', async () => {
+    const relay = createMockRelay()
+    const seen: string[] = []
+    relay.wss.on('connection', (_ws, req) => {
+      seen.push(new URL(req.url ?? '/', 'http://x').searchParams.get('client') ?? '')
+    })
+    const client = new TapflowClient(`ws://localhost:${relay.port}`, '')
+    await client.connect()
+    // Disconnect between the two, which is what a reconnect is — and what keeps the first socket from
+    // outliving the mock relay's `close()`, which waits on its clients.
+    client.disconnect()
+    await client.connect()
+    client.disconnect()
+    await relay.close()
+
+    expect(seen).toHaveLength(2)
+    expect(seen[0], 'no client id was sent').not.toBe('')
+    expect(seen[1], 'a reconnect introduced itself as a different client').toBe(seen[0])
+  })
+})
+
 describe('disconnect_device settles what was waiting on the session (#514)', () => {
   let relay: ReturnType<typeof createMockRelay>
   let client: TapflowClient

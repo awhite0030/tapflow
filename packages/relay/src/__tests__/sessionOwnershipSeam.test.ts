@@ -3,12 +3,14 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { WebSocket } from 'ws'
-import { RelayServer, IDR_REQUEST_THROTTLE_MS } from '../RelayServer'
+import { RelayServer, IDR_REQUEST_THROTTLE_MS, ownerKeyFor } from '../RelayServer'
+import { signJwt, hashPat } from '../middleware/auth'
 import type { JoinResult } from '../SessionManager'
-import { initDb, closeDb } from '../db'
+import { initDb, closeDb, getDb } from '../db'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 import type {
-  AgentRegistered, DeviceShutdown, DeviceShutdownError, GenericError, SessionChrome, SessionJoined,
+  AgentRegistered, AgentsListed, DeviceShutdown, DeviceShutdownError, GenericError, SessionChrome,
+  SessionJoined,
 } from '@tapflowio/protocol'
 
 // Three defects that share a subject — who holds a session — and **not** the question of who *should*.
@@ -54,8 +56,19 @@ describe('session ownership seam', () => {
     return { agent, sessionIds: reply.registeredSessions.map((s) => s.sessionId) }
   }
 
-  async function browserSocket() {
-    const ws = new WebSocket(`ws://localhost:${port}`)
+  /** A browser socket, optionally speaking for a named client. Omitting the id is what an older build or
+   *  a third-party client does, and the relay mints one per connection — so two anonymous sockets are two
+   *  owners, which is exactly today's behaviour. */
+  async function browserSocket(client?: string, userId?: number) {
+    const url = new URL(`ws://localhost:${port}`)
+    if (client) url.searchParams.set('client', client)
+    // A cookie is the only way to give a connection a *principal* here — every socket in this file is
+    // otherwise a localhost connection with no auth, so all of them are `anon` and any rule keyed on the
+    // user is trivially satisfied. Two mutations survived on exactly that before this parameter existed.
+    const headers = userId === undefined
+      ? undefined
+      : { cookie: `tapflow_token=${signJwt({ userId, email: `u${userId}@example.test`, role: 'Admin' })}` }
+    const ws = new WebSocket(url.toString(), { headers })
     await waitForOpen(ws)
     return ws
   }
@@ -491,6 +504,405 @@ describe('session ownership seam', () => {
     agent.close()
   })
 
+  // ── #579 · #527 — the owner is a client, and occupancy is judged by liveness ──────────────────────
+
+  it('a second socket of the same client may command the session the first holds', async () => {
+    // #527. The dashboard opens four sockets per tab and the one that holds the session is not the one
+    // that sends the teardown, which is why this could not be answered with a socket.
+    const { agent, sessionIds } = await registerAgent('owner-two-sockets')
+    const sessionId = sessionIds[0]!
+    const holder = await browserSocket('tab-a')
+    holder.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(holder, 'session:joined')
+
+    const sibling = await browserSocket('tab-a')
+    sibling.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    expect((await waitForType<DeviceShutdown>(agent, 'device:shutdown')).sessionId).toBe(sessionId)
+
+    agent.close(); holder.close(); sibling.close()
+  })
+
+  it('an unheld session stays shutdownable, so the unmount teardown survives the race', async () => {
+    // The reason the gate is "not someone else's" rather than "mine". The viewer's socket close and the
+    // teardown's `device:shutdown` travel on different connections with no ordering between them; if the
+    // close lands first the session is unheld, and an owns-it gate would refuse the teardown and leave the
+    // device booted until the idle timer. #527 named that path as the reason a gate could not be added.
+    const { agent, sessionIds } = await registerAgent('owner-unheld')
+    const sessionId = sessionIds[0]!
+    const holder = await browserSocket('tab-a')
+    holder.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(holder, 'session:joined')
+
+    const closed = new Promise<void>((r) => holder.on('close', () => r()))
+    holder.close()
+    await closed
+
+    const teardown = await browserSocket('tab-a')
+    teardown.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    expect((await waitForType<DeviceShutdown>(agent, 'device:shutdown')).sessionId).toBe(sessionId)
+
+    agent.close(); teardown.close()
+  })
+
+  it('a live holder still refuses another client', async () => {
+    const { agent, sessionIds } = await registerAgent('owner-live-holder')
+    const sessionId = sessionIds[0]!
+    const holder = await browserSocket('tab-a')
+    holder.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(holder, 'session:joined')
+
+    const other = await browserSocket('tab-b')
+    other.send(JSON.stringify({ type: 'session:start', sessionId }))
+    expect((await waitForType<GenericError>(other, 'error')).reason).toBe('session-busy')
+
+    agent.close(); holder.close(); other.close()
+  })
+
+  it('the same client re-joins on a new socket without waiting for the holder to be noticed', async () => {
+    // #579's ordinary shape: `useRelay` reconnects inside the same document after 2s, so the returning
+    // socket is a different socket and the same client. Before this it contended with its own predecessor.
+    const { agent, sessionIds } = await registerAgent('owner-rejoin')
+    const sessionId = sessionIds[0]!
+    const first = await browserSocket('tab-a')
+    first.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(first, 'session:joined')
+
+    // The old socket is left open and alive — the point is that being the same client is enough.
+    const second = await browserSocket('tab-a')
+    second.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(second, 'session:joined')
+
+    // Ownership moved: the new socket commands, and replies go to it.
+    second.send(JSON.stringify({
+      type: 'input:touch:end', sessionId, requestId: 'rq-1', payload: { x: 0.5, y: 0.5 },
+    }))
+    expect((await waitForType(agent, 'input:touch:end')).sessionId).toBe(sessionId)
+
+    agent.close(); first.close(); second.close()
+  })
+
+  it('a holder that has stopped answering is not occupancy', async () => {
+    // #579's root: the check read `readyState`, which a sleeping laptop leaves OPEN. Liveness is the
+    // relay's own pong record, reached here the way the other private-field tests in this file reach one.
+    const { agent, sessionIds } = await registerAgent('owner-dead-holder')
+    const sessionId = sessionIds[0]!
+    const holder = await browserSocket('tab-a')
+    holder.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(holder, 'session:joined')
+
+    const internals = server as unknown as {
+      sessions: { get(id: string): { browserSocket: object | null } | undefined }
+      lastPongAt: WeakMap<object, number>
+    }
+    const holderWs = internals.sessions.get(sessionId)!.browserSocket!
+    internals.lastPongAt.set(holderWs, Date.now() - 10 * 60_000)
+
+    const other = await browserSocket('tab-b')
+    other.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(other, 'session:joined')
+    expect(await waitForTypeOrNull<GenericError>(other, 'error', 200)).toBeNull()
+
+    agent.close(); holder.close(); other.close()
+  })
+
+  it('busy answers the asker, and agrees with occupancy about liveness', async () => {
+    const { agent, sessionIds } = await registerAgent('owner-busy')
+    const sessionId = sessionIds[0]!
+    const holder = await browserSocket('tab-a')
+    holder.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(holder, 'session:joined')
+
+    const listOn = async (ws: WebSocket) => {
+      ws.send(JSON.stringify({ type: 'agents:list' }))
+      const listed = await waitForType<AgentsListed>(ws, 'agents:listed')
+      return listed.sessions[0]!.devices.find((d) => d.sessionId === sessionId)!.busy
+    }
+    const stranger = await browserSocket('tab-b')
+    expect(await listOn(stranger), 'another client should see it as taken').toBe(true)
+    expect(await listOn(holder), 'the holder should not be locked out of its own device').toBe(false)
+
+    // And the same liveness rule the join uses — otherwise the card flashes free while a join is refused.
+    const internals = server as unknown as { lastPongAt: WeakMap<object, number> }
+    const holderWs = (server as unknown as {
+      sessions: { get(id: string): { browserSocket: object } | undefined }
+    }).sessions.get(sessionId)!.browserSocket
+    internals.lastPongAt.set(holderWs, Date.now() - 10 * 60_000)
+    expect(await listOn(stranger), 'a holder that stopped answering does not keep the card locked').toBe(false)
+
+    agent.close(); holder.close(); stranger.close()
+  })
+
+  it('a sibling socket may issue a correlated command, which is what an owner being a client means', async () => {
+    // R2, and the assertion `mayShutDown` cannot make: `device:shutdown` has its own weaker gate, so a
+    // test using only that one passes with ownership still keyed on the socket. Measured — it did.
+    const { agent, sessionIds } = await registerAgent('owner-sibling-input')
+    const sessionId = sessionIds[0]!
+    const holder = await browserSocket('tab-a')
+    holder.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(holder, 'session:joined')
+
+    const sibling = await browserSocket('tab-a')
+    sibling.send(JSON.stringify({
+      type: 'input:touch:end', sessionId, requestId: 'rq-sib', payload: { x: 0.5, y: 0.5 },
+    }))
+    expect((await waitForType(agent, 'input:touch:end')).sessionId).toBe(sessionId)
+    expect(await waitForTypeOrNull(sibling, 'input:error', 200)).toBeNull()
+
+    // And a socket of another client is still refused by that same gate.
+    const stranger = await browserSocket('tab-b')
+    stranger.send(JSON.stringify({
+      type: 'input:touch:end', sessionId, requestId: 'rq-str', payload: { x: 0.5, y: 0.5 },
+    }))
+    expect((await waitForType(stranger, 'input:error')).reason).toBe('not-session-owner')
+
+    agent.close(); holder.close(); sibling.close(); stranger.close()
+  })
+
+  it('a holder whose socket is closing is not busy, because a join for it would succeed', async () => {
+    // `busy` and occupancy have to carry **the same** conditions. A socket in CLOSING has not fired
+    // `close`, so its pong is still fresh and `isAlive` says yes — but `readyState` is not OPEN, so the
+    // join succeeds. `busy` was missing that clause, which locked every other tester out of a device the
+    // relay was ready to hand them, for as long as the close took.
+    const { agent, sessionIds } = await registerAgent('owner-busy-closing')
+    const sessionId = sessionIds[0]!
+    const holder = await browserSocket('tab-a')
+    holder.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(holder, 'session:joined')
+
+    const stranger = await browserSocket('tab-b')
+    const isBusy = async () => {
+      stranger.send(JSON.stringify({ type: 'agents:list' }))
+      const listed = await waitForType<AgentsListed>(stranger, 'agents:listed')
+      return listed.sessions[0]!.devices.find((d) => d.sessionId === sessionId)!.busy
+    }
+    expect(await isBusy()).toBe(true)
+
+    // Force the holder's server-side socket into a non-OPEN state without letting `close` run, which is
+    // what a lost FIN looks like from the relay's side.
+    const held = (server as unknown as {
+      sessions: { get(id: string): { browserSocket: { readyState: number } } | undefined }
+    }).sessions.get(sessionId)!.browserSocket
+    const real = held.readyState
+    Object.defineProperty(held, 'readyState', { value: WebSocket.CLOSING, configurable: true })
+    try {
+      expect(await isBusy(), 'busy disagreed with the occupancy test').toBe(false)
+    } finally {
+      Object.defineProperty(held, 'readyState', { value: real, configurable: true })
+    }
+
+    agent.close(); holder.close(); stranger.close()
+  })
+
+  it('the owner key pairs the user with the claimed id', () => {
+    // Held here because the handler's inline version was unreachable without an authenticated handshake,
+    // and a mutation dropping the user id survived the entire suite. Two accounts claiming the same id is
+    // the case the pairing exists for: a leaked client id must be useless to anyone else.
+    expect(ownerKeyFor(7, 'tab-a').key).toBe('7:tab-a')
+    expect(ownerKeyFor(7, 'tab-a').key).not.toBe(ownerKeyFor(8, 'tab-a').key)
+    // No claim → a fresh identity each time, which is per-socket, which is what it replaced.
+    expect(ownerKeyFor(7, null).key).not.toBe(ownerKeyFor(7, null).key)
+    expect(ownerKeyFor(7, '').key).not.toBe(ownerKeyFor(7, '').key)
+    // Unauthenticated (localhost) connections still differ by their claim.
+    expect(ownerKeyFor(undefined, 'tab-a').key).toBe('anon:tab-a')
+  })
+
+  it('mintedness cannot be claimed, only granted', () => {
+    // **The forgery a first version admitted.** It marked minted keys with a `minted-` prefix and had the
+    // shutdown gate recover the fact with `includes(':minted-')` — but the claim comes off the handshake
+    // query unvalidated, so `?client=minted-1` handed the caller its own exemption, and
+    // `?client=x:minted-y` did it while keeping a real user id, which let a *different* user power the
+    // device off. It is a field now, and a field cannot be spelled into existence.
+    expect(ownerKeyFor(7, 'minted-1').minted, 'a claim named like a mint is still a claim').toBe(false)
+    expect(ownerKeyFor(7, 'x:minted-y').minted).toBe(false)
+    expect(ownerKeyFor(7, null).minted, 'no claim is the only way to be minted').toBe(true)
+    expect(ownerKeyFor(7, '').minted).toBe(true)
+    // And the principal is the part before the first delimiter, whatever the claim contains.
+    expect(ownerKeyFor(7, 'x:minted-y').user).toBe('7')
+  })
+
+  it('a socket the handshake never recorded matches nothing, not even another one', () => {
+    // **The gates rest on this accessor, not on the seeding being total.** `handleConnection` records every
+    // accepted socket before a message can arrive, so nothing reaches the fallback today — but the answer it
+    // gives is what decides whether that stays a defence or becomes a dependency. A shared `'unidentified'`
+    // made any two unrecorded sockets equal, and equal is exactly what `ownsSession` tests for; equal users
+    // are what the shutdown exemption tests for. So a future path that accepted a socket without recording
+    // it would not fail closed — it would hand every such socket ownership of every other's session.
+    //
+    // Reaching in past `private` is deliberate: there is no wire that produces this state, which is the
+    // point. A test that could only drive it through a connection would be a test of the seeding instead.
+    const relay = new RelayServer({ port: 0 })
+    const reach = relay as unknown as {
+      ownerRecord(ws: object): { key: string; user: string; minted: boolean }
+      ownerOf(ws: object): string
+      userOf(ws: object): string
+    }
+    const [a, b] = [{}, {}]
+
+    expect(reach.ownerOf(a)).not.toBe(reach.ownerOf(b))
+    expect(reach.userOf(a), 'equal principals would pass the shutdown exemption').not.toBe(reach.userOf(b))
+    expect(reach.ownerRecord(a).minted, 'unrecorded is not the same as unidentified').toBe(false)
+    // Stored, not freshly minted per call — otherwise a socket would not own the session it just bound.
+    expect(reach.ownerOf(a)).toBe(reach.ownerOf(a))
+    expect(reach.ownerOf(a)).toBe(reach.ownerRecord(a).key)
+  })
+
+  it('a client that sends no id keeps the behaviour each gate had before it', async () => {
+    // R6, and it is **two different answers** because the two gates are different.
+    //
+    // An unidentified connection is minted an identity, so its sockets are strangers to each other —
+    // which is the ownership `ownsSession` always had, and input stays refused. But the *shutdown* gate
+    // cannot be applied to such a client at all: it would refuse that client's own teardown every time,
+    // not as a race, because its teardown socket is minted a different identity from the one holding the
+    // session. An older dashboard bundle re-attaching to an upgraded relay is exactly that shape, and
+    // gating it would leave a device booted until the idle timer on every Back press.
+    const { agent, sessionIds } = await registerAgent('owner-anonymous')
+    const sessionId = sessionIds[0]!
+    const one = await browserSocket()
+    one.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(one, 'session:joined')
+
+    const two = await browserSocket()
+    two.send(JSON.stringify({
+      type: 'input:touch:end', sessionId, requestId: 'rq-anon', payload: { x: 0.5, y: 0.5 },
+    }))
+    expect((await waitForType(two, 'input:error')).reason, 'input is still socket-shaped').toBe('not-session-owner')
+
+    two.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    expect((await waitForType<DeviceShutdown>(agent, 'device:shutdown')).sessionId).toBe(sessionId)
+    expect(await waitForTypeOrNull(two, 'device:shutdown-error', 200)).toBeNull()
+
+    agent.close(); one.close(); two.close()
+  })
+
+  it('an unidentified holder is exempt only for its own user, not across users', async () => {
+    // The exemption exists so a legacy client's own teardown works, and its own teardown is by definition
+    // the same signed-in user. Extending it further would leave one tester able to power off another's
+    // device for as long as anyone runs an older build — unchanged from before the gate existed, which is
+    // not a reason to carry it forward when the narrower rule costs one comparison.
+    //
+    // Both sockets here are unauthenticated localhost connections, so both are the `anon` principal and
+    // the exemption applies — which is what makes this the *permissive* half. Its restrictive twin is the
+    // unit assertion above: mintedness cannot be claimed, so an identified holder never reaches this path.
+    const { agent, sessionIds } = await registerAgent('owner-minted-same-user')
+    const sessionId = sessionIds[0]!
+    const legacy = await browserSocket()
+    legacy.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(legacy, 'session:joined')
+
+    const sibling = await browserSocket()
+    sibling.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    expect((await waitForType<DeviceShutdown>(agent, 'device:shutdown')).sessionId).toBe(sessionId)
+
+    agent.close(); legacy.close(); sibling.close()
+  })
+
+  it('a claim that looks minted is still a claim, and is gated', async () => {
+    // The forgery in wire form. A first version marked minted keys inside the owner string and recovered
+    // the fact with `includes(':minted-')`, so connecting as this would have handed the caller its own
+    // exemption — the claim comes off the handshake query and is never validated.
+    const { agent, sessionIds } = await registerAgent('owner-fake-mint')
+    const sessionId = sessionIds[0]!
+    const holder = await browserSocket('minted-1')
+    holder.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(holder, 'session:joined')
+
+    const stranger = await browserSocket('tab-b')
+    stranger.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    await waitForType<DeviceShutdownError>(stranger, 'device:shutdown-error')
+    expect(await waitForTypeOrNull(agent, 'device:shutdown', 200)).toBeNull()
+
+    agent.close(); holder.close(); stranger.close()
+  })
+
+  it('a PAT connection gets its own principal, not `anon`', async () => {
+    // `getAuth` reads the cookie only, so a first version made every agent, `mcp-server` and
+    // `flow-runner` connection `anon:` — the whole population whose handshake URL is most likely to end
+    // up in a reverse proxy's access log, and the one the user pairing exists to protect. The handler was
+    // already resolving the PAT and discarding it.
+    const db = getDb()
+    const addUser = db.prepare("INSERT OR IGNORE INTO users (id, email, role) VALUES (?, ?, 'Admin')")
+    addUser.run(41, 'pat41@example.test')
+    addUser.run(42, 'pat42@example.test')
+    const mint = (raw: string, userId: number) =>
+      db.prepare("INSERT INTO personal_access_tokens (user_id, name, token_hash, scope) VALUES (?, ?, ?, ?)")
+        .run(userId, `t${userId}`, hashPat(raw), 'view')
+
+    const rawA = 'tflw_pat_ownerA'
+    const rawB = 'tflw_pat_ownerB'
+    mint(rawA, 41)
+    mint(rawB, 42)
+
+    // **A local connection never reaches the PAT path** — `verifyPat` is consulted only when the caller is
+    // neither local nor cookie-authenticated, so on the default server every socket here would be `anon`
+    // and this test would assert nothing. Trusting the loopback proxy is what lets `x-forwarded-for` make
+    // the connection look remote, which is the state a real PAT client is in.
+    await server.stop()
+    server = new RelayServer({ port: 0, trustedProxies: ['127.0.0.1', '::1'] })
+    await server.start()
+    port = (server.address() as { port: number }).port
+
+    const withPat = async (raw: string) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`, {
+        headers: { authorization: `Bearer ${raw}`, 'x-forwarded-for': '203.0.113.7' },
+      })
+      await waitForOpen(ws)
+      return ws
+    }
+
+    const { agent, sessionIds } = await registerAgent('owner-pat')
+    const sessionId = sessionIds[0]!
+    const holder = await withPat(rawA)
+    holder.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(holder, 'session:joined')
+
+    // A different PAT is a different principal, so it does not inherit the holder's exemption.
+    const other = await withPat(rawB)
+    other.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    await waitForType<DeviceShutdownError>(other, 'device:shutdown-error')
+    expect(await waitForTypeOrNull(agent, 'device:shutdown', 200)).toBeNull()
+
+    agent.close(); holder.close(); other.close()
+  })
+
+  it('the legacy exemption does not reach across users', async () => {
+    // The holder identifies itself with nothing, so it is exempt — but only for its own principal. User 2
+    // must not inherit user 1's exemption, or one tester could power off another's device for as long as
+    // anyone is running a build that predates the `client` parameter.
+    const { agent, sessionIds } = await registerAgent('owner-cross-user')
+    const sessionId = sessionIds[0]!
+    const legacy = await browserSocket(undefined, 1)
+    legacy.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(legacy, 'session:joined')
+
+    const sameUser = await browserSocket(undefined, 1)
+    sameUser.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    expect((await waitForType<DeviceShutdown>(agent, 'device:shutdown')).sessionId).toBe(sessionId)
+
+    const otherUser = await browserSocket(undefined, 2)
+    otherUser.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    await waitForType<DeviceShutdownError>(otherUser, 'device:shutdown-error')
+    expect(await waitForTypeOrNull(agent, 'device:shutdown', 200)).toBeNull()
+
+    agent.close(); legacy.close(); sameUser.close(); otherUser.close()
+  })
+
+  it('a client that does send an id is gated on shutdown', async () => {
+    // The other side of the same rule: the gate holds between clients that say who they are. Paired with
+    // the test above so neither can be read as the whole story.
+    const { agent, sessionIds } = await registerAgent('owner-identified-gate')
+    const sessionId = sessionIds[0]!
+    const holder = await browserSocket('tab-a')
+    holder.send(JSON.stringify({ type: 'session:start', sessionId }))
+    await waitForType(holder, 'session:joined')
+
+    const stranger = await browserSocket('tab-b')
+    stranger.send(JSON.stringify({ type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' } }))
+    await waitForType<DeviceShutdownError>(stranger, 'device:shutdown-error')
+    expect(await waitForTypeOrNull(agent, 'device:shutdown', 200)).toBeNull()
+
+    agent.close(); holder.close(); stranger.close()
+  })
+
   // ── #542 — device:shutdown is answered when it cannot be dispatched ───────────────────────────────
 
   it('answers a shutdown addressed to a session that does not exist', async () => {
@@ -552,24 +964,24 @@ describe('session ownership seam', () => {
     agent.close(); browser.close()
   })
 
-  it('still forwards a shutdown from a socket that does not hold the session', async () => {
-    // #527, not this slice. `reachableTarget` deliberately omits the ownership clause, because three of
-    // the dashboard's four senders come from a socket that never joins — gating it here would break
-    // going back and the unmount teardown, the two paths that stop a device costing money. This pins the
-    // omission so that closing #527 is a decision someone makes rather than a line that drifts in.
+  it('refuses a shutdown for a session another client is holding', async () => {
+    // **This test used to assert the opposite**, and deliberately: it pinned #527's omission so that
+    // closing it would be a decision someone made rather than a line that drifted in. The decision is
+    // made — a session is owned by a client rather than a socket — so the assertion flips. Kept in place,
+    // rather than deleted and rewritten elsewhere, because the inversion is the record of the change.
     const { agent, sessionIds } = await registerAgent('seam-shutdown-nonowner')
     const sessionId = sessionIds[0]!
-    const holder = await browserSocket()
+    const holder = await browserSocket('tab-a')
     holder.send(JSON.stringify({ type: 'session:start', sessionId }))
     await waitForType(holder, 'session:joined')
 
-    const stranger = await browserSocket()
+    const stranger = await browserSocket('tab-b')
     stranger.send(JSON.stringify({
       type: 'device:shutdown', sessionId, payload: { deviceId: 'dev0' },
     }))
-    const forwarded = await waitForType<DeviceShutdown>(agent, 'device:shutdown')
-    expect(forwarded.sessionId).toBe(sessionId)
-    expect(await waitForTypeOrNull(stranger, 'device:shutdown-error', 200)).toBeNull()
+    const refusal = await waitForType<DeviceShutdownError>(stranger, 'device:shutdown-error')
+    expect(refusal.message).toMatch(/held by another client/)
+    expect(await waitForTypeOrNull(agent, 'device:shutdown', 200)).toBeNull()
 
     agent.close(); holder.close(); stranger.close()
   })

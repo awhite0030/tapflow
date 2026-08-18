@@ -122,6 +122,35 @@ function ownershipRefusal(session: Session): string {
   return session.browserSocket ? 'session held by another client' : 'session not joined'
 }
 
+/**
+ * The owner key a connection speaks for, from the authenticated user and the client id it claimed.
+ *
+ * **Both halves, and a pure function so both can be tested.** The user id is what keeps a leaked client id
+ * useless to anyone else — without it this would be the relay's first ownership claim a caller can forge,
+ * where socket identity could not be. It comes from the cookie *or* the PAT: reading only the cookie would
+ * have made every agent and every non-browser client `anon:`, which is the population most likely to have
+ * its handshake URL end up in a reverse proxy's access log. The mint is what removes the fallback branch: a connection that
+ * claims nothing gets an identity of its own, which is per-socket, which is the behaviour ownership had
+ * before it moved off the socket.
+ *
+ * Exported for the test that holds the pairing. Inline in the handler it was unreachable without standing
+ * up an authenticated handshake, and a mutation dropping the user id survived the whole suite.
+ */
+export function ownerKeyFor(
+  userId: number | string | undefined,
+  claimed: string | null,
+): { key: string; user: string; minted: boolean } {
+  const user = String(userId ?? 'anon')
+  // **Mintedness is a separate field, not a marker inside the key.** A first version prefixed the mint
+  // with `minted-` and had `mayShutDown` recover the fact with `includes(':minted-')` — which the client
+  // controls, because `claimed` comes straight off the handshake query and is never validated. Connecting
+  // as `?client=minted-1` produced `anon:minted-1` and silently disabled the shutdown gate for that
+  // holder; `?client=x:minted-y` did it while keeping a real user id, so a *different* user could then
+  // power the device off. Encoding a security-relevant fact in a caller-supplied string is the forgery
+  // this whole key was introduced to avoid, reintroduced one layer down.
+  return { key: `${user}:${claimed || randomUUID()}`, user, minted: !claimed }
+}
+
 /** One line per rejecting socket per second, at most. See `RelayServer.logInboundRejection`. */
 const REJECT_LOG_INTERVAL_MS = 1_000
 
@@ -165,8 +194,36 @@ export class RelayServer {
   private purgeBuildsTimer: ReturnType<typeof setInterval> | null = null
   private flushResourcesTimer: ReturnType<typeof setInterval> | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
-  // Liveness per socket for the heartbeat sweep. WeakMap → no manual cleanup on close (GC handles it).
-  private wsAlive = new WeakMap<WebSocket, boolean>()
+  /**
+   * When each socket last answered a ping. WeakMap → no manual cleanup on close (GC handles it).
+   *
+   * **A timestamp, not the swept boolean it replaced.** That flag was set `false` for *every* socket at the
+   * start of each sweep and back to `true` only when the pong returned, so a perfectly healthy socket read
+   * as dead for the whole round trip — a normal state on a 30s cycle rather than an edge case. And the
+   * window is longest for exactly the socket that matters: video goes out on `browserSocket`, and the ping
+   * is written behind whatever is already queued there, so an external viewer's pong can take a second or
+   * two.
+   *
+   * That was invisible while the flag only decided termination, because a sweep that finds `false` has by
+   * definition already waited a full interval. Reading it to answer *"is this holder alive right now"* is
+   * what exposes it: occupancy would hand a live tester's session away, and `busy` would flash a device as
+   * free every 30 seconds — the dashboard polls every 5s and `disabled={isBusy}`, so the UI would open the
+   * button rather than a race being needed.
+   */
+  private lastPongAt = new WeakMap<WebSocket, number>()
+  /**
+   * Who each socket speaks for — `<userId>:<clientId>`, the key a session's ownership is compared against.
+   *
+   * **Two parts, and both are load-bearing.** The client id is supplied by the caller (`?client=`), so on
+   * its own it is the relay's first *forgeable* ownership claim: today's ownership is socket identity,
+   * which nothing can spoof. Binding it to the authenticated user — which `getAuth` already resolves at
+   * the handshake — keeps a leaked id useless to anyone else's account.
+   *
+   * **A connection that supplies no client id is given one**, rather than falling back to socket identity.
+   * There is deliberately no fallback branch: one model, and a client that does not identify itself gets an
+   * identity that happens to be per-socket, which is exactly today's behaviour.
+   */
+  private ownerKey = new WeakMap<WebSocket, { key: string; user: string; minted: boolean }>()
   private dropHandlers = new Map<string, () => void>()
   // Per-session throttled drop-warn for audio (kept separate so audio drops don't mask video drops in logs).
   private audioDropHandlers = new Map<string, () => void>()
@@ -416,10 +473,29 @@ export class RelayServer {
   // Terminate sockets that missed the previous pong; ping the rest. Covers all roles via wss.clients.
   private runHeartbeat(clients: Iterable<WebSocket> = this.wss.clients): void {
     for (const ws of clients) {
-      if (this.wsAlive.get(ws) === false) { ws.terminate(); continue }
-      this.wsAlive.set(ws, false)
+      if (!this.isAlive(ws)) { ws.terminate(); continue }
       if (ws.readyState === WebSocket.OPEN) ws.ping()
     }
+  }
+
+  /**
+   * Has this socket answered recently enough to be treated as present?
+   *
+   * `1.5` intervals rather than one: a pong that arrives *during* a sweep must not be read as late, and a
+   * socket pinged at the end of one interval has until halfway through the next. The cost is that a
+   * genuinely dead socket is recognised in up to 45s instead of 30 — **and 45 seconds with no false
+   * negative beats 30 with one every cycle**, because a false negative here does not merely delay: it
+   * hands a live tester's session to whoever asked next.
+   */
+  private isAlive(ws: WebSocket): boolean {
+    const at = this.lastPongAt.get(ws)
+    // **No entry means just connected, not dead.** `handleConnection` seeds one, but a socket is in
+    // `wss.clients` from the upgrade, so there is a tick where a sweep could see it first — and the flag
+    // this replaced was explicitly safe there ("alive until proven otherwise"). Reading absence as dead
+    // would terminate a connection that had done nothing wrong, and occupancy would read the same absence
+    // as a free session.
+    if (at === undefined) return true
+    return Date.now() - at <= HEARTBEAT_MS * 1.5
   }
 
   // 갱신된 cert를 재시작 없이 핫스왑한다(https 종단일 때만 의미 있음).
@@ -520,9 +596,20 @@ export class RelayServer {
       return
     }
     this.wsExternal.set(ws, isExternalAddress(addr))
-    // Heartbeat liveness: alive until proven otherwise; each pong revives it (see runHeartbeat).
-    this.wsAlive.set(ws, true)
-    ws.on('pong', () => this.wsAlive.set(ws, true))
+    // Read from the upgrade URL because a browser cannot set WebSocket headers, and because it has to be
+    // known **per connection** rather than per join: the dashboard socket that sends the unmount teardown
+    // never joins anything. `new URL` against a dummy base — `request.url` is path-relative.
+    const claimed = new URL(request.url ?? '/', 'http://relay').searchParams.get('client')
+    // **The PAT counts as a principal, and a first version dropped it.** `getAuth` reads the cookie only,
+    // so every agent, `mcp-server` and `flow-runner` connection would have been `anon:` — and the whole
+    // point of pairing the claim with a user is that a leaked client id is useless to anyone else. Two
+    // processes on the same PAT are the same principal, which is right; two on different PATs are not,
+    // which is what this restores. `pat` is already resolved above and was being discarded.
+    this.ownerKey.set(ws, ownerKeyFor(getAuth(request)?.userId ?? pat?.userId, claimed))
+
+    // Heartbeat liveness: a fresh socket counts as having just answered, and each pong renews it.
+    this.lastPongAt.set(ws, Date.now())
+    ws.on('pong', () => this.lastPongAt.set(ws, Date.now()))
     if (decision.role === 'browser') this.wsRoles.set(ws, 'browser')
     // 'first-message' → role is determined by the first message (agent:register / stream:register)
 
@@ -759,7 +846,10 @@ export class RelayServer {
       case 'ui:tree:response':   this.handleUITreeResponse(msg); break
       case 'ui:tree:error':      this.handleUITreeError(msg); break
       case 'agents:list': {
-        this.sendTo(ws, { type: 'agents:listed', sessions: this.sessions.list() })
+        this.sendTo(ws, {
+          type: 'agents:listed',
+          sessions: this.sessions.list(this.ownerOf(ws), (holder) => this.isAlive(holder)),
+        })
         break
       }
 
@@ -973,6 +1063,16 @@ export class RelayServer {
         // session inline and dropped the frame when it could not, making it the only browser-originated
         // command the relay never answers. `mcp-server`'s `shutdownDevice` waits 30s on `device:shutdown-done`
         // and then reports `Request timed out` with no cause, which is the silence, not a diagnosis.
+        const session = this.sessions.get(msg.sessionId)
+        if (session && !this.mayShutDown(ws, session)) {
+          this.sendTo(ws, {
+            type: 'device:shutdown-error',
+            sessionId: msg.sessionId,
+            ...(msg.requestId === undefined ? {} : { requestId: msg.requestId }),
+            message: ownershipRefusal(session),
+          })
+          break
+        }
         const target = this.reachableTargetWithoutOwnership(msg.sessionId)
         if (!target.ok) {
           // Echoed, and the relay is the producer — the same obligation `device:boot-error` carries and for
@@ -1358,7 +1458,15 @@ export class RelayServer {
     //
     // `!== ws` because a socket re-joining the session it already holds is not contending with anyone:
     // `SessionList` sends `session:start` before a shutdown, so pressing shutdown twice hit this.
-    if (session.browserSocket && session.browserSocket !== ws && session.browserSocket.readyState === WebSocket.OPEN) {
+    // The same three conditions `join()` applies, and they have to agree: this one answers the caller and
+    // that one performs the bind, so a disagreement is a refusal for a session the bind would have allowed.
+    if (
+      session.browserSocket &&
+      session.owner !== null &&
+      session.owner !== this.ownerOf(ws) &&
+      session.browserSocket.readyState === WebSocket.OPEN &&
+      this.isAlive(session.browserSocket)
+    ) {
       this.sendTo(ws, { type: 'error', sessionId: msg.sessionId, message: 'Session busy', reason: 'session-busy' })
       return
     }
@@ -1375,7 +1483,7 @@ export class RelayServer {
       }
     }
     try {
-      const joined = this.sessions.join(msg.sessionId, ws)
+      const joined = this.sessions.join(msg.sessionId, ws, this.ownerRecord(ws), (h) => this.isAlive(h))
       if (!joined.ok) {
         // Both of these are answered above, so arriving here means the state moved between that check and
         // this call. They are **values now rather than throws** (#515), and that is what fixes the defect:
@@ -1490,17 +1598,19 @@ export class RelayServer {
    *  resolver a future handler must not pick by accident — it is the general-looking one and the unsafe
    *  one at the same time, which is the pairing worth spelling out.
    *
-   *  **Exists for `device:shutdown` alone, and only until #527.** That command cannot take the ownership
-   *  check yet — three of the dashboard's four senders come from `useAgentSession`, whose socket never
-   *  joins, so gating it would break going back and the unmount teardown, the two paths that stop a device
-   *  costing money when a tester walks away. It still needs the other two, because without them a shutdown
-   *  addressed to a missing session or a closed agent socket was dropped in silence and `mcp-server`'s
-   *  caller burned a 30s deadline for it (#542).
+   *  **Still here after #527, and this paragraph used to say it would not be.** It predicted that
+   *  answering "who may shut a device down" would move `device:shutdown` up to `dispatchTarget`. The
+   *  answer turned out to be a *different* gate rather than that one: `mayShutDown` refuses a session
+   *  another client holds and permits an unheld one, because the dashboard's unmount teardown races its
+   *  own viewer socket's close and an owns-it gate refuses the teardown whenever the close lands first —
+   *  leaving the device booted until the idle timer, which is the cost #527 was filed to avoid.
    *
-   *  So the split is the seam: when #527 answers who may shut a device down, `device:shutdown` moves up to
-   *  `dispatchTarget` and this method goes away. The cost of the seam is that a non-owner now learns
-   *  whether a session id exists and whether its agent is up — recorded rather than waved past, and small
-   *  against what it can already do, which is shut that device down.
+   *  So the two are ordered rather than merged: `mayShutDown` decides *who*, this decides *whether it can
+   *  be delivered at all*, and without the second a shutdown addressed to a missing session or a closed
+   *  agent socket is dropped in silence and `mcp-server`'s caller burns a 30s deadline (#542).
+   *
+   *  The disclosure it was written to record stands: a caller that is not the holder still learns whether
+   *  a session id exists and whether its agent is up.
    */
   private reachableTargetWithoutOwnership(
     sessionId: string,
@@ -1523,7 +1633,68 @@ export class RelayServer {
    *  is deliberate rather than incidental: it makes an input arriving inside the reconnect grace fail fast
    *  instead of being applied to a device with nobody watching the result. */
   private ownsSession(ws: WebSocket, session: Session | undefined): boolean {
-    return session?.browserSocket === ws
+    return session?.owner !== null && session?.owner === this.ownerOf(ws)
+  }
+
+  /** Which owner this socket speaks for. Every connection has one — supplied or minted — so this never
+   *  answers `undefined` and two anonymous sockets can never match by both lacking an identity. */
+  private ownerOf(ws: WebSocket): string {
+    return this.ownerRecord(ws).key
+  }
+
+  /** The principal behind a socket — a user id, or `anon` for a connection carrying no cookie and no PAT. */
+  private userOf(ws: WebSocket): string {
+    return this.ownerRecord(ws).user
+  }
+
+  /** Everything the bind needs to record about who is joining.
+   *
+   *  **A socket with no record gets one of its own rather than a shared sentinel.** `handleConnection`
+   *  seeds every accepted connection before a message can arrive, so the fallback is unreachable today —
+   *  but a literal would make any two unseeded sockets *equal*, and equal keys pass `ownsSession` while
+   *  equal users pass `mayShutDown`'s same-principal exemption. That rests the whole ownership invariant
+   *  on one call site staying total, which is the shape of dependency the sentinel is supposed to remove.
+   *  Minting keeps the answer "this socket and no other"; storing it keeps repeat calls consistent, since
+   *  a fresh value each time would fail to recognise the very socket that bound the session. `minted` is
+   *  `false` deliberately — the legacy exemption exists for a client that identified itself with nothing,
+   *  not for one the relay failed to record. */
+  private ownerRecord(ws: WebSocket): { key: string; user: string; minted: boolean } {
+    const known = this.ownerKey.get(ws)
+    if (known) return known
+    const unseeded = `unidentified:${randomUUID()}`
+    const record = { key: unseeded, user: unseeded, minted: false }
+    this.ownerKey.set(ws, record)
+    return record
+  }
+
+  /**
+   * May this socket shut the session's device down?
+   *
+   * **"Not someone else's" rather than "mine", and the difference is the reason #527 stayed open.** The
+   * dashboard's unmount teardown sends `device:shutdown` from one socket while another socket's `close`
+   * races it to the relay — two connections, no ordering — and if the close lands first the session is
+   * unheld. An owns-it gate refuses the teardown there, and the device stays booted until the five-minute
+   * idle timer: the path #527 named as the reason a gate could not be added at all.
+   *
+   * An unheld session therefore stays shutdownable by anyone authenticated, which is unchanged from today
+   * — this command has never had a gate — and is written down rather than implied. What changes is the
+   * case the issue is about: a device another tester is *holding* can no longer be powered off.
+   */
+  private mayShutDown(ws: WebSocket, session: Session | undefined): boolean {
+    if (session?.owner == null) return true
+    if (session.owner === this.ownerOf(ws)) return true
+    // **A holder that never identified itself is not gated**, because it cannot pass a gate: every one of
+    // its sockets was minted a separate identity, so its own teardown socket is a stranger to the socket
+    // holding the session — deterministically, not as a race. An older dashboard bundle re-attaching to an
+    // upgraded relay is exactly that, and refusing it would leave a device booted until the idle timer on
+    // every Back press: the cost #527 was filed to avoid, reintroduced by #527's fix.
+    //
+    // **Scoped to the same principal, though.** The exemption exists so a legacy client's own teardown
+    // works, and its own teardown is by definition the same signed-in user — so extending it across users
+    // buys nothing and would leave one tester able to power off another's device for as long as anyone is
+    // running an older build. That is unchanged from before this gate existed, but "unchanged" is not a
+    // reason to carry it forward when the narrower rule costs one comparison.
+    return session.ownerMinted && session.ownerUser === this.userOf(ws)
   }
 
   /** Input that no ack answers: opening and move frames, rotation, the keyboard-forwarding toggle.

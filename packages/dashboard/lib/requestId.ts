@@ -10,7 +10,9 @@
  *
  * Lived inside `useClipboardBridge` until the correlation work (L5) gave a second caller — `open-url`,
  * whose reply the viewer toasts. Moved rather than copied, because a second `randomUUID` would have
- * looked correct in every dev environment and thrown only on the deployment tapflow is for.
+ * looked correct in every dev environment and thrown only on the deployment tapflow is for. It happened:
+ * the third caller, `useRelay`'s per-document client id, was written as `crypto.randomUUID()` and would
+ * have blanked the whole dashboard over plain HTTP — caught by review, not by a green suite.
  */
 export function newRequestId(): string {
   const b = new Uint8Array(16)

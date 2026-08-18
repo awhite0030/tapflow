@@ -285,10 +285,11 @@ another tester was looking at, and the reply routed to that session's browser ra
 
 Every branch that can take the check now has it: the five acked inputs, `device:boot`, `open-url`,
 `app:install`, `app:launch`, `app:clear-state`, `clipboard:read`, `clipboard:write`, `session:leave`,
-`session:end`. **`device:shutdown` is the exception to the *ownership* clause**, and the blocker is in the
-dashboard rather than the relay — three of its four senders never join the session. #527. It is no longer an
-exception to being *answered*: #542 gave the pair a failure member and the relay routes the command through
-the same resolver minus that one clause.
+`session:end`. **`device:shutdown` takes a weaker gate than the ownership clause** (#527): refused when
+another client holds the session, permitted when nobody does — because the dashboard's unmount teardown
+races its own viewer socket's close on a different connection, and an owns-it gate would refuse the very
+teardown that stops a device costing money. It is no longer an exception to being *answered* either: #542
+gave the pair a failure member.
 
 A refusal is **answered where a waiter exists** and dropped where none does — with `device:shutdown-error`
 as the deliberate loosening, answered to the sender whether or not one is waiting. The relay cannot tell
@@ -431,8 +432,8 @@ written to catch. Two numbers stood in this paragraph before that — seven repl
 door predicates, then eleven reads — and each outlived its own basis, which is why there is no count
 here now.
 
-`device:shutdown` is still on the request side with no **ownership** gate (#527); that is a different
-question from addressing and the parse does not answer it. The declaration was nevertheless right to
+`device:shutdown` carries its own gate as of #527 — "not someone else's" rather than "mine"; that is still
+a different question from addressing, and the parse does not answer it. The declaration was nevertheless right to
 stay required rather than be widened:
 
 - Every in-repo sender does supply one. `BrowserToRelay` declares `sessionId: string` on every member
