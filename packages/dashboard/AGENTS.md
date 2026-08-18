@@ -71,10 +71,18 @@ out to be a real bug hiding inside a *handled* type (`error`, whose meaning was 
 `DeviceViewer` mints a `requestId` for every `device:boot` it sends and gates on it — but not uniformly,
 and the disposition table above cannot show the difference. Three rules, each holding a defect shut:
 
-- **`device:boot-error` is never correlated.** `AndroidAgent.restartVideoStream` sends it for a stream
-  that died mid-session, with no `device:boot` behind it and so no id it could carry, and this branch is
-  the only surface that reports it. Gate it and a dead stream becomes a picture that has quietly stopped
-  updating — #426's symptom.
+- **An *uncorrelated* `device:boot-error` is always reported, and a correlated one only when it answers
+  the boot this viewer is still waiting on.** The first half is #426: `AndroidAgent.restartVideoStream`
+  sends this message for a stream that died mid-session, with no `device:boot` behind it and so no id it
+  could carry, and this branch is the only surface that reports it — gate that and a dead stream becomes a
+  picture that has quietly stopped updating. The second half arrived with #526: both agents now answer a
+  boot they abandon rather than going silent, so the id of a boot **this viewer replaced itself** comes
+  back as a failure while its replacement is running normally.
+  Judged against the latest boot id, **never against `bootIdsRef` membership**. `session:joined` clears
+  that set and it arrives again on every socket reconnect, so one Wi-Fi blip leaves a still-running boot's
+  id outside the set — a membership gate would then report exactly the failure this rule exists to
+  suppress. The gate sits above the `rebindRef` release for the same reason: the boot that replaced this
+  one owns that release.
 - **`setDeviceReady(true)` runs before the gate.** The relay replays a cached `device:ready` to a
   re-joining viewer as `{ type, payload }` — no `sessionId`, no correlator — and clearing the spinner is
   what that replay is *for* (#440).

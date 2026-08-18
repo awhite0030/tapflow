@@ -18,7 +18,21 @@ status: living
 
 - ADB commands are isolated in `AdbWrapper`, swappable with an `AdbRunner` mock in tests.
 - **UI tree** (`queryUITree` / `ui:tree:request`): `AdbWrapper.dumpUiHierarchy` runs `adb exec-out timeout 10 uiautomator dump /dev/tty` — the device-side toybox `timeout` bounds the dump because uiautomator waits for an idle window and can hang on continuous animation; a timed-out dump surfaces as an explicit `PlatformError`, never a silent empty tree. `uiTree.ts` parses the XML into the unified `UIElement[]` schema (agent-core); the screen size comes from the root node bounds, so landscape dumps normalize correctly without a `wm size` round-trip.
-- On emulator boot: `EmulatorLauncher.waitForBoot(serial)` — polls `sys.boot_completed=1`.
+- On emulator boot: `EmulatorLauncher.waitForBoot(serial)` — polls `sys.boot_completed=1`, bounded by
+  `EmulatorLauncher.BOOT_READY_TIMEOUT_MS` (120s). Named and exported because a relay client that gives up
+  first turns this agent's own answer into a bare timeout (#549); the relationship is held across packages
+  by `scripts/__tests__/bootDeadlineOutlivesAgent.test.mjs`.
+- **A boot this agent stops running is answered** (#526), with the same three rules as iOS — the reason is
+  keyed by the seq that lost it, the answer goes only to a request that carries a correlator, and a boot
+  abandoned with no open control channel stays silent because the answer has nowhere to go. The shared
+  vocabulary and prose live in `agent-core` (`bootAbandonMessage`) precisely so the two platforms cannot
+  drift apart on what a tester is told.
+  **Losing the relay mid-boot invalidates the boot here too, which it did not before.** Both agents clear
+  `deviceStates` on reconnect, but a running `handleDeviceBoot` holds its own reference to one — so this
+  agent used to finish, stand up a video stream and announce `device:ready` for a session that no longer
+  exists. iOS has invalidated since its helper-leak fix; the bump lives in the reconnect path rather than
+  inside `cleanupDeviceState`, because this agent calls that cleanup from inside `handleDeviceBoot` and a
+  bump there would make every boot supersede itself.
 - **Backend selection** (`pickAndroidBackend`): emulators (serial `emulator-*`) → **gRPC**; real devices → **scrcpy**. `TAPFLOW_ANDROID_BACKEND=grpc|scrcpy` overrides. On any gRPC failure (e.g. an emulator booted externally without `-grpc`), `startVideoStream` falls back to scrcpy so streaming still works.
 - **gRPC backend (emulator default)**: `EmulatorGrpcClient` connects to the emulator's gRPC endpoint (`-grpc <port>`, default 8554, unsecured localhost) and reads `streamScreenshot` RGBA8888 frames → `EmulatorVideo` pipes them to the `emulator-encoder` Swift helper (Mac VideoToolbox: baseline, B-frames off, BT.709, force-IDR on demand), **bypassing the emulator's slow guest software H.264 encoder**. Mirrors the ios-agent VideoToolbox path so both platforms share one encode pipeline. The screenshot stream is frame-driven (no frames while static), so no static-skip is needed.
 - **scrcpy backend (real devices + fallback)**: `ScrcpySession` → `ScrcpyVideo` pushes the scrcpy server to the device, runs it, and receives an H.264 Annex B stream over TCP. Two connections in order — video socket (1st) + control socket (2nd) — before the server begins streaming. `ScrcpyControl` keeps the control socket open. Pin `OMX.google.h264.encoder` (pure software) on a `google_apis/arm64-v8a` (android-34) image — the verified config; the default `c2.android.avc.encoder` (Codec 2.0) shows silent stalls under GPU load that the pump can't detect, and `google_apis_playstore` is untested (see `contributing/android-video-streaming-diagnosis.md`). This guest-encoder constraint applies to scrcpy only — the gRPC path never touches it.

@@ -96,14 +96,57 @@ describe('DeviceViewer correlates the lifecycle replies, selectively', () => {
     expect(screen.getByText(/Boot failed: scrcpy failed to restart/)).toBeTruthy()
   })
 
-  it('reports a boot-error whose correlator matches nothing this viewer sent', () => {
-    // The same prohibition stated so that it fails under a *correlating* gate rather than only under a
-    // presence check: a gate keyed on `bootIdsRef` would drop this and the case above alike.
+  it('says nothing about a boot it has already replaced', () => {
+    // **This assertion used to run the other way, and #526 is what turned it.** It read "reports a
+    // boot-error whose correlator matches nothing this viewer sent", stated so the rule would fail under a
+    // correlating gate and not only under a presence check. What made that safe was that the only
+    // correlated boot-errors came from boots this viewer was still waiting on: an agent that abandoned one
+    // sent nothing at all. Both agents now answer an abandoned boot, so the id of a boot this viewer
+    // *replaced* arrives as a failure — and reporting it puts "Boot failed" on screen while the boot that
+    // replaced it is running normally.
+    //
+    // The prohibition it was defending is untouched and sits in the test above: an **uncorrelated**
+    // boot-error is still reported, which is the only kind #426 is about.
     render(<DeviceViewer sessionId="s1" deviceId="dev-1" />)
     join()
 
     act(() => {
       deliver!({ type: 'device:boot-error', sessionId: 's1', requestId: 'not-ours', message: 'agent offline' })
+    })
+
+    expect(screen.queryByText(/Boot failed/)).toBeNull()
+  })
+
+  it('still says nothing when the replaced boot is one this viewer sent', () => {
+    // **Why the gate reads the latest id and not `bootIdsRef` membership**, which is the shape that looks
+    // equivalent and is the one to reach for. A rebind adds its boot to that set *without clearing it*, so
+    // both ids are members — and the superseded one is exactly the id an agent now answers. Membership
+    // then says "mine, report it" and puts "Boot failed" on screen while the rebind's own boot is running.
+    //
+    // Its twin is the reconnect, where the set is cleared and the still-running boot's id falls *out* of
+    // it: membership drops that one for the wrong reason and happens to agree. One case each way is what
+    // makes the two rules distinguishable, so this is the one that has to be here.
+    render(<DeviceViewer sessionId="s1" deviceId="dev-1" />)
+    join()
+    const first = lastBootId()
+    act(() => { deliver!({ type: 'session:rebound', sessionId: 's1', capabilities: [] }) })
+    expect(lastBootId(), 'the rebind did not send its own boot').not.toBe(first)
+
+    act(() => {
+      deliver!({ type: 'device:boot-error', sessionId: 's1', requestId: first, message: 'superseded' })
+    })
+
+    expect(screen.queryByText(/Boot failed/)).toBeNull()
+  })
+
+  it('reports the failure of the boot it is actually waiting on', () => {
+    // The other half, and the one that keeps the gate from being a mute button: the latest boot's own
+    // failure is what the tester needs, and it is what `setBootError` is for.
+    render(<DeviceViewer sessionId="s1" deviceId="dev-1" />)
+    join()
+
+    act(() => {
+      deliver!({ type: 'device:boot-error', sessionId: 's1', requestId: lastBootId(), message: 'agent offline' })
     })
 
     expect(screen.getByText(/Boot failed: agent offline/)).toBeTruthy()

@@ -36,7 +36,10 @@ const AGENTS = {
 }
 
 const HELPER_BODIES = [
-  /private sendMsg\(msg: AgentControlOutbound\): void \{\n {4}this\.ws\?\.send\(JSON\.stringify\(msg\)\)\n {2}\}/,
+  // `sendMsg` gained a readyState guard (#526): a send to a closing socket is buffered and dropped in
+  // silence, which turns a boot answer into the silence it was written to end. Matched exactly, guard
+  // included — loosening this to "contains JSON.stringify" is what the three bypasses below did.
+  /private sendMsg\(msg: AgentControlOutbound\): void \{\n {4}if \(this\.ws\?\.readyState !== WebSocket\.OPEN\) return\n {4}this\.ws\.send\(JSON\.stringify\(msg\)\)\n {2}\}/,
   /private sendOn\(ws: WebSocket, msg: AgentControlOutbound\): void \{\n {4}ws\.send\(JSON\.stringify\(msg\)\)\n {2}\}/,
 ]
 

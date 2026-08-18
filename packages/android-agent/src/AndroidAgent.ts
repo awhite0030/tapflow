@@ -1,12 +1,12 @@
 import os from 'os'
 import { randomUUID } from 'crypto'
 import { WebSocket } from 'ws'
-import type { AndroidButton, ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
+import type { AndroidButton, BootAbandonReason, ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
 import type {
   AgentControlOutbound, ClipboardReplyBody, OpenUrlReplyBody,
   AppInstallReplyBody, AppLaunchReplyBody, AppClearStateReplyBody,
 } from '@tapflowio/protocol'
-import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
+import { createLogger, PlatformError, ValidationError, bootAbandonMessage, BOOT_NO_SESSION_STATE } from '@tapflowio/agent-core'
 import { outcomeMessage, wireReason, type InputOutcome } from './inputOutcome.js'
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
@@ -140,6 +140,11 @@ const ANDROID_BUTTONS: AndroidButton[] = [
 
 interface DeviceState {
   sessionId: string
+  /** Why each superseded boot was superseded, keyed by **the seq it lost**. A single slot would tell the
+   *  wrong story the moment two boots overlap: boot A, boot B, then a shutdown leaves one slot saying
+   *  `shut-down`, which is what B lost to — A lost to B. Each checkpoint reads its own seq and deletes it,
+   *  so the map is empty again as soon as the boots it describes have gone. */
+  bootAbandon: Map<number, BootAbandonReason>
   deviceId: string
   touchHelper: AndroidTouchHelper | null
   // Device-booted flag for truthful input acks — set on device:ready, cleared on shutdown; false after a reconnect until the ack path re-verifies once via adb.
@@ -229,9 +234,19 @@ export class AndroidAgent implements DeviceAgent {
    *  being a no-op between reconnects, and this preserves that exactly.
    *
    *  Typed with `AgentControlOutbound`, which is why this exists — an agent's literal used to reach `ws.send`
-   *  with nothing checking it, and #489/#490 are what that cost. */
+   *  with nothing checking it, and #489/#490 are what that cost. *
+ *  **The guard is not defensive tidying.** `ws.send` on anything other than OPEN takes the `sendAfterClose`
+ *  path, which adds the payload to a buffer nobody will flush and neither throws nor emits — so a reply
+ *  sent to a closing socket is indistinguishable from a delivered one at the call site. `reportResources`
+ *  has always checked; this did not, and the boot answers this file now owes a caller are exactly the
+ *  messages whose purpose is to end someone's wait.
+ *
+ *  The body is held character for character by `scripts/__tests__/agentSendTyped.test.mjs`, so the comment
+ *  lives out here: that check strips comments and matches the body exactly, having watched three earlier
+ *  drafts get bypassed by a renamed socket. */
   private sendMsg(msg: AgentControlOutbound): void {
-    this.ws?.send(JSON.stringify(msg))
+    if (this.ws?.readyState !== WebSocket.OPEN) return
+    this.ws.send(JSON.stringify(msg))
   }
 
   /** Send on a socket the caller has already established. Takes the socket **as an argument** rather than
@@ -402,6 +417,7 @@ export class AndroidAgent implements DeviceAgent {
         landscape: false,
         lastTouchPx: { x: 0, y: 0 },
         bootSeq: 0,
+        bootAbandon: new Map(),
         restarting: false,
       })
     })
@@ -412,6 +428,7 @@ export class AndroidAgent implements DeviceAgent {
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null }
     if (this.resourcesTimer) { clearInterval(this.resourcesTimer); this.resourcesTimer = null }
     for (const state of this.deviceStates.values()) {
+      this.bumpBootSeq(state, 'relay-lost')
       this.cleanupDeviceState(state)
     }
     this.deviceStates.clear()
@@ -425,6 +442,13 @@ export class AndroidAgent implements DeviceAgent {
     if (this._stopping) return
     if (this.resourcesTimer) { clearInterval(this.resourcesTimer); this.resourcesTimer = null }
     for (const state of this.deviceStates.values()) {
+      // **Invalidate any boot still in flight, which this agent did not do until now.** The map is dropped
+      // just below, but a `handleDeviceBoot` awaiting the emulator holds its own reference and its seq
+      // would still match — so it ran to completion against a state nobody owns, standing up a video
+      // stream and sending `device:ready` for a session that no longer exists. iOS has invalidated here
+      // since its helper-leak fix; the two agents disagreed about the same user action (losing the relay
+      // mid-boot), which is the asymmetry the invariant table for #526 was written to surface.
+      this.bumpBootSeq(state, 'relay-lost')
       this.cleanupDeviceState(state)
     }
     this.deviceStates.clear()
@@ -849,23 +873,63 @@ export class AndroidAgent implements DeviceAgent {
     return streamWs
   }
 
+  /** Retire the boot that holds the current seq, recording what retired it, and return the new seq.
+   *
+   *  **Three callers, and the third is why this is a method.** A new boot supersedes the one in flight, a
+   *  shutdown abandons it, and losing the relay invalidates it — that last one lives in the reconnect path
+   *  and is easy to miss when reading `handleDeviceBoot` alone. Spreading the reason across three
+   *  `state.bootSeq++` lines makes forgetting one silent; here it is a parameter.
+   *
+   *  Deliberately **not** folded into `cleanupDeviceState` the way iOS's bump once was: this agent calls
+   *  that cleanup from inside `handleDeviceBoot`, so a bump there would make every boot supersede itself. */
+  private bumpBootSeq(state: DeviceState, reason: BootAbandonReason): number {
+    state.bootAbandon.set(state.bootSeq, reason)
+    return ++state.bootSeq
+  }
+
+  /** Answer a boot this agent has stopped running. Called at every point that abandons one.
+   *
+   *  **Only when a correlator exists**, which is the same rule the input path settled on (#489): a reply
+   *  nobody is waiting for is not an answer, and the dashboard reports every *uncorrelated*
+   *  `device:boot-error` as a failure — deliberately, since this agent's own dead-stream report
+   *  (`restartVideoStream`) has no id it could carry (#426). So sending one for a boot with no correlator
+   *  would put an error toast on a tester's screen for a device that is booting normally. */
+  private abandonBoot(state: DeviceState, seq: number, sessionId: string, requestId?: string): void {
+    const reason = state.bootAbandon.get(seq) ?? 'superseded'
+    state.bootAbandon.delete(seq)
+    if (!requestId) {
+      logger.warn(`boot for ${sessionId} abandoned (${reason}) with no requestId — nothing to answer`)
+      return
+    }
+    this.sendMsg({ type: 'device:boot-error', sessionId, requestId, message: bootAbandonMessage(reason) })
+  }
+
   // `requestId` is a parameter, never a field on `state`: `bootSeq` exists because two boots overlap,
   // and a correlator hoisted onto shared state would answer the first request with the second's id.
   // Optional because the relay's idle timer boots nothing — but every *browser* boot carries one.
   private async handleDeviceBoot(sessionId: string, avdId: string, tier?: { secureContext: boolean; external: boolean }, requestId?: string): Promise<void> {
     const state = this.deviceStates.get(sessionId)
-    if (!state || !this.ws) return
+    // Split, because the two halves are not the same kind of nothing. No open control channel means the
+    // answer itself has nowhere to go, so this is the one abandonment that stays silent — and the caller
+    // learns from the relay instead, which declares the agent away and terminates the session. A missing
+    // `state` is answerable and now answered (#489's reasoning, on the boot path).
+    const ws = this.ws
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    if (!state) {
+      if (requestId) this.sendMsg({ type: 'device:boot-error', sessionId, requestId, message: BOOT_NO_SESSION_STATE })
+      return
+    }
 
-    const seq = ++state.bootSeq
+    const seq = this.bumpBootSeq(state, 'superseded')
 
     this.cleanupDeviceState(state)
     if (tier) { state.secureContext = tier.secureContext; state.external = tier.external }
-    this.sendOn(this.ws, { type: 'device:booting', sessionId })
+    this.sendOn(ws, { type: 'device:booting', sessionId })
 
     try {
       const avdName = avdId.replace(/^avd:/, '')
       const devices = await this.adb.listDevices()
-      if (seq !== state.bootSeq) return
+      if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
 
       const target = devices.find((d) => d.id === avdId)
       if (!target) throw new PlatformError(`Device not found: ${avdId}`)
@@ -877,9 +941,9 @@ export class AndroidAgent implements DeviceAgent {
         try {
           this.launcher.launch(avdName, grpcPort, { audio: this.audioEnabled() })
           const serial = await this.launcher.findSerial(avdName)
-          if (seq !== state.bootSeq) return
+          if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
           await this.launcher.waitForBoot(serial)
-          if (seq !== state.bootSeq) return
+          if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
           this.adb.setSerial(avdId, serial)
         } finally {
           // The emulator now holds the port (or boot failed) — drop the reservation either way.
@@ -888,7 +952,7 @@ export class AndroidAgent implements DeviceAgent {
       }
 
       const refreshed = await this.adb.listDevices()
-      if (seq !== state.bootSeq) return
+      if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
       const refreshedDevice = refreshed.find((d) => d.id === avdId) ?? target
 
       this.sendDeviceInfo(state, { ...refreshedDevice, status: 'booted' } as Device)
@@ -896,11 +960,12 @@ export class AndroidAgent implements DeviceAgent {
       const streamWs = await this.openStreamWs(state)
       if (seq !== state.bootSeq) {
         streamWs.close()
+        this.abandonBoot(state, seq, sessionId, requestId)
         return
       }
 
       await this.startVideoStream(state, streamWs)
-      if (seq !== state.bootSeq) return
+      if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
       this.sendMsg({
         type: 'session:chrome',
         sessionId: state.sessionId,
@@ -915,7 +980,7 @@ export class AndroidAgent implements DeviceAgent {
       state.booted = true
       this.sendMsg({ type: 'device:ready', sessionId, requestId, payload: { deviceId: avdId } })
     } catch (e) {
-      if (seq !== state.bootSeq) return
+      if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
       const message = e instanceof Error ? e.message : String(e)
       logger.error('boot failed:', message)
       this.sendMsg({ type: 'device:boot-error', sessionId, requestId, message })
@@ -926,7 +991,7 @@ export class AndroidAgent implements DeviceAgent {
     const state = this.deviceStates.get(sessionId)
     if (!state) return
 
-    state.bootSeq++
+    this.bumpBootSeq(state, 'shut-down')
     this.cleanupDeviceState(state)
 
     const serial = this.adb.getSerial(avdId)

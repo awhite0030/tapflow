@@ -234,6 +234,26 @@ interface Waiter {
   what: string
 }
 
+/** How long to wait for a boot before giving up on it.
+ *
+ * **Larger than either agent's own boot ceiling, and that is the whole point.** iOS polls for up to 90s
+ * (`SimctlWrapper.BOOT_READY_TIMEOUT_MS`) and Android for up to 120s
+ * (`EmulatorLauncher.BOOT_READY_TIMEOUT_MS`) before answering `device:boot-error` themselves. A client
+ * that gives up first replaces a reason with a bare timeout — `flow-runner` sat at 120s, inside both (#549).
+ *
+ * The margin over 120s is not decoration: those constants bound **one poll**, not the request. A boot also
+ * runs `listDevices`, possibly `shutdown` and `erase`, the boot itself, then opens a stream — none of which
+ * has a named ceiling. The margin is what covers them, and `scripts/__tests__/bootDeadlineOutlivesAgent.test.mjs`
+ * requires it to be there rather than checking a bare inequality, which today's flow-runner (120s against
+ * Android's 120s) would have passed.
+ *
+ * This is **not** the backstop for a dead agent, which is the thing it looks like. The relay declares an
+ * agent away and terminates the session after its grace window, and `session:terminated` settles every
+ * waiter here in ~15s. What this covers is a request that will never be answered by a live relay — after
+ * #526 that is the rebound session (a new agent never saw the boot, #583) and whatever is not yet known.
+ */
+const BOOT_DEADLINE_MS = 180_000
+
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 // Minimal relay client for the deterministic runner: WebSocket for session and
@@ -559,7 +579,7 @@ export class RelayClient {
     this.send({ type: 'device:boot', sessionId, requestId, payload: { deviceId } })
     const msg = await this.waitFor(
       (m) => (m['type'] === 'device:ready' || m['type'] === 'device:boot-error') && m['sessionId'] === sessionId && correlatesWith(m, requestId),
-      120_000,
+      BOOT_DEADLINE_MS,
       'device boot',
       sessionId,
     )

@@ -90,6 +90,12 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // counter: a crash-looping agent issues several boots and each gets its own reply. Cleared on
   // `session:joined` and nowhere else — see the `device:booting` branch for why not there.
   const bootIdsRef = useRef<Set<string>>(new Set());
+  // The **most recent** boot this mount sent, which is a different question from `bootIdsRef`'s. The set
+  // answers "did I ask for this?"; this answers "is this still the one I am waiting for?" — and only the
+  // second can suppress the failure of a boot this viewer replaced itself, now that both agents answer a
+  // superseded boot instead of going silent (#526). Membership cannot: `session:joined` clears the set on
+  // every reconnect, so after a Wi-Fi blip the id of a boot that is still running is no longer in it.
+  const latestBootIdRef = useRef<string | null>(null);
   // Deeplinks this viewer asked for. A reply does not go to whoever asked — the relay forwards it to
   // whichever socket holds the session now — so before `open-url` carried a `requestId` this viewer
   // toasted "Deeplink opened" for an `mcp-server` deeplink it knew nothing about.
@@ -180,6 +186,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       bootIdsRef.current.clear();
       const bootId = newRequestId();
       bootIdsRef.current.add(bootId);
+      latestBootIdRef.current = bootId;
       sendRef.current({ type: 'device:boot', sessionId, requestId: bootId, payload: { deviceId, resetMode: reset, acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
     }
     if (msg.type === 'session:agent-away') {
@@ -229,6 +236,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       resetSentRef.current = true;
       const rebootId = newRequestId();
       bootIdsRef.current.add(rebootId);
+      latestBootIdRef.current = rebootId;
       sendRef.current({ type: 'device:boot', sessionId, requestId: rebootId, payload: { deviceId, resetMode: 'app-only', acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
       // Only when the status card has not been saying it already — otherwise the toast lands at the
       // exact moment that message is replaced by the reconnect, saying the same thing twice.
@@ -242,6 +250,14 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // reports it. Gating it on `bootIdsRef` would turn a dead stream back into a picture that has
       // simply stopped updating — the symptom #426 was opened about.
       //
+      // **A boot this viewer has already replaced is not a failure to report.** Both agents now answer a
+      // superseded boot rather than abandoning it silently, so re-picking a device — or any reconnect that
+      // re-boots — produces an error for a request that has been overtaken. Judged against the latest id
+      // only, never set membership; and an id from before this mount's first boot (`null`) is somebody
+      // else's by the same argument. This sits above the `rebindRef` release deliberately: the boot that
+      // replaced this one owns that release, and taking it here would let a straggler free the current
+      // cycle's rebind.
+      if (msg.requestId !== undefined && msg.requestId !== latestBootIdRef.current) return;
       // Joining a session whose agent is away answers `session:joined`, and the branch above sends
       // `device:boot` on the strength of it — which the relay refuses with `agent offline`. The
       // waiting state already says what is happening, and recording a boot failure on top of it

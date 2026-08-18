@@ -286,6 +286,167 @@ describe('AndroidAgent', () => {
       browser.close()
     })
 
+    // ── #526: a boot the agent stops running is answered, not abandoned ───────────────────────
+
+    /** The launcher this agent built, whose `waitForBoot` is where a boot can be parked. */
+    function launcherOf(agent: AndroidAgent) {
+      return (agent as unknown as { launcher: { waitForBoot: ReturnType<typeof vi.fn> } }).launcher
+    }
+
+    /** A `waitForBoot` whose first `hold` calls park until released, and which answers at once after. */
+    function holdingBoot(agent: AndroidAgent, hold: number) {
+      const releases: (() => void)[] = []
+      let calls = 0
+      launcherOf(agent).waitForBoot.mockImplementation(() => {
+        calls++
+        if (calls <= hold) return new Promise<void>((resolve) => releases.push(resolve))
+        return Promise.resolve()
+      })
+      return { releases, calls: () => calls }
+    }
+
+    async function joinedAgent(adb: AdbWrapper) {
+      const agent = new AndroidAgent({}, adb)
+      await agent.connect(`ws://localhost:${port}`)
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      return { agent, browser }
+    }
+
+    const boot = (sessionId: string | null, requestId: string) =>
+      JSON.stringify({ type: 'device:boot', requestId, sessionId, payload: { deviceId: 'avd:Pixel_8_API_34' } })
+
+    it('answers a boot that a newer boot superseded', async () => {
+      const { agent, browser } = await joinedAgent(mockAdb(false))
+      const wait = holdingBoot(agent, 1)
+
+      browser.send(boot(agent.sessionId, 'rq-a'))
+      await vi.waitFor(() => expect(wait.calls()).toBe(1), { timeout: 2000 })
+
+      const superseded = waitForType(browser, 'device:boot-error')
+      browser.send(boot(agent.sessionId, 'rq-b'))
+      const ready = await waitForType(browser, 'device:ready')
+      expect(ready['requestId'], 'the surviving boot is the newer one').toBe('rq-b')
+
+      wait.releases[0]!()
+      const e = await superseded
+      expect(e['requestId']).toBe('rq-a')
+      expect(String(e['message'])).toContain('superseded')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('tells each abandoned boot what actually superseded it', async () => {
+      // Two overlapping boots and one later event — the smallest sequence that tells a per-seq reason
+      // apart from a single slot on the state, which would tell A it lost to the shutdown that took B.
+      const { agent, browser } = await joinedAgent(mockAdb(false))
+      const wait = holdingBoot(agent, 2)
+
+      const seen: Record<string, string> = {}
+      const both = new Promise<void>((resolve) => {
+        browser.on('message', (raw) => {
+          const m = JSON.parse(String(raw)) as Record<string, string>
+          if (m['type'] === 'device:boot-error') {
+            seen[m['requestId']!] = m['message']!
+            if (Object.keys(seen).length === 2) resolve()
+          }
+        })
+      })
+
+      browser.send(boot(agent.sessionId, 'rq-a'))
+      await vi.waitFor(() => expect(wait.calls()).toBe(1), { timeout: 2000 })
+      browser.send(boot(agent.sessionId, 'rq-b'))
+      await vi.waitFor(() => expect(wait.calls()).toBe(2), { timeout: 2000 })
+      browser.send(JSON.stringify({ type: 'device:shutdown', requestId: 'rq-s', sessionId: agent.sessionId, payload: { deviceId: 'avd:Pixel_8_API_34' } }))
+      await waitForType(browser, 'device:shutdown-done')
+
+      for (const release of wait.releases) release()
+      await both
+
+      expect(seen['rq-a'], 'A lost to B, not to the shutdown').toContain('superseded')
+      expect(seen['rq-b'], 'B is the one the shutdown abandoned').toContain('shut down')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('answers a boot for a session it holds no device state for', async () => {
+      const { agent, browser } = await joinedAgent(mockAdb(false))
+      const sessionId = agent.sessionId
+      // Held first: `agent.sessionId` reads the first entry of the very map being emptied.
+      ;(agent as unknown as { deviceStates: Map<string, unknown> }).deviceStates.clear()
+
+      const errored = waitForType(browser, 'device:boot-error')
+      browser.send(boot(sessionId, 'rq-nostate'))
+      const e = await errored
+      expect(e['requestId']).toBe('rq-nostate')
+      expect(String(e['message'])).toContain('re-join')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('abandons a boot when the relay goes away mid-boot, instead of finishing it', async () => {
+      // **The asymmetry this slice closes.** iOS has invalidated in-flight boots on reconnect since its
+      // helper-leak fix; this agent did not, so a boot that outlived the socket ran to completion against
+      // a state `_scheduleReconnect` had already dropped — standing up a video stream and announcing
+      // `device:ready` for a session that no longer exists. Both agents clear `deviceStates` there, but the
+      // running boot holds its own reference to one, so clearing the map does not reach it.
+      const adb = mockAdb(false)
+      const agent = new AndroidAgent({ reconnectDelays: [20] }, adb)
+      await agent.connect(`ws://localhost:${port}`)
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const sessionId = agent.sessionId
+      browser.send(JSON.stringify({ type: 'session:start', sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      const wait = holdingBoot(agent, 1)
+      browser.send(boot(sessionId, 'rq-lost'))
+      await waitForType(browser, 'device:booting')
+      await vi.waitFor(() => expect(wait.calls()).toBe(1), { timeout: 2000 })
+
+      // Drop the relay and bring another up on the same port, so the agent's own reconnect runs and the
+      // socket is live again — an `agent.disconnect()` version of this passes with the fix removed,
+      // because `ws` then stays null and the send guard covers for it.
+      browser.close()
+      await relay.stop()
+      relay = new RelayServer({ port })
+      await relay.start()
+      const rejoined = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(rejoined)
+      let joined = null
+      for (let i = 0; i < 60 && joined === null; i++) {
+        rejoined.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+        joined = await waitForTypeOrNull(rejoined, 'session:joined', 250)
+      }
+      expect(joined, 'the agent never re-registered').not.toBeNull()
+
+      // **Observed at the first thing the resumed boot would do, not at the last.** Two later signals look
+      // like the obvious assertions and see nothing either way: `device:ready` names the dropped session,
+      // which this relay has never heard of and discards at the door, and the video session is never built
+      // because `openStreamWs` registers that same id and gets nowhere. Both stay silent with the fix
+      // removed, so both would have passed a broken agent. The step immediately after the wait is `adb`,
+      // which answers regardless of what the relay knows — so that is where the difference is visible.
+      const adbCallsBefore = (adb.listDevices as ReturnType<typeof vi.fn>).mock.calls.length
+      const serialBefore = adb.getSerial('avd:Pixel_8_API_34')
+      wait.releases[0]!()
+      await new Promise((r) => setImmediate(r))
+      await new Promise((r) => setTimeout(r, 50))
+      expect(
+        (adb.listDevices as ReturnType<typeof vi.fn>).mock.calls.length,
+        'the abandoned boot carried on against a state the reconnect had dropped',
+      ).toBe(adbCallsBefore)
+      expect(adb.getSerial('avd:Pixel_8_API_34'), 'and bound a serial onto it').toBe(serialBefore)
+      expect(await waitForTypeOrNull(rejoined, 'device:ready', 100)).toBeNull()
+
+      agent.disconnect()
+      rejoined.close()
+    })
+
     // ── L5b′: the lifecycle pair correlates, and the correlator is optional ────────────────────
     //
     // Optional means the compiler enforces nothing — `<Pair>ReplyBody` cannot be built for a field an

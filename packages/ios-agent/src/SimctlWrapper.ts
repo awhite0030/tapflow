@@ -140,7 +140,9 @@ export class SimctlWrapper {
   // readiness on `boot` resolving is announcing something that is not yet true, which is what
   // `app install intermittently fails with "No devices are booted"` (#440) was left standing on.
   // Android has waited since the beginning (`EmulatorLauncher.waitForBoot`); this is the counterpart.
-  private static readonly BOOT_READY_TIMEOUT_MS = 90_000
+  // Exported, and read by `scripts/__tests__/bootDeadlineOutlivesAgent.test.mjs`: a client that gives up
+  // before this does turns the agent's own reason into a bare timeout (#549).
+  static readonly BOOT_READY_TIMEOUT_MS = 90_000
   private static readonly BOOT_POLL_INTERVAL_MS = 500
   // Bounds one reading, not the wait. `listDevices` is otherwise untimed, so a wedged
   // CoreSimulatorService makes the deadline below unreachable — the loop would sit inside a single
