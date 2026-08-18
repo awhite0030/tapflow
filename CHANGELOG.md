@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-08-19
+
+**The wire answers.** Every request now carries an identifier its reply echoes, every refusal comes back
+with a machine-readable reason, and a session belongs to the client that opened it rather than to one of
+its sockets. Most of what is listed below is one program: paths where nothing was sent, so whoever asked
+found out by waiting.
+
 ### Breaking Changes
 
 - **Requires Node.js ≥ 22.** Node 20 reached end of life on 2026-04-30 and no longer receives security
@@ -506,7 +513,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Automatic `tapflow.config.json` creation as a side effect of `tapflow start` / `tapflow relay start`.
 
-[Unreleased]: https://github.com/jo-duchan/tapflow/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/jo-duchan/tapflow/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/jo-duchan/tapflow/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/jo-duchan/tapflow/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/jo-duchan/tapflow/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/jo-duchan/tapflow/compare/v0.15.0...v0.16.0

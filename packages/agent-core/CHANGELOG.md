@@ -1,5 +1,206 @@
 # @tapflowio/agent-core
 
+## 0.19.0
+
+### Minor Changes
+
+- e55371c: **Requires Node.js ≥ 22.** Node 20 reached end of life on 2026-04-30 and no longer receives security patches.
+
+  Three declarations disagreed about what was supported, and none of them matched what was actually run. The manifests said `>=20.12.0`, the documentation said "≥ 20" — meaning 20.0.0 — and CI ran 20 while Docker ran 22 and the release job ran 24. There was also a band that was declared but unusable: every `undici` 7.x requires Node `>=20.18.1`, so 20.12 through 20.17 could not complete a development install regardless of what the manifests promised.
+
+  The floor is now 22 everywhere, and 22 is a version that will be tested rather than merely claimed — CI runs the suite on both 22 and 24. That is the part that had been missing: `>=20.12.0` was declared for a year and never once exercised on 20.12, which is how it drifted below what the dependency tree already required.
+
+  `tapflow`, `@tapflowio/flow-runner` and `@tapflowio/mcp-server` declared no `engines` at all and now do. `tapflow` is the package installed with `npm i -g`, so until now the CLI announced no Node requirement to the people most likely to need it.
+
+  `tapflow doctor` moves with it and reports `Node ≥ 22 required` below the floor. Without that change it would have printed a green check on Node 20 while the package manifest called the same version unsupported.
+
+  Node 22 is supported until 2027-04-30; Node 24 is the active LTS. Containers and the published image now run 24.
+
+### Patch Changes
+
+- a5466b9: refactor(protocol): declare the agent→relay direction, and type every agent send
+
+  An agent's outbound literal was the one part of the wire contract no compiler could see. The relay forwards
+  replies with `JSON.stringify(msg)`, so nothing typed ever re-creates them, and each agent handed its literal
+  straight to `ws.send`. #489 (an agent answering nobody) and #490 (a missing `reason`) both came out of that,
+  and `scripts/__tests__/inputErrorReason.test.mjs` exists because a script had to stand in for a compiler.
+
+  Seven message types were declared nowhere: `agent:register`, `agent:resources`, `screenshot:done`,
+  `screenshot:error`, `stream:register`, `ui:tree:response`, `ui:tree:error` — the last undeclared direction.
+  They are now `AgentToRelay` and `StreamToRelay`, and `AgentControlOutbound` is what the agents' typed send
+  helpers take.
+
+  `stream:register` is its own direction rather than part of `AgentToRelay`, mirroring `RelayToStream`: the
+  relay assigns the role `'stream'` from it, not `'agent'`, so folding it in would make the union's name
+  disagree with the runtime role — and would let a control socket claim to be a session's stream socket once
+  inbound is narrowed by role.
+
+  ## Two helpers, and why not one
+
+  ```ts
+  private sendMsg(msg: AgentControlOutbound): void { this.ws?.send(JSON.stringify(msg)) }
+  private sendOn(ws: WebSocket, msg: AgentControlOutbound): void { ws.send(JSON.stringify(msg)) }
+  ```
+
+  `sendOn` takes the socket **as an argument**. Seven call sites sit behind an entry guard (`if (!this.ws)
+return`) and are therefore compiler-proven non-null; reading `this.ws` inside a helper — or asserting it with
+  `!` — would make those guards optional to the compiler and turn deleting one from a compile error into a
+  runtime `TypeError`. One of them has a test whose subject is the window that guard covers.
+
+  ## What the compiler found once it could see
+
+  - **30 sends passed an optional `sessionId` into a field declared required.** The agents' dispatcher took
+    `{ sessionId?: string }` while every message it dispatches is session-scoped. It now takes a required one,
+    with the check moved to the socket boundary — a message with no `sessionId` did not come from the relay's
+    forward path, which resolves the session before forwarding.
+  - **`requestId` was read as optional in the clipboard cases and required in the screenshot and ui:tree ones**,
+    for the same wire guarantee, in the same file. Now consistent. It is still an assertion about unvalidated
+    JSON, as the other two always were; that is #444.
+  - **The clipboard `respond` helper took `object`**, so all three clipboard replies were unchecked. Typed with
+    `ClipboardReplyBody`, which is `ClipboardReply` minus the ids the helper merges.
+
+  **Twenty-five `msg.sessionId!` assertions went away as a consequence**, along with the now-unreachable
+  `if (!sessionId) return` inside each agent's `ackNoSession`. That is the same payoff #444 is after on the relay
+  side, arriving here first: once the declaration is required, the assertion has nothing left to assert.
+
+  `screenshot:error` and `ui:tree:error` are the first `*-error` messages that do **not** extend `SessionError`.
+  They are request-scoped — the relay resolves them by `requestId` alone — and the convention check names them,
+  which draws the family's boundary rather than widening it. `SessionError` is for a failure a _session_ is
+  waiting on.
+
+  Their `sessionId` is **required**, like every other producer field. A draft made it optional on the grounds
+  that the agents pass through an optional id; that was true when written and false by the end of this change,
+  which required it on both dispatchers. A field weaker than every producer describes a message nobody sends —
+  and here it would also have removed the one field a symmetric ownership check could read, since the clipboard
+  replies beside these verify `session.agentSocket === ws` before resolving and these two do not.
+
+  The agents' helpers take `AgentControlOutbound = AgentToRelay | AgentToBrowser`, **not** a union that also
+  includes `StreamToRelay`. An earlier draft merged all three, which handed back the exact hazard the direction
+  split exists to avoid: `case 'stream:register'` calls `setStreamSocket(session.id, ws)` with no role gate, so a
+  control socket that could type-check that message could take over the session's video path.
+
+  `UIElement`, `UIElementRole` and `UIElementFrame` moved from `agent-core` to `protocol` — `ui:tree:response`
+  cannot be typed without them and protocol is a leaf that cannot import agent-core. `mcp-server` had a
+  hand-written mirror with a comment saying so; it is now a re-export.
+
+  `scripts/__tests__/agentSendTyped.test.mjs` asserts nothing goes around the helpers, and it matches
+  **serialization** rather than any spelling of `.send`. Three drafts keyed on `this.ws` were bypassed in review
+  by renaming the socket — `streamWs.send(JSON.stringify(…))` walks past them, and that is not hypothetical:
+  `streamWs` is in scope in `startBinaryStream` and the relay dispatches a text frame from a stream socket
+  through the same agent cases. A commented-out copy of the canonical helper also satisfied the positive
+  assertion while the real one took `msg: object`, leaving all 66 of that agent's sends unchecked with the check
+  green. Both are closed, and a file in the agent packages that writes to a socket _and_ serializes now has to
+  be listed with a reason.
+
+- 15593db: A boot that will not finish says so, instead of letting you wait
+
+  Two halves of one question — what ends the wait for a device to come up — and both used to be answered by
+  a timeout somewhere else.
+
+  What you can observe:
+
+  - **A boot that gets overtaken fails immediately, with the reason.** Re-pick a device while the first one
+    is still starting, or shut it down mid-boot, and the agent used to abandon the earlier boot silently.
+    Nothing was sent in either direction, so whoever asked found out by waiting: 30 seconds for an MCP
+    caller, two minutes for a flow run, forever for a spinner. An abandoned boot is now answered on its own
+    request — as superseded by a newer boot, abandoned by a shutdown, or invalidated by the agent losing the
+    relay — whenever the agent still has an open connection to send that answer on. When it does not, the
+    paragraph at the end of this note applies instead.
+  - **A slow cold boot is no longer reported as a failure that never happened.** The agents poll a booting
+    device for up to 90 seconds (iOS) or 120 (Android) and then explain what went wrong. `mcp-server` gave
+    up at 30 — inside both — so a device that was simply slow came back to the model as a bare timeout
+    while the explanation was still on its way. `flow-runner` sat at exactly Android's 120, which left no
+    room at all. Both now wait past the agent, and a check across the packages keeps them there: the
+    numbers may change, the relationship may not. The cost of waiting longer is worth knowing: a wedged
+    relay now blocks an MCP caller for three minutes rather than 30 seconds, so a host whose own tool
+    timeout is shorter will cut in first with a message of its own.
+  - **A tester is no longer told a boot failed when the failure belongs to a boot they replaced.** The
+    viewer reports the failure of the boot it is waiting on, and an uncorrelated one — which is how a dead
+    video stream is reported, and has no request behind it — exactly as before.
+  - **Losing the relay mid-boot no longer leaves Android finishing a boot nobody owns.** Both agents drop
+    their device state when the connection goes, but a boot already running holds its own reference to
+    one; on Android it ran to completion against that, standing up a video stream and announcing the
+    device ready for a session that no longer existed. iOS has invalidated in-flight boots there since its
+    helper-leak fix. The two now agree.
+
+  One thing deliberately stays silent: a boot abandoned when the agent has no open connection to the relay.
+  The reply's own channel is what is missing. That case is covered by the relay, which declares the agent
+  away and ends the session's waits inside its grace window — and `sendMsg` now checks that the socket is
+  open rather than merely present, because sending to a closing one buffers the message and reports nothing,
+  which is how an answer becomes a silence.
+
+- 5ab537d: Type-check and lint the test trees
+
+  Backfills: #537
+
+  <!-- changelog: internal — a per-package `typecheck` script and a test-tree tsconfig; no runtime or interface change a self-hoster can observe -->
+
+  Every package's build tsconfig excluded `src/__tests__` and eslint ignored it, so a test double could
+  drift from the interface it doubled with both gates green. The manifests gained a `typecheck` script and
+  the test trees a tsconfig of their own, which is the only reason this touches published files at all.
+  What the gates then found was inside the tests: a double declaring `implements DeviceAgent` while missing
+  two members, five duplicate object keys, a call passing one argument to a two-argument method, and a
+  `test-utils` constraint no named message could satisfy.
+
+  The CLI is `tapflow`, not `@tapflowio/cli` — the manifest name, which is what `changeset version` resolves.
+
+- b459157: refactor(protocol): wire payload types are declared once, and a check keeps them that way
+
+  Every wire payload type was declared separately in three to five packages, and they had drifted **in
+  both directions**: `@tapflowio/protocol` was missing the `payload` field on `clipboard:error` that both
+  agents send and the viewer reads, while the dashboard's `session:chrome` declaration was missing three
+  fields its own `DeviceViewer` reads. Nothing checked either side, which is the situation
+  `@tapflowio/protocol` was created to end — it had been half done.
+
+  Protocol now owns them and everyone else imports: `ChromeData`, `ChromeButton`, `ChromeRect`,
+  `AndroidButton`, `AgentResources`, `SessionInfo`, `Point`, and `ClipboardErrorPayload` (which moves out
+  of `agent-core`, since neither the dashboard nor `mcp-server` can reach that package). `agent-core`,
+  `flow-runner` and the relay re-export the names they published, so no consumer of those packages
+  changes — including third-party agents built on `AgentRegistry.register()`.
+
+  Three shapes were also the same thing under different names, which is how the duplication survived:
+  protocol's `DeviceSummary` was `AgentDevice` in the dashboard and `DeviceInfo` in `mcp-server` and
+  `flow-runner`, and that last name collided with the relay's own `DeviceInfo`, which is a _different_
+  shape. `DeviceSummary` is now the one name; `flow-runner` keeps exporting `DeviceInfo` as an alias
+  because the CLI imports it.
+
+  **The comments moved with the types, and that mattered more than the types.** `ChromeData`'s fields
+  were described accurately only in `ios-agent`, which produces them: the viewer lays out against an
+  _expanded_ composite canvas (the device frame grown by the button margins), and protocol's copy said
+  `compositeWidth` was "full PDF width including devicePadding" — a different quantity. Deleting the
+  producer's declaration would have deleted the only correct description of the coordinate space three
+  viewers compute against. Protocol's fields now carry it, with the two spaces named explicitly.
+
+  A new check (`scripts/__tests__/protocolPayloadTypes.test.mjs`) fails if any package re-declares a
+  protocol payload shape. It matches on **field sets, not names** — the inventory that planned this work
+  grepped for names and missed two of the five copies of one shape for exactly the reason above, so a
+  name-scoped check would have passed with all five standing and would be bypassed by a rename. It found
+  two more copies during implementation: the relay's own `SessionInfo` and `agent-core`'s `Point`.
+
+  No behaviour change: type declarations, imports and comments only. Every package's test count is
+  unchanged.
+
+- Updated dependencies [a5466b9]
+- Updated dependencies [d63811f]
+- Updated dependencies [42987e1]
+- Updated dependencies [87cd901]
+- Updated dependencies [4d4fe13]
+- Updated dependencies [17a7484]
+- Updated dependencies [513b17b]
+- Updated dependencies [1ce516f]
+- Updated dependencies [b5ea86d]
+- Updated dependencies [a669e0a]
+- Updated dependencies [ef2dac8]
+- Updated dependencies [e55371c]
+- Updated dependencies [e8b29b8]
+- Updated dependencies [3f903c8]
+- Updated dependencies [7ad6343]
+- Updated dependencies [e84a2ea]
+- Updated dependencies [b459157]
+- Updated dependencies [2317d50]
+- Updated dependencies [760e27a]
+  - @tapflowio/protocol@0.19.0
+
 ## 0.18.0
 
 ## 0.17.0
