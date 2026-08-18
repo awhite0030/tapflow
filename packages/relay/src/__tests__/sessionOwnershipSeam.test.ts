@@ -720,6 +720,32 @@ describe('session ownership seam', () => {
     expect(ownerKeyFor(7, 'x:minted-y').user).toBe('7')
   })
 
+  it('a socket the handshake never recorded matches nothing, not even another one', () => {
+    // **The gates rest on this accessor, not on the seeding being total.** `handleConnection` records every
+    // accepted socket before a message can arrive, so nothing reaches the fallback today — but the answer it
+    // gives is what decides whether that stays a defence or becomes a dependency. A shared `'unidentified'`
+    // made any two unrecorded sockets equal, and equal is exactly what `ownsSession` tests for; equal users
+    // are what the shutdown exemption tests for. So a future path that accepted a socket without recording
+    // it would not fail closed — it would hand every such socket ownership of every other's session.
+    //
+    // Reaching in past `private` is deliberate: there is no wire that produces this state, which is the
+    // point. A test that could only drive it through a connection would be a test of the seeding instead.
+    const relay = new RelayServer({ port: 0 })
+    const reach = relay as unknown as {
+      ownerRecord(ws: object): { key: string; user: string; minted: boolean }
+      ownerOf(ws: object): string
+      userOf(ws: object): string
+    }
+    const [a, b] = [{}, {}]
+
+    expect(reach.ownerOf(a)).not.toBe(reach.ownerOf(b))
+    expect(reach.userOf(a), 'equal principals would pass the shutdown exemption').not.toBe(reach.userOf(b))
+    expect(reach.ownerRecord(a).minted, 'unrecorded is not the same as unidentified').toBe(false)
+    // Stored, not freshly minted per call — otherwise a socket would not own the session it just bound.
+    expect(reach.ownerOf(a)).toBe(reach.ownerOf(a))
+    expect(reach.ownerOf(a)).toBe(reach.ownerRecord(a).key)
+  })
+
   it('a client that sends no id keeps the behaviour each gate had before it', async () => {
     // R6, and it is **two different answers** because the two gates are different.
     //

@@ -1639,17 +1639,32 @@ export class RelayServer {
   /** Which owner this socket speaks for. Every connection has one — supplied or minted — so this never
    *  answers `undefined` and two anonymous sockets can never match by both lacking an identity. */
   private ownerOf(ws: WebSocket): string {
-    return this.ownerKey.get(ws)?.key ?? 'unidentified'
+    return this.ownerRecord(ws).key
   }
 
   /** The principal behind a socket — a user id, or `anon` for a connection carrying no cookie and no PAT. */
   private userOf(ws: WebSocket): string {
-    return this.ownerKey.get(ws)?.user ?? 'unidentified'
+    return this.ownerRecord(ws).user
   }
 
-  /** Everything the bind needs to record about who is joining. */
+  /** Everything the bind needs to record about who is joining.
+   *
+   *  **A socket with no record gets one of its own rather than a shared sentinel.** `handleConnection`
+   *  seeds every accepted connection before a message can arrive, so the fallback is unreachable today —
+   *  but a literal would make any two unseeded sockets *equal*, and equal keys pass `ownsSession` while
+   *  equal users pass `mayShutDown`'s same-principal exemption. That rests the whole ownership invariant
+   *  on one call site staying total, which is the shape of dependency the sentinel is supposed to remove.
+   *  Minting keeps the answer "this socket and no other"; storing it keeps repeat calls consistent, since
+   *  a fresh value each time would fail to recognise the very socket that bound the session. `minted` is
+   *  `false` deliberately — the legacy exemption exists for a client that identified itself with nothing,
+   *  not for one the relay failed to record. */
   private ownerRecord(ws: WebSocket): { key: string; user: string; minted: boolean } {
-    return this.ownerKey.get(ws) ?? { key: 'unidentified', user: 'unidentified', minted: false }
+    const known = this.ownerKey.get(ws)
+    if (known) return known
+    const unseeded = `unidentified:${randomUUID()}`
+    const record = { key: unseeded, user: unseeded, minted: false }
+    this.ownerKey.set(ws, record)
+    return record
   }
 
   /**
