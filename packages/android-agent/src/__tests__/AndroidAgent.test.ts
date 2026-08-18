@@ -466,7 +466,12 @@ describe('AndroidAgent', () => {
       // `device:ready` for a session that no longer exists. Both agents clear `deviceStates` there, but the
       // running boot holds its own reference to one, so clearing the map does not reach it.
       const adb = mockAdb(false)
-      const agent = new AndroidAgent({ reconnectDelays: [20] }, adb)
+      // A one-second handshake and a 25s budget, both copied from the iOS twin of this test rather than
+      // guessed: stopping a relay, starting another on the same port and waiting out the agent's own
+      // reconnect is the heaviest sequence in this file, and the default 10s handshake is longer than the
+      // whole default 5s test budget — one attempt landing in it stops every later one, since
+      // `_scheduleReconnect` runs only from `connect()`'s `.catch`. It passed locally and timed out on CI.
+      const agent = new AndroidAgent({ reconnectDelays: [20], handshakeTimeoutMs: 1_000 }, adb)
       await agent.connect(`ws://localhost:${port}`)
       const browser = new WebSocket(`ws://localhost:${port}`)
       await waitForOpen(browser)
@@ -515,7 +520,7 @@ describe('AndroidAgent', () => {
 
       agent.disconnect()
       rejoined.close()
-    })
+    }, 25_000)
 
     // ── L5b′: the lifecycle pair correlates, and the correlator is optional ────────────────────
     //
