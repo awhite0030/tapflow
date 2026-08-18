@@ -22,6 +22,9 @@ export {
   clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX,
   isClipboardSentinel,
+  type BootAbandonReason,
+  bootAbandonMessage,
+  BOOT_NO_SESSION_STATE,
 } from './types.js'
 export type { DeviceAgent, DeviceAgentConstructor } from './DeviceAgent.js'
 export { hasAudioCapability } from './AudioStreamCapability.js'

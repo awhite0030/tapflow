@@ -46,9 +46,31 @@ status: living
     second against a device that is deliberately off. The check after the wait stays as well — it covers the
     microtask-thin case where the wait has resolved and the seq moves before the handler resumes.
 
-  Still open, and **not** fixed by the above: `mcp-server`'s `boot_device` waits 30s, *inside* the agent's 90s,
-  so a cold boot past 30s reports a bare timeout to the LLM rather than the reason the agent is about to send.
-  That ceiling was unreachable while the agent answered on boot acceptance.
+  Closed since, by #549: both relay clients wait `BOOT_DEADLINE_MS`, which clears the slowest agent poll
+  (Android's 120s) by a stated margin, and `scripts/__tests__/bootDeadlineOutlivesAgent.test.mjs` holds the
+  relationship rather than the numbers. The margin is not decoration — `BOOT_READY_TIMEOUT_MS` bounds *the
+  wait for the device to report itself up*, one stage of a boot rather than the request (and
+  `BOOT_POLL_READ_TIMEOUT_MS` is narrower again: one reading inside that wait). A boot also lists devices,
+  may shut down and erase, boots, and opens a stream, none of which has a ceiling anywhere. A client inside
+  those was giving the caller a bare timeout for a boot that was proceeding normally, and whose explanation
+  was already on its way. **The margin is an allowance, not a ceiling** — no total exists to enforce, which
+  is #588.
+
+- **A boot this agent stops running is answered** (#526). Every checkpoint that abandons one —
+  superseded by a newer boot, abandoned by a shutdown, invalidated by losing the relay — sends
+  `device:boot-error` for *that request's* correlator, where it used to `return` with nothing said in
+  either direction and let the caller discover it by waiting out its own deadline. Three details are
+  decisions rather than mechanics:
+  - **The reason is keyed by the seq that lost it**, not held in one slot on the state. Boot A, boot B,
+    then a shutdown leaves a single slot saying `shut-down` — which is what *B* lost to. A lost to B.
+  - **Only when the request carries a correlator.** A reply nobody waits for is not an answer, and the
+    dashboard reports every uncorrelated `device:boot-error` (see #426 there), so inventing one would put
+    a failure on a tester's screen for a device that is booting normally. Same rule as `ackInput`'s (#489).
+  - **No open control channel is the one abandonment that stays silent**, because the answer's own
+    channel is what is missing. The caller learns from the relay instead, which declares the agent away
+    and terminates the session inside its grace window. `sendMsg` now checks `readyState` rather than
+    `this.ws != null`: `ws.send` on a closing socket buffers the payload and neither throws nor emits, so
+    an answer sent there is indistinguishable from a delivered one at the call site.
 
 ### Input acks carry a reason
 

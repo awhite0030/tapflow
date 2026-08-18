@@ -216,9 +216,14 @@ when the agent is offline or the session is unknown, and that `device:boot-error
 caller reads a diagnosis as unsolicited and waits out its deadline instead. That is the defect this file already
 records as having shipped twice, in a position no check reaches. A test is the only thing holding it.
 
-**A consumer correlating one of these replies is a bug, and one of them is load-bearing.** The dashboard must
-**not** gate `device:boot-error` on the correlator — it is the sole surface reporting a mid-session stream
-death, which carries no id by construction. `device:booting` is not correlated for a stronger reason than
+**A consumer that requires a correlator on one of these replies is a bug, and one of them is load-bearing.**
+The dashboard must **not** drop a `device:boot-error` for *lacking* an id — it is the sole surface reporting a
+mid-session stream death, which carries no id by construction. Judging an id it *does* carry is a different
+rule and became necessary in #526: the agents now answer a boot they abandon, so a viewer that replaced its
+own boot receives that boot's failure while the replacement runs. `DeviceViewer` therefore reports every
+uncorrelated one and, of the correlated, only the one answering the boot it is still waiting on — which is
+the id it most recently sent, never `bootIdsRef` membership. The distinction to keep is *absent* versus
+*mismatched*, not correlated versus not. `device:booting` is not correlated for a stronger reason than
 "nobody waits on it": `DeviceViewer` **must** act on a boot another client requested, tearing down chrome and
 in-flight install records whoever asked, so correlating it would suppress the case the message exists for.
 What the correlator does buy on the consumer side is narrower and real — `DeviceViewer` decrements a pending

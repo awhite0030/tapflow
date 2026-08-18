@@ -50,7 +50,7 @@ had just been fetched and discarded — a lie in the source that changes nothing
 `sendChromeData` reads `id`, `name`, `osVersion` and `typeId` and never `status`. What changes is that the value
 is now the one that was observed.
 
-**Known gap, not addressed here:** `mcp-server`'s `boot_device` waiter has a 30s deadline
+**Known gap when this was written, closed by #549 in this same release — see "A boot that will not finish says so":** `mcp-server`'s `boot_device` waiter has a 30s deadline
 (`client.ts`), which now sits *inside* the agent's 90s one. A cold or full-erase boot past 30s
 reports a bare timeout to the LLM rather than the reason the agent is about to send. Before this change that
 ceiling was unreachable, because the agent answered as soon as the boot was accepted — with the answer that

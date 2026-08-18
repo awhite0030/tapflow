@@ -98,3 +98,44 @@ export const CLIPBOARD_DEVICE_CALL_MS = 300
  *  point the message is not the user's problem. */
 export const CLIPBOARD_AGENT_WORST_MS =
   CLIPBOARD_WRITE_DEADLINE_MS + CLIPBOARD_COPY_DEADLINE_MS + 5 * CLIPBOARD_DEVICE_CALL_MS
+
+/** Why an agent gave up on a `device:boot` it had already started.
+ *
+ *  **The three ways a boot ends without running, and they are answers rather than silences.** Every
+ *  checkpoint in `handleDeviceBoot` used to `return` with nothing sent in either direction, so the caller
+ *  learned about it by waiting out its own deadline — 30s for `mcp-server`, 120s for `flow-runner`, and a
+ *  spinner that never resolves for a viewer (#526).
+ *
+ *  Shared rather than declared per platform because the *user-visible* answer must not differ by platform.
+ *  That is the class of defect the invariant table in this slice's plan exists to catch: one platform
+ *  fixed, the other not, found five separate times on the clipboard bridge. */
+export type BootAbandonReason = 'superseded' | 'shut-down' | 'relay-lost'
+
+/** What to tell the caller, given the reason.
+ *
+ *  Prose, not a `reason` field on the wire. The consumers that read this — a model deciding whether to
+ *  retry, a tester reading a toast — need a sentence; the one consumer that branches (the dashboard,
+ *  which suppresses the boot it replaced itself) branches on the correlator it already holds. A machine
+ *  field nobody reads is what #492's rule is against, and it is cheap to add later if a consumer needs it.
+ *
+ *  Each string says what happened *and* what to do about it, because the two clients surface it as the
+ *  whole failure — there is no second line for advice. */
+export function bootAbandonMessage(reason: BootAbandonReason): string {
+  switch (reason) {
+    case 'superseded':
+      return 'Boot superseded by a newer boot for this session — the newer one is what to wait on.'
+    case 'shut-down':
+      return 'Boot abandoned: the device was shut down while it was starting. Boot it again to use it.'
+    case 'relay-lost':
+      return 'Boot abandoned: the agent lost its connection to the relay while the device was starting.'
+  }
+}
+
+/** The answer for a boot that names a session this agent holds no device state for.
+ *
+ *  Separate from the three above because it is not an abandonment — nothing was ever started. It is the
+ *  boot equivalent of `ackInput`'s no-session reply (#489), and it is reachable for the same reason: the
+ *  re-seeding from `agent:registered` carries one entry per *device*, while a device can now sit behind
+ *  two sessions. */
+export const BOOT_NO_SESSION_STATE =
+  'No device state for this session on the agent — re-join the session before booting.'

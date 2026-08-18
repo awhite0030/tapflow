@@ -95,7 +95,13 @@ export class EmulatorLauncher {
     throw new PlatformError(`Could not find emulator serial for AVD "${avdName}" within ${timeoutMs / 1000}s`)
   }
 
-  async waitForBoot(serial: string, timeoutMs = 120_000): Promise<void> {
+  /** How long a `sys.boot_completed` poll may run. Named rather than inline **so a check can read it**:
+   *  a relay client that gives up before this does reports a bare timeout for a boot that was proceeding
+   *  normally (#549), and the two numbers live in different packages. A caller may still pass its own —
+   *  which the check cannot see, and says so. */
+  static readonly BOOT_READY_TIMEOUT_MS = 120_000
+
+  async waitForBoot(serial: string, timeoutMs = EmulatorLauncher.BOOT_READY_TIMEOUT_MS): Promise<void> {
     const adb = getAdbPath()
 
     // Wait for device to appear in ADB
