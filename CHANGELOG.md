@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- `js-yaml` moved to 3.15.1 / 4.3.1 (GHSA-5p4m-2wfm-xmqj — quadratic CPU consumption resolving `!!omap`), and its two `pnpm.overrides` entries were retired with it. The pin listed under 0.19.0 below no longer exists: the declared ranges had admitted the patch all along, so what held the old version in place was a lockfile that never re-evaluated them, not a range that forbade it. Development dependency only — no published package carries `js-yaml`.
+- `js-yaml` moved to 3.15.1 / 4.3.1 (GHSA-5p4m-2wfm-xmqj — quadratic CPU consumption resolving `!!omap`), and its two `pnpm.overrides` entries were retired with it. The pin listed under 0.16.0 below no longer exists: the declared ranges had admitted the patch all along, so what held the old version in place was a lockfile that never re-evaluated them, not a range that forbade it. Development dependency only — no published package carries `js-yaml`.
+- `shell-quote` and `dompurify` lost their `pnpm.overrides` entries as well, this time with no version change at all: both already sit at the highest floor any advisory for them asks for (1.9.0 and 3.4.13), and neither entry was doing the work. `concurrently` pins `shell-quote` to an exact version, which the key `<1.8.4` never intersected; `mermaid`'s caret on `dompurify` reaches the same release the override named. 0.9.2 below announced a dompurify pin at 3.4.11, raised since without a note of its own — there is now no pin on either package at all. Both are development dependencies of private packages only.
 
 ## [0.19.0] - 2026-08-19
 
