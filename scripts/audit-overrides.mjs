@@ -101,7 +101,9 @@ export function judgeKey({ key, replacement }, affected, resolvedLine, siblings 
     faults.push({ kind: 'unbounded-key-lower', detail: `\`${key}\` reaches every major below` })
   }
 
-  // Every replacement in this block caps except one. esbuild is 0.x, where each minor is breaking.
+  // Every replacement in this block caps. The one that did not was `esbuild`'s `>=0.28.1`, kept
+  // uncapped because esbuild is 0.x where each minor is breaking — and that entry was retired
+  // rather than capped, which is why this rule now has no standing exception to explain.
   if (!replUpper && !/^\^|^~|^\d/.test(replacement.trim())) {
     faults.push({ kind: 'unbounded-replacement', detail: `\`${replacement}\` has no upper bound` })
   }

@@ -238,10 +238,12 @@ describe('against this repository', () => {
   it('agrees with `pnpm why -r --prod` on which of these packages reach production', () => {
     // Measured independently with pnpm; this parser has to reproduce it or it is not usable as
     // the gate's evidence.
-    // `js-yaml`, `dompurify` and `shell-quote` are no longer in `pnpm.overrides`, and they stay in
-    // this list precisely because this assertion is what licensed retiring those entries: the
-    // overrides went away, the packages did not, and the day one turns up in a published tree is
-    // the day its retirement was wrong.
+    // `js-yaml`, `dompurify`, `shell-quote` and `esbuild` are no longer in `pnpm.overrides`, and
+    // they stay in this list precisely because this assertion is what licensed retiring those
+    // entries: the overrides went away, the packages did not, and the day one turns up in a
+    // published tree is the day its retirement was wrong. `esbuild` is the sharpest of the four —
+    // two of its resolved versions sit inside an advisory the retired key never covered, so this
+    // assertion, that none of it reaches production, is the whole of why that is tolerable.
     // `@hono/node-server` is retired too but sits in the other list, where the same assertion
     // argues the opposite way: reaching production is what made that retirement worth checking
     // twice, not what cleared it. What cleared it is that `@modelcontextprotocol/sdk` declares
