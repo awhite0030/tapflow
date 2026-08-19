@@ -235,9 +235,12 @@ describe('against this repository', () => {
     for (const n of image) expect(all.has(n), `${n} should also be published-reachable`).toBe(true)
   })
 
-  it('agrees with `pnpm why -r --prod` on which overridden packages reach production', () => {
+  it('agrees with `pnpm why -r --prod` on which of these packages reach production', () => {
     // Measured independently with pnpm; this parser has to reproduce it or it is not usable as
     // the gate's evidence.
+    // `js-yaml` is no longer in `pnpm.overrides`, and it stays in this list precisely because this
+    // assertion is what licensed retiring the entry: the override went away, the package did not,
+    // and the day it turns up in a published tree is the day that retirement was wrong.
     const names = prodReachableNames(lock, published)
     for (const p of ['hono', 'fast-uri', 'axios', 'protobufjs', '@hono/node-server']) {
       expect(names.has(p), `${p} should be prod-reachable`).toBe(true)
