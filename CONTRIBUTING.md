@@ -103,6 +103,14 @@ v0.3.0-rc.1      # release candidate, no new features
 
 **On every PR that touches user-facing behaviour**, add an entry under `## [Unreleased]`. Keep entries concise — one line per item, starting with a backtick-quoted identifier when applicable.
 
+**Not every changeset earns an entry.** Protocol typing and internal refactors would fill the file with noise a self-hoster cannot act on, so a changeset opts out from inside its own body, on a line of its own:
+
+```markdown
+<!-- changelog: internal — protocol typing, nothing a user can observe -->
+```
+
+The marker goes in the changeset rather than the PR body, because it classifies that one change — a PR carrying two changesets can need it for only one of them. `internal` is matched literally, so `<!-- changelog: docs-only -->` does not opt out. The CI `changeset` job checks only that `CHANGELOG.md` was touched; no check can tell whether the prose matches the diff.
+
 **Breaking Changes** go in `### Breaking Changes` with a one-line description and a `Migrate:` hint. For complex migrations, a separate `MIGRATION.md` may be added, but prefer keeping it inline unless the guide exceeds ~10 lines.
 
 **At release time**, rename `## [Unreleased]` to `## [x.y.z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it, and append a comparison link at the bottom:
