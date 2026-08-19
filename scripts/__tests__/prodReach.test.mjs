@@ -238,9 +238,10 @@ describe('against this repository', () => {
   it('agrees with `pnpm why -r --prod` on which of these packages reach production', () => {
     // Measured independently with pnpm; this parser has to reproduce it or it is not usable as
     // the gate's evidence.
-    // `js-yaml` is no longer in `pnpm.overrides`, and it stays in this list precisely because this
-    // assertion is what licensed retiring the entry: the override went away, the package did not,
-    // and the day it turns up in a published tree is the day that retirement was wrong.
+    // `js-yaml`, `dompurify` and `shell-quote` are no longer in `pnpm.overrides`, and they stay in
+    // this list precisely because this assertion is what licensed retiring those entries: the
+    // overrides went away, the packages did not, and the day one turns up in a published tree is
+    // the day its retirement was wrong.
     const names = prodReachableNames(lock, published)
     for (const p of ['hono', 'fast-uri', 'axios', 'protobufjs', '@hono/node-server']) {
       expect(names.has(p), `${p} should be prod-reachable`).toBe(true)
