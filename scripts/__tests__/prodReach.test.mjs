@@ -242,6 +242,11 @@ describe('against this repository', () => {
     // this list precisely because this assertion is what licensed retiring those entries: the
     // overrides went away, the packages did not, and the day one turns up in a published tree is
     // the day its retirement was wrong.
+    // `@hono/node-server` is retired too but sits in the other list, where the same assertion
+    // argues the opposite way: reaching production is what made that retirement worth checking
+    // twice, not what cleared it. What cleared it is that `@modelcontextprotocol/sdk` declares
+    // `^1.19.9 || ^2.0.5`, and the newest release of either branch is above that branch's
+    // advisory floor — so restoring the declared range cannot reach a vulnerable version.
     const names = prodReachableNames(lock, published)
     for (const p of ['hono', 'fast-uri', 'axios', 'protobufjs', '@hono/node-server']) {
       expect(names.has(p), `${p} should be prod-reachable`).toBe(true)
