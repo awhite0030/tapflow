@@ -33,7 +33,9 @@
   </p>
 </div>
 
+<!-- readme-sync:exempt npm-has-no-video -->
 <video src="https://github.com/user-attachments/assets/dbba8bde-74b6-4fb9-bdb6-3919bc4295c4" controls width="100%"></video>
+<!-- /readme-sync:exempt -->
 
 <p align="center"><em>Streams over H.264 with a zero-buffer decoder (no MSE) — <a href="contributing/streaming-latency-log.md">latency measurements ↗</a></em></p>
 
