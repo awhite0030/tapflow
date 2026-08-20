@@ -100,6 +100,7 @@ import { launchAudioHelper } from '@tapflowio/audiotap-helper'
 import { SimctlWrapper } from '../SimctlWrapper'
 import { TouchHelper } from '../TouchHelper'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
+import type { SessionJoined } from '@tapflowio/protocol'
 const MockTouchHelper = vi.mocked(TouchHelper)
 const MockAudioStreamer = vi.mocked(AudioCaptureStreamer)
 const mockLaunchAudioHelper = vi.mocked(launchAudioHelper)
@@ -2837,8 +2838,24 @@ describe('IOSAgent', () => {
       const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
-      const joined = await waitForType(browser, 'session:joined')
-      expect((joined as unknown as { capabilities: string[] }).capabilities).toContain('clipboard')
+      const joined = await waitForType<SessionJoined>(browser, 'session:joined')
+      expect(joined.capabilities).toContain('clipboard')
+
+      agent.disconnect(); browser.close()
+    })
+
+    // The same argument the clipboard case above makes, for the capability that replaced the
+    // viewer's `os !== 'android'` check (#447): the agent's array is now the *only* switch behind
+    // Full reset, so dropping `'full-reset'` from it removes the control with nothing else in any
+    // suite to notice — the relay and dashboard tests all use hand-written capability fixtures.
+    it('advertises the full-reset capability all the way to the viewer', async () => {
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      const joined = await waitForType<SessionJoined>(browser, 'session:joined')
+      expect(joined.capabilities).toContain('full-reset')
 
       agent.disconnect(); browser.close()
     })

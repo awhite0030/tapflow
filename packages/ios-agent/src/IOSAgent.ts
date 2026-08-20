@@ -15,7 +15,9 @@ import type {
 const logger = createLogger('ios-agent')
 
 // Typed so a typo cannot ship silently — the viewer gates the whole clipboard bridge on this.
-const AGENT_CAPABILITIES: AgentCapability[] = ['clipboard']
+// `full-reset` is honoured in `handleDeviceBoot`, which shuts a running device down before
+// `simctl erase` (which refuses anything but a shut-down device) and boots it again.
+const AGENT_CAPABILITIES: AgentCapability[] = ['clipboard', 'full-reset']
 
 // Human prose for each reason. Not in `@tapflowio/protocol`: that package's main entry must stay
 // runtime-free so it erases under `import type` and never reaches the dashboard bundle — a lookup

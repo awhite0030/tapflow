@@ -93,6 +93,19 @@ export interface SessionInfo {
   agentName?: string
   platform?: string
   resources?: AgentResources
+  /** What this agent implements, mirroring `AgentRegister.capabilities`.
+   *
+   *  It rides the listing as well as `session:joined` because the viewer has to gate controls
+   *  **while picking a device**, which happens before any session exists to join — Full reset
+   *  (#447) is armed on the picker, not inside the session.
+   *
+   *  **Required, like every other producer field.** There is one producer (`SessionManager.list()`)
+   *  and it always emits an array, so no relay can send the listing without it — and none ever
+   *  will, because the dashboard ships inside the relay package (`files: [public]`) and cannot skew
+   *  from it. An agent that predates the capability is expressed by `[]`, not by the key being
+   *  absent; the door already defaults it that way (`validate/index.ts`). Optional here would
+   *  describe a frame nobody sends and hand every consumer a `?.` to carry for good. */
+  capabilities: string[]
   devices: DeviceSummary[]
 }
 
