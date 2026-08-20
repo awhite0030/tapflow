@@ -4,16 +4,19 @@
 //
 // The comparison normalises the two URL prefixes npm needs and skips regions both files mark as
 // deliberately divergent. That makes the markers the hole rather than the fix: the check's core
-// operation is "stop looking here", so what follows is aimed at the ways that instruction can be
-// wrong. Per contributing/test-and-guard-coverage.md:
+// operation is "stop looking here", so much of what follows is aimed at the ways that instruction can
+// be wrong. Per contributing/test-and-guard-coverage.md:
 //
-//   - An unbalanced marker is an error, never an exemption. Treating an unclosed marker as "exempt
-//     to end of file" turns one typo into a green run over a file nothing compared. Asserted below
-//     against synthetic input, because that failure cannot be produced by the real files.
-//   - The equality assertion is paired with a positive one. A normalisation later widened toward
-//     "normalise links" would hide the cli copy pointing at a different page while staying green,
-//     so the rewrites are literal prefixes and the test asserts they actually fire.
-//   - The floors come from measurement, not from a round number. See the constants.
+//   - An unbalanced marker throws rather than widening what is skipped. A line that is not
+//     marker-shaped is not a marker at all — it stays in the comparison, which fails loudly rather
+//     than quietly exempting anything. Both readings are asserted against synthetic input, since a
+//     test cannot delete a marker from the committed files to prove it.
+//   - Equality is paired with assertions that fail on a wrong value rather than on silence. The
+//     rewrites must fire; the root copy must contain none of them; and every link the cli copy
+//     carries must already be absolute, which is the property "the cli absolutises its links" stated
+//     per link instead of as a total.
+//   - Values that describe today's files are labelled as measured, so a failure tells the reader
+//     whether to change the README back or move the number in the same diff.
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import { dirname, resolve } from 'path'
@@ -27,30 +30,44 @@ const PAIR = [
 ]
 
 // Literal prefixes, deliberately not a link-shaped pattern. npm resolves neither repo-relative
-// paths nor `blob/main` links, so the cli copy absolutises both; everything else about a link must
-// still have to match.
+// paths nor `blob/main` links, so the cli copy absolutises both; everything else about a link still
+// has to match. The cost is that the root README cannot itself write one of these URLs on purpose —
+// see #605.
 const REWRITES = [
   'https://raw.githubusercontent.com/jo-duchan/tapflow/main/',
   'https://github.com/jo-duchan/tapflow/blob/main/',
 ]
 
-const OPEN = /^<!-- readme-sync:exempt(?: ([a-z0-9-]+))? -->$/
-const CLOSE = /^<!-- \/readme-sync:exempt -->$/
+// `\r?$` because the repo has no `.gitattributes`: a checkout with `core.autocrlf=true` ends every
+// line with a carriage return, and without this the markers stop being markers. The failure that
+// produced would be `expected [] to deeply equal [ 'npm-has-no-video' ]`, which names nothing.
+const OPEN = /^<!-- readme-sync:exempt(?: ([a-z0-9-]+))? -->\r?$/
+const CLOSE = /^<!-- \/readme-sync:exempt -->\r?$/
 
-// Measured at 9016902 with one exempt region (`npm-has-no-video`): both files compare 247 lines,
-// the region costs 1 line on the root side and 6 on the cli side, and the cli compared span carries
-// 11 rewritten URLs (1 raw.githubusercontent, 10 blob/main). The floors sit at those numbers rather
-// than below them, so a second exempt region — or an extraction that quietly emptied the comparison
-// — has to be raised by hand in a diff somebody reads.
-const MIN_COMPARED_LINES = 247
-const MAX_EXEMPT_LINES = 6
-const MIN_REWRITES_IN_CLI = 11
+// Every link target the compared span carries, from markdown and from raw HTML.
+const LINK_TARGETS = (text) =>
+  [...text.matchAll(/\]\(([^)]+)\)/g)].map((m) => m[1]).concat(
+    [...text.matchAll(/(?:href|src)="([^"]+)"/g)].map((m) => m[1]),
+  )
+
+const ASSET_IDS = (text) => [...text.matchAll(/user-attachments\/assets\/([0-9a-f-]+)/g)].map((m) => m[1])
+
+// Measured at 9016902 with one exempt region (`npm-has-no-video`). The exempt caps sit exactly on
+// what that region costs today — 1 line on the root side, 6 on the cli — because the exempt span is
+// where drift hides, so growing it should have to be raised by hand in a diff somebody reads.
+const MAX_EXEMPT_LINES = { root: 1, cli: 6 }
+
+// The compared span measured 247 lines on both sides. This floor sits well below that on purpose:
+// deleting a section from both READMEs is ordinary correct work and must not fail here. It exists to
+// catch an extraction that silently emptied the comparison, not to pin the document's length.
+const MIN_COMPARED_LINES = 200
 
 /**
  * Split a README into the span that is compared and the regions marked exempt.
  *
- * Every malformed marker throws. The failure this is guarding against is the opposite — a reading
- * where a broken marker quietly widens what is skipped — so there is no lenient branch to fall into.
+ * A recognised marker that is unbalanced throws. There is no lenient branch, because the failure
+ * being guarded against is the opposite one — a reading where a broken marker quietly widens what is
+ * skipped. A line that is not marker-shaped is not treated as a marker; it stays in the comparison.
  */
 export function split(text) {
   const compared = []
@@ -60,14 +77,13 @@ export function split(text) {
   text.split('\n').forEach((line, i) => {
     const at = `line ${i + 1}`
     const opened = OPEN.exec(line)
-    const closed = CLOSE.test(line)
 
     if (opened) {
       if (open) throw new Error(`readme-sync: exempt region opened inside another at ${at}`)
       open = { reason: opened[1] ?? null, lines: [], at }
       return
     }
-    if (closed) {
+    if (CLOSE.test(line)) {
       if (!open) throw new Error(`readme-sync: exempt region closed without opening at ${at}`)
       exempt.push(open)
       open = null
@@ -85,15 +101,13 @@ const normalise = (lines) =>
 
 const read = (p) => readFileSync(resolve(ROOT, p), 'utf8')
 
-// Parsed on demand, not at module scope. `split` throws on a malformed marker, and a throw during
-// collection takes the whole file down — reported as "no tests", with the four assertions below
-// that prove the parser never running. Lazily, the same marker fails one named test instead.
+// Parsed on demand, not at module scope. `split` throws on an unbalanced marker, and a throw during
+// collection takes the whole file down — reported as "no tests", with the assertions below that
+// prove the parser never running. Lazily, the same marker fails named tests instead.
 let cache = null
 const parsed = () => (cache ??= Object.fromEntries(PAIR.map(({ label, path }) => [label, split(read(path))])))
 
-describe('a malformed marker is an error rather than a wider exemption', () => {
-  // The real files cannot produce these, and the reading that makes them harmless — "an unclosed
-  // marker exempts the rest" — is exactly the one that would pass while comparing nothing.
+describe('a marker is recognised by its shape, and a recognised one must balance', () => {
   it('rejects an opening marker that is never closed', () => {
     expect(() => split('a\n<!-- readme-sync:exempt why -->\nb\n')).toThrow(/never closed/)
   })
@@ -101,13 +115,21 @@ describe('a malformed marker is an error rather than a wider exemption', () => {
     expect(() => split('a\n<!-- /readme-sync:exempt -->\n')).toThrow(/without opening/)
   })
   it('rejects a region opened inside another', () => {
-    const text = '<!-- readme-sync:exempt a -->\n<!-- readme-sync:exempt b -->\n'
-    expect(() => split(text)).toThrow(/inside another/)
+    expect(() => split('<!-- readme-sync:exempt a -->\n<!-- readme-sync:exempt b -->\n')).toThrow(/inside another/)
   })
   it('keeps an ordinary line out of the exempt span', () => {
     const { compared, exempt } = split('a\n<!-- readme-sync:exempt why -->\nb\n<!-- /readme-sync:exempt -->\nc\n')
     expect(compared).toEqual(['a', 'c', ''])
     expect(exempt).toEqual([expect.objectContaining({ reason: 'why', lines: ['b'] })])
+  })
+  it('does not treat a line that is merely marker-like as a marker', () => {
+    // Indented, so it is content. It then fails the comparison rather than exempting anything —
+    // loud in the safe direction.
+    expect(split('  <!-- readme-sync:exempt why -->\n').exempt).toEqual([])
+  })
+  it('reads markers on a CRLF checkout', () => {
+    const text = '<!-- readme-sync:exempt why -->\r\nb\r\n<!-- /readme-sync:exempt -->\r\n'
+    expect(split(text).exempt).toEqual([expect.objectContaining({ reason: 'why' })])
   })
 })
 
@@ -122,25 +144,40 @@ describe('the two READMEs', () => {
     expect(normalise(parsed().cli.compared)).toEqual(normalise(parsed().root.compared))
   })
 
-  // Pairs the equality above with a claim that fails on a wrong value rather than on silence. If
-  // the rewrites stop matching what the cli copy actually writes, the two spans could only be equal
-  // by both having lost the links.
+  // The equality above is satisfied by two files that are wrong in the same way: copy a new
+  // repo-relative link into both and forget to absolutise the cli one, and they still match while
+  // the npm page carries a dead link. This is that property stated per link.
+  it('leave no repo-relative link in the copy npm renders', () => {
+    const targets = LINK_TARGETS(parsed().cli.compared.join('\n'))
+    expect(targets.length).toBeGreaterThan(0)
+    const relative = targets.filter((t) => !/^(https?:|#)/.test(t))
+    expect(relative, 'cli link targets npm cannot resolve').toEqual([])
+  })
+
   it('are compared with rewrites that actually fire', () => {
     const cli = parsed().cli.compared.join('\n')
     const root = parsed().root.compared.join('\n')
-    const hits = REWRITES.map((prefix) => cli.split(prefix).length - 1)
-    expect(hits.every((n) => n > 0)).toBe(true)
-    expect(hits.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(MIN_REWRITES_IN_CLI)
+    expect(REWRITES.map((prefix) => cli.split(prefix).length - 1).every((n) => n > 0)).toBe(true)
     // The root copy writes none of them, so a rewrite can only ever pull the cli side toward it.
     for (const prefix of REWRITES) expect(root).not.toContain(prefix)
+  })
+
+  // The one thing both exempt regions are supposed to share. Re-record the demo, update the root
+  // asset id, and without this the cli copy keeps linking the old video with everything green.
+  it('point their exempt regions at the same demo asset', () => {
+    const ids = (label) => ASSET_IDS(parsed()[label].exempt.flatMap((r) => r.lines).join('\n'))
+    expect(ids('root').length).toBeGreaterThan(0)
+    expect(ids('cli')).toEqual(ids('root'))
   })
 
   it('are compared over a span the exempt regions have not eaten', () => {
     for (const { label } of PAIR) {
       const { compared, exempt } = parsed()[label]
       const exemptLines = exempt.reduce((n, r) => n + r.lines.length, 0)
-      expect(exemptLines, `${label} exempt span`).toBeLessThanOrEqual(MAX_EXEMPT_LINES)
-      expect(compared.length, `${label} compared span`).toBeGreaterThanOrEqual(MIN_COMPARED_LINES)
+      expect(exemptLines, `${label} exempt lines (measured ${MAX_EXEMPT_LINES[label]}; raise it here in the same diff if the region deliberately grew)`)
+        .toBeLessThanOrEqual(MAX_EXEMPT_LINES[label])
+      expect(compared.length, `${label} compared lines (floor ${MIN_COMPARED_LINES}; falling below it means the extraction dropped content, not that the README shrank)`)
+        .toBeGreaterThanOrEqual(MIN_COMPARED_LINES)
     }
   })
 })
