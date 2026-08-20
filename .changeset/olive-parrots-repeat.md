@@ -11,8 +11,9 @@ emulator that is already running is stopped and relaunched, the same answer iOS 
 erase` refusing a booted device.
 
 Whether one is running is asked of the process rather than of adb, since adb reports an emulator that
-is still coming up as shut down and a second emulator on the same AVD would race its lock file. If it
-will not exit, the boot fails with an error instead of launching: a relaunch that loses the lock exits
+is still coming up as shut down and a second emulator on the same AVD would race its lock file. That
+probe distinguishes "nothing is running" from "the lookup could not run", and only the first permits a
+launch. If the emulator will not exit, or cannot be observed at all, the boot fails with an error: a relaunch that loses the lock exits
 unseen, and the surviving emulator is what the agent would then find and report ready — a Full reset
 that never happened, announced as complete.
 

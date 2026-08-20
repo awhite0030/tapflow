@@ -7,11 +7,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 vi.mock('child_process', () => ({
   spawn: vi.fn(() => ({ on: vi.fn(), unref: vi.fn() })),
   execFile: vi.fn(),
-  execFileSync: vi.fn(() => ''),
+  // `probeEmulator` reads `status` and `error` off the result rather than catching a throw, which
+  // is also what makes both of its outcomes reachable from a test — this runner reports an error
+  // thrown inside `mockImplementation` as a failure even when production code swallows it.
+  spawnSync: vi.fn(() => ({ status: 1, stdout: '', error: undefined })),
 }))
 
-import { spawn, execFileSync } from 'child_process'
-import { buildEmulatorArgs, EmulatorLauncher, findEmulatorPid, stopEmulatorProcess } from '../EmulatorLauncher'
+import { spawn, spawnSync } from 'child_process'
+import { buildEmulatorArgs, EmulatorLauncher, findEmulatorPid, probeEmulator, stopEmulatorProcess } from '../EmulatorLauncher'
 
 describe('buildEmulatorArgs', () => {
   it('includes -no-audio by default (audio off — video path unchanged)', () => {
@@ -88,7 +91,7 @@ describe('EmulatorLauncher.launch', () => {
 })
 
 describe('waitForExit', () => {
-  beforeEach(() => vi.mocked(execFileSync).mockReset())
+  beforeEach(() => vi.mocked(spawnSync).mockReset())
   afterEach(() => vi.useRealTimers())
 
   /** `findEmulatorPid` parses `pgrep` stdout; no match parses to NaN, which it reports as null.
@@ -97,9 +100,10 @@ describe('waitForExit', () => {
   const NONE = ''
   const pgrepReturns = (...results: string[]) => {
     let i = 0
-    vi.mocked(execFileSync).mockImplementation(
-      () => results[Math.min(i++, results.length - 1)]!,
-    )
+    vi.mocked(spawnSync).mockImplementation(() => {
+      const out = results[Math.min(i++, results.length - 1)]!
+      return { status: out ? 0 : 1, stdout: out, error: undefined } as never
+    })
   }
 
   it('returns as soon as no process holds the AVD', async () => {
@@ -112,7 +116,15 @@ describe('waitForExit', () => {
   it('keeps waiting while a process is still there, then returns when it goes', async () => {
     pgrepReturns('4321\n', '4321\n', NONE)
     await expect(new EmulatorLauncher().waitForExit('Pixel', 5_000)).resolves.toBeUndefined()
-    expect(vi.mocked(execFileSync).mock.calls.length).toBeGreaterThanOrEqual(3)
+    expect(vi.mocked(spawnSync).mock.calls.length).toBeGreaterThanOrEqual(3)
+  })
+
+  // A probe that cannot look is not a confirmed exit. Returning here would let the caller launch
+  // against a lock that may still be held, and nothing downstream tells that from a real wipe.
+  it('throws when the process lookup itself is unavailable', async () => {
+    vi.mocked(spawnSync).mockReturnValue({ status: null, stdout: '', error: new Error('ENOENT') } as never)
+    await expect(new EmulatorLauncher().waitForExit('Pixel', 5_000))
+      .rejects.toThrow(/process lookup unavailable/)
   })
 
   // Throwing is the whole contract. Returning here would let the caller launch a second emulator
@@ -126,10 +138,10 @@ describe('waitForExit', () => {
 })
 
 describe('stopEmulatorProcess', () => {
-  beforeEach(() => vi.mocked(execFileSync).mockReset())
+  beforeEach(() => vi.mocked(spawnSync).mockReset())
 
   it('signals the pid it found', () => {
-    vi.mocked(execFileSync).mockReturnValue('4321\n')
+    vi.mocked(spawnSync).mockReturnValue({ status: 0, stdout: '4321\n', error: undefined } as never)
     const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
     expect(stopEmulatorProcess('Pixel')).toBe(true)
     expect(kill).toHaveBeenCalledWith(4321, 'SIGTERM')
@@ -137,7 +149,7 @@ describe('stopEmulatorProcess', () => {
   })
 
   it('reports false when nothing is running, without signalling', () => {
-    vi.mocked(execFileSync).mockReturnValue('')
+    vi.mocked(spawnSync).mockReturnValue({ status: 1, stdout: '', error: undefined } as never)
     const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
     expect(stopEmulatorProcess('Pixel')).toBe(false)
     expect(kill).not.toHaveBeenCalled()
@@ -146,28 +158,49 @@ describe('stopEmulatorProcess', () => {
 
   // A pid that died between the lookup and the signal is not a failure to stop it.
   it('reports false rather than throwing when the signal is refused', () => {
-    vi.mocked(execFileSync).mockReturnValue('4321\n')
+    vi.mocked(spawnSync).mockReturnValue({ status: 0, stdout: '4321\n', error: undefined } as never)
     const kill = vi.spyOn(process, 'kill').mockImplementation(() => { throw new Error('ESRCH') })
     expect(stopEmulatorProcess('Pixel')).toBe(false)
     kill.mockRestore()
   })
 })
 
-describe('findEmulatorPid', () => {
-  beforeEach(() => vi.mocked(execFileSync).mockReset())
+describe('probeEmulator', () => {
+  beforeEach(() => vi.mocked(spawnSync).mockReset())
 
-  // `pgrep` exiting non-zero (no match, or not installed) reaches the same `return null` as the
-  // empty-output case above, and that outcome is what every caller depends on — it is why
-  // `waitForExit` is safe to call on a host that cannot look. **Not covered directly**: an error
-  // thrown from inside `vi.fn().mockImplementation` is reported as a test failure by this runner
-  // even when the production `catch` swallows it (verified — `expect(...).not.toThrow()` passes and
-  // the error is still raised alongside it), so the exit-1 branch cannot be exercised here without
-  // asserting on the harness instead of the code.
+  it('reads pgrep exit 1 as "gone", because that is pgrep saying it looked', () => {
+    vi.mocked(spawnSync).mockReturnValue({ status: 1, stdout: '', error: undefined } as never)
+    expect(probeEmulator('Pixel')).toEqual({ state: 'gone' })
+  })
+
+  it('reads a failure to run pgrep as "unknown", not as "gone"', () => {
+    vi.mocked(spawnSync).mockReturnValue({ status: null, stdout: '', error: new Error('ENOENT') } as never)
+    expect(probeEmulator('Pixel')).toEqual({ state: 'unknown' })
+  })
+
+  it('reports the pid it found', () => {
+    vi.mocked(spawnSync).mockReturnValue({ status: 0, stdout: '4321\n', error: undefined } as never)
+    expect(probeEmulator('Pixel')).toEqual({ state: 'running', pid: 4321 })
+  })
+})
+
+describe('findEmulatorPid', () => {
+  beforeEach(() => vi.mocked(spawnSync).mockReset())
+
+  // Both non-running probe states collapse to `null` here on purpose — the audio tap's worst case
+  // is that it does not mute. The `probeEmulator` describe above is where they are told apart, and
+  // `waitForExit` is the caller for which the difference is a wiped device or a lie about one.
+  it('answers null whether the emulator is gone or the lookup was unavailable', () => {
+    vi.mocked(spawnSync).mockReturnValue({ status: 1, stdout: '', error: undefined } as never)
+    expect(findEmulatorPid('Pixel')).toBeNull()
+    vi.mocked(spawnSync).mockReturnValue({ status: null, stdout: '', error: new Error('ENOENT') } as never)
+    expect(findEmulatorPid('Pixel')).toBeNull()
+  })
 
   it('escapes regex metacharacters in the AVD name', () => {
-    vi.mocked(execFileSync).mockReturnValue('1\n')
+    vi.mocked(spawnSync).mockReturnValue({ status: 0, stdout: '1\n', error: undefined } as never)
     findEmulatorPid('Pixel.7')
-    const pattern = (vi.mocked(execFileSync).mock.calls[0]?.[1] as string[])[1]
+    const pattern = (vi.mocked(spawnSync).mock.calls[0]?.[1] as string[])[1]
     expect(pattern).toContain('Pixel\\.7')
   })
 })

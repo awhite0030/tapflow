@@ -36,7 +36,7 @@ import {
 } from '@tapflowio/agent-core/utils'
 import { execFileSync } from 'child_process'
 import { AdbWrapper } from './AdbWrapper.js'
-import { EmulatorLauncher, findEmulatorPid, stopEmulatorProcess } from './EmulatorLauncher.js'
+import { EmulatorLauncher, findEmulatorPid, probeEmulator, stopEmulatorProcess } from './EmulatorLauncher.js'
 import { ensureHelperApp, launchMuteOnlyTap, isAudioSupported } from '@tapflowio/audiotap-helper'
 import { AndroidTouchHelper } from './AndroidTouchHelper.js'
 import { parseUiAutomatorDump } from './uiTree.js'
@@ -973,7 +973,17 @@ export class AndroidAgent implements DeviceAgent {
       // same AVD and race its lock file. iOS widened the same condition for the same reason and
       // says so at `IOSAgent.ts` (`!== 'shutdown'`, not `=== 'booted'`); this is that widening,
       // expressed against the only thing Android's two-valued status cannot tell us.
-      if (fullErase && findEmulatorPid(avdName) !== null) {
+      // `probeEmulator`, not `findEmulatorPid`: the latter reports "could not look" as "not
+      // running", and here that difference is a wiped device versus a lie about one. An
+      // unconfirmable probe fails the boot before anything destructive happens.
+      const emulator = fullErase ? probeEmulator(avdName) : { state: 'gone' as const }
+      if (emulator.state === 'unknown') {
+        throw new PlatformError(
+          `Could not tell whether emulator "${avdName}" was already running (process lookup ` +
+          'unavailable), so Full reset was not attempted.',
+        )
+      }
+      if (emulator.state === 'running') {
         const serial = this.adb.getSerial(avdId)
         if (serial) {
           await this.adb.shutdown(serial).catch((e: unknown) => {

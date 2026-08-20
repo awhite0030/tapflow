@@ -61,6 +61,9 @@ vi.mock('../EmulatorLauncher', () => ({
     waitForExit: vi.fn().mockResolvedValue(undefined),
   }) }),
   findEmulatorPid: vi.fn(() => null),
+  // The boot path probes rather than asking for a pid, because it has to tell "not running" from
+  // "could not look" (#447 review). Default: nothing running, and we could see that.
+  probeEmulator: vi.fn(() => ({ state: 'gone' as const })),
   stopEmulatorProcess: vi.fn(() => true),
 }))
 // Shared macOS host-mute helper (#341). Off by default in tests (isAudioSupported → false → no-op);
@@ -127,7 +130,7 @@ import { AdbWrapper } from '../AdbWrapper'
 import { ScrcpySession } from '../scrcpy/ScrcpySession'
 import { EmulatorVideo } from '../emulator/EmulatorVideo'
 import { EmulatorGrpcClient } from '../emulator/EmulatorGrpcClient'
-import { findEmulatorPid, stopEmulatorProcess } from '../EmulatorLauncher'
+import { findEmulatorPid, probeEmulator, stopEmulatorProcess } from '../EmulatorLauncher'
 import { isAudioSupported, launchMuteOnlyTap } from '@tapflowio/audiotap-helper'
 import type { ScrcpyControl } from '../scrcpy/ScrcpyControl'
 import type { ScrcpyFrame } from '../scrcpy/ScrcpyVideo'
@@ -332,10 +335,10 @@ describe('AndroidAgent', () => {
       // to be cleared as well as the return value — a `not.toHaveBeenCalled()` reading a previous
       // test's call is a failure that points at the wrong test.
       beforeEach(() => {
-        vi.mocked(findEmulatorPid).mockReturnValue(null)
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'gone' })
         vi.mocked(stopEmulatorProcess).mockClear()
       })
-      afterEach(() => vi.mocked(findEmulatorPid).mockReturnValue(null))
+      afterEach(() => vi.mocked(probeEmulator).mockReturnValue({ state: 'gone' }))
 
       it('launches with wipeData when the toggle was armed', async () => {
         const agent = new AndroidAgent({}, mockAdb(false))
@@ -373,7 +376,7 @@ describe('AndroidAgent', () => {
       })
 
       it('stops an already-running emulator first, then relaunches it wiped', async () => {
-        vi.mocked(findEmulatorPid).mockReturnValue(4321)
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'running', pid: 4321 })
         const adb = mockAdb(true)
         const shutdown = vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
         const agent = new AndroidAgent({}, adb)
@@ -391,7 +394,7 @@ describe('AndroidAgent', () => {
       // honest: an ordinary boot must not touch a running emulator, or every tester loses the
       // device they were using to a cold boot nobody asked for.
       it('leaves a running emulator alone on an ordinary boot', async () => {
-        vi.mocked(findEmulatorPid).mockReturnValue(4321)
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'running', pid: 4321 })
         const adb = mockAdb(true)
         const shutdown = vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
         const agent = new AndroidAgent({}, adb)
@@ -409,7 +412,7 @@ describe('AndroidAgent', () => {
       // Relaunching before the old qemu process is gone races the AVD's lock file. Nothing in
       // `emu kill` waits — it returns as soon as the console accepts it.
       it('waits for the old process to exit before relaunching, naming the AVD not the device id', async () => {
-        vi.mocked(findEmulatorPid).mockReturnValue(4321)
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'running', pid: 4321 })
         const adb = mockAdb(true)
         vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
         const agent = new AndroidAgent({}, adb)
@@ -434,7 +437,7 @@ describe('AndroidAgent', () => {
       // A live process adb cannot see — still coming up, or its adb server restarted. There is no
       // console to ask, and skipping the stop would put a second emulator on the same AVD.
       it('stops a live emulator that adb cannot see, without a serial', async () => {
-        vi.mocked(findEmulatorPid).mockReturnValue(4321)
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'running', pid: 4321 })
         const adb = mockAdb(false)          // no serial: adb reports nothing booted
         const shutdown = vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
         const agent = new AndroidAgent({}, adb)
@@ -464,12 +467,42 @@ describe('AndroidAgent', () => {
         agent.disconnect(); browser.close()
       })
 
+      // `pgrep` answers "no match" and "I am not installed" through the same thrown error, so a
+      // probe that cannot look must not read as "nothing is running" — that lands on the same
+      // silent false success as launching after a failed stop, by a different door.
+      it('fails the boot when it cannot tell whether an emulator is running', async () => {
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'unknown' })
+        const agent = new AndroidAgent({}, mockAdb(false))
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent, 'full-erase')
+        const err = await waitForType(browser, 'device:boot-error')
+
+        expect(err['requestId']).toBe('rq-wipe')
+        expect(launcherOf(agent).launch).not.toHaveBeenCalled()
+
+        agent.disconnect(); browser.close()
+      })
+
+      // The same probe failure must not touch an ordinary boot — it never asks, and a host without
+      // `pgrep` has to keep booting devices normally.
+      it('does not consult the probe on an ordinary boot', async () => {
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'unknown' })
+        const agent = new AndroidAgent({}, mockAdb(false))
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent)
+        await waitForType(browser, 'device:ready')
+
+        expect(launcherOf(agent).launch).toHaveBeenCalled()
+
+        agent.disconnect(); browser.close()
+      })
+
       // The blocker this review found: proceeding to launch after a failed stop reports a Full
       // reset that never happened, because `findSerial` scans `adb devices` for any emulator
       // answering to this AVD and returns the survivor, and `waitForBoot` passes instantly on a
       // device that is already up. The boot has to fail where the tester can see it.
       it('fails the boot rather than launching when the old emulator will not exit', async () => {
-        vi.mocked(findEmulatorPid).mockReturnValue(4321)
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'running', pid: 4321 })
         const adb = mockAdb(true)
         vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
         const agent = new AndroidAgent({}, adb)

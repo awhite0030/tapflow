@@ -1,4 +1,4 @@
-import { execFile, execFileSync, spawn } from 'child_process'
+import { execFile, spawn, spawnSync } from 'child_process'
 import { promisify } from 'util'
 import { createLogger, PlatformError, ValidationError } from '@tapflowio/agent-core'
 
@@ -32,20 +32,50 @@ export interface EmulatorLaunchOpts {
   wipeData?: boolean
 }
 
+/** What a `pgrep` for this AVD's qemu process could establish.
+ *
+ *  `'unknown'` is the member that matters and the one a boolean cannot hold: `pgrep` exits 1 when
+ *  it finds nothing, and fails to run at all when it is absent — and those are opposite facts.
+ *  Collapsing them reads "I could not look" as "nothing is there", which is safe for the audio tap
+ *  (it just does not mute) and unsafe for Full reset (it wipes nothing and says it did). */
+export type EmulatorProbe = { state: 'running'; pid: number } | { state: 'gone' } | { state: 'unknown' }
+
 /**
- * Find the running emulator's qemu PID by AVD name — the qemu process embeds `-avd <name>` in its
- * command line. Used to point the macOS mute-only audio tap at the emulator's host process so its
- * audio doesn't leak to the agent Mac's speakers (#341). Returns null when not found (not running yet,
- * or `pgrep` unavailable / exits 1 with no match). macOS only in practice; harmless elsewhere.
+ * Ask whether a qemu process is holding this AVD, keeping "no" and "cannot tell" apart.
+ *
+ * The qemu process embeds `-avd <name>` in its command line. `pgrep` reports "no match" by exiting
+ * non-zero, which is an answer; a `pgrep` that cannot run reports nothing at all, which is not.
+ */
+export function probeEmulator(avdName: string): EmulatorProbe {
+  // `spawnSync` rather than `execFileSync`, which is the same call plus a throw: the two outcomes
+  // this has to separate arrive as `status` and `error`, and turning both into one exception only
+  // to reconstruct the difference from its properties loses information on the way — a caller can
+  // rethrow, a wrapper can swallow, and the result is the collapse this function exists to undo.
+  // Escape regex metacharacters so an AVD name like "Pixel.7" can't alter the pgrep -f pattern.
+  const esc = avdName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const r = spawnSync('pgrep', ['-f', `qemu-system.*-avd ${esc}`], { encoding: 'utf8' })
+
+  // pgrep could not be run at all — absent, not executable. Not the same as finding nothing.
+  if (r.error || r.status === null) return { state: 'unknown' }
+  // pgrep's own "no match" is an answer: it looked, and there is nothing.
+  if (r.status !== 0) return { state: 'gone' }
+
+  const pid = parseInt((r.stdout ?? '').trim().split('\n')[0] ?? '', 10)
+  return Number.isFinite(pid) ? { state: 'running', pid } : { state: 'gone' }
+}
+
+/**
+ * The running emulator's qemu PID, or null. Used to point the macOS mute-only audio tap at the
+ * emulator's host process so its audio doesn't leak to the agent Mac's speakers (#341).
+ *
+ * **Deliberately still collapses `unknown` into null.** That caller's worst case is that it does
+ * not mute, so "could not look" and "not running" really are the same answer there. A caller for
+ * which they differ must use `probeEmulator` — see `waitForExit`, where the difference is a wiped
+ * device versus a lie about one.
  */
 export function findEmulatorPid(avdName: string): number | null {
-  try {
-    // Escape regex metacharacters so an AVD name like "Pixel.7" can't alter the pgrep -f pattern.
-    const esc = avdName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const out = execFileSync('pgrep', ['-f', `qemu-system.*-avd ${esc}`], { encoding: 'utf8' })
-    const pid = parseInt(out.trim().split('\n')[0] ?? '', 10)
-    return Number.isFinite(pid) ? pid : null
-  } catch { return null }
+  const probe = probeEmulator(avdName)
+  return probe.state === 'running' ? probe.pid : null
 }
 
 /**
@@ -152,14 +182,24 @@ export class EmulatorLauncher {
    * already up, and the session reports Full reset complete on a device that was never wiped.
    * A failed boot the tester can see beats a silent lie about erasing their data.
    *
-   * `findEmulatorPid` answers `null` when `pgrep` finds nothing **and** when it cannot run at all,
-   * so on a host without `pgrep` this returns immediately rather than blocking a boot — the same
-   * shape the audio tap relies on, and the reason this is a wait rather than a proof.
+   * **A probe that cannot look is a failure too**, not a pass. `pgrep` answers "no match" and
+   * "I am not installed" through the same thrown error, and reading the second as the first is the
+   * same lie by a different door: it returns at once, the launch races a lock that may still be
+   * held, and the survivor is reported as a completed wipe. `probeEmulator` keeps them apart and
+   * this refuses the one it cannot confirm. `findEmulatorPid` still collapses them for the audio
+   * tap, where the worst case is silence rather than a false result.
    */
   async waitForExit(avdName: string, timeoutMs = EmulatorLauncher.EXIT_TIMEOUT_MS): Promise<void> {
     const deadline = Date.now() + timeoutMs
     for (;;) {
-      if (findEmulatorPid(avdName) === null) return
+      const probe = probeEmulator(avdName)
+      if (probe.state === 'gone') return
+      if (probe.state === 'unknown') {
+        throw new PlatformError(
+          `Could not tell whether emulator "${avdName}" had stopped (process lookup unavailable), ` +
+          'so it was not relaunched — a wipe that cannot be confirmed would be reported as done.',
+        )
+      }
       if (Date.now() >= deadline) {
         throw new PlatformError(
           `Emulator "${avdName}" was still running ${timeoutMs / 1000}s after being asked to stop, ` +
