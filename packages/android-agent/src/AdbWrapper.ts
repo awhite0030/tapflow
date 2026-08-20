@@ -115,6 +115,52 @@ export class AdbWrapper {
     }
   }
 
+  /**
+   * Whether the device is in airplane mode — tapflow's network on/off (#607).
+   *
+   * `cmd connectivity airplane-mode` with **no argument** is the read; there is no `get`
+   * subcommand, and asking for one prints the service's help text. Measured on API 34.
+   *
+   * `settings get global airplane_mode_on` answers the same thing as 1/0, and is deliberately not
+   * used: keeping the read and the write in one command family means an image that lacks one lacks
+   * the other, so the two cannot disagree about whether this device is supported.
+   */
+  async airplaneMode(serial: string): Promise<boolean> {
+    const out = (await this.runner.exec(
+      '-s', serial, 'shell', 'cmd', 'connectivity', 'airplane-mode',
+    )).trim()
+    if (out === 'enabled') return true
+    if (out === 'disabled') return false
+    // Anything else is the help text or a future wording — **not** "off". Reporting an unreadable
+    // answer as online is the false negative this whole path is written to avoid.
+    throw new PlatformError(`Cannot read airplane mode state from: ${out || '(empty)'}`)
+  }
+
+  /**
+   * Put the device in airplane mode, or take it out, and **confirm it took**.
+   *
+   * The confirmation is not defensive. An image that does not know the subcommand exits non-zero
+   * and throws from the runner, but a command that succeeds and changes nothing would otherwise be
+   * reported as a device taken offline — and tapflow's output is a judgement about someone else's
+   * app, so a false "offline" gets signed off and the bug it hid is filed against the app under
+   * test. `clearAppData` guards the same shape for `pm clear`, which prints "Failed" and exits 0.
+   *
+   * It costs one adb round trip: the state reads back immediately after the write, with no
+   * settling delay (measured at 0ms, 200ms and 1s on API 34).
+   */
+  async setAirplaneMode(serial: string, on: boolean): Promise<void> {
+    await this.runner.exec(
+      '-s', serial, 'shell', 'cmd', 'connectivity', 'airplane-mode', on ? 'enable' : 'disable',
+    )
+    const actual = await this.airplaneMode(serial)
+    if (actual !== on) {
+      throw new PlatformError(
+        `Airplane mode did not change: asked for ${on ? 'on' : 'off'}, device still reports ` +
+        `${actual ? 'on' : 'off'}. The command was accepted but had no effect.`,
+      )
+    }
+  }
+
   async installApp(serial: string, apkPath: string): Promise<void> {
     try {
       await this.runner.exec('-s', serial, 'install', '-r', apkPath)
