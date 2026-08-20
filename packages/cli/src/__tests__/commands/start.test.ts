@@ -10,6 +10,7 @@ vi.mock('@tapflowio/relay', () => ({
   loadedEnvPath: null,
   createCertProvider: vi.fn(),
   startTlsBackgroundTasks: vi.fn(() => () => {}),
+  resolveRelayDisplayHost: vi.fn(() => 'localhost'),
   buildCorsOrigins: vi.fn(() => []),
   proxyWithoutPublicUrlWarning: vi.fn(() => null),
 
@@ -24,7 +25,7 @@ vi.mock('../../lib/tunnel-runner.js', () => ({
 }))
 
 import { execSync } from 'node:child_process'
-import { RelayServer, initDb, config } from '@tapflowio/relay'
+import { RelayServer, initDb, config, createCertProvider, resolveRelayDisplayHost } from '@tapflowio/relay'
 import { AgentRegistry } from '@tapflowio/agent-core'
 import { startConfiguredTunnel } from '../../lib/tunnel-runner.js'
 import { cmdStart } from '../../commands/start.js'
@@ -80,6 +81,7 @@ describe('cmdStart', () => {
     })
 
     vi.mocked(config).tunnel = null
+    vi.mocked(config).tls = null
     vi.mocked(startConfiguredTunnel).mockResolvedValue({ tunnel: mockTunnel as never, publicUrl: 'http://my-mac.tailnet.ts.net:4000' })
   })
 
@@ -105,6 +107,21 @@ describe('cmdStart', () => {
     await cmdStart({})
 
     expect(callOrder.indexOf('initDb')).toBeLessThan(callOrder.indexOf('RelayServer'))
+  })
+
+  it('import-cert 인증서의 DNS host를 출력', async () => {
+    vi.mocked(config).tls = { mode: 'import-cert', certPath: '/cert.pem', keyPath: '/key.pem' }
+    vi.mocked(createCertProvider).mockReturnValue({
+      ensureCert: vi.fn().mockResolvedValue({ cert: 'CERT', key: 'KEY' }),
+    } as never)
+    vi.mocked(resolveRelayDisplayHost).mockReturnValue('relay.example.com')
+    const output: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((...args) => output.push(args.join(' ')))
+
+    await cmdStart({})
+
+    expect(resolveRelayDisplayHost).toHaveBeenCalledWith(config.tls, 'CERT')
+    expect(output.join('\n')).toContain('https://relay.example.com:4000')
   })
 
   it('macOS + adb 있으면 iOS와 Android 모두 연결', async () => {

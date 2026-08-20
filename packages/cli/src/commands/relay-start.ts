@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { z } from 'zod'
-import { RelayServer, initDb, config, loadedEnvPath, createCertProvider, startTlsBackgroundTasks, buildCorsOrigins, proxyWithoutPublicUrlWarning } from '@tapflowio/relay'
+import { RelayServer, initDb, config, loadedEnvPath, createCertProvider, startTlsBackgroundTasks, buildCorsOrigins, proxyWithoutPublicUrlWarning, resolveRelayDisplayHost } from '@tapflowio/relay'
 import { banner, step, warn } from '../lib/print.js'
 import { startConfiguredTunnel } from '../lib/tunnel-runner.js'
 import type { TunnelPlugin } from '../lib/tunnel.js'
@@ -32,15 +32,15 @@ export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
 
   let tls: { cert: string; key: string } | undefined
   let certProvider: ReturnType<typeof createCertProvider> | null = null
+  let displayHost = 'localhost'
   if (config.tls) {
     certProvider = createCertProvider(config.tls, { dataDir: config.local.dataDir })
     const material = await certProvider.ensureCert()
     tls = { cert: material.cert, key: material.key }
+    displayHost = resolveRelayDisplayHost(config.tls, material.cert)
   }
   const httpScheme = tls ? 'https' : 'http'
   const wsScheme = tls ? 'wss' : 'ws'
-  // A domain-bound cert won't validate against localhost, so advertise the cert's domain instead.
-  const displayHost = config.tls?.mode === 'byo-api-token' ? config.tls.domain : 'localhost'
 
   const proxyWarning = proxyWithoutPublicUrlWarning(config)
   if (proxyWarning) warn(proxyWarning)
