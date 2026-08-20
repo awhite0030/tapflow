@@ -137,27 +137,34 @@ export class AdbWrapper {
   }
 
   /**
-   * Put the device in airplane mode, or take it out, and **confirm it took**.
+   * Put the device in airplane mode, or take it out, and report what it observed.
    *
-   * The confirmation is not defensive. An image that does not know the subcommand exits non-zero
-   * and throws from the runner, but a command that succeeds and changes nothing would otherwise be
-   * reported as a device taken offline — and tapflow's output is a judgement about someone else's
-   * app, so a false "offline" gets signed off and the bug it hid is filed against the app under
-   * test. `clearAppData` guards the same shape for `pm clear`, which prints "Failed" and exits 0.
+   * **Returns rather than throwing when the state cannot be confirmed, and that is the whole
+   * contract.** The write happens first and the read second, so a failure after the write is a
+   * device that has probably already changed — and a caller that cannot tell "the command failed"
+   * from "the command landed and I could not confirm it" has no choice but to guess. Guessing here
+   * means reporting an offline device as online, which is the one outcome this feature must never
+   * produce: a tester signs off offline behaviour they never saw, and the bug goes to the app.
    *
-   * It costs one adb round trip: the state reads back immediately after the write, with no
-   * settling delay (measured at 0ms, 200ms and 1s on API 34).
+   * A write that fails **does** throw: the device is unchanged and the caller's own before-state is
+   * still true, so there is nothing here it needs to be told.
+   *
+   * - `{ confirmed: true, offline }` — wrote and read it back.
+   * - `{ confirmed: false, offline }` — the read disagreed. `offline` is what the **device** said;
+   *   the command was accepted and had no effect, which is what an image that does not really
+   *   support this looks like.
+   * - `{ confirmed: false, offline: <requested> }` — the read failed outright. The write was
+   *   accepted, so the requested value is the best evidence there is; it is not a default.
    */
-  async setAirplaneMode(serial: string, on: boolean): Promise<void> {
+  async setAirplaneMode(serial: string, on: boolean): Promise<{ confirmed: boolean; offline: boolean }> {
     await this.runner.exec(
       '-s', serial, 'shell', 'cmd', 'connectivity', 'airplane-mode', on ? 'enable' : 'disable',
     )
-    const actual = await this.airplaneMode(serial)
-    if (actual !== on) {
-      throw new PlatformError(
-        `Airplane mode did not change: asked for ${on ? 'on' : 'off'}, device still reports ` +
-        `${actual ? 'on' : 'off'}. The command was accepted but had no effect.`,
-      )
+    try {
+      const actual = await this.airplaneMode(serial)
+      return { confirmed: actual === on, offline: actual }
+    } catch {
+      return { confirmed: false, offline: on }
     }
   }
 

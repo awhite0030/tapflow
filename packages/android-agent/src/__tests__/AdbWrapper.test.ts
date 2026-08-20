@@ -288,25 +288,47 @@ describe('AdbWrapper', () => {
       )
     })
 
+    it('confirms the state when the read agrees', async () => {
+      const r = await new AdbWrapper(connectivity('enabled')).setAirplaneMode('emulator-5554', true)
+      expect(r).toEqual({ confirmed: true, offline: true })
+    })
+
     // **The reason the read-back exists.** An image whose `cmd connectivity` does not know
-    // `airplane-mode` answers non-zero and is caught by the throw — but a command that succeeds and
+    // `airplane-mode` answers non-zero and throws from the write — but a command that succeeds and
     // does nothing would otherwise be reported as a device taken offline. tapflow is a QA tool: a
     // false "offline" gets signed off, and the bug it hides is filed against the app under test.
     // `clearAppData` above guards the same shape for `pm clear`.
-    it('throws when the state does not take, even though the command succeeded', async () => {
-      const runner = connectivity('disabled')   // asked for on, device still reports off
-      await expect(new AdbWrapper(runner).setAirplaneMode('emulator-5554', true))
-        .rejects.toThrow(PlatformError)
+    //
+    // **Reports rather than throws**, and `offline` is what the *device* said, not what was asked
+    // for. A caller that only learned "it failed" would have to guess which of the two states it is
+    // looking at, and guessing wrong here is exactly the false "offline" above.
+    it('reports unconfirmed, with the device state, when the write has no effect', async () => {
+      const r = await new AdbWrapper(connectivity('disabled')).setAirplaneMode('emulator-5554', true)
+      expect(r).toEqual({ confirmed: false, offline: false })
     })
 
-    it('throws the same way when asked to turn it off and it stays on', async () => {
-      const runner = connectivity('enabled')
-      await expect(new AdbWrapper(runner).setAirplaneMode('emulator-5554', false))
-        .rejects.toThrow(PlatformError)
+    it('reports the same way when asked to turn it off and it stays on', async () => {
+      const r = await new AdbWrapper(connectivity('enabled')).setAirplaneMode('emulator-5554', false)
+      expect(r).toEqual({ confirmed: false, offline: true })
     })
 
-    // An image that predates the subcommand exits 255, which reaches us as a throw from the runner.
-    it('propagates a failure from the command itself', async () => {
+    // **The write landed and the confirmation did not.** The device has probably already changed,
+    // so the requested value is the best evidence there is — falling back to the old one would
+    // report an offline device as online, the failure this whole path exists to prevent.
+    it('reports the requested state when the read-back itself fails', async () => {
+      const runner = mockRunner()
+      ;(runner.exec as ReturnType<typeof vi.fn>).mockImplementation(async (...args: string[]) => {
+        if (!args.includes('airplane-mode')) return ''
+        if (args.includes('enable') || args.includes('disable')) return ''   // write lands
+        return 'Connectivity service commands:'                             // read is unreadable
+      })
+      const r = await new AdbWrapper(runner).setAirplaneMode('emulator-5554', true)
+      expect(r).toEqual({ confirmed: false, offline: true })
+    })
+
+    // A write that fails is different: the device is unchanged, so the caller's own before-state is
+    // still true and there is nothing to report back — it throws.
+    it('throws when the write itself fails, leaving the caller its own state', async () => {
       const runner = connectivity('disabled', { setExit: new Error('exit 255') })
       await expect(new AdbWrapper(runner).setAirplaneMode('emulator-5554', true)).rejects.toThrow()
     })

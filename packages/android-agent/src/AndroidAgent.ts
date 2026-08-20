@@ -1079,7 +1079,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
       //
       // The report that follows is the first of the three unsolicited producers the protocol names.
       // Without it a viewer opening a session has no idea whether this device is on the network.
-      void this.resetNetworkForSession(sessionId)
+      void this.resetNetworkForSession(sessionId, state, seq)
     } catch (e) {
       if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
       const message = e instanceof Error ? e.message : String(e)
@@ -1126,28 +1126,43 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     }
   }
 
-  /** Put a device back on the network if the last session left it off, then report where it is. */
-  private async resetNetworkForSession(sessionId: string): Promise<void> {
+  /**
+   * Put a device back on the network if the last session left it off, then report where it is.
+   *
+   * **Guarded by `bootSeq` like every other await in the boot path**, and for the reason the wipe
+   * block states two hundred lines up: this **writes to the device**, and a boot that has been
+   * superseded must not. The window is a real one rather than a race — the read below is an adb
+   * round trip, and a tester whose device just went ready can arm the network toggle inside it.
+   * Without the check, this wakes up and puts them back online with nobody having asked.
+   */
+  private async resetNetworkForSession(sessionId: string, state: DeviceState, seq: number): Promise<void> {
     const serial = this.serialFor(sessionId)
     if (!serial) return
+    let known = false
     try {
       // Conditional: an already-online device is left alone, so an ordinary boot issues no command
       // at all. Unconditional would work too and is worse — it makes every boot a write to a
       // setting nobody asked about, on a path where a failure is not the tester's problem to solve.
-      if (await this.adb.airplaneMode(serial)) await this.adb.setAirplaneMode(serial, false)
+      known = await this.adb.airplaneMode(serial)
+      if (seq !== state.bootSeq) return
+      if (known) {
+        const r = await this.adb.setAirplaneMode(serial, false)
+        known = r.offline
+      }
     } catch (e) {
       // An image that cannot do this has nothing to clear. The report below says so.
       logger.warn('could not clear airplane mode on boot:', (e as Error).message)
     }
-    await this.reportNetworkState(sessionId)
+    if (seq !== state.bootSeq) return
+    await this.reportNetworkState(sessionId, known)
   }
 
   /** Send the current state with no correlator — this is a report, not an answer. */
-  private async reportNetworkState(sessionId: string): Promise<void> {
+  private async reportNetworkState(sessionId: string, lastKnownOffline = false): Promise<void> {
     const serial = this.serialFor(sessionId)
     if (!serial) return
     this.sendMsg({
-      type: 'network:state', sessionId, payload: await this.readNetworkState(serial),
+      type: 'network:state', sessionId, payload: await this.readNetworkState(serial, lastKnownOffline),
     })
   }
 
@@ -1161,17 +1176,21 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
       return
     }
 
-    // What the device says now, so a failure below can report the truth rather than an assumption.
+    // What the device says now. Only used when the **write** fails, where the device is unchanged
+    // and this is still true — every other path reports what the wrapper observed after writing.
     const before = await this.readNetworkState(serial)
 
+    let result: { confirmed: boolean; offline: boolean }
     try {
-      await this.adb.setAirplaneMode(serial, offline)
+      result = await this.adb.setAirplaneMode(serial, offline)
     } catch (e) {
-      // **An answer, not a failure.** An image whose `cmd connectivity` predates the subcommand, or
-      // one where the command was accepted and did nothing, is a device that cannot do this — the
-      // viewer needs to say so and stay usable. `network:error` is for a request that could not be
-      // dispatched at all, which is the case above.
-      logger.warn('airplane mode set failed:', (e as Error).message)
+      // The write itself failed: nothing reached the device. An image whose `cmd connectivity`
+      // predates the subcommand lands here.
+      //
+      // **An answer, not a failure.** The viewer needs to say this device cannot do it and stay
+      // usable; `network:error` is for a request that could not be dispatched at all, which is the
+      // no-device case above and a different fix for the tester.
+      logger.warn('airplane mode write failed:', (e as Error).message)
       this.sendMsg({
         type: 'network:state', sessionId, requestId,
         payload: { offline: before.offline, available: false, reason: 'unsupported-device' },
@@ -1179,18 +1198,39 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
       return
     }
 
+    // `result.offline` is what the wrapper **observed**, never what was asked for — the write
+    // happens before the confirmation, so a state it could not confirm is still more likely to be
+    // the requested one than the old one. Reporting the old value here is how an offline device
+    // gets rendered as online, which is the failure this whole feature exists to avoid.
     this.sendMsg({
       type: 'network:state', sessionId, requestId,
-      payload: await this.readNetworkState(serial, offline),
+      payload: result.confirmed
+        ? { offline: result.offline, available: true }
+        : { offline: result.offline, available: false, reason: 'unsupported-device' },
     })
   }
 
+  /**
+   * **Answers rather than throwing when the device cannot do it**, which is what
+   * `NetworkControlCapability` declares — the return type can express `available: false`, and a
+   * device that does not support this is not a caller error. The WS path answers the same way; the
+   * two must not disagree about the same question, and this one drifted first.
+   *
+   * A device that is not booted still throws: there is no state to describe.
+   */
   async setNetworkOffline(offline: boolean): Promise<NetworkStatePayload> {
     const sessionId = this.deviceStates.keys().next().value
     const serial = sessionId ? this.serialFor(sessionId) : undefined
     if (!serial) throw new PlatformError('No booted device')
-    await this.adb.setAirplaneMode(serial, offline)
-    return this.readNetworkState(serial, offline)
+    const before = await this.readNetworkState(serial)
+    try {
+      const r = await this.adb.setAirplaneMode(serial, offline)
+      return r.confirmed
+        ? { offline: r.offline, available: true }
+        : { offline: r.offline, available: false, reason: 'unsupported-device' }
+    } catch {
+      return { offline: before.offline, available: false, reason: 'unsupported-device' }
+    }
   }
 
   async networkState(): Promise<NetworkStatePayload> {
@@ -1636,16 +1676,16 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
           })
         break
       }
-      // Clipboard bridge. Emulator-only: it rides the gRPC EmulatorController, since the
-      // AVD images have no `adb shell cmd clipboard`. The chord is pressed HERE, not by the
-      // viewer — the browser cannot know when the key lands, and reading too early returns
-      // the PREVIOUS clipboard, a stale value the user would never notice.
       case 'network:set': {
         const { requestId } = msg as unknown as { requestId: string }
         const offline = (msg.payload as { offline: boolean }).offline
         void this.handleNetworkSet(msg.sessionId!, offline, requestId)
         break
       }
+      // Clipboard bridge. Emulator-only: it rides the gRPC EmulatorController, since the
+      // AVD images have no `adb shell cmd clipboard`. The chord is pressed HERE, not by the
+      // viewer — the browser cannot know when the key lands, and reading too early returns
+      // the PREVIOUS clipboard, a stale value the user would never notice.
       case 'clipboard:read':
       case 'clipboard:write': {
         // `requestId: string`, matching the screenshot and ui:tree casts a few cases below — clipboard was

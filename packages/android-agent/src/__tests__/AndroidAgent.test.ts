@@ -180,6 +180,11 @@ function mockAdb(booted = false): AdbWrapper {
     listAvds: vi.fn().mockResolvedValue(['Pixel_8_API_34']),
   }
   const adb = new AdbWrapper(runner)
+  // Every boot reports network state (#607), so without this the real `AdbWrapper.airplaneMode`
+  // parses `''`, throws, and each of the ~27 boot tests silently runs the degraded
+  // `unsupported-device` path — a default device that is a device tapflow cannot steer. The
+  // network tests spy over this; everyone else just gets a device that is on the network.
+  vi.spyOn(adb, 'airplaneMode').mockResolvedValue(false)
   if (booted) adb.setSerial('avd:Pixel_8_API_34', 'emulator-5554')
   vi.spyOn(adb, 'listDevices').mockResolvedValue([{
     id: 'avd:Pixel_8_API_34',
@@ -300,7 +305,14 @@ describe('AndroidAgent', () => {
     let adb: AdbWrapper
     let browser: WebSocket
 
-    /** Whether the device reports airplane mode, and what the wrapper does when asked to change it. */
+    /**
+     * A device whose airplane mode reads as `initial` and follows what it is told.
+     *
+     * The doubles mirror the real wrapper's contract: `setAirplaneMode` **returns** what it
+     * observed rather than throwing when it cannot confirm. An earlier version had the write
+     * resolve while the read rejected — a combination the real wrapper cannot produce, since it
+     * calls the read itself, so the test was pinning an unreachable path.
+     */
     function withAirplane(initial = false, setBehaviour?: (on: boolean) => void) {
       adb = mockAdb(true)
       let state = initial
@@ -308,6 +320,7 @@ describe('AndroidAgent', () => {
       vi.spyOn(adb, 'setAirplaneMode').mockImplementation(async (_s: string, on: boolean) => {
         setBehaviour?.(on)
         state = on
+        return { confirmed: true, offline: on }
       })
       return adb
     }
@@ -360,11 +373,73 @@ describe('AndroidAgent', () => {
         payload: { deviceId: 'avd:Pixel_8_API_34' },
       }))
       await waitForType(browser, 'device:ready')
+      // Barrier first, then read the recording — the reset runs after `device:ready` goes out.
+      const state = await waitForType<NetworkState>(browser, 'network:state')
 
       expect(a.setAirplaneMode).toHaveBeenCalledWith('emulator-5554', false)
-      // And the state it then reports is the cleared one, not the one it found.
-      const state = await waitForType<NetworkState>(browser, 'network:state')
       expect(state.payload).toEqual({ offline: false, available: true })
+    })
+
+    // The boot path's own version of the blocker above. The reset reads the device, fails to
+    // clear it, and then reports — and if that second read fails too, the fact it already learned
+    // must survive into the report. Dropping it renders "online" over a device the agent just
+    // established is offline.
+    it('carries what the reset learned into the report when the re-read fails', async () => {
+      const a = mockAdb(true)
+      let reads = 0
+      vi.spyOn(a, 'airplaneMode').mockImplementation(async () => {
+        if (++reads > 1) throw new Error('cannot read')
+        return true                                  // left offline by whoever had it last
+      })
+      vi.spyOn(a, 'setAirplaneMode').mockRejectedValue(new Error('exit 255'))
+      await session(a)
+
+      browser.send(JSON.stringify({
+        type: 'device:boot', requestId: 'rq-b', sessionId: agent.sessionId,
+        payload: { deviceId: 'avd:Pixel_8_API_34' },
+      }))
+      await waitForType(browser, 'device:ready')
+      const state = await waitForType<NetworkState>(browser, 'network:state')
+
+      expect(state.payload).toEqual({ offline: true, available: false, reason: 'unsupported-device' })
+    })
+
+    // The boot reset **writes to the device**, so it has to answer to `bootSeq` like every other
+    // await in that path. The window is a real one: the read below is an adb round trip, and a
+    // tester whose device just went ready can arm the toggle inside it — after which a superseded
+    // boot waking up would put them back online with nobody having asked.
+    it('abandons the boot-time reset when a newer boot supersedes it', async () => {
+      const a = mockAdb(true)
+      // One resolver per call, kept in order — a single slot would be overwritten by the second
+      // boot's own read, and releasing that would wake the *current* reset rather than the
+      // superseded one, which is a different test that would pass for the wrong reason.
+      const parked: Array<() => void> = []
+      vi.spyOn(a, 'airplaneMode').mockImplementation(
+        () => new Promise((r) => { parked.push(() => r(true)) }),
+      )
+      const setSpy = vi.spyOn(a, 'setAirplaneMode').mockResolvedValue({ confirmed: true, offline: false })
+      await session(a)
+
+      browser.send(JSON.stringify({
+        type: 'device:boot', requestId: 'rq-1', sessionId: agent.sessionId,
+        payload: { deviceId: 'avd:Pixel_8_API_34' },
+      }))
+      await waitForType(browser, 'device:ready')
+      await vi.waitFor(() => expect(parked.length).toBe(1))
+
+      // A second boot bumps the seq while the first reset is parked on its read.
+      browser.send(JSON.stringify({
+        type: 'device:boot', requestId: 'rq-2', sessionId: agent.sessionId,
+        payload: { deviceId: 'avd:Pixel_8_API_34' },
+      }))
+      await waitForType(browser, 'device:ready')
+
+      await vi.waitFor(() => expect(parked.length).toBe(2))
+      setSpy.mockClear()
+      parked[0]!()                   // the superseded reset wakes up holding "device is offline"
+      await new Promise((r) => setTimeout(r, 50))
+
+      expect(setSpy).not.toHaveBeenCalled()
     })
 
     // The control. Without it, an implementation that flips airplane mode on every boot passes the
@@ -378,6 +453,10 @@ describe('AndroidAgent', () => {
         payload: { deviceId: 'avd:Pixel_8_API_34' },
       }))
       await waitForType(browser, 'device:ready')
+      // `device:ready` is the trigger's echo, not a barrier — the reset is dispatched with `void`
+      // on the line after it. Its own last act is this report, so waiting for it is what puts the
+      // absence assertion after the work rather than beside it.
+      await waitForType(browser, 'network:state')
 
       expect(a.setAirplaneMode).not.toHaveBeenCalled()
     })
@@ -390,14 +469,17 @@ describe('AndroidAgent', () => {
       set(true)
       const state = await waitForType<NetworkState>(browser, 'network:state')
 
-      expect(state.payload).toMatchObject({ available: false, reason: 'unsupported-device' })
+      // `toEqual`, not `toMatchObject`: `offline` is the field that carries the truth here, and
+      // leaving it unasserted is what let a mutation report the requested value instead of the
+      // device's. `reason` too — each value makes a different sentence on screen.
+      expect(state.payload).toEqual({ offline: false, available: false, reason: 'unsupported-device' })
       expect(state.requestId).toBe('rq-net')
     })
 
     // …and a device with no session state is a failure, in the shape the request's waiter reads.
     it('answers network:error when there is no booted device', async () => {
       adb = mockAdb(false)
-      vi.spyOn(adb, 'setAirplaneMode').mockResolvedValue(undefined)
+      vi.spyOn(adb, 'setAirplaneMode').mockResolvedValue({ confirmed: true, offline: true })
       await session(adb)
       set(true)
       const err = await waitForType<NetworkError>(browser, 'network:error')
@@ -434,34 +516,46 @@ describe('AndroidAgent', () => {
       expect(a.airplaneMode).toHaveBeenCalledWith('emulator-5554')
     })
 
-    // **`offline` describes the device, not the request.** A device that is offline and can no
-    // longer be steered is still offline; reporting `false` would render "online" over a device
-    // whose app reaches nothing, and every bug filed after that goes to the app under test. There
-    // is no third value on the wire for "unknown", so a placeholder has no way back.
-    it('keeps offline true when the state can no longer be read', async () => {
+    // **The blocker this review found.** The wrapper writes first and confirms second, so a
+    // confirmation that fails leaves a device that has probably already changed. Reporting the
+    // pre-write value there renders "online" over an offline device — a tester signs off offline
+    // behaviour they never saw, and the bug goes to the app under test. `offline` here is what the
+    // wrapper observed, never what the caller had before.
+    it('reports the device as offline when the write landed but could not be confirmed', async () => {
       adb = mockAdb(true)
-      vi.spyOn(adb, 'airplaneMode').mockRejectedValue(new Error('cannot read'))
-      vi.spyOn(adb, 'setAirplaneMode').mockResolvedValue(undefined)
+      vi.spyOn(adb, 'airplaneMode').mockResolvedValue(false)
+      vi.spyOn(adb, 'setAirplaneMode').mockResolvedValue({ confirmed: false, offline: true })
       await session(adb)
 
       set(true)
       const state = await waitForType<NetworkState>(browser, 'network:state')
-
-      // The set landed, the read did not. Both facts survive into the answer.
-      expect(state.payload).toMatchObject({ offline: true, available: false })
+      expect(state.payload).toEqual({ offline: true, available: false, reason: 'unsupported-device' })
     })
 
-    // The mirror, and the one that stops the rule above from being "always say offline": asked to
-    // go back online with the read broken, it must not report the device as still offline either.
-    it('follows the request the other way too when the read is broken', async () => {
+    // The mirror: a command accepted that changed nothing. The wrapper saw the device stay put, so
+    // that is what goes out — this is the false "offline" the read-back exists to prevent.
+    it('reports the device as online when the command was accepted and did nothing', async () => {
       adb = mockAdb(true)
-      vi.spyOn(adb, 'airplaneMode').mockRejectedValue(new Error('cannot read'))
-      vi.spyOn(adb, 'setAirplaneMode').mockResolvedValue(undefined)
+      vi.spyOn(adb, 'airplaneMode').mockResolvedValue(false)
+      vi.spyOn(adb, 'setAirplaneMode').mockResolvedValue({ confirmed: false, offline: false })
+      await session(adb)
+
+      set(true)
+      const state = await waitForType<NetworkState>(browser, 'network:state')
+      expect(state.payload).toEqual({ offline: false, available: false, reason: 'unsupported-device' })
+    })
+
+    // A write that never reached the device leaves the before-state true, and that is the one case
+    // where reporting it is right.
+    it('keeps the pre-request state when the write itself failed', async () => {
+      adb = mockAdb(true)
+      vi.spyOn(adb, 'airplaneMode').mockResolvedValue(true)     // device was already offline
+      vi.spyOn(adb, 'setAirplaneMode').mockRejectedValue(new Error('exit 255'))
       await session(adb)
 
       set(false)
       const state = await waitForType<NetworkState>(browser, 'network:state')
-      expect(state.payload).toMatchObject({ offline: false, available: false })
+      expect(state.payload).toEqual({ offline: true, available: false, reason: 'unsupported-device' })
     })
   })
 
