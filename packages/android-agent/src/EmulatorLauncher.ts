@@ -48,6 +48,34 @@ export function findEmulatorPid(avdName: string): number | null {
   } catch { return null }
 }
 
+/**
+ * Ask this AVD's emulator process to stop, without going through adb.
+ *
+ * `adb emu kill` is the graceful route and the one to prefer — but it needs a serial, and a serial
+ * only exists once `adb devices` reports the emulator as `device`. An emulator that is still coming
+ * up, or one whose adb server was restarted underneath it, has a live process and no serial, and
+ * that is exactly the state Full reset must be able to clear (#447): a second emulator on the same
+ * AVD would race the lock file.
+ *
+ * Only ever called on the wipe path, which is what makes SIGTERM acceptable — the user data this
+ * could corrupt is being discarded in the next breath. Do not reach for this on an ordinary
+ * shutdown, where a clean console stop is worth waiting for.
+ *
+ * Returns whether a process was signalled; `false` means there was nothing to stop.
+ */
+export function stopEmulatorProcess(avdName: string): boolean {
+  const pid = findEmulatorPid(avdName)
+  if (pid === null) return false
+  try {
+    process.kill(pid, 'SIGTERM')
+    return true
+  } catch {
+    // Already gone between the lookup and the signal, or not ours to signal. `waitForExit` is what
+    // decides whether the AVD is actually free, so a failure here is not the answer to that.
+    return false
+  }
+}
+
 /** Build the emulator CLI args. Pure + exported so the `-no-audio` gating is unit-testable. */
 export function buildEmulatorArgs(avdName: string, grpcPort?: number, opts?: EmulatorLaunchOpts): string[] {
   const args = ['-avd', avdName]
@@ -113,24 +141,33 @@ export class EmulatorLauncher {
    * Wait until no qemu process is holding this AVD.
    *
    * `adb emu kill` returns as soon as the emulator console accepts it, and the process dies some
-   * time after — so a relaunch issued immediately races the AVD directory's lock file, and the
-   * loser starts against a directory another process still owns. Only Full reset (#447) needs
-   * this, because it is the one path that stops an emulator in order to start it again.
+   * time after — so a relaunch issued immediately races the AVD directory's lock file. Only Full
+   * reset (#447) needs this, because it is the one path that stops an emulator to start it again.
    *
-   * **Returns rather than throws on timeout.** The caller's next move is the launch either way:
-   * refusing to boot because a process we asked to die is taking its time would turn a slow
-   * shutdown into a failed session, while proceeding gives the emulator its own chance to report
-   * a lock it cannot take. `findEmulatorPid` also answers `null` when `pgrep` is unavailable, so
-   * on a host where it cannot look this is a no-op by construction — which is the same shape the
-   * audio tap already relies on.
+   * **Throws on timeout, and that is the whole point.** Proceeding to launch looks like the
+   * forgiving choice and is the dangerous one: the second emulator loses the lock and exits, and
+   * nothing here notices — `launch` spawns `detached` with `stdio: 'ignore'` and reads no exit
+   * code, while `findSerial` scans `adb devices` for **any** emulator answering to this AVD name,
+   * so it returns the survivor. `waitForBoot` then passes instantly against a device that is
+   * already up, and the session reports Full reset complete on a device that was never wiped.
+   * A failed boot the tester can see beats a silent lie about erasing their data.
+   *
+   * `findEmulatorPid` answers `null` when `pgrep` finds nothing **and** when it cannot run at all,
+   * so on a host without `pgrep` this returns immediately rather than blocking a boot — the same
+   * shape the audio tap relies on, and the reason this is a wait rather than a proof.
    */
   async waitForExit(avdName: string, timeoutMs = EmulatorLauncher.EXIT_TIMEOUT_MS): Promise<void> {
     const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
+    for (;;) {
       if (findEmulatorPid(avdName) === null) return
+      if (Date.now() >= deadline) {
+        throw new PlatformError(
+          `Emulator "${avdName}" was still running ${timeoutMs / 1000}s after being asked to stop, ` +
+          'so it could not be wiped and relaunched.',
+        )
+      }
       await new Promise((r) => setTimeout(r, 200))
     }
-    logger.warn(`emulator "${avdName}" still running ${timeoutMs / 1000}s after kill — launching anyway`)
   }
 
   async waitForBoot(serial: string, timeoutMs = EmulatorLauncher.BOOT_READY_TIMEOUT_MS): Promise<void> {

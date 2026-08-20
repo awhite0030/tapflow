@@ -18,9 +18,9 @@ export function useDeviceSelector(
    *  This was `os !== 'android'`, which says "Android cannot" when what it means is "this agent did
    *  not say it can" — and the two differ in both directions (#447). An iOS agent too old to
    *  implement Full reset still reports `platform: 'ios'`, so the platform check offered a control
-   *  that agent has no code for; and the day AndroidAgent implements `-wipe-data` it would still
-   *  hide it. Gating on what the agent advertised is right on both counts, and needs no dashboard
-   *  change when the second one lands.
+   *  that agent has no code for; and `AndroidAgent` implements `-wipe-data` now, which the platform
+   *  check would still be hiding. That second half landed without touching this file, which is the
+   *  argument for gating this way rather than a prediction about it.
    *
    *  No session picked yet means nothing known yet, so the control stays hidden. */
   const fullResetSupported = selectedSession?.capabilities.includes('full-reset') ?? false
