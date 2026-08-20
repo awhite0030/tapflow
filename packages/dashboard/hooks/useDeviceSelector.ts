@@ -23,7 +23,7 @@ export function useDeviceSelector(
    *  change when the second one lands.
    *
    *  No session picked yet means nothing known yet, so the control stays hidden. */
-  const fullResetSupported = selectedSession?.capabilities?.includes('full-reset') ?? false
+  const fullResetSupported = selectedSession?.capabilities.includes('full-reset') ?? false
 
   /** Full reset is a one-shot intent — "erase the next device I pick" — not a setting that stays
    *  on. Leaving a session is a conditional re-render, not an unmount, so without this the toggle

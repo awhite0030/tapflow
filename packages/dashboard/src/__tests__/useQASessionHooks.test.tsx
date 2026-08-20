@@ -21,6 +21,9 @@ let capturedOnMessage: (msg: BrowserInbound) => void = () => {}
 
 const makeSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
   agentName: 'test-mac',
+  // An agent that advertises nothing. `capabilities` is required on the wire, so `[]` — not an
+  // absent key — is how the relay reports one that predates a capability (#447).
+  capabilities: [],
   devices: [],
   ...overrides,
 })
@@ -211,7 +214,7 @@ describe('useDeviceSelector', () => {
     makeDevice({ id: 'd3', name: 'iPhone 15', osVersion: 'iOS 17', platform: 'ios' }),
   ]
   /** Advertises nothing, which is what an agent that predates a capability sends (#447). */
-  const session: SessionInfo = { agentName: 'mac', devices }
+  const session: SessionInfo = { agentName: 'mac', capabilities: [], devices }
   const withCaps = (capabilities: string[]): SessionInfo => ({ ...session, capabilities })
 
   it('filters devices by osVersion when set', () => {
@@ -236,7 +239,7 @@ describe('useDeviceSelector', () => {
       makeDevice({ osVersion: 'Android 15', platform: 'android' }),
       makeDevice({ osVersion: 'Android 14', platform: 'android' }),
     ]
-    const sess: SessionInfo = { agentName: 'mac', devices: mixedDevices }
+    const sess: SessionInfo = { agentName: 'mac', capabilities: [], devices: mixedDevices }
     const { result } = renderHook(() => useDeviceSelector(sess, 'android'))
 
     expect(result.current.osVersions).toEqual(['Android 15', 'Android 14', 'Android 13'])
@@ -310,6 +313,35 @@ describe('useDeviceSelector', () => {
     it('is not supported before an agent is selected', () => {
       const { result } = renderHook(() => useDeviceSelector(undefined, 'ios'))
       expect(result.current.fullResetSupported).toBe(false)
+    })
+
+    // What `AndroidAgent` actually registers today. Named on its own because the shapes around it
+    // are `[]` and `['clipboard','full-reset']`, and a guard written as "has any capability at all"
+    // passes both of those — this is the case that tells membership from non-emptiness.
+    it('is not supported for an agent that advertises other capabilities but not this one', () => {
+      const { result } = renderHook(() => useDeviceSelector(withCaps(['clipboard']), 'android'))
+      expect(result.current.fullResetSupported).toBe(false)
+    })
+
+    // The gate used to read `os`, which cannot change while the page lives, so `consumeResetMode`'s
+    // dependency on it never had to be right. It reads the picked agent now, and that *does* change
+    // under a live hook: leaving a session is a conditional re-render, not an unmount (#439), and
+    // going back to the Mac list without picking a device leaves the toggle armed.
+    //
+    // Without `fullResetSupported` in the callback's deps this test fails and every other one here
+    // still passes — they each render against a single fixed session, so the stale closure never
+    // gets a chance to be wrong.
+    it('re-reads the guard when the picked agent changes, so an armed toggle cannot cross over', () => {
+      const { result, rerender } = renderHook(
+        ({ s }: { s: SessionInfo }) => useDeviceSelector(s, 'ios'),
+        { initialProps: { s: withCaps(['full-reset']) } },
+      )
+
+      act(() => result.current.setResetMode('full-erase'))
+      rerender({ s: withCaps(['clipboard']) })      // different Mac, no device picked in between
+      act(() => result.current.consumeResetMode())
+
+      expect(result.current.appliedResetMode).toBe('app-only')
     })
   })
 })

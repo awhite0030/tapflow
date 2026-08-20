@@ -1722,6 +1722,25 @@ describe('AndroidAgent', () => {
         expect((joined as unknown as { capabilities: string[] }).capabilities).toContain('clipboard')
       })
 
+      // #447: `handleDeviceBoot` does not read `resetMode` and the emulator is never launched with
+      // `-wipe-data`, so advertising `full-reset` would put a toggle on screen that erases nothing
+      // and then disarms itself, which reads as "done" — the bug that issue exists for.
+      //
+      // Asserting an absence is usually the weak shape this repo warns about, but not here: the
+      // mutation is adding the string to `AGENT_CAPABILITIES`, and that fails this line. It is the
+      // only thing standing between a one-word edit and a control that lies. Delete it in the same
+      // change that implements the wipe.
+      it('does not advertise full-reset, because nothing here honours it yet', async () => {
+        browser = new WebSocket(`ws://localhost:${port}`)
+        await waitForOpen(browser)
+        browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+        const joined = await waitForType(browser, 'session:joined')
+        const caps = (joined as unknown as { capabilities: string[] }).capabilities
+        // Paired with a positive so this cannot pass by the capability list being empty/absent.
+        expect(caps).toContain('clipboard')
+        expect(caps).not.toContain('full-reset')
+      })
+
       it('clipboard:read returns the guest clipboard as clipboard:data', async () => {
         grpcClipboardText = '한글 テスト 🎉\nline2'
         await bootDevice()
