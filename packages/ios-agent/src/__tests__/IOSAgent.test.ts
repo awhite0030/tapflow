@@ -100,6 +100,7 @@ import { launchAudioHelper } from '@tapflowio/audiotap-helper'
 import { SimctlWrapper } from '../SimctlWrapper'
 import { TouchHelper } from '../TouchHelper'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
+import type { SessionJoined } from '@tapflowio/protocol'
 const MockTouchHelper = vi.mocked(TouchHelper)
 const MockAudioStreamer = vi.mocked(AudioCaptureStreamer)
 const mockLaunchAudioHelper = vi.mocked(launchAudioHelper)
@@ -2837,8 +2838,8 @@ describe('IOSAgent', () => {
       const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
-      const joined = await waitForType(browser, 'session:joined')
-      expect((joined as unknown as { capabilities: string[] }).capabilities).toContain('clipboard')
+      const joined = await waitForType<SessionJoined>(browser, 'session:joined')
+      expect(joined.capabilities).toContain('clipboard')
 
       agent.disconnect(); browser.close()
     })
@@ -2853,8 +2854,8 @@ describe('IOSAgent', () => {
       const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
       await agent.connect(`ws://localhost:${port}`)
       browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
-      const joined = await waitForType(browser, 'session:joined')
-      expect((joined as unknown as { capabilities: string[] }).capabilities).toContain('full-reset')
+      const joined = await waitForType<SessionJoined>(browser, 'session:joined')
+      expect(joined.capabilities).toContain('full-reset')
 
       agent.disconnect(); browser.close()
     })

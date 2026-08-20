@@ -131,6 +131,7 @@ import type { ScrcpyControl } from '../scrcpy/ScrcpyControl'
 import type { ScrcpyFrame } from '../scrcpy/ScrcpyVideo'
 import type { AdbRunner } from '../adb'
 import { barrier, waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
+import type { SessionJoined } from '@tapflowio/protocol'
 
 // Test-only view of a per-device state entry (the real DeviceState is not exported).
 interface TestState {
@@ -1718,8 +1719,8 @@ describe('AndroidAgent', () => {
         browser = new WebSocket(`ws://localhost:${port}`)
         await waitForOpen(browser)
         browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
-        const joined = await waitForType(browser, 'session:joined')
-        expect((joined as unknown as { capabilities: string[] }).capabilities).toContain('clipboard')
+        const joined = await waitForType<SessionJoined>(browser, 'session:joined')
+        expect(joined.capabilities).toContain('clipboard')
       })
 
       // #447: `handleDeviceBoot` does not read `resetMode` and the emulator is never launched with
@@ -1734,8 +1735,8 @@ describe('AndroidAgent', () => {
         browser = new WebSocket(`ws://localhost:${port}`)
         await waitForOpen(browser)
         browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
-        const joined = await waitForType(browser, 'session:joined')
-        const caps = (joined as unknown as { capabilities: string[] }).capabilities
+        const joined = await waitForType<SessionJoined>(browser, 'session:joined')
+        const caps = joined.capabilities
         // Paired with a positive so this cannot pass by the capability list being empty/absent.
         expect(caps).toContain('clipboard')
         expect(caps).not.toContain('full-reset')
