@@ -86,6 +86,7 @@ describe('a changeset that owes the root CHANGELOG an entry', () => {
     'long-backtick-fence.md': cs('"@tapflowio/relay": patch') + '\n````md\n```md\n<!-- changelog: internal -->\n```\n````\n',
     'mixed-fence.md': cs('"@tapflowio/relay": patch') + '\n```md\n~~~\n<!-- changelog: internal -->\n~~~\n```\n',
     'after-fence.md': cs('"@tapflowio/protocol": patch') + '\n```md\nexample\n```\n<!-- changelog: internal -->\n',
+    'indented-fence.md': cs('"@tapflowio/protocol": patch') + '\n    ```md\n<!-- changelog: internal -->\n    ```\n',
   })[f]
 
   it('owes one for a plain changeset', () => {
@@ -109,6 +110,9 @@ describe('a changeset that owes the root CHANGELOG an entry', () => {
   })
   it('is released by a marker after a closed fence', () => {
     expect(changelogEntryOwed(['after-fence.md'], read)).toEqual([])
+  })
+  it('is released by an unindented marker between four-space-indented fence-like lines', () => {
+    expect(changelogEntryOwed(['indented-fence.md'], read)).toEqual([])
   })
 })
 

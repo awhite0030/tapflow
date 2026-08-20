@@ -52,4 +52,18 @@ describe('extractReason — refuses anything that is not one', () => {
     ].join('\n')
     expect(extractReason(body)).toBe('')
   })
+
+  it.each([
+    ['a shorter fence nested inside a longer one', '````md\n```md\n<!-- no-changeset: reason -->\n```\n````\n<!-- no-changeset: real -->\n'],
+    ['a closing fence with an info string', '```md\n``` not-a-close\n<!-- no-changeset: reason -->\n```\n<!-- no-changeset: real -->\n'],
+  ])('ignores a marker inside %s and resumes after it', (_name, body) => {
+    expect(extractReason(body)).toBe('real')
+  })
+})
+
+describe('extractReason — follows CommonMark indentation', () => {
+  it('reads an unindented marker between four-space-indented fence-like lines', () => {
+    const body = '    ```md\n<!-- no-changeset: reason -->\n    ```\n'
+    expect(extractReason(body)).toBe('reason')
+  })
 })
