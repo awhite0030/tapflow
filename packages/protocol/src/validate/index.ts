@@ -524,6 +524,7 @@ type _InputRotate = Assert<V<'input:rotate', InputRotate>>
 type _InputKeyboardToggle = Assert<V<'input:keyboard:toggle', InputKeyboardToggle>>
 type _ClipboardRead = Assert<V<'clipboard:read', ClipboardRead>>
 type _ClipboardWrite = Assert<V<'clipboard:write', ClipboardWrite>>
+type _NetworkSet = Assert<V<'network:set', NetworkSet>>
 
 type _AgentRegister = Assert<V<'agent:register', AgentRegister>>
 type _AgentResources = Assert<V<'agent:resources', AgentResourceReport>>
