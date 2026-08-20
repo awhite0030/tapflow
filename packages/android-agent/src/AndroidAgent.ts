@@ -240,7 +240,12 @@ function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
 }
 const ADB_KEYEVENT_TIMEOUT_MS = 5_000
 
-export class AndroidAgent implements DeviceAgent {
+// `implements NetworkControlCapability` as well as `DeviceAgent`, and the clause is the whole
+// point: without it the two methods are just methods, and a change to the interface reaches this
+// class through nothing at all. `AgentRegistry.test.ts` once declared `implements DeviceAgent`
+// while missing two members — the clause only works when something checks it, and here that is the
+// compiler.
+export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
   private readonly adb: AdbWrapper
   private readonly launcher: EmulatorLauncher
   private ws: WebSocket | null = null
