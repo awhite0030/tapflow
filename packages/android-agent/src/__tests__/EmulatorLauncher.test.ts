@@ -178,6 +178,40 @@ describe('probeEmulator', () => {
     expect(probeEmulator('Pixel')).toEqual({ state: 'unknown' })
   })
 
+  // pgrep exits 2 on a syntax error and 3 on a fatal one. Neither means it looked and found
+  // nothing, and reading them that way lets a wipe relaunch past a live emulator.
+  it('reads any other non-zero status as "unknown", not as "gone"', () => {
+    for (const status of [2, 3]) {
+      vi.mocked(spawnSync).mockReturnValue({ status, stdout: '', error: undefined } as never)
+      expect(probeEmulator('Pixel')).toEqual({ state: 'unknown' })
+    }
+  })
+
+  // Exit 0 means pgrep matched something, so output it cannot parse is "cannot tell".
+  it('reads a match it cannot parse as "unknown"', () => {
+    vi.mocked(spawnSync).mockReturnValue({ status: 0, stdout: 'not-a-pid\n', error: undefined } as never)
+    expect(probeEmulator('Pixel')).toEqual({ state: 'unknown' })
+  })
+
+  // `process.kill(0, …)` signals the caller's own process group, so a zero here is not a pid we
+  // may act on — `Number.isFinite` alone would have let it through.
+  it('refuses a non-positive pid rather than reporting it as running', () => {
+    for (const stdout of ['0\n', '-1\n']) {
+      vi.mocked(spawnSync).mockReturnValue({ status: 0, stdout, error: undefined } as never)
+      expect(probeEmulator('Pixel')).toEqual({ state: 'unknown' })
+    }
+  })
+
+  // Verified against a real `pgrep -f`: the unbounded pattern matched a running `-avd Pixel_8`
+  // when asked about `Pixel`, which for the audio tap muted the wrong emulator and here would
+  // SIGTERM it.
+  it('matches the whole -avd argument, so one AVD name cannot be a prefix of another', () => {
+    vi.mocked(spawnSync).mockReturnValue({ status: 1, stdout: '', error: undefined } as never)
+    probeEmulator('Pixel')
+    const pattern = (vi.mocked(spawnSync).mock.calls[0]?.[1] as string[])[1]!
+    expect(pattern).toContain('[[:space:]]-avd[[:space:]]Pixel([[:space:]]|$)')
+  })
+
   it('reports the pid it found', () => {
     vi.mocked(spawnSync).mockReturnValue({ status: 0, stdout: '4321\n', error: undefined } as never)
     expect(probeEmulator('Pixel')).toEqual({ state: 'running', pid: 4321 })

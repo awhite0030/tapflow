@@ -44,24 +44,38 @@ export type EmulatorProbe = { state: 'running'; pid: number } | { state: 'gone' 
  * Ask whether a qemu process is holding this AVD, keeping "no" and "cannot tell" apart.
  *
  * The qemu process embeds `-avd <name>` in its command line. `pgrep` reports "no match" by exiting
- * non-zero, which is an answer; a `pgrep` that cannot run reports nothing at all, which is not.
+ * **1**, which is an answer; a `pgrep` that cannot run, or that fails for its own reasons, reports
+ * nothing usable at all, which is not.
  */
 export function probeEmulator(avdName: string): EmulatorProbe {
   // `spawnSync` rather than `execFileSync`, which is the same call plus a throw: the two outcomes
   // this has to separate arrive as `status` and `error`, and turning both into one exception only
-  // to reconstruct the difference from its properties loses information on the way — a caller can
-  // rethrow, a wrapper can swallow, and the result is the collapse this function exists to undo.
-  // Escape regex metacharacters so an AVD name like "Pixel.7" can't alter the pgrep -f pattern.
+  // to reconstruct the difference from its properties loses information on the way.
+  //
+  // The pattern matches the **whole** `-avd` argument. Without the boundaries, `Pixel` matches a
+  // running `-avd Pixel_8` (verified with `pgrep -f`), which for the audio tap meant muting the
+  // wrong emulator and here would mean sending SIGTERM to it. POSIX character classes rather than
+  // `\b`, because `pgrep -f` matches with an extended regex and word boundaries are not portable
+  // there. Metacharacters in the name are escaped so an AVD like "Pixel.7" cannot alter the pattern.
   const esc = avdName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const r = spawnSync('pgrep', ['-f', `qemu-system.*-avd ${esc}`], { encoding: 'utf8' })
+  const r = spawnSync(
+    'pgrep',
+    ['-f', `qemu-system.*[[:space:]]-avd[[:space:]]${esc}([[:space:]]|$)`],
+    { encoding: 'utf8' },
+  )
 
-  // pgrep could not be run at all — absent, not executable. Not the same as finding nothing.
+  // Could not run pgrep at all — absent, not executable. Not the same as finding nothing.
   if (r.error || r.status === null) return { state: 'unknown' }
-  // pgrep's own "no match" is an answer: it looked, and there is nothing.
-  if (r.status !== 0) return { state: 'gone' }
+  // **Only exit 1 is pgrep saying it looked and found nothing.** 2 is a syntax error and 3 is a
+  // fatal one; reading either as "gone" would let a wipe relaunch past an emulator still holding
+  // the AVD, which is the failure this whole probe exists to prevent.
+  if (r.status === 1) return { state: 'gone' }
+  if (r.status !== 0) return { state: 'unknown' }
 
+  // Exit 0 means it matched something, so unparseable output is "cannot tell", never "nothing".
+  // `> 0` and not merely finite: `process.kill(0, …)` signals the caller's whole process group.
   const pid = parseInt((r.stdout ?? '').trim().split('\n')[0] ?? '', 10)
-  return Number.isFinite(pid) ? { state: 'running', pid } : { state: 'gone' }
+  return Number.isInteger(pid) && pid > 0 ? { state: 'running', pid } : { state: 'unknown' }
 }
 
 /**
