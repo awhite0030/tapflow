@@ -36,7 +36,7 @@ import {
 } from '@tapflowio/agent-core/utils'
 import { execFileSync } from 'child_process'
 import { AdbWrapper } from './AdbWrapper.js'
-import { EmulatorLauncher, findEmulatorPid } from './EmulatorLauncher.js'
+import { EmulatorLauncher, findEmulatorPid, probeEmulator, stopEmulatorProcess } from './EmulatorLauncher.js'
 import { ensureHelperApp, launchMuteOnlyTap, isAudioSupported } from '@tapflowio/audiotap-helper'
 import { AndroidTouchHelper } from './AndroidTouchHelper.js'
 import { parseUiAutomatorDump } from './uiTree.js'
@@ -48,12 +48,10 @@ import { EmulatorVideo } from './emulator/EmulatorVideo.js'
 
 const logger = createLogger('android-agent')
 
-// Typed so a typo cannot ship silently — the viewer gates the whole clipboard bridge on this.
-// `full-reset` is deliberately absent: `handleDeviceBoot` does not read `resetMode`, and
-// `-wipe-data` is not passed to the emulator (#447). Listing it would make the viewer offer a
-// toggle that disarms having erased nothing, which reads as "done". Add it in the same change
-// that implements the wipe, not before.
-const AGENT_CAPABILITIES: AgentCapability[] = ['clipboard']
+// Typed so a typo cannot ship silently — the viewer gates the whole clipboard bridge on this, and
+// since #447 the Full reset toggle too. `full-reset` is honoured in `handleDeviceBoot`, which stops
+// an already-running emulator and relaunches it with `-wipe-data`.
+const AGENT_CAPABILITIES: AgentCapability[] = ['clipboard', 'full-reset']
 
 // Parse H.264 SPS NAL unit to extract frame dimensions.
 // scrcpy sends a new SPS (inside an IDR keyframe) whenever the capture size changes —
@@ -930,7 +928,7 @@ export class AndroidAgent implements DeviceAgent {
   // `requestId` is a parameter, never a field on `state`: `bootSeq` exists because two boots overlap,
   // and a correlator hoisted onto shared state would answer the first request with the second's id.
   // Optional because the relay's idle timer boots nothing — but every *browser* boot carries one.
-  private async handleDeviceBoot(sessionId: string, avdId: string, tier?: { secureContext: boolean; external: boolean }, requestId?: string): Promise<void> {
+  private async handleDeviceBoot(sessionId: string, avdId: string, fullErase = false, tier?: { secureContext: boolean; external: boolean }, requestId?: string): Promise<void> {
     const state = this.deviceStates.get(sessionId)
     // Split, because the two halves are not the same kind of nothing. No open control channel means the
     // answer itself has nowhere to go, so this is the one abandonment that stays silent — and the caller
@@ -963,12 +961,64 @@ export class AndroidAgent implements DeviceAgent {
       const target = devices.find((d) => d.id === avdId)
       if (!target) throw new PlatformError(`Device not found: ${avdId}`)
 
-      if (target.status !== 'booted') {
+      // `-wipe-data` is a **launch** argument, so an emulator that is already up cannot honour it
+      // where it stands — the mirror of `simctl erase` refusing a booted device (#439). A device
+      // survives agent restarts and sessions that ended without a clean shutdown, so "this
+      // session's first boot, device already running" is reachable; iOS answers it by restarting
+      // and so does this, or the toggle would refuse exactly the device a tester just armed it for.
+      //
+      // **Asked of the process, not of `target.status`.** That status is `Boolean(serial)` — it
+      // says adb can *see* the emulator, which an emulator that is still coming up, or one whose
+      // adb server restarted, is not. Skipping the stop there would put a second emulator on the
+      // same AVD and race its lock file. iOS widened the same condition for the same reason and
+      // says so at `IOSAgent.ts` (`!== 'shutdown'`, not `=== 'booted'`); this is that widening,
+      // expressed against the only thing Android's two-valued status cannot tell us.
+      // `probeEmulator`, not `findEmulatorPid`: the latter reports "could not look" as "not
+      // running", and here that difference is a wiped device versus a lie about one. An
+      // unconfirmable probe fails the boot before anything destructive happens.
+      const emulator = fullErase ? probeEmulator(avdName) : { state: 'gone' as const }
+      if (emulator.state === 'unknown') {
+        throw new PlatformError(
+          `Could not tell whether emulator "${avdName}" was already running (process lookup ` +
+          'unavailable), so Full reset was not attempted.',
+        )
+      }
+      if (emulator.state === 'running') {
+        const serial = this.adb.getSerial(avdId)
+        if (serial) {
+          await this.adb.shutdown(serial).catch((e: unknown) => {
+            // Best effort, as on the shutdown path: the emulator may already be going down. The
+            // wait below is what decides whether we may launch, not this call's success.
+            logger.warn('emu kill before wipe failed (already gone?):', (e as Error).message)
+          })
+          this.adb.clearSerial(avdId)
+        } else {
+          // Live process, no console to ask. Safe here and only here — the data a hard stop could
+          // damage is about to be wiped.
+          stopEmulatorProcess(avdName)
+        }
+        // Throws if it is still up at the deadline, which the outer catch turns into
+        // `device:boot-error`. Launching anyway would report a Full reset that never happened.
+        await this.launcher.waitForExit(avdName)
+        // The stop and the wait are both awaits, so a newer boot may have overtaken us. Without
+        // this the superseded boot goes on to wipe a device the tester has since re-picked with the
+        // toggle off — the erase-with-no-click #439 exists to prevent, on the platform where it
+        // would be silent.
+        if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
+      }
+
+      // `|| fullErase`: the branch above left the device down on purpose, and the reading in
+      // `target` predates it.
+      if (target.status !== 'booted' || fullErase) {
         // One unique gRPC port per emulator (undefined when forced to scrcpy → no `-grpc`).
         const grpcPort = this.forceScrcpy() ? undefined : await this.pickFreeGrpcPort()
         state.grpcPort = grpcPort ?? null
+        // The port probe is an await, and the launch below is destructive now that it can carry
+        // `-wipe-data`. A `device:shutdown` landing in that gap used to reach a harmless relaunch;
+        // it would now bring the device back *erased* seconds after the tester asked for it to stop.
+        if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
         try {
-          this.launcher.launch(avdName, grpcPort, { audio: this.audioEnabled() })
+          this.launcher.launch(avdName, grpcPort, { audio: this.audioEnabled(), wipeData: fullErase })
           const serial = await this.launcher.findSerial(avdName)
           if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
           await this.launcher.waitForBoot(serial)
@@ -1123,8 +1173,8 @@ export class AndroidAgent implements DeviceAgent {
   private handleRelayMessage(msg: { type: string; sessionId: string; requestId?: string; payload?: unknown }): void {
     switch (msg.type) {
       case 'device:boot': {
-        const { deviceId, secureContext, external } = msg.payload as { deviceId: string; secureContext?: boolean; external?: boolean }
-        this.handleDeviceBoot(msg.sessionId, deviceId, { secureContext: !!secureContext, external: !!external }, msg.requestId)
+        const { deviceId, resetMode, secureContext, external } = msg.payload as { deviceId: string; resetMode?: 'app-only' | 'full-erase'; secureContext?: boolean; external?: boolean }
+        this.handleDeviceBoot(msg.sessionId, deviceId, resetMode === 'full-erase', { secureContext: !!secureContext, external: !!external }, msg.requestId)
           .catch((e) => logger.error('handleDeviceBoot failed:', e))
         break
       }

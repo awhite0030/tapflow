@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Full reset now works on Android.** The toggle wipes the emulator's user data before booting it, the counterpart to erasing a simulator on iOS — so a tester can start from a first-launch state without touching Android Studio. Because the wipe can only be applied while the emulator starts, one that is already running is stopped and started again, which is what iOS does for the same reason; expect the extra boot. If it will not stop — or if tapflow cannot see well enough to tell — the boot fails and says so rather than quietly handing you a device that was never wiped. `-no-snapshot` was already passed on every boot and is **not** this: it skips the saved snapshot and keeps user data, so nothing was being wiped before ([#447](https://github.com/jo-duchan/tapflow/issues/447)).
+
 ### Fixed
 
-- **Full reset** now appears based on what the device agent says it can do, rather than on which platform you picked. The control was offered for every iOS device and hidden for every Android one, which was right about today's agents and wrong about any other combination: an agent older than the feature was still offered a toggle it has no code for, and an Android agent that gains the ability later would still have had it hidden. If you run an agent from before this release against a newer relay, the toggle is now correctly absent instead of erasing nothing — one more reason to upgrade agents and relay together, as 0.19.0 asked. Android still does not implement Full reset ([#447](https://github.com/jo-duchan/tapflow/issues/447)); this is what lets it appear the moment it does, with no dashboard change.
+- **Full reset** now appears based on what the device agent says it can do, rather than on which platform you picked. The control was offered for every iOS device and hidden for every Android one, which was right about the agents of the day and wrong about any other combination: an agent older than the feature was still offered a toggle it has no code for, and an Android agent that gains the ability would still have had it hidden — which is the half that landed above in this same release. If you run an agent from before this release against a newer relay, the toggle is now correctly absent instead of erasing nothing — one more reason to upgrade agents and relay together, as 0.19.0 asked.
 
 ### Security
 

@@ -58,8 +58,13 @@ vi.mock('../EmulatorLauncher', () => ({
     launch: vi.fn(),
     findSerial: vi.fn().mockResolvedValue('emulator-5554'),
     waitForBoot: vi.fn().mockResolvedValue(undefined),
+    waitForExit: vi.fn().mockResolvedValue(undefined),
   }) }),
   findEmulatorPid: vi.fn(() => null),
+  // The boot path probes rather than asking for a pid, because it has to tell "not running" from
+  // "could not look" (#447 review). Default: nothing running, and we could see that.
+  probeEmulator: vi.fn(() => ({ state: 'gone' as const })),
+  stopEmulatorProcess: vi.fn(() => true),
 }))
 // Shared macOS host-mute helper (#341). Off by default in tests (isAudioSupported → false → no-op);
 // the host-mute test overrides these to assert the mute tap launches.
@@ -125,7 +130,7 @@ import { AdbWrapper } from '../AdbWrapper'
 import { ScrcpySession } from '../scrcpy/ScrcpySession'
 import { EmulatorVideo } from '../emulator/EmulatorVideo'
 import { EmulatorGrpcClient } from '../emulator/EmulatorGrpcClient'
-import { findEmulatorPid } from '../EmulatorLauncher'
+import { findEmulatorPid, probeEmulator, stopEmulatorProcess } from '../EmulatorLauncher'
 import { isAudioSupported, launchMuteOnlyTap } from '@tapflowio/audiotap-helper'
 import type { ScrcpyControl } from '../scrcpy/ScrcpyControl'
 import type { ScrcpyFrame } from '../scrcpy/ScrcpyVideo'
@@ -285,6 +290,233 @@ describe('AndroidAgent', () => {
 
       agent.disconnect()
       browser.close()
+    })
+
+    // ── #447: Full reset — `-wipe-data`, the counterpart to iOS's `simctl erase` ──────────────
+
+    describe('resetMode: full-erase', () => {
+      /** The launcher this agent built, so the flags it was launched with can be read. */
+      function launcherOf(agent: AndroidAgent) {
+        return (agent as unknown as {
+          launcher: {
+            launch: ReturnType<typeof vi.fn>
+            waitForExit: ReturnType<typeof vi.fn>
+          }
+        }).launcher
+      }
+
+      /** What the emulator will actually be told, not how the caller spelled it. `wipeData` absent
+       *  and `wipeData: false` produce the same command line (`buildEmulatorArgs` reads it as
+       *  falsy), so asserting the key's presence would fail a refactor that is behaviourally
+       *  identical — and pass none that is not. */
+      function wipedOnFirstLaunch(agent: AndroidAgent): boolean {
+        const opts = launcherOf(agent).launch.mock.calls[0]?.[2] as { wipeData?: boolean } | undefined
+        return opts?.wipeData ?? false
+      }
+
+      async function boot(agent: AndroidAgent, resetMode?: 'app-only' | 'full-erase') {
+        const browser = new WebSocket(`ws://localhost:${port}`)
+        await waitForOpen(browser)
+        browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+        await waitForType(browser, 'session:joined')
+        browser.send(JSON.stringify({
+          type: 'device:boot',
+          requestId: 'rq-wipe',
+          sessionId: agent.sessionId,
+          payload: { deviceId: 'avd:Pixel_8_API_34', ...(resetMode ? { resetMode } : {}) },
+        }))
+        return browser
+      }
+
+      // The suite's default is "no emulator process". Each test states which world it is in, because
+      // the stop branch is gated on the process rather than on adb's view of it.
+      //
+      // Both are module-level `vi.fn()`s shared by every test in the file, so the call history has
+      // to be cleared as well as the return value — a `not.toHaveBeenCalled()` reading a previous
+      // test's call is a failure that points at the wrong test.
+      beforeEach(() => {
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'gone' })
+        vi.mocked(stopEmulatorProcess).mockClear()
+      })
+      afterEach(() => vi.mocked(probeEmulator).mockReturnValue({ state: 'gone' }))
+
+      it('launches with wipeData when the toggle was armed', async () => {
+        const agent = new AndroidAgent({}, mockAdb(false))
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent, 'full-erase')
+        await waitForType(browser, 'device:ready')
+
+        expect(wipedOnFirstLaunch(agent)).toBe(true)
+
+        agent.disconnect(); browser.close()
+      })
+
+      // The control. Without it the assertion above passes on an implementation that wipes every
+      // boot, which is the worse of the two failures — it erases devices nobody asked it to.
+      it('does not wipe an ordinary boot', async () => {
+        const agent = new AndroidAgent({}, mockAdb(false))
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent)
+        await waitForType(browser, 'device:ready')
+
+        expect(wipedOnFirstLaunch(agent)).toBe(false)
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('passes app-only through as no wipe', async () => {
+        const agent = new AndroidAgent({}, mockAdb(false))
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent, 'app-only')
+        await waitForType(browser, 'device:ready')
+
+        expect(wipedOnFirstLaunch(agent)).toBe(false)
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('stops an already-running emulator first, then relaunches it wiped', async () => {
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'running', pid: 4321 })
+        const adb = mockAdb(true)
+        const shutdown = vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
+        const agent = new AndroidAgent({}, adb)
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent, 'full-erase')
+        await waitForType(browser, 'device:ready')
+
+        expect(shutdown).toHaveBeenCalledWith('emulator-5554')
+        expect(wipedOnFirstLaunch(agent)).toBe(true)
+
+        agent.disconnect(); browser.close()
+      })
+
+      // The mirror of the test above, and the one that keeps the `fullErase &&` in the condition
+      // honest: an ordinary boot must not touch a running emulator, or every tester loses the
+      // device they were using to a cold boot nobody asked for.
+      it('leaves a running emulator alone on an ordinary boot', async () => {
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'running', pid: 4321 })
+        const adb = mockAdb(true)
+        const shutdown = vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
+        const agent = new AndroidAgent({}, adb)
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent)
+        await waitForType(browser, 'device:ready')
+
+        expect(shutdown).not.toHaveBeenCalled()
+        // Paired with the launch, so this cannot pass by the boot having failed before reaching it.
+        expect(launcherOf(agent).launch).not.toHaveBeenCalled()
+
+        agent.disconnect(); browser.close()
+      })
+
+      // Relaunching before the old qemu process is gone races the AVD's lock file. Nothing in
+      // `emu kill` waits — it returns as soon as the console accepts it.
+      it('waits for the old process to exit before relaunching, naming the AVD not the device id', async () => {
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'running', pid: 4321 })
+        const adb = mockAdb(true)
+        vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
+        const agent = new AndroidAgent({}, adb)
+        await agent.connect(`ws://localhost:${port}`)
+
+        const l = launcherOf(agent)
+        const order: string[] = []
+        l.waitForExit.mockImplementation(async () => { order.push('waited') })
+        l.launch.mockImplementation(() => { order.push('launched') })
+
+        const browser = await boot(agent, 'full-erase')
+        await waitForType(browser, 'device:ready')
+
+        expect(order).toEqual(['waited', 'launched'])
+        // `avd:Pixel_8_API_34` is three lines away in the same block and would make `pgrep` match
+        // nothing, so the wait would return at once and buy nothing at all.
+        expect(l.waitForExit).toHaveBeenCalledWith('Pixel_8_API_34')
+
+        agent.disconnect(); browser.close()
+      })
+
+      // A live process adb cannot see — still coming up, or its adb server restarted. There is no
+      // console to ask, and skipping the stop would put a second emulator on the same AVD.
+      it('stops a live emulator that adb cannot see, without a serial', async () => {
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'running', pid: 4321 })
+        const adb = mockAdb(false)          // no serial: adb reports nothing booted
+        const shutdown = vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
+        const agent = new AndroidAgent({}, adb)
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent, 'full-erase')
+        await waitForType(browser, 'device:ready')
+
+        expect(shutdown).not.toHaveBeenCalled()          // no console to send it to
+        expect(vi.mocked(stopEmulatorProcess)).toHaveBeenCalledWith('Pixel_8_API_34')
+        expect(launcherOf(agent).waitForExit).toHaveBeenCalledWith('Pixel_8_API_34')
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('does not try to stop an emulator that is not running', async () => {
+        const adb = mockAdb(false)
+        const shutdown = vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
+        const agent = new AndroidAgent({}, adb)
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent, 'full-erase')
+        await waitForType(browser, 'device:ready')
+
+        expect(shutdown).not.toHaveBeenCalled()
+        expect(vi.mocked(stopEmulatorProcess)).not.toHaveBeenCalled()
+        expect(launcherOf(agent).waitForExit).not.toHaveBeenCalled()
+
+        agent.disconnect(); browser.close()
+      })
+
+      // `pgrep` answers "no match" and "I am not installed" through the same thrown error, so a
+      // probe that cannot look must not read as "nothing is running" — that lands on the same
+      // silent false success as launching after a failed stop, by a different door.
+      it('fails the boot when it cannot tell whether an emulator is running', async () => {
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'unknown' })
+        const agent = new AndroidAgent({}, mockAdb(false))
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent, 'full-erase')
+        const err = await waitForType(browser, 'device:boot-error')
+
+        expect(err['requestId']).toBe('rq-wipe')
+        expect(launcherOf(agent).launch).not.toHaveBeenCalled()
+
+        agent.disconnect(); browser.close()
+      })
+
+      // The same probe failure must not touch an ordinary boot — it never asks, and a host without
+      // `pgrep` has to keep booting devices normally.
+      it('does not consult the probe on an ordinary boot', async () => {
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'unknown' })
+        const agent = new AndroidAgent({}, mockAdb(false))
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent)
+        await waitForType(browser, 'device:ready')
+
+        expect(launcherOf(agent).launch).toHaveBeenCalled()
+
+        agent.disconnect(); browser.close()
+      })
+
+      // The blocker this review found: proceeding to launch after a failed stop reports a Full
+      // reset that never happened, because `findSerial` scans `adb devices` for any emulator
+      // answering to this AVD and returns the survivor, and `waitForBoot` passes instantly on a
+      // device that is already up. The boot has to fail where the tester can see it.
+      it('fails the boot rather than launching when the old emulator will not exit', async () => {
+        vi.mocked(probeEmulator).mockReturnValue({ state: 'running', pid: 4321 })
+        const adb = mockAdb(true)
+        vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
+        const agent = new AndroidAgent({}, adb)
+        await agent.connect(`ws://localhost:${port}`)
+        launcherOf(agent).waitForExit.mockRejectedValue(new Error('still running after 30s'))
+
+        const browser = await boot(agent, 'full-erase')
+        const err = await waitForType(browser, 'device:boot-error')
+
+        expect(err['requestId']).toBe('rq-wipe')
+        expect(launcherOf(agent).launch).not.toHaveBeenCalled()
+
+        agent.disconnect(); browser.close()
+      })
     })
 
     // ── #526: a boot the agent stops running is answered, not abandoned ───────────────────────
@@ -1723,23 +1955,15 @@ describe('AndroidAgent', () => {
         expect(joined.capabilities).toContain('clipboard')
       })
 
-      // #447: `handleDeviceBoot` does not read `resetMode` and the emulator is never launched with
-      // `-wipe-data`, so advertising `full-reset` would put a toggle on screen that erases nothing
-      // and then disarms itself, which reads as "done" — the bug that issue exists for.
-      //
-      // Asserting an absence is usually the weak shape this repo warns about, but not here: the
-      // mutation is adding the string to `AGENT_CAPABILITIES`, and that fails this line. It is the
-      // only thing standing between a one-word edit and a control that lies. Delete it in the same
-      // change that implements the wipe.
-      it('does not advertise full-reset, because nothing here honours it yet', async () => {
+      // #447: the toggle is gated on this, not on the platform string — so the capability and the
+      // `-wipe-data` launch flag have to arrive together. Advertising it without the flag puts a
+      // control on screen that erases nothing and then disarms, which reads as "done".
+      it('advertises the full-reset capability all the way to the viewer', async () => {
         browser = new WebSocket(`ws://localhost:${port}`)
         await waitForOpen(browser)
         browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
         const joined = await waitForType<SessionJoined>(browser, 'session:joined')
-        const caps = joined.capabilities
-        // Paired with a positive so this cannot pass by the capability list being empty/absent.
-        expect(caps).toContain('clipboard')
-        expect(caps).not.toContain('full-reset')
+        expect(joined.capabilities).toContain('full-reset')
       })
 
       it('clipboard:read returns the guest clipboard as clipboard:data', async () => {
