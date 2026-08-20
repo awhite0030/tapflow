@@ -11,6 +11,7 @@ import type {
   AppClearState, AppClearStateDone, AppClearStateError, AppInstallDone, AppInstallError, AppInstallToAgent,
   AppInstallToRelay, AppLaunchDone, AppLaunchError, AppLaunchToAgent, AppLaunchToRelay, BrowserInbound,
   BrowserToRelay, ClipboardData, ClipboardError, ClipboardRead, ClipboardWrite, ClipboardWriteDone,
+  NetworkError, NetworkSet, NetworkState,
   DeviceBoot, DeviceBootError, DeviceBooting, DeviceReady, DeviceShutdown, DeviceShutdownDone,
   DeviceShutdownError, GenericError,
   InputButton, InputDone, InputError, InputKey, InputKeyboardToggle, InputPinchEnd, InputPinchMove,
@@ -136,6 +137,9 @@ export const _AppLaunchToAgent: AppLaunchToAgent['type'] = 'app:launch'
 export const _AppLaunchToRelay: AppLaunchToRelay['type'] = 'app:launch'
 export const _ClipboardData: ClipboardData['type'] = 'clipboard:data'
 export const _ClipboardError: ClipboardError['type'] = 'clipboard:error'
+export const _NetworkSet: NetworkSet['type'] = 'network:set'
+export const _NetworkState: NetworkState['type'] = 'network:state'
+export const _NetworkError: NetworkError['type'] = 'network:error'
 export const _ClipboardRead: ClipboardRead['type'] = 'clipboard:read'
 export const _ClipboardWrite: ClipboardWrite['type'] = 'clipboard:write'
 export const _ClipboardWriteDone: ClipboardWriteDone['type'] = 'clipboard:write-done'

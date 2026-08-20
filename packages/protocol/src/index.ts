@@ -544,6 +544,60 @@ export interface ClipboardError extends SessionScoped {
   payload?: ClipboardErrorPayload
 }
 
+/**
+ * Why network control is not available on this device right now.
+ *
+ * A closed set for the same reason `InputErrorReason` is one: **a member exists per thing a
+ * consumer must do differently**, not per internal state an agent can be in. Each of these makes a
+ * different sentence on screen, which is what a single `available: boolean` could not do — and a
+ * machine field nobody branches on is the shape this package forbids by name (#492).
+ */
+export type NetworkUnavailableReason =
+  /** The hooks were delivered but did not take. The agent proved this by trying, not by assuming. */
+  | 'hooks-not-installed'
+  /** Nothing was delivered for this boot — a re-arm that did not happen, or a device booted outside
+   *  tapflow. Distinct from the above because the answer is to reboot the device, not to give up. */
+  | 'not-armed'
+  /** This device cannot do it at all: an Android image whose `cmd connectivity` predates the API.
+   *  Unlike the other two, retrying anything will not change it. */
+  | 'unsupported-device'
+
+/**
+ * What the device's network is doing, and whether tapflow can steer it.
+ *
+ * **Answers `network:set`, and is also sent unsolicited** — on `device:ready`, when a boot re-arms
+ * the injection, and when a session's condition is cleared. So `requestId` is optional, and absent
+ * means *this frame is not the answer to a request* — never "an old agent" (see
+ * 「Lifecycle correlation」 in AGENTS.md for what that optionality costs and who pays it).
+ *
+ * `available` is separate from the `network-control` capability on purpose. The capability is
+ * announced once at `agent:register`, before any device is booted or app launched, so it can only
+ * ever mean "this agent has the code". Whether the hooks actually took is per device and per app,
+ * and this is where that lives.
+ */
+export interface NetworkState {
+  type: 'network:state'
+  /** Inline rather than `extends SessionScoped`: that base is the **failure** family — every member
+   *  of it carries a `message` and `protocolMessageNames` enforces that. This one reports state, not
+   *  a failure, so it names its session the way `clipboard:data` does. */
+  sessionId: string
+  requestId?: string
+  payload: {
+    offline: boolean
+    available: boolean
+    /** Set when `available` is false, and only then. */
+    reason?: NetworkUnavailableReason
+  }
+}
+
+/** A `network:set` that could not be dispatched or that the device refused. Relay-or-agent, because
+ *  the relay answers one it cannot deliver rather than letting the viewer's control sit armed. */
+export interface NetworkError extends SessionScoped {
+  type: 'network:error'
+  message: string
+  requestId: string
+}
+
 export type RelayOrAgentToBrowser =
   | SessionChrome
   | SessionDeviceInfo
@@ -559,6 +613,7 @@ export type RelayOrAgentToBrowser =
   // `mcp-server` and `flow-runner` key on the `input:type-*` pair and ignore an `input:error` entirely,
   // which is why widening `TERMINAL_INPUT_TYPES` was never the fix for it.
   | InputTypeError
+  | NetworkError
   | ClipboardError
 
 export interface AgentsListed {
@@ -823,6 +878,7 @@ export type AgentToBrowser =
   | InputTypeDone
   | KeyboardToggled
   | ClipboardData
+  | NetworkState
   | ClipboardWriteDone
 
 /** Everything a browser socket can receive, whoever produced it. This is what a viewer's message
@@ -1082,6 +1138,20 @@ export type ClipboardRequest =
   | ClipboardRead
   | ClipboardWrite
 
+/**
+ * Take the device under test off the network, or put it back (#607).
+ *
+ * `requestId` is **required**, like the clipboard pair: every producer is a viewer acting on a
+ * control, so an id is always available, and requiring it makes a missing one a compile error
+ * rather than a reply the viewer drops.
+ */
+export interface NetworkSet {
+  type: 'network:set'
+  sessionId: string
+  requestId: string
+  payload: { offline: boolean }
+}
+
 
 export interface AgentsList {
   type: 'agents:list'
@@ -1279,4 +1349,5 @@ export type BrowserToRelay =
   | InputRotate
   | InputKeyboardToggle
   | ClipboardRequest
+  | NetworkSet
 

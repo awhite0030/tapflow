@@ -990,6 +990,11 @@ export class RelayServer {
       // Bound to the session's own agent socket, unlike the replies above: this payload
       // lands on the viewer's host OS clipboard, so a second agent (another Mac on the
       // same relay) must not be able to address someone else's session.
+      // Bound to the session's own agent socket for the same reason clipboard is: this reply says
+      // whether a **specific tester's** device is on the network, and a second agent must not be
+      // able to tell that tester's viewer something about it.
+      case 'network:state':
+      case 'network:error':
       case 'clipboard:data':
       case 'clipboard:write-done':
       case 'clipboard:error': {
@@ -1200,6 +1205,21 @@ export class RelayServer {
         } else if (ws.readyState === WebSocket.OPEN) {
           this.sendTo(ws, {
             type: 'clipboard:error', sessionId: msg.sessionId, requestId: msg.requestId, message: clip.message,
+          })
+        }
+        break
+      }
+      // Ownership is not decoration here: taking a device off the network is the most disruptive
+      // thing a non-holder could do to someone else's session short of shutting it down, and unlike
+      // a shutdown it leaves the device *looking* fine. `dispatchTarget` rather than the weaker
+      // `reachableTarget` `device:shutdown` uses — there is no teardown race to accommodate.
+      case 'network:set': {
+        const net = this.dispatchTarget(ws, msg.sessionId)
+        if (net.ok) {
+          net.session.agentSocket.send(JSON.stringify(msg))
+        } else if (ws.readyState === WebSocket.OPEN) {
+          this.sendTo(ws, {
+            type: 'network:error', sessionId: msg.sessionId, requestId: msg.requestId, message: net.message,
           })
         }
         break
@@ -1793,6 +1813,7 @@ export class RelayServer {
         this.sendTo(ws, { type: 'input:type-error', sessionId, requestId, message, reason: 'malformed' }); break
       case 'clipboard:read':
       case 'clipboard:write': this.sendTo(ws, { type: 'clipboard:error', sessionId, requestId, message }); break
+      case 'network:set':     this.sendTo(ws, { type: 'network:error', sessionId, requestId, message }); break
       // The four remaining acked inputs. A `default` rather than four labels because the union is
       // closed and exhaustive: adding a thirteenth answerable request without a case here would land
       // it on `input:error`, which `answerableRequestsAnswered` is what stops.

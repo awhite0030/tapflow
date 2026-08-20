@@ -54,6 +54,11 @@ export const INBOUND_DISPOSITION = {
   'clipboard:data': { at: 'DeviceViewer, useClipboardBridge' },
   'clipboard:error': { at: 'DeviceViewer, useClipboardBridge' },
   'clipboard:write-done': { at: 'DeviceViewer, useClipboardBridge' },
+  // The viewer is the only consumer that acts on these — it owns the control. **No handler exists
+  // yet**: the protocol lands before the UI (#607, plan step 2 of 5), and this file is written so
+  // that gap is a stated fact rather than an absent branch nobody can tell from an oversight.
+  'network:state': { ignored: 'No handler yet — the control lands in a later slice of #607.' },
+  'network:error': { ignored: 'No handler yet — the control lands in a later slice of #607.' },
   'device:boot-error': { at: 'DeviceViewer, SessionList' },
   'device:booting': { at: 'DeviceViewer' },
   'device:ready': { at: 'DeviceViewer, SessionList' },

@@ -35,6 +35,12 @@ export type {
   AudioSampleFormat,
   AudioChannels,
 } from './AudioStreamCapability.js'
+export { hasNetworkControl } from './NetworkControlCapability.js'
+export type {
+  NetworkControlCapability,
+  NetworkState,
+  NetworkUnavailable,
+} from './NetworkControlCapability.js'
 export { createKeyedSerialQueue } from './utils/serialQueue.js'
 export { AgentRegistry } from './AgentRegistry.js'
 export type { AgentConnectOpts } from './AgentRegistry.js'

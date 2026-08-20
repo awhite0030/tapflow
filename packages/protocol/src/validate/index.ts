@@ -56,6 +56,7 @@ import type {
   AgentRegister, AgentResourceReport, AgentsList, AppClearState, AppClearStateDone,
   AppClearStateError, AppInstallDone, AppInstallError, AppInstallToRelay, AppLaunchDone,
   AppLaunchError, AppLaunchToRelay, ClipboardData, ClipboardError, ClipboardRead, ClipboardWrite,
+  NetworkError, NetworkSet, NetworkState,
   ClipboardWriteDone, DeviceBoot, DeviceBootError, DeviceBooting, DeviceReady, DeviceShutdown,
   DeviceShutdownDone, InputButton, InputDone, InputError, InputKey, InputKeyboardToggle,
   InputPinchEnd, InputPinchMove, InputPinchStart, InputRotate, InputTouchEnd, InputTouchMove,
@@ -175,6 +176,15 @@ const BROWSER_INBOUND = {
     type: z.literal('clipboard:write'), sessionId, requestId,
     payload: z.object({ text: z.string(), pasteAfter: z.boolean().optional() }),
   }),
+  // `payload` required, and `offline` required inside it: this command has exactly one thing to say
+  // and a frame that omits it is not "toggle" — nothing on the wire carries the current state, so
+  // there would be nothing to toggle *from*. A malformed one is answered rather than dropped
+  // (`ANSWERABLE` below), because the viewer's control would otherwise sit armed on a device that
+  // never heard the request.
+  'network:set': z.object({
+    type: z.literal('network:set'), sessionId, requestId,
+    payload: z.object({ offline: z.boolean() }),
+  }),
 } as const
 
 // ── agent → relay ────────────────────────────────────────────────────────────
@@ -278,6 +288,11 @@ const AGENT_FORWARDED = {
   'clipboard:data': envC('clipboard:data'),
   'clipboard:write-done': envC('clipboard:write-done'),
   'clipboard:error': envC('clipboard:error'),
+  // `envCo`, not `envC`: this one answers `network:set` **and** arrives unsolicited — on
+  // `device:ready`, on a boot that re-arms the injection, and when a session's condition is cleared.
+  // Absent means "not the answer to a request", never "an old agent".
+  'network:state': envCo('network:state'),
+  'network:error': envC('network:error'),
 } as const
 
 const AGENT_INBOUND = { ...AGENT_CONSUMED, ...AGENT_FORWARDED } as const
@@ -322,6 +337,7 @@ const ANSWERABLE = {
   'input:type': envC('input:type'),
   'clipboard:read': envC('clipboard:read'),
   'clipboard:write': envC('clipboard:write'),
+  'network:set': envC('network:set'),
 } as const
 
 export type AnswerableType = keyof typeof ANSWERABLE
@@ -540,3 +556,5 @@ type _KeyboardToggled = Assert<E<'keyboard:toggled', KeyboardToggled>>
 type _ClipboardData = Assert<E<'clipboard:data', ClipboardData>>
 type _ClipboardWriteDone = Assert<E<'clipboard:write-done', ClipboardWriteDone>>
 type _ClipboardError = Assert<E<'clipboard:error', ClipboardError>>
+type _NetworkState = Assert<E<'network:state', NetworkState>>
+type _NetworkError = Assert<E<'network:error', NetworkError>>
