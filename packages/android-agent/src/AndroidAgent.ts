@@ -1677,9 +1677,22 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         break
       }
       case 'network:set': {
-        const { requestId } = msg as unknown as { requestId: string }
-        const offline = (msg.payload as { offline: boolean }).offline
-        void this.handleNetworkSet(msg.sessionId!, offline, requestId)
+        const requestId = this.correlatorOf(msg)
+        if (requestId === null) break
+        // `?? {}` and a re-check of a field the relay's schema already requires: this case owes a
+        // reply, and the ws dispatch swallows a synchronous throw (see `input:button`), so a cast
+        // that dereferences a missing payload answers nothing at all — the one failure the
+        // requester cannot tell from a hung device. A malformed frame gets a `network:error`
+        // because it could not be dispatched, which is the same reason the no-device case does.
+        const { offline } = (msg.payload ?? {}) as { offline?: boolean }
+        if (typeof offline !== 'boolean') {
+          this.sendMsg({
+            type: 'network:error', sessionId: msg.sessionId, requestId,
+            message: 'network:set payload must carry a boolean `offline`.',
+          })
+          break
+        }
+        void this.handleNetworkSet(msg.sessionId, offline, requestId)
         break
       }
       // Clipboard bridge. Emulator-only: it rides the gRPC EmulatorController, since the

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { PlatformError, ValidationError } from '@tapflowio/agent-core'
 import { AdbWrapper } from '../AdbWrapper'
 import type { AdbRunner } from '../adb'

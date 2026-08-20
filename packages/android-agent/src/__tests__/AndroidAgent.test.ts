@@ -557,6 +557,55 @@ describe('AndroidAgent', () => {
       const state = await waitForType<NetworkState>(browser, 'network:state')
       expect(state.payload).toEqual({ offline: true, available: false, reason: 'unsupported-device' })
     })
+
+    // Injected past the relay, which is the only way to reach these: its schema requires
+    // `payload.offline` and refuses the frame itself, so a browser cannot produce one. That door
+    // is not the agent's, though — inbound is unvalidated here (#444), and the dispatch swallows a
+    // synchronous throw, so a cast through a missing payload would answer *nothing* and leave the
+    // requester on its own timeout. Same reason `input:button` destructures defensively.
+    for (const [label, payload] of [
+      ['no payload', undefined],
+      ['a payload with no offline', {}],
+      ['a non-boolean offline', { offline: 'true' }],
+    ] as const) {
+      it(`answers network:error for a network:set with ${label}`, async () => {
+        await session(withAirplane(false))
+        const errored = waitForType<NetworkError>(browser, 'network:error')
+        internals(agent).handleRelayMessage({
+          type: 'network:set', sessionId: agent.sessionId, requestId: 'rq-bad', payload,
+        })
+
+        const err = await errored
+        expect(err.requestId).toBe('rq-bad')
+        // Not just *an* error: the no-device case at the top of `handleNetworkSet` sends the same
+        // label, and the two are a different fix for the tester. The message is the only thing
+        // that separates them, so collapsing the guard into that path has to fail here.
+        expect(err.message).toContain('offline')
+        expect(adb.setAirplaneMode).not.toHaveBeenCalled()
+      })
+    }
+
+    // A reply carrying `requestId: ''` correlates to nothing, so sending one would change the
+    // device and leave the requester waiting anyway — for a mutation that is the worse half of the
+    // trade. `correlatorOf` drops it instead, which is what every other correlated case does.
+    //
+    // Mutation: replacing `correlatorOf` with the old `msg as unknown as { requestId: string }`
+    // cast makes this fail — a `network:state` arrives before the valid request's, with `''` on it.
+    it('drops a network:set whose correlator is empty, rather than answering uncorrelatably', async () => {
+      const a = withAirplane(false)
+      await session(a)
+      internals(agent).handleRelayMessage({
+        type: 'network:set', sessionId: agent.sessionId, requestId: '', payload: { offline: true },
+      })
+      // The barrier: a well-formed request sent *after* it. Its reply cannot arrive before one the
+      // dispatcher made for the empty frame, so reading here is reading after both were handled.
+      set(false, 'rq-after')
+      const state = await waitForType<NetworkState>(browser, 'network:state')
+
+      expect(state.requestId).toBe('rq-after')
+      expect(a.setAirplaneMode).toHaveBeenCalledTimes(1)
+      expect(a.setAirplaneMode).toHaveBeenCalledWith('emulator-5554', false)
+    })
   })
 
   describe('device:boot flow — full reset', () => {
