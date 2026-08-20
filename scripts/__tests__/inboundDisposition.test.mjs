@@ -65,7 +65,7 @@ describe('inbound disposition', () => {
     // The compiler already refuses a missing key, so this is not the coverage assertion; it is the
     // parser's own honesty check. Without it the two assertions below pass on an empty map.
     // 29 as of #542: `device:shutdown-error` gave the shutdown pair the failure member it lacked.
-    expect(table_entries.size).toBe(29)
+    expect(table_entries.size).toBe(31)
   })
 
   it('every entry is exactly one of at / ignored', () => {
@@ -142,7 +142,7 @@ describe('inbound disposition', () => {
     expect(thin).toEqual([])
   })
 
-  it('the six ignored messages are the ones the measurement found', () => {
+  it('the ignored messages are the ones a decision put there', () => {
     // Pinned so that "handled" quietly becoming "ignored" is a decision someone makes here, in a diff,
     // rather than a branch that got deleted. Growing this list is allowed; doing it silently is not.
     const ignored = [...table_entries].filter(([, v]) => /\bignored:/.test(v)).map(([t]) => t).sort()
@@ -152,6 +152,11 @@ describe('inbound disposition', () => {
       'input:done',
       'input:type-done',
       'input:type-error',
+      // Not a decision to leave these unhandled — the protocol for #607 lands a slice before the
+      // control that reads them, and this file exists so "no branch yet" cannot be told apart from
+      // "no branch ever" by anything but a written reason. They become `at:` with the viewer.
+      'network:error',
+      'network:state',
       'session:deviceInfo',
     ])
   })

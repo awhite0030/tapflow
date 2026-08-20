@@ -37,9 +37,17 @@ export interface Device {
 // The dashboard cannot import from here (it has no agent-core dependency), so this stays a
 // plain string list on the wire rather than a helper nobody on the reading side can call.
 // `full-reset`: the agent honours `device:boot`'s `resetMode: 'full-erase'` by wiping the device
-// before booting it. iOS does (`simctl erase`); Android does not yet (#447), and says so by not
-// listing it rather than by being named in a platform check on the viewer.
-export type AgentCapability = 'clipboard' | 'full-reset'
+// before booting it. Both platforms do as of #447 — iOS with `simctl erase`, Android with
+// `-wipe-data` — and an agent that does not says so by not listing it rather than by being named in
+// a platform check on the viewer.
+//
+// `network-control`: the agent implements `network:set` (#607). **This one claims less than the
+// other two do.** They are settled facts about the agent's own code; whether the network mechanism
+// actually takes is per device and per app — an injection that did not land, an emulator image too
+// old for the command — and this string is sent once at `agent:register`, before any device is
+// booted. So it means "this agent has the code", and `network:state.available` carries the rest.
+// Reading it as a promise that the toggle will work is the mistake this comment exists to prevent.
+export type AgentCapability = 'clipboard' | 'full-reset' | 'network-control'
 
 
 // ── Clipboard bridge shared contract ────────────────────────────────────────

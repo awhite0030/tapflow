@@ -170,7 +170,7 @@ describe('protocol message interfaces', () => {
     // `InputKey`, which was already named and is a message like any other. L4a added the seven agent→relay
     // messages, the last direction that had none. 66 is `DeviceShutdownError`, #542 — the shutdown pair had
     // no failure member, so an undeliverable shutdown had nothing to be answered with.
-    expect(messages.size).toBe(66)
+    expect(messages.size).toBe(69)
     // `InputKey` predates L1 and has always been named; it must be in here too.
     expect(messages.has('InputKey')).toBe(true)
   })
@@ -281,7 +281,7 @@ describe('protocol message interfaces', () => {
       if (base !== 'SessionScoped') offenders.push(`${name} ('${literal}')`)
     }
     expect(offenders).toEqual([])
-    expect([...messages].filter(([, m]) => m.extends === 'SessionScoped')).toHaveLength(10)
+    expect([...messages].filter(([, m]) => m.extends === 'SessionScoped')).toHaveLength(11)
     // `error` is the ninth, as of L5d. Pinned by name rather than only by the count, because the count alone
     // would be satisfied by any new member and this is the one whose membership was argued.
     expect(messages.get('GenericError')).toMatchObject({ literal: 'error', extends: 'SessionScoped' })
