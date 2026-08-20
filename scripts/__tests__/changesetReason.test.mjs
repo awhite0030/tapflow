@@ -64,6 +64,14 @@ describe('extractReason — refuses anything that is not one', () => {
     const body = '```js`\n```\n<!-- no-changeset: reason -->\n```\n'
     expect(extractReason(body)).toBe('')
   })
+
+  it('opens a tilde fence even when its info string contains a backtick', () => {
+    // The other half of the clause above: CommonMark forbids a backtick in a backtick fence's
+    // info string and permits one in a tilde fence's. Refusing to open here would leave the
+    // marker below unquoted, which is #560's leak arriving from the other side.
+    const body = '~~~js`\n<!-- no-changeset: reason -->\n~~~\n'
+    expect(extractReason(body)).toBe('')
+  })
 })
 
 describe('extractReason — follows CommonMark indentation', () => {
