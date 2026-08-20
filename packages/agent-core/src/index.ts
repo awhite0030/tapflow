@@ -38,8 +38,8 @@ export type {
 export { hasNetworkControl } from './NetworkControlCapability.js'
 export type {
   NetworkControlCapability,
-  NetworkState,
-  NetworkUnavailable,
+  NetworkStatePayload,
+  NetworkUnavailableReason,
 } from './NetworkControlCapability.js'
 export { createKeyedSerialQueue } from './utils/serialQueue.js'
 export { AgentRegistry } from './AgentRegistry.js'

@@ -754,7 +754,7 @@ export class RelayServer {
    */
   private settleRole(ws: WebSocket, inbound: ParseResult): boolean {
     // Every reason that carries a type, which is all of them but the two that have none to carry.
-    // Missing `bad-payload` here returned `false` before the caller could answer, so the twelve
+    // Missing `bad-payload` here returned `false` before the caller could answer, so the thirteen
     // answerable requests were classified correctly and then dropped anyway — the regression this
     // whole path exists to prevent, reintroduced one line above it.
     const type = inbound.ok ? inbound.msg.type
@@ -1815,7 +1815,7 @@ export class RelayServer {
       case 'clipboard:write': this.sendTo(ws, { type: 'clipboard:error', sessionId, requestId, message }); break
       case 'network:set':     this.sendTo(ws, { type: 'network:error', sessionId, requestId, message }); break
       // The four remaining acked inputs. A `default` rather than four labels because the union is
-      // closed and exhaustive: adding a thirteenth answerable request without a case here would land
+      // closed and exhaustive: adding a fourteenth answerable request without a case here would land
       // it on `input:error`, which `answerableRequestsAnswered` is what stops.
       default:
         this.sendTo(ws, { type: 'input:error', sessionId, requestId, message, reason: 'malformed' })

@@ -19,3 +19,8 @@ carries that as `available` plus a closed `reason`. A single boolean was tried a
 capability gating the control, `available: false` would have been unreachable, and the state it
 describes — conditioned but no longer steerable — would have hidden the only control that could undo
 it.
+
+`offline` reports the **device**, not the request: one taken offline and then left unsteerable is
+still offline, and saying otherwise would render "online" over a device whose app reaches nothing.
+The payload shape and its reason set live in `@tapflowio/protocol` and are re-exported by
+`agent-core`, the rule that package already follows for `ClipboardErrorPayload`.

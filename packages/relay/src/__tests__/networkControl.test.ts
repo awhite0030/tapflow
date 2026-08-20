@@ -8,7 +8,7 @@ import { initDb, closeDb } from '../db'
 import { waitForOpen, waitForType, waitForTypeOrNull } from '@tapflowio/test-utils'
 
 import type {
-  AgentRegistered, BrowserToRelay, NetworkError, NetworkSet, NetworkState, RelayToAgent,
+  AgentRegistered, BrowserInbound, BrowserToRelay, NetworkError, NetworkSet, NetworkState, RelayToAgent,
   SessionJoined,
 } from '@tapflowio/protocol'
 
@@ -80,6 +80,10 @@ describe('network control relay routing (#607)', () => {
       payload: { offline: true, available: true },
     }))
     const state = await waitForType<NetworkState>(browser, 'network:state')
+    // `waitForType` matches on `type` alone, so without this the address is unasserted — and
+    // `DeviceViewer` drops any frame whose `sessionId` is not its own, which turns a wrong address
+    // into a control that sits armed forever with nothing on screen to say why.
+    expect(state.sessionId).toBe(sessionId)
     expect(state.requestId).toBe('rq-2')
     expect(state.payload).toEqual({ offline: true, available: true })
 
@@ -95,6 +99,7 @@ describe('network control relay routing (#607)', () => {
       payload: { offline: false, available: false, reason: 'hooks-not-installed' },
     }))
     const state = await waitForType<NetworkState>(browser, 'network:state')
+    expect(state.sessionId).toBe(sessionId)
     expect(state.requestId).toBeUndefined()
     expect(state.payload.reason).toBe('hooks-not-installed')
 
@@ -112,11 +117,53 @@ describe('network control relay routing (#607)', () => {
     intruder.send(JSON.stringify(setMsg(sessionId, 'rq-3', true)))
 
     const err = await waitForType<NetworkError>(intruder, 'network:error')
+    expect(err.sessionId).toBe(sessionId)
     expect(err.requestId).toBe('rq-3')
+    // `message` carries the diagnosis `dispatchTarget` picked — stale session id, dead Mac, or in
+    // use by someone else. An empty one ships a toast that says nothing.
+    expect(err.message.length).toBeGreaterThan(0)
     // And the agent never saw it — refused at the door, not after delivery.
     expect(await waitForTypeOrNull(agent, 'network:set', 300)).toBeNull()
 
     agent.close(); browser.close(); intruder.close()
+  })
+
+  // The mirror of the test above, on the direction the gate in `RelayServer` actually buys. Without
+  // it, moving these two labels into the ungated forward block two lines up leaves **every** relay
+  // test green and the static routing guard green with them — that guard reads `case` labels and
+  // cannot see which block they sit in. A second agent could then tell a stranger's viewer their
+  // device is offline, or that it is fine when it is not.
+  it('another agent cannot push network:state into someone else\'s session', async () => {
+    const { agent, browser, sessionId } = await setup()
+
+    const rogue = new WebSocket(`ws://localhost:${port}`)
+    await waitForOpen(rogue)
+    rogue.send(JSON.stringify({
+      type: 'agent:register', platform: 'ios', agentName: 'net-2',
+      devices: [{ id: 'rogue-1', name: 'Rogue', platform: 'ios', status: 'booted' }],
+    }))
+    await waitForType(rogue, 'agent:registered')
+
+    const got: BrowserInbound[] = []
+    browser.on('message', (d) => got.push(JSON.parse(d.toString()) as BrowserInbound))
+
+    rogue.send(JSON.stringify({
+      type: 'network:state', sessionId, payload: { offline: true, available: true },
+    }))
+    rogue.send(JSON.stringify({
+      type: 'network:error', sessionId, requestId: 'spoof', message: 'ATTACKER',
+    }))
+    await new Promise((r) => setTimeout(r, 200))
+    expect(got.filter((m) => m.type === 'network:state' || m.type === 'network:error')).toEqual([])
+
+    // Paired with a positive, so this cannot pass by the forward being broken for everyone.
+    agent.send(JSON.stringify({
+      type: 'network:state', sessionId, payload: { offline: false, available: true },
+    }))
+    const mine = await waitForType<NetworkState>(browser, 'network:state')
+    expect(mine.payload.offline).toBe(false)
+
+    agent.close(); browser.close(); rogue.close()
   })
 
   // The refusal has to arrive in the shape this request's own waiter reads. An `input:error` here
@@ -128,7 +175,9 @@ describe('network control relay routing (#607)', () => {
     }))
 
     const err = await waitForType<NetworkError>(browser, 'network:error')
+    expect(err.sessionId).toBe(sessionId)
     expect(err.requestId).toBe('rq-4')
+    expect(err.message.length).toBeGreaterThan(0)
     expect(await waitForTypeOrNull(agent, 'network:set', 300)).toBeNull()
 
     agent.close(); browser.close()
@@ -148,6 +197,21 @@ describe('network control relay routing (#607)', () => {
     }))
     const state = await waitForType<NetworkState>(browser, 'network:state')
     expect(state.payload).toEqual({ offline: false, available: false, reason: 'not-armed' })
+
+    agent.close(); browser.close()
+  })
+
+  // The combination the wire has to be able to carry: still offline, no longer steerable. If a
+  // producer used `offline` as a placeholder for "the request did not land" this frame could not be
+  // expressed, and the viewer would show "online" over a device whose app reaches nothing.
+  it('carries offline:true together with available:false', async () => {
+    const { agent, browser, sessionId } = await setup()
+    agent.send(JSON.stringify({
+      type: 'network:state', sessionId,
+      payload: { offline: true, available: false, reason: 'not-armed' },
+    }))
+    const state = await waitForType<NetworkState>(browser, 'network:state')
+    expect(state.payload).toEqual({ offline: true, available: false, reason: 'not-armed' })
 
     agent.close(); browser.close()
   })

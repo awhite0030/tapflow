@@ -575,6 +575,33 @@ export type NetworkUnavailableReason =
  * ever mean "this agent has the code". Whether the hooks actually took is per device and per app,
  * and this is where that lives.
  */
+/**
+ * What a device's network is doing and whether tapflow can steer it.
+ *
+ * **Named rather than inline** so `agent-core` can re-export it instead of declaring a second copy
+ * — the rule `types.ts` already follows for `ClipboardErrorPayload` — and so
+ * `scripts/__tests__/protocolPayloadTypes.test.mjs` can see it. An inline payload is invisible to
+ * that check, which is how the first draft of this shipped two declarations of one shape.
+ */
+export interface NetworkStatePayload {
+  /**
+   * Whether the device is off the network **right now**, as far as the agent can tell.
+   *
+   * **This describes the device, not the request.** When `available` is false it still reports what
+   * is true: a device taken offline and then left unsteerable — the app relaunched, a re-arm that
+   * did not happen — is *still offline*, and saying `false` there would render "online" over a
+   * device whose app can reach nothing, sending every bug filed after it to the app under test.
+   * Report the state, never a placeholder for "the request did not land".
+   */
+  offline: boolean
+  /** Whether tapflow can still change `offline`. Separate from the `network-control` capability:
+   *  that is announced once per agent and means "this agent has the code", while this is per device
+   *  and per app. */
+  available: boolean
+  /** Set when `available` is false, and only then. */
+  reason?: NetworkUnavailableReason
+}
+
 export interface NetworkState {
   type: 'network:state'
   /** Inline rather than `extends SessionScoped`: that base is the **failure** family — every member
@@ -582,12 +609,7 @@ export interface NetworkState {
    *  a failure, so it names its session the way `clipboard:data` does. */
   sessionId: string
   requestId?: string
-  payload: {
-    offline: boolean
-    available: boolean
-    /** Set when `available` is false, and only then. */
-    reason?: NetworkUnavailableReason
-  }
+  payload: NetworkStatePayload
 }
 
 /** A `network:set` that could not be dispatched or that the device refused. Relay-or-agent, because

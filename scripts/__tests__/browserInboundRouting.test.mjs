@@ -172,7 +172,7 @@ describe('browser-inbound routing matches the protocol union', () => {
   it('the parser reached every forward site', () => {
     expect(forwarded.size).toBe(24)
     const sends = (relaySrc.match(/browserSocket\.send\(JSON\.stringify\(raw\)\)/g) ?? []).length
-    expect(sends).toBe(8) // 6 single-label blocks + the 13-label block + the clipboard block
+    expect(sends).toBe(8) // 6 single-label blocks + the 13-label block + the owner-gated block
   })
 
   // The other half of the rule above, and the one a count cannot see: a forward that switched back to
@@ -191,7 +191,8 @@ describe('browser-inbound routing matches the protocol union', () => {
   //
   // What survives is the property underneath, which nothing states. A forward resolves the session from
   // the message and sends to *that session's* browser without checking that the sender is that session's
-  // agent — `clipboard:*` is the deliberate exception, bound to `session.agentSocket` with the reason
+  // agent — `clipboard:*` and `network:*` are the deliberate exceptions, bound to `session.agentSocket`
+  // with the reason
   // beside it. The door is what makes that safe, and it is safe only while the two sets are disjoint: a
   // literal that is **both** browser-sendable and browser-forwardable passes the role gate and is then
   // injected into another tester's viewer, which acts on it.
@@ -201,7 +202,7 @@ describe('browser-inbound routing matches the protocol union', () => {
   // a divergence a compile error. So this reads the union the door is held to, not a second copy of it.
   it('no literal is both browser-sendable and browser-forwardable', () => {
     const sendable = unionMembers(protocolSrc, 'BrowserToRelay')
-    // Anti-vacuity on both operands. `forwarded` is pinned at 22 above; this one has no other pin, and an
+    // Anti-vacuity on both operands. `forwarded` is pinned above; this one has no other pin, and an
     // empty set would make the intersection empty for the wrong reason.
     expect(sendable.size).toBeGreaterThanOrEqual(20)
     expect([...forwarded].filter((t) => sendable.has(t)).sort()).toEqual([])
