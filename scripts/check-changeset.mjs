@@ -289,12 +289,21 @@ function* proseLines(body, { skipFrontmatter = false } = {}) {
     while (i < lines.length && lines[i].trim() !== '---') i++
     i++                                            // step past the closing delimiter
   }
-  let fenced = false
+  let fence = null
   for (; i < lines.length; i++) {
     const raw = lines[i]
     const line = raw.trim()
-    if (/^(```|~~~)/.test(line)) { fenced = !fenced; continue }
-    if (fenced) continue
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(raw)
+    if (fence) {
+      if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && !marker[2].trim()) {
+        fence = null
+      }
+      continue
+    }
+    if (marker && (marker[1][0] === '~' || !marker[2].includes('`'))) {
+      fence = { char: marker[1][0], length: marker[1].length }
+      continue
+    }
     if (/^ {4,}|^\t/.test(raw)) continue           // indented code block
     yield { raw, line }
   }
@@ -380,8 +389,7 @@ export function ignoredOnlyChangesets(files, ignored, read) {
  *
  *     <!-- changelog: internal — protocol typing, nothing a user can observe -->
  *
- * The reason is required for the same purpose it is required on `no-changeset`: skipping is a decision
- * somebody wrote down, not something that happens by forgetting.
+ * The marker itself records the decision; prose after `internal` is optional.
  *
  * **What this covers, stated rather than implied:** a branch that touches a changeset — added, amended or
  * renamed — and ships published source. It does **not** cover a branch with no changeset (its
@@ -394,7 +402,12 @@ export function ignoredOnlyChangesets(files, ignored, read) {
  * can need it for one of them.
  */
 export function changelogEntryOwed(files, read) {
-  return files.filter((f) => !/^<!--\s*changelog:\s*internal\b.*-->$/m.test(read(f)))
+  return files.filter((f) => {
+    for (const { raw } of proseLines(read(f), { skipFrontmatter: true })) {
+      if (/^<!--\s*changelog:\s*internal\b.*-->$/.test(raw)) return false
+    }
+    return true
+  })
 }
 
 function main() {

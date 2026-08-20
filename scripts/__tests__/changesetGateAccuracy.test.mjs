@@ -81,6 +81,11 @@ describe('a changeset that owes the root CHANGELOG an entry', () => {
     'internal.md': `${cs('"@tapflowio/protocol": patch')}\n<!-- changelog: internal — protocol typing, nothing observable -->\n`,
     'no-reason.md': `${cs('"@tapflowio/protocol": patch')}\n<!-- changelog: internal -->\n`,
     'mentions-it.md': `${cs('"@tapflowio/relay": patch')}\n\nSee the changelog: internal notes are not a marker.\n`,
+    'backtick-fence.md': cs('"@tapflowio/relay": patch') + '\n```md\n<!-- changelog: internal -->\n```\n',
+    'tilde-fence.md': `${cs('"@tapflowio/relay": patch')}\n~~~md\n<!-- changelog: internal -->\n~~~\n`,
+    'long-backtick-fence.md': cs('"@tapflowio/relay": patch') + '\n````md\n```md\n<!-- changelog: internal -->\n```\n````\n',
+    'mixed-fence.md': cs('"@tapflowio/relay": patch') + '\n```md\n~~~\n<!-- changelog: internal -->\n~~~\n```\n',
+    'after-fence.md': cs('"@tapflowio/protocol": patch') + '\n```md\nexample\n```\n<!-- changelog: internal -->\n',
   })[f]
 
   it('owes one for a plain changeset', () => {
@@ -98,6 +103,12 @@ describe('a changeset that owes the root CHANGELOG an entry', () => {
   // an opt-out -- the shape this repo has been bitten by twice, where a comment was read as a value.
   it('is not released by prose that merely says the words', () => {
     expect(changelogEntryOwed(['mentions-it.md'], read)).toEqual(['mentions-it.md'])
+  })
+  it.each(['backtick-fence.md', 'tilde-fence.md', 'long-backtick-fence.md', 'mixed-fence.md'])('is not released by a marker inside %s', (file) => {
+    expect(changelogEntryOwed([file], read)).toEqual([file])
+  })
+  it('is released by a marker after a closed fence', () => {
+    expect(changelogEntryOwed(['after-fence.md'], read)).toEqual([])
   })
 })
 
