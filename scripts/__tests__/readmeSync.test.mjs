@@ -49,10 +49,12 @@ const CLOSE = /^<!-- \/readme-sync:exempt -->\r?$/
 // deliberate obfuscation, and the count assertion below is what catches it silently matching
 // nothing. Parsing the markdown properly was weighed and refused: it buys coverage of forms this
 // document does not use, at the price of a parser dependency in a scripts guard.
-const LINK_TARGETS = (text) => [
+// The HTML half allows whitespace around `=` and an unquoted value, both of which are valid and
+// neither of which a hand-written `<a href=/guide>` announces as unusual.
+export const LINK_TARGETS = (text) => [
   ...[...text.matchAll(/\]\(\s*([^)\s]+)/g)].map((m) => m[1]),
   ...[...text.matchAll(/^\[[^\]]+\]:\s*(\S+)/gm)].map((m) => m[1]),
-  ...[...text.matchAll(/(?:href|src)=("|')([^"']+)\1/g)].map((m) => m[2]),
+  ...[...text.matchAll(/(?:href|src)\s*=\s*(?:("|')([^"']*)\1|([^\s>"']+))/g)].map((m) => m[2] ?? m[3]),
 ]
 
 const ASSET_IDS = (text) => [...text.matchAll(/user-attachments\/assets\/([0-9a-f-]+)/g)].map((m) => m[1])
@@ -140,6 +142,24 @@ describe('a marker is recognised by its shape, and a recognised one must balance
   it('reads markers on a CRLF checkout', () => {
     const text = '<!-- readme-sync:exempt why -->\r\nb\r\n<!-- /readme-sync:exempt -->\r\n'
     expect(split(text).exempt).toEqual([expect.objectContaining({ reason: 'why' })])
+  })
+})
+
+describe('the link extractor', () => {
+  // Every form is one a contributor can write without knowing a guard is watching. A form that
+  // slips past is invisible: the target count stays at its floor because the link was never
+  // counted in the first place, so nothing reports the miss.
+  const cases = [
+    ['inline markdown', '[a](one.md)', 'one.md'],
+    ['inline markdown with a title', '[a](two.md "t")', 'two.md'],
+    ['a reference definition', '[a]: three.md', 'three.md'],
+    ['a double-quoted attribute', '<img src="four.png" />', 'four.png'],
+    ['a single-quoted attribute', "<img src='five.png' />", 'five.png'],
+    ['whitespace around the equals sign', '<a href = "six.md">x</a>', 'six.md'],
+    ['an unquoted value', '<a href=seven.md>x</a>', 'seven.md'],
+  ]
+  it.each(cases)('finds the target in %s', (_label, text, expected) => {
+    expect(LINK_TARGETS(text)).toContain(expected)
   })
 })
 
