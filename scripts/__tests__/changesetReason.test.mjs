@@ -59,6 +59,11 @@ describe('extractReason — refuses anything that is not one', () => {
   ])('ignores a marker inside %s and resumes after it', (_name, body) => {
     expect(extractReason(body)).toBe('real')
   })
+
+  it('does not open a backtick fence when its info string contains a backtick', () => {
+    const body = '```js`\n```\n<!-- no-changeset: reason -->\n```\n'
+    expect(extractReason(body)).toBe('')
+  })
 })
 
 describe('extractReason — follows CommonMark indentation', () => {
