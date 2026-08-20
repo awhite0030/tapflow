@@ -44,11 +44,16 @@ const REWRITES = [
 const OPEN = /^<!-- readme-sync:exempt(?: ([a-z0-9-]+))? -->\r?$/
 const CLOSE = /^<!-- \/readme-sync:exempt -->\r?$/
 
-// Every link target the compared span carries, from markdown and from raw HTML.
-const LINK_TARGETS = (text) =>
-  [...text.matchAll(/\]\(([^)]+)\)/g)].map((m) => m[1]).concat(
-    [...text.matchAll(/(?:href|src)="([^"]+)"/g)].map((m) => m[1]),
-  )
+// Every link target a README carries: inline markdown, reference definitions, and raw HTML in
+// either quote style. A floor, not a fence — this is regex extraction, so it does not survive
+// deliberate obfuscation, and the count assertion below is what catches it silently matching
+// nothing. Parsing the markdown properly was weighed and refused: it buys coverage of forms this
+// document does not use, at the price of a parser dependency in a scripts guard.
+const LINK_TARGETS = (text) => [
+  ...[...text.matchAll(/\]\(\s*([^)\s]+)/g)].map((m) => m[1]),
+  ...[...text.matchAll(/^\[[^\]]+\]:\s*(\S+)/gm)].map((m) => m[1]),
+  ...[...text.matchAll(/(?:href|src)=("|')([^"']+)\1/g)].map((m) => m[2]),
+]
 
 const ASSET_IDS = (text) => [...text.matchAll(/user-attachments\/assets\/([0-9a-f-]+)/g)].map((m) => m[1])
 
@@ -56,6 +61,11 @@ const ASSET_IDS = (text) => [...text.matchAll(/user-attachments\/assets\/([0-9a-
 // what that region costs today — 1 line on the root side, 6 on the cli — because the exempt span is
 // where drift hides, so growing it should have to be raised by hand in a diff somebody reads.
 const MAX_EXEMPT_LINES = { root: 1, cli: 6 }
+
+// Measured: 41 link targets in the whole cli README. A floor rather than the exact count, so
+// adding a link is ordinary work — its job is to fail when the extractor matches nothing at all,
+// which would make the assertion above vacuously true.
+const MIN_CLI_LINK_TARGETS = 41
 
 // The compared span measured 247 lines on both sides. This floor sits well below that on purpose:
 // deleting a section from both READMEs is ordinary correct work and must not fail here. It exists to
@@ -147,11 +157,15 @@ describe('the two READMEs', () => {
   // The equality above is satisfied by two files that are wrong in the same way: copy a new
   // repo-relative link into both and forget to absolutise the cli one, and they still match while
   // the npm page carries a dead link. This is that property stated per link.
-  it('leave no repo-relative link in the copy npm renders', () => {
-    const targets = LINK_TARGETS(parsed().cli.compared.join('\n'))
-    expect(targets.length).toBeGreaterThan(0)
-    const relative = targets.filter((t) => !/^(https?:|#)/.test(t))
-    expect(relative, 'cli link targets npm cannot resolve').toEqual([])
+  // The whole file, not the compared span. Being exempt from the equality check does not make a
+  // region exempt from npm being able to resolve it — and that region is where the npm-specific
+  // markup is hand-written, so it is the likeliest place to type a repo-relative path.
+  it('leave no repo-relative link anywhere in the copy npm renders', () => {
+    const targets = LINK_TARGETS(read('packages/cli/README.md'))
+    expect(targets.length, 'cli link targets found — zero means the extractor stopped matching')
+      .toBeGreaterThanOrEqual(MIN_CLI_LINK_TARGETS)
+    expect(targets.filter((t) => !/^(https?:|#)/.test(t)), 'cli link targets npm cannot resolve')
+      .toEqual([])
   })
 
   it('are compared with rewrites that actually fire', () => {
