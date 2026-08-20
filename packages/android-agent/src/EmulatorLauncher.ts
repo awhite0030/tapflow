@@ -26,6 +26,10 @@ function getEmulatorPath(): string {
 export interface EmulatorLaunchOpts {
   // Opt-in audio output; default off keeps `-no-audio` so the video-only path is unchanged.
   audio?: boolean
+  // Full reset (#447) — wipe `userdata` before booting, the counterpart to iOS's `simctl erase`.
+  // `-no-snapshot` below is **not** this: it is a cold boot, which skips the snapshot and keeps
+  // userdata, so nothing here erased anything until this flag existed.
+  wipeData?: boolean
 }
 
 /**
@@ -49,6 +53,7 @@ export function buildEmulatorArgs(avdName: string, grpcPort?: number, opts?: Emu
   const args = ['-avd', avdName]
   if (!opts?.audio) args.push('-no-audio')
   args.push('-no-snapshot', '-no-window', '-gpu', 'host')
+  if (opts?.wipeData) args.push('-wipe-data')
   if (grpcPort !== undefined) args.push('-grpc', String(grpcPort))
   return args
 }
@@ -100,6 +105,33 @@ export class EmulatorLauncher {
    *  normally (#549), and the two numbers live in different packages. A caller may still pass its own —
    *  which the check cannot see, and says so. */
   static readonly BOOT_READY_TIMEOUT_MS = 120_000
+
+  /** How long to wait for a stopped emulator's qemu process to actually exit. */
+  static readonly EXIT_TIMEOUT_MS = 30_000
+
+  /**
+   * Wait until no qemu process is holding this AVD.
+   *
+   * `adb emu kill` returns as soon as the emulator console accepts it, and the process dies some
+   * time after — so a relaunch issued immediately races the AVD directory's lock file, and the
+   * loser starts against a directory another process still owns. Only Full reset (#447) needs
+   * this, because it is the one path that stops an emulator in order to start it again.
+   *
+   * **Returns rather than throws on timeout.** The caller's next move is the launch either way:
+   * refusing to boot because a process we asked to die is taking its time would turn a slow
+   * shutdown into a failed session, while proceeding gives the emulator its own chance to report
+   * a lock it cannot take. `findEmulatorPid` also answers `null` when `pgrep` is unavailable, so
+   * on a host where it cannot look this is a no-op by construction — which is the same shape the
+   * audio tap already relies on.
+   */
+  async waitForExit(avdName: string, timeoutMs = EmulatorLauncher.EXIT_TIMEOUT_MS): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (findEmulatorPid(avdName) === null) return
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    logger.warn(`emulator "${avdName}" still running ${timeoutMs / 1000}s after kill — launching anyway`)
+  }
 
   async waitForBoot(serial: string, timeoutMs = EmulatorLauncher.BOOT_READY_TIMEOUT_MS): Promise<void> {
     const adb = getAdbPath()

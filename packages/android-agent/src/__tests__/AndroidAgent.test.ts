@@ -58,6 +58,7 @@ vi.mock('../EmulatorLauncher', () => ({
     launch: vi.fn(),
     findSerial: vi.fn().mockResolvedValue('emulator-5554'),
     waitForBoot: vi.fn().mockResolvedValue(undefined),
+    waitForExit: vi.fn().mockResolvedValue(undefined),
   }) }),
   findEmulatorPid: vi.fn(() => null),
 }))
@@ -285,6 +286,126 @@ describe('AndroidAgent', () => {
 
       agent.disconnect()
       browser.close()
+    })
+
+    // ── #447: Full reset — `-wipe-data`, the counterpart to iOS's `simctl erase` ──────────────
+
+    describe('resetMode: full-erase', () => {
+      /** The launcher this agent built, so the flags it was actually launched with can be read. */
+      function launchArgs(agent: AndroidAgent) {
+        const l = (agent as unknown as { launcher: { launch: ReturnType<typeof vi.fn> } }).launcher
+        return l.launch.mock.calls
+      }
+
+      /** What the emulator will actually be told, not how the caller spelled it. `wipeData` absent
+       *  and `wipeData: false` produce the same command line (`buildEmulatorArgs` reads it as
+       *  falsy), so asserting the key's presence would fail a refactor that is behaviourally
+       *  identical — and pass none that is not. */
+      function wipedOnFirstLaunch(agent: AndroidAgent): boolean {
+        const opts = launchArgs(agent)[0]?.[2] as { wipeData?: boolean } | undefined
+        return opts?.wipeData ?? false
+      }
+
+      async function boot(agent: AndroidAgent, resetMode?: 'app-only' | 'full-erase') {
+        const browser = new WebSocket(`ws://localhost:${port}`)
+        await waitForOpen(browser)
+        browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+        await waitForType(browser, 'session:joined')
+        browser.send(JSON.stringify({
+          type: 'device:boot',
+          requestId: 'rq-wipe',
+          sessionId: agent.sessionId,
+          payload: { deviceId: 'avd:Pixel_8_API_34', ...(resetMode ? { resetMode } : {}) },
+        }))
+        await waitForType(browser, 'device:ready')
+        return browser
+      }
+
+      it('launches with wipeData when the toggle was armed', async () => {
+        const agent = new AndroidAgent({}, mockAdb(false))
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent, 'full-erase')
+
+        expect(wipedOnFirstLaunch(agent)).toBe(true)
+
+        agent.disconnect(); browser.close()
+      })
+
+      // The control. Without it the assertion above passes on an implementation that wipes every
+      // boot, which is the worse of the two failures — it erases devices nobody asked it to.
+      it('does not wipe an ordinary boot', async () => {
+        const agent = new AndroidAgent({}, mockAdb(false))
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent)
+
+        expect(wipedOnFirstLaunch(agent)).toBe(false)
+
+        agent.disconnect(); browser.close()
+      })
+
+      it('passes app-only through as no wipe', async () => {
+        const agent = new AndroidAgent({}, mockAdb(false))
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent, 'app-only')
+
+        expect(wipedOnFirstLaunch(agent)).toBe(false)
+
+        agent.disconnect(); browser.close()
+      })
+
+      // `-wipe-data` is a **launch** argument, so an emulator that is already up cannot honour it
+      // where it stands — the mirror of `simctl erase` refusing a booted device (#439). It survives
+      // agent restarts and sessions that ended without a clean shutdown, so "already running" is
+      // reachable on a session's first boot. iOS answers this by restarting; so does this.
+      it('stops an already-running emulator first, then relaunches it wiped', async () => {
+        const adb = mockAdb(true)
+        const shutdown = vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
+        const agent = new AndroidAgent({}, adb)
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent, 'full-erase')
+
+        expect(shutdown).toHaveBeenCalledWith('emulator-5554')
+        expect(wipedOnFirstLaunch(agent)).toBe(true)
+
+        agent.disconnect(); browser.close()
+      })
+
+      // Relaunching before the old qemu process is gone races the AVD's lock file, and the emulator
+      // that loses starts against a directory another process still owns. Nothing in `emu kill`
+      // waits — it returns as soon as the console accepts it.
+      it('waits for the old process to exit before relaunching', async () => {
+        const adb = mockAdb(true)
+        vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
+        const agent = new AndroidAgent({}, adb)
+        await agent.connect(`ws://localhost:${port}`)
+
+        const l = (agent as unknown as {
+          launcher: { waitForExit: ReturnType<typeof vi.fn>; launch: ReturnType<typeof vi.fn> }
+        }).launcher
+        const order: string[] = []
+        l.waitForExit.mockImplementation(async () => { order.push('waited') })
+        l.launch.mockImplementation(() => { order.push('launched') })
+
+        const browser = await boot(agent, 'full-erase')
+
+        expect(order).toEqual(['waited', 'launched'])
+
+        agent.disconnect(); browser.close()
+      })
+
+      // An emulator that is already down has nothing to stop, and issuing `emu kill` at a serial
+      // the map no longer holds would be an adb call against nothing.
+      it('does not try to stop an emulator that is already down', async () => {
+        const adb = mockAdb(false)
+        const shutdown = vi.spyOn(adb, 'shutdown').mockResolvedValue(undefined)
+        const agent = new AndroidAgent({}, adb)
+        await agent.connect(`ws://localhost:${port}`)
+        const browser = await boot(agent, 'full-erase')
+
+        expect(shutdown).not.toHaveBeenCalled()
+
+        agent.disconnect(); browser.close()
+      })
     })
 
     // ── #526: a boot the agent stops running is answered, not abandoned ───────────────────────
@@ -1723,23 +1844,15 @@ describe('AndroidAgent', () => {
         expect(joined.capabilities).toContain('clipboard')
       })
 
-      // #447: `handleDeviceBoot` does not read `resetMode` and the emulator is never launched with
-      // `-wipe-data`, so advertising `full-reset` would put a toggle on screen that erases nothing
-      // and then disarms itself, which reads as "done" — the bug that issue exists for.
-      //
-      // Asserting an absence is usually the weak shape this repo warns about, but not here: the
-      // mutation is adding the string to `AGENT_CAPABILITIES`, and that fails this line. It is the
-      // only thing standing between a one-word edit and a control that lies. Delete it in the same
-      // change that implements the wipe.
-      it('does not advertise full-reset, because nothing here honours it yet', async () => {
+      // #447: the toggle is gated on this, not on the platform string — so the capability and the
+      // `-wipe-data` launch flag have to arrive together. Advertising it without the flag puts a
+      // control on screen that erases nothing and then disarms, which reads as "done".
+      it('advertises the full-reset capability all the way to the viewer', async () => {
         browser = new WebSocket(`ws://localhost:${port}`)
         await waitForOpen(browser)
         browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
         const joined = await waitForType<SessionJoined>(browser, 'session:joined')
-        const caps = joined.capabilities
-        // Paired with a positive so this cannot pass by the capability list being empty/absent.
-        expect(caps).toContain('clipboard')
-        expect(caps).not.toContain('full-reset')
+        expect(joined.capabilities).toContain('full-reset')
       })
 
       it('clipboard:read returns the guest clipboard as clipboard:data', async () => {
