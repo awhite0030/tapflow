@@ -101,6 +101,9 @@ describe('network control relay routing (#607)', () => {
     const state = await waitForType<NetworkState>(browser, 'network:state')
     expect(state.sessionId).toBe(sessionId)
     expect(state.requestId).toBeUndefined()
+    // The payload is a union, so `reason` is only reachable after narrowing — which is the shape
+    // every consumer will use, and the reason an unavailable frame cannot arrive without one.
+    if (state.payload.available) throw new Error('expected an unavailable state')
     expect(state.payload.reason).toBe('hooks-not-installed')
 
     agent.close(); browser.close()

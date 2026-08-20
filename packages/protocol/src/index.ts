@@ -575,32 +575,45 @@ export type NetworkUnavailableReason =
  * ever mean "this agent has the code". Whether the hooks actually took is per device and per app,
  * and this is where that lives.
  */
-/**
- * What a device's network is doing and whether tapflow can steer it.
- *
- * **Named rather than inline** so `agent-core` can re-export it instead of declaring a second copy
- * — the rule `types.ts` already follows for `ClipboardErrorPayload` — and so
- * `scripts/__tests__/protocolPayloadTypes.test.mjs` can see it. An inline payload is invisible to
- * that check, which is how the first draft of this shipped two declarations of one shape.
- */
-export interface NetworkStatePayload {
+/** The device is off the network right now, or is not, and tapflow can still change that. */
+export interface NetworkSteerable {
   /**
    * Whether the device is off the network **right now**, as far as the agent can tell.
    *
-   * **This describes the device, not the request.** When `available` is false it still reports what
-   * is true: a device taken offline and then left unsteerable — the app relaunched, a re-arm that
-   * did not happen — is *still offline*, and saying `false` there would render "online" over a
-   * device whose app can reach nothing, sending every bug filed after it to the app under test.
-   * Report the state, never a placeholder for "the request did not land".
+   * **This describes the device, not the request.** A device taken offline and then left
+   * unsteerable is *still offline* — see `NetworkNotSteerable`, which carries the same field for
+   * that reason. Reporting `false` as a stand-in for "the request did not land" would render
+   * "online" over a device whose app can reach nothing, sending every bug filed after it to the app
+   * under test.
    */
   offline: boolean
-  /** Whether tapflow can still change `offline`. Separate from the `network-control` capability:
-   *  that is announced once per agent and means "this agent has the code", while this is per device
-   *  and per app. */
-  available: boolean
-  /** Set when `available` is false, and only then. */
-  reason?: NetworkUnavailableReason
+  available: true
 }
+
+/** Whatever the device's network is doing, tapflow can no longer change it — and this is why. */
+export interface NetworkNotSteerable {
+  /** Still the device's real state. See `NetworkSteerable.offline`. */
+  offline: boolean
+  available: false
+  /** **Required here, and absent from the steerable member.** Written as prose first — "set when
+   *  `available` is false, and only then" — which a single interface could not enforce: it admitted
+   *  both `{ available: false }` with nothing to show a tester and `{ available: true, reason }`.
+   *  Each value makes a different sentence on screen, so an unavailable state with no reason is a
+   *  control that says it does not work and cannot say why. */
+  reason: NetworkUnavailableReason
+}
+
+/**
+ * What a device's network is doing and whether tapflow can steer it.
+ *
+ * **Two named members rather than one interface with an optional field**, so the invariant is the
+ * compiler's rather than a comment's. **And named rather than inline** so `agent-core` can
+ * re-export instead of declaring a second copy — the rule `types.ts` already follows for
+ * `ClipboardErrorPayload` — and so `scripts/__tests__/protocolPayloadTypes.test.mjs` can see the
+ * shapes. That check reads named declarations; an inline payload is invisible to it, and so is a
+ * union alias whose members are anonymous.
+ */
+export type NetworkStatePayload = NetworkSteerable | NetworkNotSteerable
 
 export interface NetworkState {
   type: 'network:state'

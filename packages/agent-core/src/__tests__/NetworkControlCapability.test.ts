@@ -106,7 +106,11 @@ describe('NetworkControlCapability', () => {
     expect(hasNetworkControl(agent)).toBe(true)
 
     const state = await agent.setNetworkOffline(true)
+    // Narrowing on `available` is how a consumer reaches `reason` at all — the payload is a union,
+    // so an unavailable state without one cannot be constructed and an available state with one
+    // cannot either. This is the consumer shape the viewer will use.
     expect(state.available).toBe(false)
+    if (state.available) throw new Error('expected an unavailable state')
     expect(state.reason).toBe('hooks-not-installed')
     // `false` because the device really is on the network — not as a stand-in for "the request did
     // not land". The test below is the one that pins which of those two `offline` means.
