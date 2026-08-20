@@ -84,7 +84,12 @@ const normalise = (lines) =>
   lines.map((l) => REWRITES.reduce((acc, prefix) => acc.split(prefix).join(''), l))
 
 const read = (p) => readFileSync(resolve(ROOT, p), 'utf8')
-const parsed = Object.fromEntries(PAIR.map(({ label, path }) => [label, split(read(path))]))
+
+// Parsed on demand, not at module scope. `split` throws on a malformed marker, and a throw during
+// collection takes the whole file down — reported as "no tests", with the four assertions below
+// that prove the parser never running. Lazily, the same marker fails one named test instead.
+let cache = null
+const parsed = () => (cache ??= Object.fromEntries(PAIR.map(({ label, path }) => [label, split(read(path))])))
 
 describe('a malformed marker is an error rather than a wider exemption', () => {
   // The real files cannot produce these, and the reading that makes them harmless — "an unclosed
@@ -108,21 +113,21 @@ describe('a malformed marker is an error rather than a wider exemption', () => {
 
 describe('the two READMEs', () => {
   it('declare the same exempt regions in the same order', () => {
-    const reasons = (label) => parsed[label].exempt.map((r) => r.reason)
+    const reasons = (label) => parsed()[label].exempt.map((r) => r.reason)
     expect(reasons('cli')).toEqual(reasons('root'))
     expect(reasons('root')).toEqual(['npm-has-no-video'])
   })
 
   it('match outside the exempt regions once the npm URL prefixes are normalised', () => {
-    expect(normalise(parsed.cli.compared)).toEqual(normalise(parsed.root.compared))
+    expect(normalise(parsed().cli.compared)).toEqual(normalise(parsed().root.compared))
   })
 
   // Pairs the equality above with a claim that fails on a wrong value rather than on silence. If
   // the rewrites stop matching what the cli copy actually writes, the two spans could only be equal
   // by both having lost the links.
   it('are compared with rewrites that actually fire', () => {
-    const cli = parsed.cli.compared.join('\n')
-    const root = parsed.root.compared.join('\n')
+    const cli = parsed().cli.compared.join('\n')
+    const root = parsed().root.compared.join('\n')
     const hits = REWRITES.map((prefix) => cli.split(prefix).length - 1)
     expect(hits.every((n) => n > 0)).toBe(true)
     expect(hits.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(MIN_REWRITES_IN_CLI)
@@ -132,7 +137,7 @@ describe('the two READMEs', () => {
 
   it('are compared over a span the exempt regions have not eaten', () => {
     for (const { label } of PAIR) {
-      const { compared, exempt } = parsed[label]
+      const { compared, exempt } = parsed()[label]
       const exemptLines = exempt.reduce((n, r) => n + r.lines.length, 0)
       expect(exemptLines, `${label} exempt span`).toBeLessThanOrEqual(MAX_EXEMPT_LINES)
       expect(compared.length, `${label} compared span`).toBeGreaterThanOrEqual(MIN_COMPARED_LINES)
