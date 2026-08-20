@@ -93,6 +93,15 @@ export interface SessionInfo {
   agentName?: string
   platform?: string
   resources?: AgentResources
+  /** What this agent implements, mirroring `AgentRegister.capabilities`.
+   *
+   *  It rides the listing as well as `session:joined` because the viewer has to gate controls
+   *  **while picking a device**, which happens before any session exists to join — Full reset
+   *  (#447) is armed on the picker, not inside the session. Optional only for a relay that
+   *  predates the field; `SessionManager.list()` always emits an array, and `[]` means "advertises
+   *  nothing", which is what makes an old agent hide the control rather than offer one it cannot
+   *  honour. */
+  capabilities?: string[]
   devices: DeviceSummary[]
 }
 

@@ -36,7 +36,10 @@ export interface Device {
 // on a merely-slow agent, and a lost keystroke on an old one).
 // The dashboard cannot import from here (it has no agent-core dependency), so this stays a
 // plain string list on the wire rather than a helper nobody on the reading side can call.
-export type AgentCapability = 'clipboard'
+// `full-reset`: the agent honours `device:boot`'s `resetMode: 'full-erase'` by wiping the device
+// before booting it. iOS does (`simctl erase`); Android does not yet (#447), and says so by not
+// listing it rather than by being named in a platform check on the viewer.
+export type AgentCapability = 'clipboard' | 'full-reset'
 
 
 // ── Clipboard bridge shared contract ────────────────────────────────────────

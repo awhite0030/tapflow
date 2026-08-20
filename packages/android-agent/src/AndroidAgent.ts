@@ -49,6 +49,10 @@ import { EmulatorVideo } from './emulator/EmulatorVideo.js'
 const logger = createLogger('android-agent')
 
 // Typed so a typo cannot ship silently — the viewer gates the whole clipboard bridge on this.
+// `full-reset` is deliberately absent: `handleDeviceBoot` does not read `resetMode`, and
+// `-wipe-data` is not passed to the emulator (#447). Listing it would make the viewer offer a
+// toggle that disarms having erased nothing, which reads as "done". Add it in the same change
+// that implements the wipe, not before.
 const AGENT_CAPABILITIES: AgentCapability[] = ['clipboard']
 
 // Parse H.264 SPS NAL unit to extract frame dimensions.

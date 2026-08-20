@@ -210,7 +210,9 @@ describe('useDeviceSelector', () => {
     makeDevice({ id: 'd2', name: 'Pixel 6', osVersion: 'Android 13', platform: 'android' }),
     makeDevice({ id: 'd3', name: 'iPhone 15', osVersion: 'iOS 17', platform: 'ios' }),
   ]
+  /** Advertises nothing, which is what an agent that predates a capability sends (#447). */
   const session: SessionInfo = { agentName: 'mac', devices }
+  const withCaps = (capabilities: string[]): SessionInfo => ({ ...session, capabilities })
 
   it('filters devices by osVersion when set', () => {
     const { result } = renderHook(() => useDeviceSelector(session, 'android'))
@@ -244,7 +246,7 @@ describe('useDeviceSelector', () => {
   // survive back-to-the-list and erase the next device the tester picked.
   describe('resetMode is a one-shot intent', () => {
     it('hands the armed mode to the viewer and disarms the toggle when a device is picked', () => {
-      const { result } = renderHook(() => useDeviceSelector(session, 'ios'))
+      const { result } = renderHook(() => useDeviceSelector(withCaps(['full-reset']), 'ios'))
 
       act(() => result.current.setResetMode('full-erase'))
       act(() => result.current.consumeResetMode())
@@ -254,7 +256,7 @@ describe('useDeviceSelector', () => {
     })
 
     it('does not re-arm on the next pick', () => {
-      const { result } = renderHook(() => useDeviceSelector(session, 'ios'))
+      const { result } = renderHook(() => useDeviceSelector(withCaps(['full-reset']), 'ios'))
 
       act(() => result.current.setResetMode('full-erase'))
       act(() => result.current.consumeResetMode())
@@ -264,10 +266,12 @@ describe('useDeviceSelector', () => {
       expect(result.current.resetMode).toBe('app-only')
     })
 
-    // #447: AndroidAgent never reads resetMode. Arming it there would disarm the toggle having
-    // erased nothing — a stronger promise than before, kept even less.
-    it('never applies full-erase on Android, where nothing acts on it', () => {
-      const { result } = renderHook(() => useDeviceSelector(session, 'android'))
+    // #447: arming a mode nothing acts on would disarm the toggle having erased nothing — a
+    // stronger promise than before, kept even less.
+    // `'ios'` on purpose: the platform is no longer what decides this, so the test that proves the
+    // mode is not applied has to be one the old platform check would have got wrong.
+    it('never applies full-erase when the agent does not advertise it', () => {
+      const { result } = renderHook(() => useDeviceSelector(session, 'ios'))
 
       expect(result.current.fullResetSupported).toBe(false)
 
@@ -275,6 +279,37 @@ describe('useDeviceSelector', () => {
       act(() => result.current.consumeResetMode())
 
       expect(result.current.appliedResetMode).toBe('app-only')
+    })
+  })
+
+  // #447: this used to be `os !== 'android'`, which says "Android cannot" when what it means is
+  // "this agent did not say it can". The two differ in both directions, and each direction is a
+  // bug the platform string cannot express.
+  describe('Full reset is gated on the capability, not the platform', () => {
+    it('is supported when the agent advertises full-reset', () => {
+      const { result } = renderHook(() => useDeviceSelector(withCaps(['clipboard', 'full-reset']), 'ios'))
+      expect(result.current.fullResetSupported).toBe(true)
+    })
+
+    // The direction the OS string got wrong first: an agent too old to implement Full reset still
+    // reports `platform: 'ios'`, so the viewer offered a control that agent has no code for.
+    it('is not supported on iOS when the agent is too old to advertise it', () => {
+      const { result } = renderHook(() => useDeviceSelector(withCaps([]), 'ios'))
+      expect(result.current.fullResetSupported).toBe(false)
+    })
+
+    // And the other direction, which is what unblocks the rest of #447: the moment AndroidAgent
+    // implements `-wipe-data` and advertises it, the toggle appears with no dashboard change.
+    it('is supported on Android once that agent advertises it', () => {
+      const { result } = renderHook(() => useDeviceSelector(withCaps(['full-reset']), 'android'))
+      expect(result.current.fullResetSupported).toBe(true)
+    })
+
+    // Nothing picked yet means nothing known yet. Hiding the control is the safe answer; showing it
+    // would arm a one-shot intent against an agent we have not heard from.
+    it('is not supported before an agent is selected', () => {
+      const { result } = renderHook(() => useDeviceSelector(undefined, 'ios'))
+      expect(result.current.fullResetSupported).toBe(false)
     })
   })
 })

@@ -53,14 +53,18 @@ const { QASession } = await import('../pages/QASession')
 const device = (id: string, name: string, platform = 'ios') => ({
   id, name, platform, status: 'shutdown', osVersion: 'iOS 18.3', sessionId: 'sess-1', busy: false,
 })
+// `capabilities` is what gates the toggle now, not `platform` (#447). These mirror what each agent
+// actually registers: `IOSAgent` lists `full-reset`, `AndroidAgent` does not yet.
 const AGENTS: SessionInfo[] = [{
   agentName: 'studio-mac',
   platform: 'ios',
+  capabilities: ['clipboard', 'full-reset'],
   devices: [device('dev-a', 'iPhone 15'), device('dev-b', 'iPhone SE')],
 }]
 const ANDROID_AGENTS: SessionInfo[] = [{
   agentName: 'studio-mac',
   platform: 'android',
+  capabilities: ['clipboard'],
   devices: [device('dev-a', 'Pixel 7', 'android')],
 }]
 
