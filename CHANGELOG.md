@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The dashboard's icon set moved to **lucide-react 1.x** from 0.577, ahead of the network control that needs an icon 0.577 does not have. Nothing you interact with changes: forty-nine of the fifty icons in use are drawn from byte-identical path data, the fiftieth is the book on the sidebar's Docs link and it is a little taller, and the bundle is the same size.
+- The dashboard's icon set moved to **lucide-react 1.x** from 0.577 — housekeeping ahead of the network control for [#607](https://github.com/jo-duchan/tapflow/issues/607), which will use an icon lucide added in v1.6.0. Nothing you interact with changes: forty-nine of the fifty icons in use are drawn from identical data, the fiftieth is the book on the sidebar's Docs link and it has been redrawn with rounder corners, and all the JS the dashboard ships grows by 30 bytes.
 
 ### Security
 
