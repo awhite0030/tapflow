@@ -289,7 +289,8 @@ const AGENT_FORWARDED = {
   'clipboard:write-done': envC('clipboard:write-done'),
   'clipboard:error': envC('clipboard:error'),
   // `envCo`, not `envC`: this one answers `network:set` **and** arrives unsolicited — on
-  // `device:ready`, on a boot that re-arms the injection, and when a session's condition is cleared.
+  // `device:ready`, on a boot that re-arms the injection, when a session's condition is cleared, and
+  // in reply to the relay's `network:request-state` on a viewer re-join (#614).
   // Absent means "not the answer to a request", never "an old agent".
   'network:state': envCo('network:state'),
   'network:error': envC('network:error'),

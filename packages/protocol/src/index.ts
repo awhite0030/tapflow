@@ -227,6 +227,34 @@ export interface StreamRequestIdr {
   sessionId: string
 }
 
+/**
+ * Ask the agent to re-read the device's network condition and report it (#614).
+ *
+ * Shaped after `stream:request-idr` above, and sent from the same place — the relay's re-join replay
+ * block. A viewer that reconnects has no other way to learn whether the device is offline:
+ * `NetworkState` is agent-produced, and the relay cannot cache it the way it caches `chromeData` and
+ * `deviceInfo`. Those become false only on a reboot or an agent death, both of which the relay
+ * observes; airplane mode changes when someone types `adb` in a terminal, and on iOS the state is
+ * "is the injected dylib armed", which is not a thing the relay can observe at all. **The relay caches
+ * only what it can invalidate**, so this asks rather than remembers.
+ *
+ * Uncorrelated, like its neighbour: the answer is a `network:state` with no `requestId`, which is the
+ * fourth unsolicited producer that message declares. An agent that predates this ignores the frame.
+ *
+ * **That silence is not self-healing, unlike an ignored IDR request.** A dropped keyframe request is
+ * repaired by the next periodic one; nothing re-produces a network state. The read path also has no
+ * error message, because there is no requester to address one to — so a viewer will have to arm its
+ * own deadline after joining and say it could not read. **No viewer does yet**: the control is not on
+ * screen, and this describes the obligation the one that lands takes on, not behaviour that exists.
+ *
+ * The relay sends this only to an agent whose `capabilities` include `network-control`, so the
+ * silence never means "this agent does not implement it" — that is already known before the ask.
+ */
+export interface NetworkRequestState {
+  type: 'network:request-state'
+  sessionId: string
+}
+
 // Optional, unlike every other correlated request, because **the relay originates this one** — the
 // idle timer at `RelayServer.ts` shuts a device down with no browser behind it. This is one interface
 // serving both `BrowserToRelay` and `RelayToAgent`, so required here would be unsatisfiable there.
@@ -282,6 +310,7 @@ export interface UiTreeRequest {
 export type RelayToAgent =
   | AgentRegistered
   | StreamRequestIdr
+  | NetworkRequestState
   | DeviceShutdown
   | AppInstallToAgent
   | AppLaunchToAgent
@@ -566,7 +595,8 @@ export type NetworkUnavailableReason =
  * What the device's network is doing, and whether tapflow can steer it.
  *
  * **Answers `network:set`, and is also sent unsolicited** — on `device:ready`, when a boot re-arms
- * the injection, and when a session's condition is cleared. So `requestId` is optional, and absent
+ * the injection, when a session's condition is cleared, and in reply to `network:request-state` from
+ * a viewer's re-join (#614). So `requestId` is optional, and absent
  * means *this frame is not the answer to a request* — never "an old agent" (see
  * 「Lifecycle correlation」 in AGENTS.md for what that optionality costs and who pays it).
  *
