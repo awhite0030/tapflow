@@ -22,7 +22,7 @@ const control = (over: Partial<NetworkControl> = {}): NetworkControl =>
 
 /** The button, found by whichever action its current position offers. */
 const networkButton = () =>
-  screen.queryByRole('button', { name: /device (offline|online)$/ })
+  screen.queryByRole('button', { name: /device (offline|online|network)$/ })
 
 describe('SimulatorToolbar — network control', () => {
   it('renders nothing when the agent did not say it could do this', () => {
@@ -55,7 +55,45 @@ describe('SimulatorToolbar — network control', () => {
       return name
     }
     expect(named('offline')).toBe('Bring device online')
-    for (const p of ['online', 'waiting', 'unknown'] as const) expect(named(p)).toBe('Take device offline')
+    expect(named('online')).toBe('Take device offline')
+  })
+
+  it('puts no direction in the name of a state it could not read', () => {
+    // **The same claim-from-silence, one channel over.** "Take device offline" asserts the device is
+    // currently online, which is what `aria-pressed={false}` was dropped for — moving it from the
+    // state into the name does not stop it being that claim. The pulse and the muted colour say "we
+    // do not know" to anyone who can see them; this says it to everyone else, and unlike the
+    // description beside it a name cannot be silenced by a verbosity setting.
+    //
+    // Mutation: falling back to 'Take device offline' for these two fails here.
+    for (const position of ['waiting', 'unknown'] as const) {
+      const { unmount } = toolbar(control({ position }))
+      expect(networkButton()!.getAttribute('aria-label'), position).toBe('Toggle device network')
+      unmount()
+    }
+  })
+
+  it('keeps the live region mounted when it has nothing to say', () => {
+    // A live region inserted in the same commit as its first sentence is routinely dropped by NVDA,
+    // JAWS and VoiceOver — which would silence the one case that replaced `aria-busy`, because
+    // `online → pending` is exactly where the region would have appeared.
+    //
+    // Mutation: rendering the span only when there is text fails here.
+    toolbar(control({ position: 'online', pending: false }))
+    const live = screen.getByRole('status')
+    expect(live.textContent).toBe('')
+  })
+
+  it('describes each toolbar with its own element', () => {
+    // Two viewers on screen would otherwise point both buttons at the first span, so one device's
+    // control would be described by another device's network state.
+    //
+    // Mutation: a literal id makes both ids equal and fails here.
+    const { container: a } = toolbar(control({ position: 'unknown' }))
+    const { container: b } = toolbar(control({ position: 'waiting' }))
+    const idOf = (root: HTMLElement) =>
+      root.querySelector('[aria-describedby]')!.getAttribute('aria-describedby')
+    expect(idOf(a)).not.toBe(idOf(b))
   })
 
   it('says nothing about pressedness, in either direction', () => {
@@ -82,7 +120,7 @@ describe('SimulatorToolbar — network control', () => {
     // query — a `getByText` here would assert on a node that never exists and fail for the wrong reason.
     await userEvent.hover(networkButton()!)
     const tip = await screen.findByRole('tooltip')
-    expect(tip.textContent).toContain('Take device offline')
+    expect(tip.textContent).toContain('Toggle device network')
     expect(tip.textContent).toContain('could not be read')
   })
 

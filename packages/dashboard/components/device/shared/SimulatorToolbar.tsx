@@ -4,6 +4,7 @@ import { Camera, Link2, Loader2, Radio, RadioOff, RotateCw, Square, Video } from
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { useId } from 'react';
 import type { ReactNode } from 'react';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
 
@@ -86,13 +87,19 @@ function networkLook(position: NetworkControl['position']) {
  *
  * **`aria-pressed` was tried and dropped.** A toggle can carry its state either in a stable name plus
  * `aria-pressed`, or in a name that says the next action; saying both makes "Take device offline,
- * pressed" — two grammars for one fact, and the second of them wrong. The action reading is what this
- * control needs, because two of its four positions have no pressedness to report and `false` there
- * would assert the device is on the network, which is the claim the whole design refuses to make from
- * silence.
+ * pressed" — two grammars for one fact, and the second of them wrong.
+ *
+ * **And the two unreadable positions get a name with no direction in it.** "Take device offline"
+ * there would assert the device is currently online, which is the same claim-from-silence that
+ * `aria-pressed={false}` was dropped for — it does not stop being that claim by moving from the state
+ * into the name. The pulse and the muted colour say "we do not know" to everyone who can see them;
+ * this is what says it to everyone else, and unlike the description beside it a name cannot be
+ * turned off by a verbosity setting.
  */
 function networkAction(position: NetworkControl['position']) {
-  return position === 'offline' ? 'Bring device online' : 'Take device offline';
+  if (position === 'offline') return 'Bring device online';
+  if (position === 'online') return 'Take device offline';
+  return 'Toggle device network';
 }
 
 export function SimulatorToolbar({
@@ -106,6 +113,11 @@ export function SimulatorToolbar({
   launchSlot,
   network,
 }: SimulatorToolbarProps) {
+  // Per instance, not a literal: this component takes all its state through props and is rendered per
+  // device viewer, so two toolbars on screen would point both buttons' `aria-describedby` at the first
+  // span — one device's control described by another device's network state. The unit tests render one
+  // toolbar at a time and cannot see that.
+  const descId = useId();
   if (!joined) return null;
 
   return (
@@ -183,7 +195,7 @@ export function SimulatorToolbar({
                   variant="ghost" size="icon"
                   className={cn('h-8 w-8', className)}
                   aria-label={label}
-                  aria-describedby={status || network.pending ? 'network-state-desc' : undefined}
+                  aria-describedby={status || network.pending ? descId : undefined}
                   onClick={network.onToggle}
                 >
                   {network.pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
@@ -196,11 +208,13 @@ export function SimulatorToolbar({
                   `role="status"` because the sentence *changes on screen* — `useNetworkControl` flips
                   `waiting` to `unknown` on a timer — and a description that changes on an element
                   nobody is focused on is announced by no AT at all. */}
-              {(status || network.pending) && (
-                <span id="network-state-desc" role="status" className="sr-only">
-                  {network.pending ? 'Changing the network state.' : status}
-                </span>
-              )}
+              {/* **Mounted unconditionally, with only the text toggled.** A live region inserted in the
+                  same commit as its first sentence is routinely dropped by NVDA, JAWS and VoiceOver —
+                  which would have silenced exactly the one case that replaced `aria-busy`, since
+                  `online → pending` is where the region would have appeared. */}
+              <span id={descId} role="status" className="sr-only">
+                {network.pending ? 'Changing the network state.' : status ?? ''}
+              </span>
               {/* The visible text contains the accessible name (WCAG 2.5.3): a voice-control user says
                   what the tooltip shows, and the status is appended rather than substituted. */}
               <TooltipContent side="left">{status ? `${label} — ${status}` : label}</TooltipContent>
