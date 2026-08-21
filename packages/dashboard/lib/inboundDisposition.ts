@@ -54,11 +54,14 @@ export const INBOUND_DISPOSITION = {
   'clipboard:data': { at: 'DeviceViewer, useClipboardBridge' },
   'clipboard:error': { at: 'DeviceViewer, useClipboardBridge' },
   'clipboard:write-done': { at: 'DeviceViewer, useClipboardBridge' },
-  // The viewer is the only consumer that acts on these — it owns the control. **No handler exists
-  // yet**: the protocol lands before the UI (#607, plan step 2 of 5), and this file is written so
-  // that gap is a stated fact rather than an absent branch nobody can tell from an oversight.
-  'network:state': { ignored: 'No handler yet — the control lands in a later slice of #607.' },
-  'network:error': { ignored: 'No handler yet — the control lands in a later slice of #607.' },
+  // The viewer is the only consumer that acts on these — it owns the control. Both were `ignored`
+  // while the protocol was ahead of the UI (#607); the control landed and this is what closed that gap.
+  //
+  // `DeviceViewer` routes both into one handler because they answer the same request. They are not the
+  // same answer: a `network:state` says where the device is, and a `network:error` says the request
+  // never reached one — so it clears the wait and moves nothing.
+  'network:state': { at: 'DeviceViewer, useNetworkControl' },
+  'network:error': { at: 'DeviceViewer, useNetworkControl' },
   'device:boot-error': { at: 'DeviceViewer, SessionList' },
   'device:booting': { at: 'DeviceViewer' },
   'device:ready': { at: 'DeviceViewer, SessionList' },
