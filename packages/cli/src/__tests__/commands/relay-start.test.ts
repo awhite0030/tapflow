@@ -113,7 +113,7 @@ describe('cmdRelayStart', () => {
 
     await cmdRelayStart({})
 
-    expect(resolveRelayDisplayHost).toHaveBeenCalledWith(config.tls, 'CERT')
+    expect(resolveRelayDisplayHost).toHaveBeenCalledWith(config.tls, 'CERT', expect.any(Function))
     expect(output.join('\n')).toContain('https://relay.example.com:4000')
   })
 

@@ -30,7 +30,7 @@ async function main(): Promise<void> {
     provider = createCertProvider(config.tls, { dataDir })
     const material = await provider.ensureCert()
     tls = { cert: material.cert, key: material.key }
-    displayHost = resolveRelayDisplayHost(config.tls, material.cert)
+    displayHost = resolveRelayDisplayHost(config.tls, material.cert, (message) => logger.warn(message))
   } else {
     logger.info(
       'TLS disabled — serving HTTP. Secure-context features (e.g. WebCodecs hardware decode) require HTTPS; ' +

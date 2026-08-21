@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   info: vi.fn(),
@@ -45,11 +45,13 @@ describe('relay server startup output', () => {
     vi.spyOn(process, 'on').mockImplementation(() => process)
   })
 
+  afterEach(() => vi.restoreAllMocks())
+
   it('uses the imported certificate host in the advertised URL', async () => {
     await import('../server.js')
 
     await vi.waitFor(() => expect(mocks.start).toHaveBeenCalled())
-    expect(mocks.resolveRelayDisplayHost).toHaveBeenCalledWith(mocks.tls, 'CERT')
+    expect(mocks.resolveRelayDisplayHost).toHaveBeenCalledWith(mocks.tls, 'CERT', expect.any(Function))
     expect(mocks.info).toHaveBeenCalledWith('tapflow relay running at https://relay.example.com:4000')
   })
 })

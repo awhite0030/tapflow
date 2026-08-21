@@ -37,7 +37,7 @@ export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
     certProvider = createCertProvider(config.tls, { dataDir: config.local.dataDir })
     const material = await certProvider.ensureCert()
     tls = { cert: material.cert, key: material.key }
-    displayHost = resolveRelayDisplayHost(config.tls, material.cert)
+    displayHost = resolveRelayDisplayHost(config.tls, material.cert, warn)
   }
   const httpScheme = tls ? 'https' : 'http'
   const wsScheme = tls ? 'wss' : 'ws'

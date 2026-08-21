@@ -148,6 +148,8 @@ API 토큰은 설정 파일이 아니라 `tapflow init`이 만들어 두는 `.ta
 | `tls.certPath` | fullchain 인증서 PEM 경로. |
 | `tls.keyPath` | 개인 키 PEM 경로. |
 
+시작할 때 tapflow는 `localhost`가 아닌 첫 번째 구체적인 DNS SAN을 접속 주소로 안내합니다. 와일드카드 전용 인증서처럼 그런 이름이 없으면 `localhost`를 안내하고 경고를 출력합니다. 팀원이 이 주소를 사용하려면 안내된 이름이 relay의 LAN 주소로 해석되어야 합니다.
+
 ::: tip 접속과 알려진 제약
 - 인증서는 도메인에 묶입니다. 따라서 `https://[도메인]:[포트]`로 접속해야 합니다. `localhost`나 IP로 접속하면 이름 불일치 경고가 납니다.
 - 일부 공유기는 공개 도메인이 사설 IP를 가리키는 응답을 차단합니다(DNS rebinding). 이 경우 공유기에 예외를 등록하거나 로컬 DNS로 도메인을 LAN IP에 매핑하세요.

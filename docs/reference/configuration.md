@@ -146,6 +146,8 @@ To use an internal PKI or a wildcard certificate you already hold, point to the 
 | `tls.certPath` | Path to the fullchain certificate PEM. |
 | `tls.keyPath` | Path to the private key PEM. |
 
+At startup, tapflow advertises the first concrete DNS SAN other than `localhost`. If the certificate has no such name — for example, a wildcard-only certificate — it advertises `localhost` and prints a warning. The advertised name must resolve to the relay's LAN address for teammates to use it.
+
 ::: tip Access and known limits
 - The certificate is bound to the domain, so open `https://[domain]:[port]`. Connecting via `localhost` or an IP raises a name-mismatch warning.
 - Some routers block responses where a public domain points to a private IP (DNS rebinding). Add a router exception, or map the domain to the LAN IP via local DNS.

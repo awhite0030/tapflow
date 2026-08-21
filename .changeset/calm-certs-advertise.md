@@ -3,4 +3,4 @@
 "tapflow": patch
 ---
 
-Advertise the concrete DNS host from an imported TLS certificate in relay startup output. DNS SANs take precedence over the legacy subject CN; certificates with only wildcard or IP SANs keep the safe `localhost` fallback.
+Advertise the first teammate-ready DNS host from an imported TLS certificate in relay startup output, preferring a concrete SAN over `localhost`. DNS SANs take precedence over the legacy subject CN; certificates with unusable DNS SANs keep the safe `localhost` fallback and now explain it with a warning.
