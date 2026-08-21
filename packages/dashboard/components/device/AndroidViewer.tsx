@@ -9,6 +9,8 @@ import { useDecoderStream } from '@/hooks/useDecoderStream';
 import type { Decoder } from '@/lib/decoders/types';
 import { useFps } from '@/hooks/useFps';
 import { SimulatorToolbar } from './shared/SimulatorToolbar';
+import { useNetworkControl } from '@/hooks/useNetworkControl';
+import type { NetworkMessageHandler } from '@/hooks/useNetworkControl';
 import { SimulatorInfoCard } from './shared/SimulatorInfoCard';
 import { DeepLinkDialog } from './DeepLinkDialog';
 import { Button } from '@/components/ui/button';
@@ -47,6 +49,8 @@ interface AndroidViewerProps {
   binaryFrameHandlerRef: React.RefObject<BinaryFrameHandler | undefined>;
   clipboardHandlerRef: React.MutableRefObject<ClipboardMessageHandler | undefined>;
   clipboardSupported: boolean;
+  networkHandlerRef: MutableRefObject<NetworkMessageHandler | undefined>;
+  networkSupported: boolean;
   onRecordingUploaded?: () => void;
   screenWidth?: number;
   screenHeight?: number;
@@ -60,7 +64,7 @@ export function AndroidViewer({
   sessionId, buildId, send, openUrl, launchApp, connected, joined,
   deviceReady, installing, installed, installError, bootError,
   launching, androidButtons,
-  binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, onRecordingUploaded,
+  binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, networkHandlerRef, networkSupported, onRecordingUploaded,
   screenWidth, screenHeight, cornerRadius,
   perfHookRef,
 }: AndroidViewerProps) {
@@ -234,6 +238,11 @@ export function AndroidViewer({
   useClipboardBridge({
     sessionId, send, active: keyboardActive, supported: clipboardSupported,
     handlerRef: clipboardHandlerRef, sendChord, onError: (m) => toast.error(m),
+  })
+
+  const network = useNetworkControl({
+    sessionId, send, supported: networkSupported, deviceReady, handlerRef: networkHandlerRef,
+    onError: (m) => toast.error(m),
   })
 
   // ── Keyboard forwarding ───────────────────────────────────────────────────
@@ -517,6 +526,7 @@ export function AndroidViewer({
         onRotate={handleRotate}
         platformSlot={platformSlot}
         launchSlot={launchSlot}
+        network={networkSupported ? { position: network.position, steerable: network.steerable, pending: network.pending, onToggle: network.toggle } : undefined}
       />
 
       <div className="flex items-start gap-8">

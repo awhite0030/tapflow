@@ -7,6 +7,8 @@ import { useClientRecording } from '@/hooks/useClientRecording';
 import { Home, Keyboard, Loader2, Play } from 'lucide-react';
 import { useFps } from '@/hooks/useFps';
 import { SimulatorToolbar } from './shared/SimulatorToolbar';
+import { useNetworkControl } from '@/hooks/useNetworkControl';
+import type { NetworkMessageHandler } from '@/hooks/useNetworkControl';
 import { SimulatorInfoCard } from './shared/SimulatorInfoCard';
 import { DeepLinkDialog } from './DeepLinkDialog';
 import { Button } from '@/components/ui/button';
@@ -47,6 +49,8 @@ interface IOSViewerProps {
   binaryFrameHandlerRef: React.MutableRefObject<BinaryFrameHandler | undefined>;
   clipboardHandlerRef: React.MutableRefObject<ClipboardMessageHandler | undefined>;
   clipboardSupported: boolean;
+  networkHandlerRef: MutableRefObject<NetworkMessageHandler | undefined>;
+  networkSupported: boolean;
   onRecordingUploaded?: () => void;
   swKeyboardVisible: boolean;
   swKeyboardPending: boolean;
@@ -58,7 +62,7 @@ export function IOSViewer({
   sessionId, buildId, send, openUrl, launchApp, connected, joined,
   deviceReady, installing, installed, installError, bootError,
   launching, chrome,
-  binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, onRecordingUploaded,
+  binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, networkHandlerRef, networkSupported, onRecordingUploaded,
   swKeyboardVisible, swKeyboardPending, onKbdToggle,
   perfHookRef,
 }: IOSViewerProps) {
@@ -302,6 +306,11 @@ export function IOSViewer({
     handlerRef: clipboardHandlerRef, sendChord, onError: (m) => toast.error(m),
   })
 
+  const network = useNetworkControl({
+    sessionId, send, supported: networkSupported, deviceReady, handlerRef: networkHandlerRef,
+    onError: (m) => toast.error(m),
+  })
+
   // ── Keyboard forwarding ───────────────────────────────────────────────────
   useEffect(() => {
     const MODIFIER_CODES = new Set(['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'MetaLeft', 'MetaRight'])
@@ -539,6 +548,7 @@ export function IOSViewer({
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon" className="h-8 w-8"
+            aria-label="Home"
             onClick={() => send({ type: 'input:button', sessionId, requestId: newRequestId(), payload: { name: 'home' } })}
           >
             <Home className="h-4 w-4" />
@@ -549,6 +559,11 @@ export function IOSViewer({
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon" className="h-8 w-8"
+            aria-label="Software keyboard"
+            // `data-active` below is a CSS hook and nothing reads it out. The toolbar's other two
+            // toggles carry their state in `aria-pressed`; this was the one left outside ARIA.
+            aria-pressed={swKeyboardVisible}
+            aria-busy={swKeyboardPending}
             disabled={swKeyboardPending}
             onClick={onKbdToggle}
             data-active={swKeyboardVisible}
@@ -592,6 +607,7 @@ export function IOSViewer({
         onRotate={handleRotate}
         platformSlot={platformSlot}
         launchSlot={launchSlot}
+        network={networkSupported ? { position: network.position, steerable: network.steerable, pending: network.pending, onToggle: network.toggle } : undefined}
       />
 
       <div className="flex items-start gap-8">

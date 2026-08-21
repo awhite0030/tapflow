@@ -12,6 +12,7 @@ import type { FrameTiming, PerfHook } from './perf/types';
 import { parseEnvelopeHeader, HEADER_SIZE, CODEC_H264, CODEC_AUDIO, type BinaryFrameHandler } from '@/lib/envelope';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
 import type { ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
+import type { NetworkMessageHandler } from '@/hooks/useNetworkControl';
 import { canDecodeH264 } from '@/lib/decoders/pickDecoder';
 import { resolveInputError } from '@/lib/inputErrorNotice';
 import { newRequestId } from '@/lib/requestId';
@@ -115,6 +116,9 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // The mounted viewer's clipboard bridge registers here; replies are correlated by
   // requestId on its side, so this only has to hand the message over.
   const clipboardHandlerRef = useRef<ClipboardMessageHandler | undefined>(undefined);
+  // Same shape, one message family over: the network control registers here and the routing below
+  // hands it `network:state` and `network:error` (#607).
+  const networkHandlerRef = useRef<NetworkMessageHandler | undefined>(undefined);
 
   // Opt-in audio output (Android emulator first). Audio frames are codec-tagged and routed
   // straight to Web Audio — they never enter the video FIFO/decoder path. Always-on playback;
@@ -400,6 +404,11 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       setSwKeyboardVisible(visible);
       setSwKeyboardPending(false);
     }
+    if (msg.type === 'network:state' || msg.type === 'network:error') {
+      networkHandlerRef.current?.(msg);
+      return;
+    }
+
     if (msg.type === 'clipboard:data' || msg.type === 'clipboard:write-done' || msg.type === 'clipboard:error') {
       clipboardHandlerRef.current?.(msg);
     }
@@ -501,6 +510,8 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     binaryFrameHandlerRef,
     clipboardHandlerRef,
     clipboardSupported: agentCapabilities.includes('clipboard'),
+    networkHandlerRef,
+    networkSupported: agentCapabilities.includes('network-control'),
     onRecordingUploaded,
     swKeyboardVisible, swKeyboardPending, onKbdToggle,
   };

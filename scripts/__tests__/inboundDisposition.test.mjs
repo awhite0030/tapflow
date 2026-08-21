@@ -35,6 +35,7 @@ const FILES = {
   SessionList: 'packages/dashboard/components/SessionList.tsx',
   useAgentSession: 'packages/dashboard/hooks/useAgentSession.ts',
   useClipboardBridge: 'packages/dashboard/hooks/useClipboardBridge.ts',
+  useNetworkControl: 'packages/dashboard/hooks/useNetworkControl.ts',
   MacResources: 'packages/dashboard/src/pages/MacResources.tsx',
 }
 
@@ -152,11 +153,9 @@ describe('inbound disposition', () => {
       'input:done',
       'input:type-done',
       'input:type-error',
-      // Not a decision to leave these unhandled — the protocol for #607 lands a slice before the
-      // control that reads them, and this file exists so "no branch yet" cannot be told apart from
-      // "no branch ever" by anything but a written reason. They become `at:` with the viewer.
-      'network:error',
-      'network:state',
+      // `network:state` and `network:error` were here, with a note saying they would become `at:`
+      // when the viewer landed. It has, and they did — which is the whole point of writing "no branch
+      // yet" down rather than leaving an absent branch to speak for itself.
       'session:deviceInfo',
     ])
   })
