@@ -251,7 +251,12 @@ export function SimulatorToolbar({
                   // live region beside it.
                   aria-disabled={network.pending}
                   aria-describedby={descId}
-                  onClick={network.onToggle}
+                  // Enforced here, not only announced here. `aria-disabled` said the control was
+                  // unavailable while the refusal lived in `useNetworkControl.toggle` — a state in
+                  // ARIA and not in behaviour, which is the mirror of a state in CSS and not in ARIA.
+                  // Same reason as the `Retry:` scoping above: this takes its state as props and has
+                  // to hold on its own terms, whichever viewer supplies the handler.
+                  onClick={() => { if (!network.pending) network.onToggle(); }}
                 >
                   {network.pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
                 </Button>

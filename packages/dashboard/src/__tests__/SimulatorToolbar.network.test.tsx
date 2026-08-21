@@ -272,6 +272,19 @@ describe('SimulatorToolbar — network control', () => {
     expect(onToggle).toHaveBeenCalledTimes(1)
   })
 
+  it('refuses the click it says it is refusing', async () => {
+    // `aria-disabled` announced unavailability while the guard lived in the hook — a state in ARIA
+    // and not in behaviour, which is the mirror of a state in CSS and not in ARIA. Voice-control
+    // implementations that skip `aria-disabled` targets would have been told one thing while any
+    // consumer wiring a handler without its own guard fired the action.
+    //
+    // Mutation: `onClick={network.onToggle}` fails here.
+    const onToggle = vi.fn()
+    toolbar(control({ onToggle, pending: true }))
+    await userEvent.click(networkButton()!)
+    expect(onToggle).not.toHaveBeenCalled()
+  })
+
   it('keeps its name while a request is in flight', async () => {
     // The spinner replaces the icon, not the label — an icon-only control that loses its accessible
     // name mid-request is unreachable for the duration.
