@@ -180,7 +180,11 @@ export function SimulatorToolbar({
               ? <ShortcutTooltip label="Start recording" keys={['⌘', '⇧', 'Y']} />
               : recordState === 'recording'
               ? <ShortcutTooltip label="Stop recording" keys={['⌘', '⇧', 'Y']} />
-              : 'Processing…'}
+              // The same four branches as the name above. Collapsing `uploading` and `done` here left
+              // the two channels disagreeing for `done` — "Recording saved" read out, "Processing…"
+              // on screen — which is stale for a sighted user and a Label-in-Name mismatch the moment
+              // this trigger becomes hoverable (#624).
+              : recordState === 'done' ? 'Recording saved' : 'Processing…'}
           </TooltipContent>
         </Tooltip>
 
