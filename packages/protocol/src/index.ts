@@ -242,9 +242,13 @@ export interface StreamRequestIdr {
  * fourth unsolicited producer that message declares. An agent that predates this ignores the frame.
  *
  * **That silence is not self-healing, unlike an ignored IDR request.** A dropped keyframe request is
- * repaired by the next periodic one; nothing re-produces a network state. The viewer therefore arms
- * its own deadline after joining and renders "could not read" — the read path has no error message
- * because there is no requester to address one to.
+ * repaired by the next periodic one; nothing re-produces a network state. The read path also has no
+ * error message, because there is no requester to address one to — so a viewer will have to arm its
+ * own deadline after joining and say it could not read. **No viewer does yet**: the control is not on
+ * screen, and this describes the obligation the one that lands takes on, not behaviour that exists.
+ *
+ * The relay sends this only to an agent whose `capabilities` include `network-control`, so the
+ * silence never means "this agent does not implement it" — that is already known before the ask.
  */
 export interface NetworkRequestState {
   type: 'network:request-state'

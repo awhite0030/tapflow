@@ -43,11 +43,12 @@ describe('session ownership seam', () => {
 
   afterEach(async () => { await server.stop() })
 
-  async function registerAgent(name: string, devices = 1) {
+  async function registerAgent(name: string, devices = 1, capabilities?: string[]) {
     const agent = new WebSocket(`ws://localhost:${port}`)
     await waitForOpen(agent)
     agent.send(JSON.stringify({
       type: 'agent:register', platform: 'ios', agentName: name,
+      ...(capabilities ? { capabilities } : {}),
       devices: Array.from({ length: devices }, (_, i) => ({
         id: `dev${i}`, name: `iPhone ${i}`, platform: 'ios', status: 'shutdown',
       })),
@@ -337,6 +338,9 @@ describe('session ownership seam', () => {
   // and not a policy. IDR drops inside the window because the next periodic keyframe repairs it;
   // nothing re-produces a `network:state`, so this one coalesces onto the trailing edge.
 
+  /** What an agent must announce for the relay to ask it anything about the network. */
+  const NETWORK_AGENT = ['clipboard', 'network-control']
+
   /** Collect `network:request-state` frames arriving at an agent socket. */
   function watchRequests(agent: WebSocket) {
     const seen: unknown[] = []
@@ -365,7 +369,7 @@ describe('session ownership seam', () => {
   }
 
   it('asks the agent what the device network is doing when a viewer re-joins', async () => {
-    const { agent, sessionIds } = await registerAgent('seam-net-1')
+    const { agent, sessionIds } = await registerAgent('seam-net-1', 1, NETWORK_AGENT)
     const sessionId = sessionIds[0]!
     const seen = watchRequests(agent)
     const browser = await browserSocket()
@@ -384,7 +388,7 @@ describe('session ownership seam', () => {
     // top of `handleSessionStart`, which would reach a session with no device at all.
     //
     // Mutation: hoisting the call out of the `readySent` block fails here.
-    const { agent, sessionIds } = await registerAgent('seam-net-2')
+    const { agent, sessionIds } = await registerAgent('seam-net-2', 1, NETWORK_AGENT)
     const sessionId = sessionIds[0]!
     const seen = watchRequests(agent)
     const browser = await browserSocket()
@@ -413,7 +417,7 @@ describe('session ownership seam', () => {
     // untouched, and the trailing edge is then a real ~400ms wait.
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
-      const { agent, sessionIds } = await registerAgent('seam-net-3')
+      const { agent, sessionIds } = await registerAgent('seam-net-3', 1, NETWORK_AGENT)
       const sessionId = sessionIds[0]!
       const seen = watchRequests(agent)
       const browser = await browserSocket()
@@ -431,7 +435,10 @@ describe('session ownership seam', () => {
 
       await vi.waitFor(() => expect(seen).toHaveLength(2), { timeout: 4_000, interval: 25 })
       // Exactly one more, not three. Arming a timer per call inside the window is the other way to
-      // coalesce wrongly, and it reads 4.
+      // coalesce wrongly — and **the settle is what makes that mutation die reliably**: `waitFor`
+      // resolves on the first poll that sees 2, so three frames milliseconds apart can be read as two
+      // if the poll lands between them.
+      await new Promise((r) => setTimeout(r, 150))
       expect(seen).toHaveLength(2)
 
       agent.close(); browser.close()
@@ -450,7 +457,7 @@ describe('session ownership seam', () => {
     // Mutation: dropping the `dispose()` line from `forgetSessionState` reads 3 at the end.
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
-      const { agent, sessionIds } = await registerAgent('seam-net-4')
+      const { agent, sessionIds } = await registerAgent('seam-net-4', 1, NETWORK_AGENT)
       const sessionId = sessionIds[0]!
       const seen = watchRequests(agent)
       const browser = await browserSocket()
@@ -484,36 +491,72 @@ describe('session ownership seam', () => {
     }
   })
 
-  it('sends nothing when the trailing edge finds the agent gone', async () => {
-    // A trailing edge is the one call in this file that outlives the statement that scheduled it, so
-    // it is the only way a send here can meet a socket that was alive when it was armed and is not
-    // when it runs. `handleSessionStart` returns above the replay block when the agent is away, so a
-    // leading edge never does.
+  it('asks nothing of an agent that never claimed it could do this', async () => {
+    // The control the capability gate needs, and the reason it is not the IDR's blind send: an agent
+    // without the code never answers, and an unanswered ask is indistinguishable from a failed read —
+    // so a viewer arming a deadline would report "could not read" on every re-join for an agent that
+    // already said, in `session:joined`, that it cannot. iOS is that agent until #607's last slice.
     //
-    // **No mutation of `networkStateRequester` fails this, and that is stated rather than hidden.**
-    // `sendTo` drops a non-OPEN socket itself, and the disposal contract means a *removed* session has
-    // no timer left to fire — so both guards inside `fire` are unreachable and this pins the
-    // composition instead: whatever else changes, an armed request must not reach a dead agent. What
-    // it would catch is a future `fire` that sends through a raw `socket.send` rather than `sendTo`.
+    // Registered exactly like the positives with the one string removed, so what differs is the claim
+    // and not the setup. Mutation: dropping the `agentCapabilities` check fires here.
+    const { agent, sessionIds } = await registerAgent('seam-net-nocap', 1, ['clipboard'])
+    const sessionId = sessionIds[0]!
+    const seen = watchRequests(agent)
+    const browser = await browserSocket()
+    await joinReady(sessionId, agent, browser)
+    await rejoin(sessionId, browser)
+    await barrier(agent)
+
+    expect(seen).toHaveLength(0)
+
+    agent.close(); browser.close()
+  })
+
+  it('serves a viewer that comes back on a new socket after a dirty disconnect', async () => {
+    // **The path this whole slice exists for, and the one the other tests do not walk.** They re-join
+    // on the same live socket (#515), which `session:leave` and a clean close both clear. A browser
+    // that dies in its close handler runs `clearBrowser` and *not* `forgetSessionState`, so `lastAt`
+    // survives into the re-join — and that is the ordinary case: a laptop lid, a Wi-Fi blip, a tab
+    // reloaded.
+    //
+    // Two mutations, and neither is caught by anything above. Replacing the coalescing body with the
+    // IDR drop policy leaves the new viewer at one request forever — it renders "unknown" for the life
+    // of the session, because nothing else produces a `network:state`. And adding
+    // `forgetSessionState` to the browser-close path — a plausible edit, since the doc above that map
+    // calls its own leak "ordinary" — builds a fresh requester whose leading edge fires at once, which
+    // this reads as a request arriving *before* the window has elapsed.
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
-      const { agent, sessionIds } = await registerAgent('seam-net-5')
+      const { agent, sessionIds } = await registerAgent('seam-net-blip', 1, NETWORK_AGENT)
       const sessionId = sessionIds[0]!
       const seen = watchRequests(agent)
-      const browser = await browserSocket()
-      await joinReady(sessionId, agent, browser)
-      await rejoin(sessionId, browser)
+
+      const first = await browserSocket('same-client')
+      await joinReady(sessionId, agent, first)
+      await rejoin(sessionId, first)
       await barrier(agent)
       expect(seen).toHaveLength(1)
 
+      // Dies without saying goodbye. `terminate` rather than `close` so no close frame is negotiated.
       vi.setSystemTime(Date.now() + Math.floor(NETWORK_STATE_REQUEST_THROTTLE_MS / 5))
-      await rejoin(sessionId, browser)
-      agent.close()
+      first.terminate()
 
-      await new Promise((r) => setTimeout(r, NETWORK_STATE_REQUEST_THROTTLE_MS + 200))
-      expect(seen).toHaveLength(1)
+      const second = await browserSocket('same-client')
+      await rejoin(sessionId, second)
+      await barrier(agent)
+      // Not yet — the burst is still inside the window. A fresh requester would have fired already.
+      expect(seen, 'the re-join was served from a new budget').toHaveLength(1)
 
-      browser.close()
+      await vi.waitFor(() => expect(seen).toHaveLength(2), { timeout: 4_000, interval: 25 })
+      // And the reply reaches the socket that is *holding* the session now, which is the payoff the
+      // trailing edge is chosen for — a leading edge fired for the first viewer cannot promise it.
+      agent.send(JSON.stringify({
+        type: 'network:state', sessionId, payload: { offline: true, available: true },
+      }))
+      const state = await waitForType(second, 'network:state')
+      expect(state['payload']).toEqual({ offline: true, available: true })
+
+      agent.close(); second.close()
     } finally {
       vi.useRealTimers()
     }

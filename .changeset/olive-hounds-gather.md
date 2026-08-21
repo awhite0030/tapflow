@@ -11,5 +11,8 @@ browser — so the network toggle had no value to render and would have shown a 
 relay now asks the agent to re-read the device, from the same block that already asks for a
 keyframe, and the Android agent answers with an uncorrelated report.
 
+The relay asks only agents that announce `network-control`, so an agent without the feature — every
+iOS agent, for now — is never asked and a viewer never has to guess from a silence.
+
 Caching it in the relay would have been cheaper and wrong: the relay caches only what it can
 invalidate, and airplane mode changes when someone types `adb` in a terminal.

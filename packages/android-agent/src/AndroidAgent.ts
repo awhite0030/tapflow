@@ -171,9 +171,15 @@ interface DeviceState {
    *  It exists because `NetworkNotSteerable.offline` is declared "still the device's real state", and
    *  the re-join report (#614) is the first producer with nothing to pass: the boot path hands over
    *  what it just read and `network:set` hands over what it measured, but a viewer coming back has no
-   *  such moment behind it. Defaulting to `false` there would answer "online" for a device that is
-   *  offline and momentarily unreadable — the one direction that hides the problem. */
-  lastNetworkOffline: boolean
+   *  such moment behind it.
+   *
+   *  **`undefined` until something is observed, rather than `false`.** The two are not the same claim:
+   *  `false` says "on the network" and the absent value says "not known", and a boolean spells the
+   *  second as the first. Reachable — a boot whose own read failed writes nothing here, and a tester
+   *  who then flips airplane mode in the emulator's own UI leaves a device that is offline, unreadable
+   *  and never observed. Answering `offline: false` for it is the one direction that hides the
+   *  problem this feature exists to show, so `reportNetworkState` stays silent there instead. */
+  lastNetworkOffline?: boolean
   streamWs: WebSocket | null
   scrcpySession: ScrcpySession | null
   emulatorVideo: EmulatorVideo | null
@@ -430,7 +436,6 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         deviceId,
         touchHelper: null,
         booted: false,
-        lastNetworkOffline: false,
         streamWs: null,
         scrcpySession: null,
         emulatorVideo: null,
@@ -1184,7 +1189,13 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     const serial = this.serialFor(sessionId)
     if (!serial) return
     const state = this.deviceStates.get(sessionId)
-    const payload = await this.readNetworkState(serial, lastKnownOffline ?? state?.lastNetworkOffline ?? false)
+    const known = lastKnownOffline ?? state?.lastNetworkOffline
+    const payload = await this.readNetworkState(serial, known ?? false)
+    // Nothing observed and nothing readable: every value of `offline` here would be a claim, and
+    // `false` is the one that reads as "on the network". Silence is already this method's answer when
+    // there is no device — nobody asked, so nothing is owed — and it is the honest one here too. The
+    // boot path always passes a value, so the report the protocol names on `device:ready` still goes.
+    if (!payload.available && known === undefined) return
     // Only an observed value enters the memory — a failed read has nothing to record, since what it
     // returns *is* the memory (or a value the caller just read off the device).
     //

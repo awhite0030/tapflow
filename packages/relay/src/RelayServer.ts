@@ -468,9 +468,11 @@ export class RelayServer {
     this.stopping = true
     for (const timer of this.agentHolds.values()) clearTimeout(timer)
     this.agentHolds.clear()
-    // Same argument one line up, and `unref()` on these does not cover it either: a trailing edge armed
-    // before `stop()` would fire against a stopped server, and its `sendTo` would reach a socket the
-    // `terminate()` loop below is about to kill.
+    // Same argument one line up. **Not** because the send would land — `sendTo` drops a socket that is
+    // not OPEN, which is why `fire` carries no check of its own — but because `unref()` only excuses a
+    // timer from keeping the process alive, and the test runner's process outlives the server anyway.
+    // An armed edge therefore still runs, holding a closure over the session map of a relay that has
+    // already stopped.
     for (const requester of this.networkStateRequesters.values()) requester.dispose()
     this.networkStateRequesters.clear()
     return new Promise((resolve, reject) => {
@@ -1656,13 +1658,22 @@ export class RelayServer {
       // among the three replayed above, so without this a viewer that reconnects has no way to learn
       // whether the device is offline and its control renders in a guessed position.
       //
-      // **Inside `readySent` as an optimisation, not as a correctness condition** — and the difference
-      // matters, because `readySent` is the *stream's* readiness, not the device's. `clearStreamSocket`
-      // lowers it while `deviceStatus` stays `'booted'`, so a device that is genuinely offline with a
-      // dead stream socket is not asked about here. The agent is what makes that safe: it holds no
-      // serial for a session with no device and answers nothing, so the gate only saves an adb round
-      // trip. `deviceStatus` is not the fix — the comment on `device:ready` above says why (#440).
-      this.networkStateRequester(session.id)()
+      // **Gated on the capability, unlike the IDR request beside it.** That one is safe to send blind
+      // because an agent without it loses nothing — the next periodic keyframe arrives anyway. This one
+      // has no such repair, so an agent that never answers is indistinguishable from one that failed to
+      // read; a viewer arming a deadline would then render "could not read" on every re-join, for an
+      // agent that already said it cannot do this at all. iOS is exactly that agent until #607's last
+      // slice. Fifty lines up, `session:joined` carries these capabilities for the stated reason that a
+      // consumer must not infer support from a timeout — asking anyway would make the relay do it.
+      //
+      // **Inside `readySent` too, and there as an optimisation rather than a correctness condition.**
+      // `readySent` is the *stream's* readiness: `clearStreamSocket` lowers it while `deviceStatus`
+      // stays `'booted'`, so a booted, genuinely offline device with a dead stream socket is not asked
+      // about here — and the agent would have answered, since it still holds that serial. What makes
+      // skipping safe is not the agent's silence but the viewer's: with `readySent` false the
+      // `device:ready` above is not replayed either, so nothing is rendering a live device to be wrong
+      // about. `deviceStatus` is not the fix — the comment on `device:ready` says why (#440).
+      if (session.agentCapabilities?.includes('network-control')) this.networkStateRequester(session.id)()
     }
   }
 

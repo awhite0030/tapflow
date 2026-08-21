@@ -653,24 +653,54 @@ describe('AndroidAgent', () => {
       expect(state.payload).toEqual({ offline: true, available: false, reason: 'unsupported-device' })
     })
 
-    it('does not remember a value it could not confirm', async () => {
+    it('does not let an unconfirmed write overwrite what it confirmed earlier', async () => {
       // Standing one guess on another: an unconfirmed write already reports a value it could not
-      // verify, and letting that become the fallback would outlive the read it was standing in for.
+      // verify, and letting that become the fallback would outlive the read it stood in for.
       //
-      // Mutation: dropping `result.confirmed` from the store reads `offline: true` here.
+      // The earlier confirmed value is what makes this readable — without it both behaviours end in
+      // the silence below, and the test could not tell them apart.
+      //
+      // Mutation: dropping `result.confirmed` from the store reads `offline: false` here.
       adb = mockAdb(true)
       vi.spyOn(adb, 'airplaneMode').mockResolvedValue(false)
-      vi.spyOn(adb, 'setAirplaneMode').mockResolvedValue({ confirmed: false, offline: true })
+      vi.spyOn(adb, 'setAirplaneMode').mockResolvedValue({ confirmed: true, offline: true })
       await session(adb)
 
       set(true)
+      await waitForType(browser, 'network:state')      // confirmed offline — this is what it knows
+
+      vi.mocked(adb.setAirplaneMode).mockResolvedValue({ confirmed: false, offline: false })
+      set(false, 'rq-unconfirmed')
       await waitForType(browser, 'network:state')
       vi.mocked(adb.airplaneMode).mockRejectedValue(new Error('gone'))
 
       requestState()
       const state = await waitForType<NetworkState>(browser, 'network:state')
 
-      expect(state.payload).toEqual({ offline: false, available: false, reason: 'unsupported-device' })
+      expect(state.payload).toEqual({ offline: true, available: false, reason: 'unsupported-device' })
+    })
+
+    it('says nothing when it has never seen the device and cannot read it now', async () => {
+      // `false` is not "unknown", it is "on the network" — and `NetworkNotSteerable.offline` is declared
+      // to be the device's real state. A boot whose own read failed records nothing, so a tester who
+      // then flips airplane mode in the emulator's own UI leaves a device that is offline, unreadable
+      // and never observed. Reporting it would claim the one direction that hides the problem.
+      //
+      // Mutation: falling back to `false` instead of staying silent answers here, and the barrier's
+      // reply is then the second `network:state` rather than the first.
+      adb = mockAdb(true)
+      vi.spyOn(adb, 'airplaneMode').mockRejectedValue(new Error('device offline'))
+      vi.spyOn(adb, 'setAirplaneMode').mockResolvedValue({ confirmed: true, offline: true })
+      await session(adb)
+
+      requestState()
+      // Barrier: a correlated request the agent does answer, sent after. Its reply cannot arrive before
+      // one the dispatcher made for the earlier frame, so the first `network:state` to land tells us
+      // whether the report was sent.
+      set(true, 'rq-barrier')
+      const state = await waitForType<NetworkState>(browser, 'network:state')
+
+      expect(state.requestId).toBe('rq-barrier')
     })
 
     // Injected past the relay, which is the only way to reach these: its schema requires
