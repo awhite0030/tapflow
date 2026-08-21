@@ -20,8 +20,9 @@ function toolbar(network?: NetworkControl) {
 const control = (over: Partial<NetworkControl> = {}): NetworkControl =>
   ({ position: 'online', pending: false, onToggle: () => {}, ...over })
 
-/** The button, found by the one name it keeps in every position. */
-const networkButton = () => screen.queryByRole('button', { name: 'Take device offline' })
+/** The button, found by whichever action its current position offers. */
+const networkButton = () =>
+  screen.queryByRole('button', { name: /device (offline|online)$/ })
 
 describe('SimulatorToolbar — network control', () => {
   it('renders nothing when the agent did not say it could do this', () => {
@@ -41,17 +42,48 @@ describe('SimulatorToolbar — network control', () => {
     expect(networkButton()).toBeTruthy()
   })
 
-  it('keeps one name across every position, and says the state in aria-pressed', () => {
-    // The APG shape for a toggle. A name that flipped between "Device is offline" and "Take device
-    // offline" leaves voice control with no stable phrase to say, and when offline it never says what
-    // activating the button does.
-    const names = (['online', 'offline', 'waiting', 'unknown'] as const).map((position) => {
+  it('names the action rather than the state, and never offers the one already done', () => {
+    // A name that said the state ("Device is offline") never tells the user what clicking does, and a
+    // fixed action name offers "Take device offline" to a device that already is. The name is the
+    // action available *from here*.
+    //
+    // Mutation: a constant label fails the offline case.
+    const named = (position: NetworkControl['position']) => {
       const { unmount } = toolbar(control({ position }))
       const name = networkButton()!.getAttribute('aria-label')
       unmount()
       return name
-    })
-    expect(new Set(names).size, 'the name moved with the position').toBe(1)
+    }
+    expect(named('offline')).toBe('Bring device online')
+    for (const p of ['online', 'waiting', 'unknown'] as const) expect(named(p)).toBe('Take device offline')
+  })
+
+  it('says nothing about pressedness, in either direction', () => {
+    // **`aria-pressed` was tried and dropped.** The name already carries the state as an action, so
+    // adding it says the same fact in two grammars — and `false` in the two positions this design
+    // refuses to draw would assert the device is on the network, which is the claim the whole thing
+    // exists to avoid making from silence.
+    //
+    // Mutation: `aria-pressed={position === 'offline'}` fails here.
+    for (const position of ['online', 'offline', 'waiting', 'unknown'] as const) {
+      const { unmount } = toolbar(control({ position }))
+      expect(networkButton()!.getAttribute('aria-pressed'), position).toBeNull()
+      unmount()
+    }
+  })
+
+  it('shows the action in the tooltip too, so what is said matches what is read', async () => {
+    // WCAG 2.5.3: the visible label has to contain the accessible name, or a voice-control user says
+    // what they see and hits nothing. The status is appended rather than substituted for it.
+    //
+    // Mutation: rendering `status` alone in the tooltip fails here.
+    toolbar(control({ position: 'unknown' }))
+    // Radix keeps `TooltipContent` out of the DOM until it opens, so this has to hover rather than
+    // query — a `getByText` here would assert on a node that never exists and fail for the wrong reason.
+    await userEvent.hover(networkButton()!)
+    const tip = await screen.findByRole('tooltip')
+    expect(tip.textContent).toContain('Take device offline')
+    expect(tip.textContent).toContain('could not be read')
   })
 
   it('explains the two positions it cannot draw, outside the tooltip', () => {
@@ -96,30 +128,14 @@ describe('SimulatorToolbar — network control', () => {
     }
   })
 
-  it('leaves aria-pressed absent where there is no state to report', () => {
-    // **`false` is not "unknown".** It asserts the device is on the network, which is the claim this
-    // design refuses to make from silence — the same boolean collapse the agent shipped on the other
-    // side of this wire, arriving through ARIA instead of through state. Absent is how the platform
-    // spells "this toggle has no state".
+  it('says a request is in flight, in the channel that is actually announced', () => {
+    // The icon is swapped for a bare spinner, which nothing reads out — and `aria-busy` on a button is
+    // not spoken by NVDA, VoiceOver or JAWS. The live region is, so that is where the sentence goes.
     //
-    // Mutation: `aria-pressed={position === 'offline'}` reads `"false"` for the last two and fails.
-    for (const [position, pressed] of [
-      ['offline', 'true'], ['online', 'false'], ['waiting', null], ['unknown', null],
-    ] as const) {
-      const { unmount } = toolbar(control({ position }))
-      expect(networkButton()!.getAttribute('aria-pressed'), position).toBe(pressed)
-      unmount()
-    }
-  })
-
-  it('says a request is in flight', () => {
-    // The icon is swapped for a bare spinner, which nothing reads out. Without this a screen-reader
-    // user hears nothing between the click and the answer.
-    const { unmount } = toolbar(control({ pending: true }))
-    expect(networkButton()!.getAttribute('aria-busy')).toBe('true')
-    unmount()
-    toolbar(control({ pending: false }))
-    expect(networkButton()!.getAttribute('aria-busy')).toBe('false')
+    // Mutation: relying on `aria-busy` alone leaves nothing to find here.
+    toolbar(control({ position: 'online', pending: true }))
+    const live = screen.getByRole('status')
+    expect(live.textContent).toMatch(/changing/i)
   })
 
   it('passes the click through', async () => {

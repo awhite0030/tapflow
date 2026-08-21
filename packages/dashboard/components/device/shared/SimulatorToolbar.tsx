@@ -82,17 +82,17 @@ function networkLook(position: NetworkControl['position']) {
 }
 
 /**
- * `aria-pressed` for a control that has four positions and only two of them are pressedness.
+ * What activating the button does from here — which is the button's name.
  *
- * **Absent, not `false`, when the state is unknown.** `false` asserts the device is on the network,
- * which is the claim this whole design refuses to make from silence — the same boolean collapse the
- * agent shipped on the other side of this wire, arriving here through ARIA instead of through state.
- * Absent is how the platform spells "this toggle has no state to report".
+ * **`aria-pressed` was tried and dropped.** A toggle can carry its state either in a stable name plus
+ * `aria-pressed`, or in a name that says the next action; saying both makes "Take device offline,
+ * pressed" — two grammars for one fact, and the second of them wrong. The action reading is what this
+ * control needs, because two of its four positions have no pressedness to report and `false` there
+ * would assert the device is on the network, which is the claim the whole design refuses to make from
+ * silence.
  */
-function networkPressed(position: NetworkControl['position']): boolean | undefined {
-  if (position === 'offline') return true;
-  if (position === 'online') return false;
-  return undefined;
+function networkAction(position: NetworkControl['position']) {
+  return position === 'offline' ? 'Bring device online' : 'Take device offline';
 }
 
 export function SimulatorToolbar({
@@ -139,8 +139,10 @@ export function SimulatorToolbar({
             <Button
               variant="ghost" size="icon"
               className={cn('h-8 w-8', recordState === 'recording' && 'text-red-500 hover:text-red-500')}
+              // The name carries the state, so `aria-pressed` would say it twice — "Stop recording,
+              // pressed" states the same fact in two grammars and reads as a contradiction. Pick one:
+              // this button flips its name, so it is a plain action button.
               aria-label={recordState === 'recording' ? 'Stop recording' : 'Start recording'}
-              aria-pressed={recordState === 'recording'}
               disabled={recordState === 'uploading' || recordState === 'done'}
               onClick={onRecordToggle}
             >
@@ -173,11 +175,7 @@ export function SimulatorToolbar({
 
         {network && (() => {
           const { Icon, className, status } = networkLook(network.position);
-          // **The name does not change with the position**, which is the APG shape for a toggle: the
-          // state rides on `aria-pressed`, and a name that flipped between "Device is offline" and
-          // "Take device offline" would leave voice control with no stable phrase and, when offline,
-          // never say what activating it does.
-          const label = 'Take device offline';
+          const label = networkAction(network.position);
           return (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -185,20 +183,27 @@ export function SimulatorToolbar({
                   variant="ghost" size="icon"
                   className={cn('h-8 w-8', className)}
                   aria-label={label}
-                  aria-pressed={networkPressed(network.position)}
-                  aria-busy={network.pending}
-                  aria-describedby={status ? 'network-state-desc' : undefined}
+                  aria-describedby={status || network.pending ? 'network-state-desc' : undefined}
                   onClick={network.onToggle}
                 >
                   {network.pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
                 </Button>
               </TooltipTrigger>
-              {/* The two positions that carry no pressedness say why, and say it **outside the
-                  tooltip**: Radix attaches a tooltip's own `aria-describedby` only while it is open,
-                  and on touch it never opens — the same gap #447 named as the reason a disabled
-                  control cannot explain itself. The colour and the pulse say it to everyone else. */}
-              {status && <span id="network-state-desc" className="sr-only">{status}</span>}
-              <TooltipContent side="left">{status ?? label}</TooltipContent>
+              {/* The two positions the button cannot draw say why, and say it **outside the tooltip**:
+                  Radix attaches a tooltip's own `aria-describedby` only while it is open, and on touch
+                  it never opens — the same gap #447 named as the reason a disabled control cannot
+                  explain itself. The colour and the pulse say it to everyone else.
+                  `role="status"` because the sentence *changes on screen* — `useNetworkControl` flips
+                  `waiting` to `unknown` on a timer — and a description that changes on an element
+                  nobody is focused on is announced by no AT at all. */}
+              {(status || network.pending) && (
+                <span id="network-state-desc" role="status" className="sr-only">
+                  {network.pending ? 'Changing the network state.' : status}
+                </span>
+              )}
+              {/* The visible text contains the accessible name (WCAG 2.5.3): a voice-control user says
+                  what the tooltip shows, and the status is appended rather than substituted. */}
+              <TooltipContent side="left">{status ? `${label} — ${status}` : label}</TooltipContent>
             </Tooltip>
           );
         })()}
