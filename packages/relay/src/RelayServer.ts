@@ -55,6 +55,13 @@ export function isExternalAddress(addr: string): boolean {
  *  a test carrying its own copy of the number passes when the constant moves, which is the drift the
  *  wire-contract work keeps finding. Not re-exported from the package index. */
 export const IDR_REQUEST_THROTTLE_MS = 500
+/** The same window for `network:request-state`, and a **separate constant on purpose**: the two share
+ *  a number today and not a policy. IDR drops inside the window; this one coalesces onto its trailing
+ *  edge (see `networkStateRequester`). Sharing the constant would mean tuning one tunes the other. */
+export const NETWORK_STATE_REQUEST_THROTTLE_MS = 500
+
+/** A throttled per-session callback that owns a timer, so it has to be disposed rather than dropped. */
+type SessionRequester = (() => void) & { dispose(): void }
 // Ping every socket each interval; a missed pong window (~2× this) terminates the dead socket.
 const HEARTBEAT_MS = 30_000
 // How long a session outlives its agent's socket, waiting for that agent to come back (#426).
@@ -231,6 +238,9 @@ export class RelayServer {
   private droppers = new Map<string, KeyframeAwareSender>()
   // Per-session throttled "request an IDR from the agent" callbacks (drop recovery).
   private idrRequesters = new Map<string, () => void>()
+  /** Unlike `idrRequesters` these hold a timer, which is why the value is not a bare closure — see
+   *  `forgetSessionState`. */
+  private networkStateRequesters = new Map<string, SessionRequester>()
   private wsRoles = new Map<WebSocket, 'agent' | 'browser' | 'stream'>()
   /** Per-socket throttle state for `logInboundRejection`. A `WeakMap` so a closed socket's entry goes
    *  with the socket — there is no cleanup to forget, unlike the maps keyed by session id nearby. */
@@ -458,6 +468,11 @@ export class RelayServer {
     this.stopping = true
     for (const timer of this.agentHolds.values()) clearTimeout(timer)
     this.agentHolds.clear()
+    // Same argument one line up, and `unref()` on these does not cover it either: a trailing edge armed
+    // before `stop()` would fire against a stopped server, and its `sendTo` would reach a socket the
+    // `terminate()` loop below is about to kill.
+    for (const requester of this.networkStateRequesters.values()) requester.dispose()
+    this.networkStateRequesters.clear()
     return new Promise((resolve, reject) => {
       this.wss.clients.forEach((ws) => ws.terminate())
       this.wss.close(() => {
@@ -516,12 +531,23 @@ export class RelayServer {
    * Pre-existing, and this slice is what makes it worth fixing here rather than filing: `idrRequesters`
    * used to be populated only by the binary drop path, i.e. only under backpressure, and a re-join now
    * creates an entry for any streaming session (#515). The leak went from rare to ordinary.
+   *
+   * **Now five maps, and the fifth is not dropped the same way.** `networkStateRequesters` holds a
+   * *coalescing* requester, so its closure owns a pending `setTimeout` — and deleting a map entry does
+   * not cancel a timer. Leaving it armed is not a leak but a double send: `session:leave` followed by a
+   * re-join inside the window fires the orphaned trailing edge *and* the new requester's leading edge,
+   * which is the second budget for one session that this map exists to prevent. Hence `dispose()`
+   * rather than `delete` alone. It was named `forgetSessionStreamState` while all four were stream
+   * records; the network requester is not one, so the name lost the word rather than the entry
+   * lost the function.
    */
-  private forgetSessionStreamState(sessionId: string): void {
+  private forgetSessionState(sessionId: string): void {
     this.dropHandlers.delete(sessionId)
     this.audioDropHandlers.delete(sessionId)
     this.droppers.delete(sessionId)
     this.idrRequesters.delete(sessionId)
+    this.networkStateRequesters.get(sessionId)?.dispose()
+    this.networkStateRequesters.delete(sessionId)
   }
 
   /**
@@ -549,6 +575,57 @@ export class RelayServer {
       }
     }
     this.idrRequesters.set(sessionId, requester)
+    return requester
+  }
+
+  /**
+   * Throttled callback asking the session's agent to re-read and report the device's network
+   * condition (#614); ignored by agents that don't support it.
+   *
+   * **Coalescing, where `idrRequester` above drops — and the difference is not a preference.** A
+   * dropped IDR request costs nothing: the next periodic keyframe repairs it. Nothing re-produces a
+   * `network:state`, so a request dropped inside the window leaves that viewer rendering "unknown"
+   * for the life of the session. The trailing edge fires after the last join in a burst, and the
+   * relay addresses the reply to whichever socket holds the session *when it arrives* — so the
+   * viewer that ends up watching is the one served, which a leading edge cannot promise.
+   *
+   * The burst this is for is the dirty blip, not two people: `join()` refuses a live holder, and a
+   * clean `session:leave` runs `forgetSessionState` and builds a fresh requester. A browser socket
+   * that dies in its close handler does neither, so `lastAt` survives into the re-join — which is
+   * the very path this slice exists to serve.
+   *
+   * One per session, constructed here, for the reason written on `idrRequester`: the throttle lives
+   * in the closure, so a second requester is a second budget.
+   */
+  private networkStateRequester(sessionId: string): SessionRequester {
+    const existing = this.networkStateRequesters.get(sessionId)
+    if (existing) return existing
+    let lastAt = 0
+    let pending: ReturnType<typeof setTimeout> | null = null
+    const fire = () => {
+      lastAt = Date.now()
+      const session = this.sessions.get(sessionId)
+      // `sendTo` already drops a socket that is not OPEN, so a closed agent needs no check here —
+      // an earlier draft duplicated it and no mutation could tell the copy from the original.
+      //
+      // The lookup is the guard that remains, and it should be unreachable: **every path that removes
+      // a session runs `forgetSessionState`, which disposes this timer.** It is kept as the cheap half
+      // of that pair rather than as a live case — a trailing edge is the one call here that outlives
+      // the statement scheduling it, so the invariant holding is worth not assuming.
+      if (session) this.sendTo(session.agentSocket, { type: 'network:request-state', sessionId })
+    }
+    const requester = (() => {
+      const wait = NETWORK_STATE_REQUEST_THROTTLE_MS - (Date.now() - lastAt)
+      if (wait <= 0) { fire(); return }
+      // Already coalesced. A second timer here would be the double send the window is for.
+      if (pending) return
+      pending = setTimeout(() => { pending = null; fire() }, wait)
+      pending.unref()
+    }) as SessionRequester
+    requester.dispose = () => {
+      if (pending) { clearTimeout(pending); pending = null }
+    }
+    this.networkStateRequesters.set(sessionId, requester)
     return requester
   }
 
@@ -875,14 +952,14 @@ export class RelayServer {
       case 'session:end': {
         if (this.ownsSession(ws, this.sessions.get(msg.sessionId))) {
           this.sessions.remove(msg.sessionId)
-          this.forgetSessionStreamState(msg.sessionId)
+          this.forgetSessionState(msg.sessionId)
         }
         break
       }
       case 'session:leave': {
         if (this.ownsSession(ws, this.sessions.get(msg.sessionId))) {
           this.sessions.clearBrowser(msg.sessionId)
-          this.forgetSessionStreamState(msg.sessionId)
+          this.forgetSessionState(msg.sessionId)
         }
         break
       }
@@ -1354,7 +1431,7 @@ export class RelayServer {
     }
     for (const s of agentSessions) {
       this.sessions.remove(s.id)
-      this.forgetSessionStreamState(s.id)
+      this.forgetSessionState(s.id)
     }
     this.sessions.removeResources(ws)
     logger.info(cause === 'replaced'
@@ -1426,7 +1503,7 @@ export class RelayServer {
           this.sendTo(s.browserSocket, { type: 'session:terminated', sessionId: s.id, reason: 'agent-disconnected' })
         }
         this.sessions.remove(s.id)
-        this.forgetSessionStreamState(s.id)
+        this.forgetSessionState(s.id)
       }
     }
 
@@ -1575,6 +1652,17 @@ export class RelayServer {
       // backpressure path already throttles this exact message per session; sharing that requester is
       // what keeps the two callers from having two policies.
       this.idrRequester(session.id)()
+      // And ask what the device's network is doing (#614). `NetworkState` is agent-produced and is not
+      // among the three replayed above, so without this a viewer that reconnects has no way to learn
+      // whether the device is offline and its control renders in a guessed position.
+      //
+      // **Inside `readySent` as an optimisation, not as a correctness condition** — and the difference
+      // matters, because `readySent` is the *stream's* readiness, not the device's. `clearStreamSocket`
+      // lowers it while `deviceStatus` stays `'booted'`, so a device that is genuinely offline with a
+      // dead stream socket is not asked about here. The agent is what makes that safe: it holds no
+      // serial for a session with no device and answers nothing, so the gate only saves an adb round
+      // trip. `deviceStatus` is not the fix — the comment on `device:ready` above says why (#440).
+      this.networkStateRequester(session.id)()
     }
   }
 
