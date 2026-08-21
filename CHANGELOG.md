@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Full reset** now appears based on what the device agent says it can do, rather than on which platform you picked. The control was offered for every iOS device and hidden for every Android one, which was right about the agents of the day and wrong about any other combination: an agent older than the feature was still offered a toggle it has no code for, and an Android agent that gains the ability would still have had it hidden — which is the half that landed above in this same release. If you run an agent from before this release against a newer relay, the toggle is now correctly absent instead of erasing nothing — one more reason to upgrade agents and relay together, as 0.19.0 asked.
 
+### Changed
+
+- The dashboard's icon set moved to **lucide-react 1.x** from 0.577, ahead of the network control that needs an icon 0.577 does not have. Nothing you interact with changes: forty-nine of the fifty icons in use are drawn from byte-identical path data, the fiftieth is the book on the sidebar's Docs link and it is a little taller, and the bundle is the same size.
+
 ### Security
 
 - `js-yaml` moved to 3.15.1 / 4.3.1 (GHSA-5p4m-2wfm-xmqj — quadratic CPU consumption resolving `!!omap`), and its two `pnpm.overrides` entries were retired with it. The pin listed under 0.16.0 below no longer exists: the declared ranges had admitted the patch all along, so what held the old version in place was a lockfile that never re-evaluated them, not a range that forbade it. Development dependency only — no published package carries `js-yaml`.
