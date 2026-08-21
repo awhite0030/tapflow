@@ -1,8 +1,5 @@
-import { createRequire } from 'node:module'
-
-const require = createRequire(import.meta.url)
-const http = require('http')
-const crypto = require('crypto')
+import http from 'http'
+import crypto from 'crypto'
 
 const expectedCode = 1008
 const timeoutMs = 5000
