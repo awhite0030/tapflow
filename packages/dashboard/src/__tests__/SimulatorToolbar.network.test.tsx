@@ -24,7 +24,7 @@ const control = (over: Partial<NetworkControl> = {}): NetworkControl =>
 
 /** The button, found by whichever action its current position offers. */
 const networkButton = () =>
-  screen.queryByRole('button', { name: /device (offline|online|network)$/ })
+  screen.queryByRole('button', { name: /(device (offline|online|network)|^Retry: )/ })
 
 /** What the button is called in a given position — read from the render, not restated here. */
 function networkButtonName(position: NetworkControl['position']) {
@@ -208,7 +208,9 @@ describe('SimulatorToolbar — network control', () => {
     //
     // Mutation: rendering `steerable: false` as `unknown` fails here.
     const { unmount } = toolbar(control({ position: 'offline', steerable: false }))
-    expect(networkButton()!.getAttribute('aria-label')).toBe('Bring device online')
+    // The name says the direction **and** that the last attempt did not land. Putting the caveat only
+    // in the description would leave it to a channel a verbosity setting can drop.
+    expect(networkButton()!.getAttribute('aria-label')).toBe('Retry: bring device online')
     const id = networkButton()!.getAttribute('aria-describedby')!
     expect(document.getElementById(id)!.textContent).toContain('offline')
     expect(document.getElementById(id)!.textContent).toContain('no longer change')
@@ -227,6 +229,19 @@ describe('SimulatorToolbar — network control', () => {
       expect((networkButton() as HTMLButtonElement).disabled, position).toBe(false)
       unmount()
     }
+  })
+
+  it('marks the control busy while it refuses clicks', () => {
+    // `toggle` returns early for as long as this lasts — up to `NETWORK_REQUEST_DEADLINE_MS`, eight
+    // seconds — and neither the swapped icon nor the one-shot live sentence is a property AT can
+    // query on the control itself.
+    //
+    // Mutation: removing `aria-busy` fails here.
+    const { unmount } = toolbar(control({ pending: true }))
+    expect(networkButton()!.getAttribute('aria-busy')).toBe('true')
+    unmount()
+    toolbar(control({ pending: false }))
+    expect(networkButton()!.getAttribute('aria-busy')).toBe('false')
   })
 
   it('passes the click through', async () => {

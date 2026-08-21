@@ -108,10 +108,17 @@ function networkLook({ position, steerable }: Pick<NetworkControl, 'position' | 
  * this is what says it to everyone else, and unlike the description beside it a name cannot be
  * turned off by a verbosity setting.
  */
-function networkAction(position: NetworkControl['position']) {
-  if (position === 'offline') return 'Bring device online';
-  if (position === 'online') return 'Take device offline';
-  return 'Toggle device network';
+function networkAction({ position, steerable }: Pick<NetworkControl, 'position' | 'steerable'>) {
+  const action = position === 'offline' ? 'Bring device online'
+    : position === 'online' ? 'Take device offline'
+      : 'Toggle device network';
+  // **The caveat goes in the name, not only in the description.** A device tapflow has just said it
+  // cannot steer still gets a name that promises the action, and the correction lived in the
+  // `aria-describedby` sentence — the very channel the paragraph above calls unreliable, since a
+  // verbosity setting can drop it. "Retry" is honest in both directions: the last attempt did not
+  // land, and clicking will try again, which is not futile while #618 leaves a transient failure
+  // indistinguishable from a permanent one.
+  return steerable ? action : `Retry: ${action.toLowerCase()}`;
 }
 
 export function SimulatorToolbar({
@@ -213,7 +220,7 @@ export function SimulatorToolbar({
 
         {network && (() => {
           const { Icon, className, status } = networkLook(network);
-          const label = networkAction(network.position);
+          const label = networkAction(network);
           // Whether the *visible* tooltip needs the sentence too. A settled, steerable position says
           // enough in the name; the two with no position and the ones tapflow cannot change do not,
           // and a tooltip carrying a sentence for every position would be noise on the common one.
@@ -225,6 +232,10 @@ export function SimulatorToolbar({
                   variant="ghost" size="icon"
                   className={cn('h-8 w-8', className)}
                   aria-label={label}
+                  // The icon is swapped for a spinner and the live region says so once — neither is a
+                  // property AT can query on the control, and `toggle` refuses a click for as long as
+                  // this lasts, which is up to `NETWORK_REQUEST_DEADLINE_MS`.
+                  aria-busy={network.pending}
                   aria-describedby={descId}
                   onClick={network.onToggle}
                 >
