@@ -607,7 +607,7 @@ export function IOSViewer({
         onRotate={handleRotate}
         platformSlot={platformSlot}
         launchSlot={launchSlot}
-        network={networkSupported ? { position: network.position, pending: network.pending, onToggle: network.toggle } : undefined}
+        network={networkSupported ? { position: network.position, steerable: network.steerable, pending: network.pending, onToggle: network.toggle } : undefined}
       />
 
       <div className="flex items-start gap-8">

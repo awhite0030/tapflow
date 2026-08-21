@@ -48,6 +48,9 @@ interface SimulatorToolbarProps {
 
 export interface NetworkControl {
   position: 'waiting' | 'unknown' | 'online' | 'offline';
+  /** Whether tapflow can still change it. Separate from where it is, because the protocol makes them
+   *  separate — a device it can no longer steer still has a network state, and still shows it. */
+  steerable: boolean;
   pending: boolean;
   onToggle: () => void;
 }
@@ -67,18 +70,27 @@ export interface NetworkControl {
  * each other because saying "could not read" about a device that is merely slow is a claim made
  * before anything was asked.
  */
-function networkLook(position: NetworkControl['position']) {
+function networkLook({ position, steerable }: Pick<NetworkControl, 'position' | 'steerable'>) {
+  // Said after the position, never instead of it. A device tapflow cannot steer is still somewhere,
+  // and an earlier draft that replaced the position with "could not be read" made the control a
+  // one-way ratchet — from that rendering every click asked for offline again, so a device taken
+  // offline on an unconfirmed write could not be brought back.
+  const cannot = steerable ? '' : ' tapflow can no longer change it.';
   switch (position) {
     case 'offline':
       // The only position with colour. It is a state a tester deliberately put the device into and
       // will forget about, and forgetting is what makes the next hour of testing confusing.
-      return { Icon: RadioOff, className: 'text-amber-500 hover:text-amber-500', status: 'Device is offline.' };
+      return {
+        Icon: RadioOff,
+        className: steerable ? 'text-amber-500 hover:text-amber-500' : 'text-amber-500/60 hover:text-amber-500/60',
+        status: `Device is offline.${cannot}`,
+      };
     case 'online':
-      return { Icon: Radio, className: '', status: 'Device is on the network.' };
+      return { Icon: Radio, className: steerable ? '' : 'text-muted-foreground', status: `Device is on the network.${cannot}` };
     case 'waiting':
       return { Icon: Radio, className: 'text-muted-foreground animate-pulse', status: 'Checking the network state.' };
     case 'unknown':
-      return { Icon: Radio, className: 'text-muted-foreground', status: 'The network state could not be read.' };
+      return { Icon: Radio, className: 'text-muted-foreground', status: 'No network state has been reported.' };
   }
 }
 
@@ -200,12 +212,12 @@ export function SimulatorToolbar({
         </Tooltip>
 
         {network && (() => {
-          const { Icon, className, status } = networkLook(network.position);
+          const { Icon, className, status } = networkLook(network);
           const label = networkAction(network.position);
-          // Whether the *visible* tooltip needs the sentence too. The settled positions say enough in
-          // the name; the two the button cannot draw do not, and a tooltip that carried a sentence for
-          // every position would be four words of noise on the common one.
-          const unreadable = network.position === 'waiting' || network.position === 'unknown';
+          // Whether the *visible* tooltip needs the sentence too. A settled, steerable position says
+          // enough in the name; the two with no position and the ones tapflow cannot change do not,
+          // and a tooltip carrying a sentence for every position would be noise on the common one.
+          const unsettled = network.position === 'waiting' || network.position === 'unknown' || !network.steerable;
           return (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -240,7 +252,7 @@ export function SimulatorToolbar({
               </span>
               {/* The visible text contains the accessible name (WCAG 2.5.3): a voice-control user says
                   what the tooltip shows, and the status is appended rather than substituted. */}
-              <TooltipContent side="left">{unreadable ? `${label} — ${status}` : label}</TooltipContent>
+              <TooltipContent side="left">{unsettled ? `${label} — ${status}` : label}</TooltipContent>
             </Tooltip>
           );
         })()}

@@ -20,11 +20,19 @@ function toolbar(network?: NetworkControl, recordState: RecordState = 'idle') {
 }
 
 const control = (over: Partial<NetworkControl> = {}): NetworkControl =>
-  ({ position: 'online', pending: false, onToggle: () => {}, ...over })
+  ({ position: 'online', steerable: true, pending: false, onToggle: () => {}, ...over })
 
 /** The button, found by whichever action its current position offers. */
 const networkButton = () =>
   screen.queryByRole('button', { name: /device (offline|online|network)$/ })
+
+/** What the button is called in a given position — read from the render, not restated here. */
+function networkButtonName(position: NetworkControl['position']) {
+  const { unmount } = toolbar(control({ position }))
+  const name = networkButton()!.getAttribute('aria-label')
+  unmount()
+  return name
+}
 
 describe('SimulatorToolbar — the record button it sits beside', () => {
   it('says what each of its four states is, including the two that disable it', () => {
@@ -153,16 +161,21 @@ describe('SimulatorToolbar — network control', () => {
     await userEvent.hover(networkButton()!)
     const tip = await screen.findByRole('tooltip')
     expect(tip.textContent).toContain('Toggle device network')
-    expect(tip.textContent).toContain('could not be read')
+    expect(tip.textContent).toContain('No network state has been reported')
   })
 
-  it('describes every position with an element that exists', () => {
-    // The tooltip is not a channel here: Radix attaches its `aria-describedby` only while open, and
-    // on touch it never opens. So `waiting` and `unknown` each carry a described-by of their own, and
-    // the positions that need no explanation carry none.
+  it('describes every position with the sentence for that position', () => {
+    // **Every position is described, including the settled ones** — an earlier version of this comment
+    // said the opposite and named a mutation that was the shipped code, which is the defect
+    // `test-and-guard-coverage.md` §1 is about. The description is the only channel that reaches
+    // touch: Radix attaches a tooltip's own `aria-describedby` only while it is open.
     //
-    // Mutation: rendering one shared sentence for both, or leaving `aria-describedby` on when the
-    // state is known, fails here.
+    // The id has to resolve to *that position's* sentence, not merely to something. Checking only
+    // that an element exists would pass on a span that repeated the button's name, leaving the state
+    // said nowhere.
+    //
+    // Mutation: pointing `aria-describedby` at a span that is not rendered, or rendering the label
+    // there instead of the status, fails here.
     // **The id and the text, not the text alone.** An earlier version resolved the attribute through
     // `getElementById` and returned `null` when it pointed at nothing — so a control that always
     // carried `aria-describedby`, dangling at an element that is not rendered, read as having none.
@@ -175,11 +188,31 @@ describe('SimulatorToolbar — network control', () => {
       unmount()
       return { id, text }
     }
+    const seen = new Set<string>()
     for (const p of ['online', 'offline', 'waiting', 'unknown'] as const) {
       const { id, text } = described(p)
       expect(id, `${p} is described by nothing`).not.toBeNull()
       expect(text, `${p} is described by an element that is not there`).not.toBe('<dangling>')
+      expect(text, `${p} is described by its own name rather than its state`)
+        .not.toBe(networkButtonName(p))
+      seen.add(text ?? '')
     }
+    expect(seen.size, 'two positions are described the same way').toBe(4)
+  })
+
+  it('still shows where the device is when tapflow can no longer move it', () => {
+    // **The ratchet this replaced.** `available: false` means "cannot change it", not "cannot read
+    // it" — the protocol carries `offline` on that member for exactly this — and an earlier draft
+    // rendered it as a position-less state. From there every click asked for offline again, so a
+    // device taken offline on a write that could not be confirmed could not be brought back.
+    //
+    // Mutation: rendering `steerable: false` as `unknown` fails here.
+    const { unmount } = toolbar(control({ position: 'offline', steerable: false }))
+    expect(networkButton()!.getAttribute('aria-label')).toBe('Bring device online')
+    const id = networkButton()!.getAttribute('aria-describedby')!
+    expect(document.getElementById(id)!.textContent).toContain('offline')
+    expect(document.getElementById(id)!.textContent).toContain('no longer change')
+    unmount()
   })
 
   it('leaves the button usable in every position, including the ones it cannot read', () => {
