@@ -72,9 +72,9 @@ function networkLook(position: NetworkControl['position']) {
     case 'offline':
       // The only position with colour. It is a state a tester deliberately put the device into and
       // will forget about, and forgetting is what makes the next hour of testing confusing.
-      return { Icon: RadioOff, className: 'text-amber-500 hover:text-amber-500', status: undefined };
+      return { Icon: RadioOff, className: 'text-amber-500 hover:text-amber-500', status: 'Device is offline.' };
     case 'online':
-      return { Icon: Radio, className: '', status: undefined };
+      return { Icon: Radio, className: '', status: 'Device is on the network.' };
     case 'waiting':
       return { Icon: Radio, className: 'text-muted-foreground animate-pulse', status: 'Checking the network state.' };
     case 'unknown':
@@ -154,7 +154,17 @@ export function SimulatorToolbar({
               // The name carries the state, so `aria-pressed` would say it twice — "Stop recording,
               // pressed" states the same fact in two grammars and reads as a contradiction. Pick one:
               // this button flips its name, so it is a plain action button.
-              aria-label={recordState === 'recording' ? 'Stop recording' : 'Start recording'}
+              //
+              // **All four states, not just `recording`.** While disabled it announced "Start
+              // recording, unavailable" — the wrong action and no reason — and the tooltip cannot
+              // supply one, because a disabled button suppresses pointer events so Radix never opens
+              // it. The same #447 gap the network control above is built around.
+              aria-label={
+                recordState === 'recording' ? 'Stop recording'
+                  : recordState === 'uploading' ? 'Processing the recording'
+                    : recordState === 'done' ? 'Recording saved'
+                      : 'Start recording'
+              }
               disabled={recordState === 'uploading' || recordState === 'done'}
               onClick={onRecordToggle}
             >
@@ -188,6 +198,10 @@ export function SimulatorToolbar({
         {network && (() => {
           const { Icon, className, status } = networkLook(network.position);
           const label = networkAction(network.position);
+          // Whether the *visible* tooltip needs the sentence too. The settled positions say enough in
+          // the name; the two the button cannot draw do not, and a tooltip that carried a sentence for
+          // every position would be four words of noise on the common one.
+          const unreadable = network.position === 'waiting' || network.position === 'unknown';
           return (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -195,7 +209,7 @@ export function SimulatorToolbar({
                   variant="ghost" size="icon"
                   className={cn('h-8 w-8', className)}
                   aria-label={label}
-                  aria-describedby={status || network.pending ? descId : undefined}
+                  aria-describedby={descId}
                   onClick={network.onToggle}
                 >
                   {network.pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
@@ -207,17 +221,22 @@ export function SimulatorToolbar({
                   explain itself. The colour and the pulse say it to everyone else.
                   `role="status"` because the sentence *changes on screen* — `useNetworkControl` flips
                   `waiting` to `unknown` on a timer — and a description that changes on an element
-                  nobody is focused on is announced by no AT at all. */}
+                  nobody is focused on is announced by no AT at all.
+                  **Every position has a sentence, including the settled ones.** Clearing this to empty
+                  on success announced nothing, so a screen-reader user heard the request begin and
+                  never heard it finish — the failure path was announced and success was the silent
+                  one. A name change on an already-focused button is not reliably re-announced, so the
+                  name could not carry it either. */}
               {/* **Mounted unconditionally, with only the text toggled.** A live region inserted in the
                   same commit as its first sentence is routinely dropped by NVDA, JAWS and VoiceOver —
                   which would have silenced exactly the one case that replaced `aria-busy`, since
                   `online → pending` is where the region would have appeared. */}
               <span id={descId} role="status" className="sr-only">
-                {network.pending ? 'Changing the network state.' : status ?? ''}
+                {network.pending ? 'Changing the network state.' : status}
               </span>
               {/* The visible text contains the accessible name (WCAG 2.5.3): a voice-control user says
                   what the tooltip shows, and the status is appended rather than substituted. */}
-              <TooltipContent side="left">{status ? `${label} — ${status}` : label}</TooltipContent>
+              <TooltipContent side="left">{unreadable ? `${label} — ${status}` : label}</TooltipContent>
             </Tooltip>
           );
         })()}

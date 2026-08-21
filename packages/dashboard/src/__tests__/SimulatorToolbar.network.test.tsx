@@ -3,13 +3,15 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { SimulatorToolbar, type NetworkControl } from '@/components/device/shared/SimulatorToolbar'
 
-function toolbar(network?: NetworkControl) {
+type RecordState = 'idle' | 'recording' | 'uploading' | 'done'
+
+function toolbar(network?: NetworkControl, recordState: RecordState = 'idle') {
   return render(
     <SimulatorToolbar
       joined
       onScreenshot={() => {}}
       onRecordToggle={() => {}}
-      recordState="idle"
+      recordState={recordState}
       onRotate={() => {}}
       onDeepLink={() => {}}
       network={network}
@@ -23,6 +25,27 @@ const control = (over: Partial<NetworkControl> = {}): NetworkControl =>
 /** The button, found by whichever action its current position offers. */
 const networkButton = () =>
   screen.queryByRole('button', { name: /device (offline|online|network)$/ })
+
+describe('SimulatorToolbar — the record button it sits beside', () => {
+  it('says what each of its four states is, including the two that disable it', () => {
+    // A disabled button suppresses pointer events, so Radix never opens its tooltip and never
+    // attaches the description — the same #447 gap the network control is built around. While
+    // uploading it announced "Start recording, unavailable": the wrong action, and no reason.
+    //
+    // Mutation: branching the label on `recording` alone fails here.
+    const named = (recordState: RecordState) => {
+      const { unmount } = toolbar(undefined, recordState)
+      const name = screen.getAllByRole('button')
+        .map((b) => b.getAttribute('aria-label'))
+        .find((n) => n && /record/i.test(n))
+      unmount()
+      return name
+    }
+    const names = (['idle', 'recording', 'uploading', 'done'] as const).map(named)
+    expect(names.every(Boolean), 'a record state has no name').toBe(true)
+    expect(new Set(names).size, 'two record states share a name').toBe(4)
+  })
+})
 
 describe('SimulatorToolbar — network control', () => {
   it('renders nothing when the agent did not say it could do this', () => {
@@ -73,15 +96,24 @@ describe('SimulatorToolbar — network control', () => {
     }
   })
 
-  it('keeps the live region mounted when it has nothing to say', () => {
-    // A live region inserted in the same commit as its first sentence is routinely dropped by NVDA,
-    // JAWS and VoiceOver — which would silence the one case that replaced `aria-busy`, because
-    // `online → pending` is exactly where the region would have appeared.
+  it('announces every position, including the ones that went well', () => {
+    // Two failures in one. A live region **inserted** with its first sentence is routinely dropped by
+    // NVDA, JAWS and VoiceOver, and a region that **empties** on success announces nothing — so the
+    // request was announced starting and never announced finishing, with the failure path the only
+    // one that spoke. A name change on an already-focused button does not reliably carry it either.
     //
-    // Mutation: rendering the span only when there is text fails here.
-    toolbar(control({ position: 'online', pending: false }))
-    const live = screen.getByRole('status')
-    expect(live.textContent).toBe('')
+    // Mutation: clearing the text for `online`/`offline`, or mounting the span only when it has
+    // something to say, fails here.
+    const said = (position: NetworkControl['position'], pending = false) => {
+      const { unmount } = toolbar(control({ position, pending }))
+      const text = screen.getByRole('status').textContent
+      unmount()
+      return text
+    }
+    const sentences = (['online', 'offline', 'waiting', 'unknown'] as const).map((p) => said(p))
+    expect(sentences.every((t) => t && t.trim().length > 0), 'a position says nothing').toBe(true)
+    expect(new Set(sentences).size, 'two positions say the same thing').toBe(4)
+    expect(said('online', true)).toMatch(/changing/i)
   })
 
   it('describes each toolbar with its own element', () => {
@@ -124,7 +156,7 @@ describe('SimulatorToolbar — network control', () => {
     expect(tip.textContent).toContain('could not be read')
   })
 
-  it('explains the two positions it cannot draw, outside the tooltip', () => {
+  it('describes every position with an element that exists', () => {
     // The tooltip is not a channel here: Radix attaches its `aria-describedby` only while open, and
     // on touch it never opens. So `waiting` and `unknown` each carry a described-by of their own, and
     // the positions that need no explanation carry none.
@@ -143,13 +175,11 @@ describe('SimulatorToolbar — network control', () => {
       unmount()
       return { id, text }
     }
-    expect(described('online').id, 'described by an element that is not there').toBeNull()
-    expect(described('offline').id).toBeNull()
-    const waiting = described('waiting')
-    const unknown = described('unknown')
-    expect(waiting.text).toBeTruthy()
-    expect(unknown.text).toBeTruthy()
-    expect(waiting.text, 'waiting and unknown say the same thing').not.toBe(unknown.text)
+    for (const p of ['online', 'offline', 'waiting', 'unknown'] as const) {
+      const { id, text } = described(p)
+      expect(id, `${p} is described by nothing`).not.toBeNull()
+      expect(text, `${p} is described by an element that is not there`).not.toBe('<dangling>')
+    }
   })
 
   it('leaves the button usable in every position, including the ones it cannot read', () => {
@@ -164,16 +194,6 @@ describe('SimulatorToolbar — network control', () => {
       expect((networkButton() as HTMLButtonElement).disabled, position).toBe(false)
       unmount()
     }
-  })
-
-  it('says a request is in flight, in the channel that is actually announced', () => {
-    // The icon is swapped for a bare spinner, which nothing reads out — and `aria-busy` on a button is
-    // not spoken by NVDA, VoiceOver or JAWS. The live region is, so that is where the sentence goes.
-    //
-    // Mutation: relying on `aria-busy` alone leaves nothing to find here.
-    toolbar(control({ position: 'online', pending: true }))
-    const live = screen.getByRole('status')
-    expect(live.textContent).toMatch(/changing/i)
   })
 
   it('passes the click through', async () => {
