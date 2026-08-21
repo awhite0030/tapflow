@@ -227,6 +227,34 @@ export interface StreamRequestIdr {
   sessionId: string
 }
 
+/**
+ * Ask the agent to re-read the device's network condition and report it (#614).
+ *
+ * Shaped after `stream:request-idr` above, and sent from the same place — the relay's re-join replay
+ * block. A viewer that reconnects has no other way to learn whether the device is offline:
+ * `NetworkState` is agent-produced, and the relay cannot cache it the way it caches `chromeData` and
+ * `deviceInfo`. Those become false only on a reboot or an agent death, both of which the relay
+ * observes; airplane mode changes when someone types `adb` in a terminal, and on iOS the state is
+ * "is the injected dylib armed", which is not a thing the relay can observe at all. **The relay caches
+ * only what it can invalidate**, so this asks rather than remembers.
+ *
+ * Uncorrelated, like its neighbour: the answer is a `network:state` with no `requestId`, which is the
+ * fourth unsolicited producer that message declares. An agent that predates this ignores the frame.
+ *
+ * **That silence is not self-healing, unlike an ignored IDR request.** A dropped keyframe request is
+ * repaired by the next periodic one; nothing re-produces a network state. The read path also has no
+ * error message, because there is no requester to address one to — so a viewer will have to arm its
+ * own deadline after joining and say it could not read. **No viewer does yet**: the control is not on
+ * screen, and this describes the obligation the one that lands takes on, not behaviour that exists.
+ *
+ * The relay sends this only to an agent whose `capabilities` include `network-control`, so the
+ * silence never means "this agent does not implement it" — that is already known before the ask.
+ */
+export interface NetworkRequestState {
+  type: 'network:request-state'
+  sessionId: string
+}
+
 // Optional, unlike every other correlated request, because **the relay originates this one** — the
 // idle timer at `RelayServer.ts` shuts a device down with no browser behind it. This is one interface
 // serving both `BrowserToRelay` and `RelayToAgent`, so required here would be unsatisfiable there.
@@ -282,6 +310,7 @@ export interface UiTreeRequest {
 export type RelayToAgent =
   | AgentRegistered
   | StreamRequestIdr
+  | NetworkRequestState
   | DeviceShutdown
   | AppInstallToAgent
   | AppLaunchToAgent
@@ -544,6 +573,96 @@ export interface ClipboardError extends SessionScoped {
   payload?: ClipboardErrorPayload
 }
 
+/**
+ * Why network control is not available on this device right now.
+ *
+ * A closed set for the same reason `InputErrorReason` is one: **a member exists per thing a
+ * consumer must do differently**, not per internal state an agent can be in. Each of these makes a
+ * different sentence on screen, which is what a single `available: boolean` could not do — and a
+ * machine field nobody branches on is the shape this package forbids by name (#492).
+ */
+export type NetworkUnavailableReason =
+  /** The hooks were delivered but did not take. The agent proved this by trying, not by assuming. */
+  | 'hooks-not-installed'
+  /** Nothing was delivered for this boot — a re-arm that did not happen, or a device booted outside
+   *  tapflow. Distinct from the above because the answer is to reboot the device, not to give up. */
+  | 'not-armed'
+  /** This device cannot do it at all: an Android image whose `cmd connectivity` predates the API.
+   *  Unlike the other two, retrying anything will not change it. */
+  | 'unsupported-device'
+
+/**
+ * What the device's network is doing, and whether tapflow can steer it.
+ *
+ * **Answers `network:set`, and is also sent unsolicited** — on `device:ready`, when a boot re-arms
+ * the injection, when a session's condition is cleared, and in reply to `network:request-state` from
+ * a viewer's re-join (#614). So `requestId` is optional, and absent
+ * means *this frame is not the answer to a request* — never "an old agent" (see
+ * 「Lifecycle correlation」 in AGENTS.md for what that optionality costs and who pays it).
+ *
+ * `available` is separate from the `network-control` capability on purpose. The capability is
+ * announced once at `agent:register`, before any device is booted or app launched, so it can only
+ * ever mean "this agent has the code". Whether the hooks actually took is per device and per app,
+ * and this is where that lives.
+ */
+/** The device is off the network right now, or is not, and tapflow can still change that. */
+export interface NetworkSteerable {
+  /**
+   * Whether the device is off the network **right now**, as far as the agent can tell.
+   *
+   * **This describes the device, not the request.** A device taken offline and then left
+   * unsteerable is *still offline* — see `NetworkNotSteerable`, which carries the same field for
+   * that reason. Reporting `false` as a stand-in for "the request did not land" would render
+   * "online" over a device whose app can reach nothing, sending every bug filed after it to the app
+   * under test.
+   */
+  offline: boolean
+  available: true
+}
+
+/** Whatever the device's network is doing, tapflow can no longer change it — and this is why. */
+export interface NetworkNotSteerable {
+  /** Still the device's real state. See `NetworkSteerable.offline`. */
+  offline: boolean
+  available: false
+  /** **Required here, and absent from the steerable member.** Written as prose first — "set when
+   *  `available` is false, and only then" — which a single interface could not enforce: it admitted
+   *  both `{ available: false }` with nothing to show a tester and `{ available: true, reason }`.
+   *  Each value makes a different sentence on screen, so an unavailable state with no reason is a
+   *  control that says it does not work and cannot say why. */
+  reason: NetworkUnavailableReason
+}
+
+/**
+ * What a device's network is doing and whether tapflow can steer it.
+ *
+ * **Two named members rather than one interface with an optional field**, so the invariant is the
+ * compiler's rather than a comment's. **And named rather than inline** so `agent-core` can
+ * re-export instead of declaring a second copy — the rule `types.ts` already follows for
+ * `ClipboardErrorPayload` — and so `scripts/__tests__/protocolPayloadTypes.test.mjs` can see the
+ * shapes. That check reads named declarations; an inline payload is invisible to it, and so is a
+ * union alias whose members are anonymous.
+ */
+export type NetworkStatePayload = NetworkSteerable | NetworkNotSteerable
+
+export interface NetworkState {
+  type: 'network:state'
+  /** Inline rather than `extends SessionScoped`: that base is the **failure** family — every member
+   *  of it carries a `message` and `protocolMessageNames` enforces that. This one reports state, not
+   *  a failure, so it names its session the way `clipboard:data` does. */
+  sessionId: string
+  requestId?: string
+  payload: NetworkStatePayload
+}
+
+/** A `network:set` that could not be dispatched or that the device refused. Relay-or-agent, because
+ *  the relay answers one it cannot deliver rather than letting the viewer's control sit armed. */
+export interface NetworkError extends SessionScoped {
+  type: 'network:error'
+  message: string
+  requestId: string
+}
+
 export type RelayOrAgentToBrowser =
   | SessionChrome
   | SessionDeviceInfo
@@ -559,6 +678,7 @@ export type RelayOrAgentToBrowser =
   // `mcp-server` and `flow-runner` key on the `input:type-*` pair and ignore an `input:error` entirely,
   // which is why widening `TERMINAL_INPUT_TYPES` was never the fix for it.
   | InputTypeError
+  | NetworkError
   | ClipboardError
 
 export interface AgentsListed {
@@ -823,6 +943,7 @@ export type AgentToBrowser =
   | InputTypeDone
   | KeyboardToggled
   | ClipboardData
+  | NetworkState
   | ClipboardWriteDone
 
 /** Everything a browser socket can receive, whoever produced it. This is what a viewer's message
@@ -1082,6 +1203,20 @@ export type ClipboardRequest =
   | ClipboardRead
   | ClipboardWrite
 
+/**
+ * Take the device under test off the network, or put it back (#607).
+ *
+ * `requestId` is **required**, like the clipboard pair: every producer is a viewer acting on a
+ * control, so an id is always available, and requiring it makes a missing one a compile error
+ * rather than a reply the viewer drops.
+ */
+export interface NetworkSet {
+  type: 'network:set'
+  sessionId: string
+  requestId: string
+  payload: { offline: boolean }
+}
+
 
 export interface AgentsList {
   type: 'agents:list'
@@ -1279,4 +1414,5 @@ export type BrowserToRelay =
   | InputRotate
   | InputKeyboardToggle
   | ClipboardRequest
+  | NetworkSet
 

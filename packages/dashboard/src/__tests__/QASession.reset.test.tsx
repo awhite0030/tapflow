@@ -53,8 +53,10 @@ const { QASession } = await import('../pages/QASession')
 const device = (id: string, name: string, platform = 'ios') => ({
   id, name, platform, status: 'shutdown', osVersion: 'iOS 18.3', sessionId: 'sess-1', busy: false,
 })
-// `capabilities` is what gates the toggle now, not `platform` (#447). These mirror what each agent
-// actually registers: `IOSAgent` lists `full-reset`, `AndroidAgent` does not yet.
+// `capabilities` is what gates the toggle now, not `platform` (#447). Both shipped agents advertise
+// `full-reset` as of the Android wipe; `ANDROID_AGENTS` keeps a list without it on purpose — it is
+// no longer a portrait of AndroidAgent but of **any** agent that does not implement the feature,
+// which is what the gate is actually written against and what the tests below need.
 const AGENTS: SessionInfo[] = [{
   agentName: 'studio-mac',
   platform: 'ios',
