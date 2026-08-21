@@ -21,6 +21,7 @@ import type {
   SessionJoined, SessionLeave, SessionRebound, SessionStart, SessionTerminated, StreamRegister,
   AgentControlOutbound, StreamToRelay,
   StreamRegistered, StreamRequestIdr, UiTreeError, UiTreeRequest, UiTreeResponse,
+  NetworkRequestState,
 } from './index.js'
 
 // ── must NOT compile ─────────────────────────────────────────────────────────
@@ -192,6 +193,7 @@ export const _SessionStart: SessionStart['type'] = 'session:start'
 export const _SessionTerminated: SessionTerminated['type'] = 'session:terminated'
 export const _StreamRegistered: StreamRegistered['type'] = 'stream:registered'
 export const _StreamRequestIdr: StreamRequestIdr['type'] = 'stream:request-idr'
+export const _NetworkRequestState: NetworkRequestState['type'] = 'network:request-state'
 export const _UiTreeRequest: UiTreeRequest['type'] = 'ui:tree:request'
 export const _AgentRegister: AgentRegister['type'] = 'agent:register'
 export const _AgentResourceReport: AgentResourceReport['type'] = 'agent:resources'

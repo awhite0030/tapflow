@@ -296,6 +296,7 @@ describe('browser-inbound routing matches the protocol union', () => {
     RelayToAgent: {
       'agent:registered': 'registeredSessions',
       'stream:request-idr': 'sessionId',
+      'network:request-state': 'sessionId',
       'device:shutdown': 'payload requestId? sessionId',
       'app:install': 'payload requestId sessionId',
       'app:launch': 'payload requestId sessionId',

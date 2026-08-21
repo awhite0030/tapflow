@@ -169,8 +169,10 @@ describe('protocol message interfaces', () => {
     // nothing. L2 shipped that exact failure in the other direction. 58 is 57 from L1's conversion plus
     // `InputKey`, which was already named and is a message like any other. L4a added the seven agent→relay
     // messages, the last direction that had none. 66 is `DeviceShutdownError`, #542 — the shutdown pair had
-    // no failure member, so an undeliverable shutdown had nothing to be answered with.
-    expect(messages.size).toBe(69)
+    // no failure member, so an undeliverable shutdown had nothing to be answered with. 70 is
+    // `NetworkRequestState`, #614 — the relay had no way to ask an agent to re-report a device's
+    // network condition, so a re-joining viewer had no way to learn it.
+    expect(messages.size).toBe(70)
     // `InputKey` predates L1 and has always been named; it must be in here too.
     expect(messages.has('InputKey')).toBe(true)
   })
