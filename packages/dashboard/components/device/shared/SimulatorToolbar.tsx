@@ -118,7 +118,13 @@ function networkAction({ position, steerable }: Pick<NetworkControl, 'position' 
   // verbosity setting can drop it. "Retry" is honest in both directions: the last attempt did not
   // land, and clicking will try again, which is not futile while #618 leaves a transient failure
   // indistinguishable from a permanent one.
-  return steerable ? action : `Retry: ${action.toLowerCase()}`;
+  // **Only where there is an attempt to retry.** `steerable` is about a report that came back, and a
+  // position-less state has had none — so prefixing there would assert a failed attempt that no
+  // channel explains, which is the claim-from-silence the rest of this file is built to avoid. The
+  // combination is unreachable through `useNetworkControl`, where any report settles the position;
+  // this component takes the two as independent props and has to be right on its own terms.
+  const settled = position === 'online' || position === 'offline';
+  return steerable || !settled ? action : `Retry: ${action.toLowerCase()}`;
 }
 
 export function SimulatorToolbar({
@@ -236,6 +242,14 @@ export function SimulatorToolbar({
                   // property AT can query on the control, and `toggle` refuses a click for as long as
                   // this lasts, which is up to `NETWORK_REQUEST_DEADLINE_MS`.
                   aria-busy={network.pending}
+                  // `aria-busy` is a hint that content is updating; NVDA, JAWS and VoiceOver do not
+                  // read it as unavailability on a button. Without this the control still presents
+                  // itself as fully actionable while `toggle` refuses every click, so a screen-reader
+                  // user activates it repeatedly and nothing happens or is said. `aria-disabled`
+                  // rather than `disabled`: that would suppress the tooltip trigger and drop focus,
+                  // which is #624's shape — and the reason a disabled control owes is already in the
+                  // live region beside it.
+                  aria-disabled={network.pending}
                   aria-describedby={descId}
                   onClick={network.onToggle}
                 >

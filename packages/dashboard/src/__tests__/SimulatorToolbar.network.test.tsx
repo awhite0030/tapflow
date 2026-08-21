@@ -239,9 +239,30 @@ describe('SimulatorToolbar — network control', () => {
     // Mutation: removing `aria-busy` fails here.
     const { unmount } = toolbar(control({ pending: true }))
     expect(networkButton()!.getAttribute('aria-busy')).toBe('true')
+    // …and says it is refusing, which `aria-busy` alone does not: NVDA, JAWS and VoiceOver do not
+    // read that as unavailability on a button.
+    //
+    // Mutation: removing `aria-disabled` fails here.
+    expect(networkButton()!.getAttribute('aria-disabled')).toBe('true')
+    // Not `disabled`, which would drop focus and suppress the tooltip — #624's shape.
+    expect((networkButton() as HTMLButtonElement).disabled).toBe(false)
     unmount()
     toolbar(control({ pending: false }))
     expect(networkButton()!.getAttribute('aria-busy')).toBe('false')
+  })
+
+  it('does not say a retry failed where nothing was ever attempted', () => {
+    // `steerable: false` means a report came back saying tapflow can no longer move it. A
+    // position-less state has had no report, so "Retry" there asserts an attempt that no channel
+    // explains. Unreachable through the hook — any report settles the position — but this component
+    // takes the two as independent props.
+    //
+    // Mutation: prefixing unconditionally fails here.
+    for (const position of ['waiting', 'unknown'] as const) {
+      const { unmount } = toolbar(control({ position, steerable: false }))
+      expect(networkButton()!.getAttribute('aria-label'), position).toBe('Toggle device network')
+      unmount()
+    }
   })
 
   it('passes the click through', async () => {
