@@ -164,6 +164,16 @@ interface DeviceState {
   touchHelper: AndroidTouchHelper | null
   // Device-booted flag for truthful input acks — set on device:ready, cleared on shutdown; false after a reconnect until the ack path re-verifies once via adb.
   booted: boolean
+  /** The last airplane-mode value actually read off this device, and **only** the fallback for a read
+   *  that fails — never the answer. `readNetworkState` still asks the device every time, because a
+   *  remembered value cannot see one changed outside tapflow.
+   *
+   *  It exists because `NetworkNotSteerable.offline` is declared "still the device's real state", and
+   *  the re-join report (#614) is the first producer with nothing to pass: the boot path hands over
+   *  what it just read and `network:set` hands over what it measured, but a viewer coming back has no
+   *  such moment behind it. Defaulting to `false` there would answer "online" for a device that is
+   *  offline and momentarily unreadable — the one direction that hides the problem. */
+  lastNetworkOffline: boolean
   streamWs: WebSocket | null
   scrcpySession: ScrcpySession | null
   emulatorVideo: EmulatorVideo | null
@@ -420,6 +430,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         deviceId,
         touchHelper: null,
         booted: false,
+        lastNetworkOffline: false,
         streamWs: null,
         scrcpySession: null,
         emulatorVideo: null,
@@ -1157,13 +1168,32 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     await this.reportNetworkState(sessionId, known)
   }
 
-  /** Send the current state with no correlator — this is a report, not an answer. */
-  private async reportNetworkState(sessionId: string, lastKnownOffline = false): Promise<void> {
+  /**
+   * Send the current state with no correlator — this is a report, not an answer.
+   *
+   * `lastKnownOffline` defaults to what this device was last *observed* doing rather than to `false`,
+   * because the re-join report (#614) has no freshly measured value to pass: the boot path and
+   * `network:set` both hand over something they just read, and a viewer coming back has nothing
+   * behind it. `false` there would answer "online" for a device that is offline and momentarily
+   * unreadable, which `NetworkNotSteerable.offline` forbids.
+   *
+   * Silent with no device, deliberately: nobody asked, so there is no requester to answer and
+   * `network:error` would be addressed to no one.
+   */
+  private async reportNetworkState(sessionId: string, lastKnownOffline?: boolean): Promise<void> {
     const serial = this.serialFor(sessionId)
     if (!serial) return
-    this.sendMsg({
-      type: 'network:state', sessionId, payload: await this.readNetworkState(serial, lastKnownOffline),
-    })
+    const state = this.deviceStates.get(sessionId)
+    const payload = await this.readNetworkState(serial, lastKnownOffline ?? state?.lastNetworkOffline ?? false)
+    // Only an observed value enters the memory — a failed read has nothing to record, since what it
+    // returns *is* the memory (or a value the caller just read off the device).
+    //
+    // **No test distinguishes this from storing unconditionally, and that is stated rather than
+    // implied:** for every caller today the two are the same write. It guards a future caller that
+    // passes a `lastKnownOffline` it did not measure, which would otherwise become the remembered
+    // truth for every later read failure.
+    if (state && payload.available) state.lastNetworkOffline = payload.offline
+    this.sendMsg({ type: 'network:state', sessionId, payload })
   }
 
   private async handleNetworkSet(sessionId: string, offline: boolean, requestId: string): Promise<void> {
@@ -1202,6 +1232,13 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     // happens before the confirmation, so a state it could not confirm is still more likely to be
     // the requested one than the old one. Reporting the old value here is how an offline device
     // gets rendered as online, which is the failure this whole feature exists to avoid.
+    // Remember it for the same reason the boot path hands its read to the report: a later re-join
+    // whose own read fails falls back to this, and the write path is the freshest truth there is.
+    // Only a **confirmed** result counts — an unconfirmed one is already a guess, and standing one
+    // guess on another is how a stale value outlives the thing it described.
+    const state = this.deviceStates.get(sessionId)
+    if (state && result.confirmed) state.lastNetworkOffline = result.offline
+
     this.sendMsg({
       type: 'network:state', sessionId, requestId,
       payload: result.confirmed
@@ -1695,6 +1732,12 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         void this.handleNetworkSet(msg.sessionId, offline, requestId)
         break
       }
+      // The relay asks on a viewer's re-join (#614). Uncorrelated both ways: the reply is a report,
+      // and nothing here is waiting on it — a session with no booted device answers nothing at all,
+      // because `network:error` would be addressed to a requester that does not exist.
+      case 'network:request-state':
+        void this.reportNetworkState(msg.sessionId)
+        break
       // Clipboard bridge. Emulator-only: it rides the gRPC EmulatorController, since the
       // AVD images have no `adb shell cmd clipboard`. The chord is pressed HERE, not by the
       // viewer — the browser cannot know when the key lands, and reading too early returns
