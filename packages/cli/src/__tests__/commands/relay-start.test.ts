@@ -6,9 +6,12 @@ vi.mock('@tapflowio/relay', () => ({
   }) }),
   initDb: vi.fn(),
   loadedEnvPath: null,
+  createCertProvider: vi.fn(),
+  startTlsBackgroundTasks: vi.fn(() => () => {}),
+  resolveRelayDisplayHost: vi.fn(() => 'localhost'),
   buildCorsOrigins: vi.fn(() => []),
   proxyWithoutPublicUrlWarning: vi.fn(() => null),
-  config: { local: { port: 4000, dataDir: '/tmp/tapflow-test', wsBackpressureBytes: 1048576, trustedProxies: [] }, relay: { url: null }, tunnel: null },
+  config: { local: { port: 4000, dataDir: '/tmp/tapflow-test', wsBackpressureBytes: 1048576, trustedProxies: [] }, relay: { url: null }, tunnel: null, tls: null },
 }))
 
 const mockTunnel = { setupServer: vi.fn(), start: vi.fn(), stop: vi.fn() }
@@ -19,7 +22,7 @@ vi.mock('../../lib/tailscale-tunnel.js', () => ({
   TailscaleTunnel: vi.fn().mockImplementation(function () { return mockTunnel }),
 }))
 
-import { RelayServer, initDb, config, buildCorsOrigins, proxyWithoutPublicUrlWarning } from '@tapflowio/relay'
+import { RelayServer, initDb, config, createCertProvider, resolveRelayDisplayHost, buildCorsOrigins, proxyWithoutPublicUrlWarning } from '@tapflowio/relay'
 import { RatholeTunnel } from '../../lib/rathole-tunnel.js'
 import { TailscaleTunnel } from '../../lib/tailscale-tunnel.js'
 import { cmdRelayStart } from '../../commands/relay-start.js'
@@ -42,6 +45,7 @@ describe('cmdRelayStart', () => {
     vi.mocked(RatholeTunnel).mockImplementation(function () { return mockTunnel as never })
     vi.mocked(TailscaleTunnel).mockImplementation(function () { return mockTunnel as never })
     vi.mocked(config).tunnel = null
+    vi.mocked(config).tls = null
   })
 
   afterEach(() => vi.restoreAllMocks())
@@ -98,6 +102,19 @@ describe('cmdRelayStart', () => {
   it('기본 포트 출력에 localhost:4000 포함', async () => {
     await cmdRelayStart({})
     expect(output.join('\n')).toContain('localhost:4000')
+  })
+
+  it('import-cert 인증서의 DNS host를 출력', async () => {
+    vi.mocked(config).tls = { mode: 'import-cert', certPath: '/cert.pem', keyPath: '/key.pem' }
+    vi.mocked(createCertProvider).mockReturnValue({
+      ensureCert: vi.fn().mockResolvedValue({ cert: 'CERT', key: 'KEY' }),
+    } as never)
+    vi.mocked(resolveRelayDisplayHost).mockReturnValue('relay.example.com')
+
+    await cmdRelayStart({})
+
+    expect(resolveRelayDisplayHost).toHaveBeenCalledWith(config.tls, 'CERT', expect.any(Function))
+    expect(output.join('\n')).toContain('https://relay.example.com:4000')
   })
 
   it('Connect Mac agents 안내에 --token PAT와 발급처가 포함됨', async () => {

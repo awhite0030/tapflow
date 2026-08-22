@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Relay startup output now advertises the first concrete non-`localhost` DNS SAN from an imported TLS certificate, falling back to a concrete subject CN only when the SAN extension is absent. Certificates with unusable DNS SANs keep the `localhost` fallback and emit a warning; IP-only and malformed certificates fall back without that warning. ([#293](https://github.com/jo-duchan/tapflow/issues/293))
 - **Full reset** now appears based on what the device agent says it can do, rather than on which platform you picked. The control was offered for every iOS device and hidden for every Android one, which was right about the agents of the day and wrong about any other combination: an agent older than the feature was still offered a toggle it has no code for, and an Android agent that gains the ability would still have had it hidden — which is the half that landed above in this same release. If you run an agent from before this release against a newer relay, the toggle is now correctly absent instead of erasing nothing — one more reason to upgrade agents and relay together, as 0.19.0 asked.
 
 ### Changed
