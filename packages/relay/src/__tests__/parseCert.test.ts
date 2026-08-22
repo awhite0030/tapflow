@@ -33,8 +33,13 @@ describe('parseCertDisplayHost', () => {
     expect(parseCertDisplayHost(fixture('tls-cert-san-localhost-first.pem'))).toBe('tapflow.lan')
   })
 
-  it.each(['tls-cert-san-wildcard.pem', 'tls-cert-san-ip.pem', 'tls-cert-san-ip-like.pem'])(
-    'does not fall back to a concrete CN when %s contains no concrete DNS SAN',
+  it.each([
+    'tls-cert-cn-wildcard.pem',
+    'tls-cert-san-wildcard.pem',
+    'tls-cert-san-ip.pem',
+    'tls-cert-san-ip-like.pem',
+  ])(
+    'uses localhost when %s cannot identify a concrete DNS host',
     (name) => {
       expect(parseCertDisplayHost(fixture(name))).toBe('localhost')
     },
