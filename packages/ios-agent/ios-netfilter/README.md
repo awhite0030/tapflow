@@ -1,0 +1,118 @@
+# ios-netfilter — iOS 오프라인 1층 (content filter System Extension)
+
+`#607` 네트워크 on/off의 **1층**이다. macOS `NEFilterDataProvider`로 사용자가 오프라인으로 전환한
+시뮬레이터의 flow를 drop하고, 나머지는 손대지 않고 통과시킨다. **시뮬 단위** 격리를 flow의 프로세스
+계보로 해낸다 — RocketSim은 bundle id로만 필터해 같은 앱 두 시뮬을 구분하지 못한다.
+
+설계 전문: [`.work/2026-08-22-ios-transparent-proxy-plan.md`](../../../.work/2026-08-22-ios-transparent-proxy-plan.md).
+왜 다른 방법이 전부 안 되는지: [`.work/2026-08-22-nefilter-content-filter-research.md`](../../../.work/2026-08-22-nefilter-content-filter-research.md).
+
+> **transparent proxy가 아니다.** `NETransparentProxyProvider`로 먼저 만들었고, 실측 결과 시뮬레이터
+> 앱의 flow를 **하나도 보지 못했다** — `handleNewFlow`에 잡힌 217건이 전부 호스트 macOS 프로세스였다.
+> 같은 조건에서 content filter(socket flow 계층)는 시뮬 flow를 그대로 본다.
+
+## 두 층을 반드시 함께 쓴다
+
+| 층 | 무엇을 | 어디서 | 상태 |
+|---|---|---|---|
+| **1층** (여기) | 트래픽 차단 (새 연결) | 호스트 sysext | 실증 완료 |
+| **2층** | 앱의 `NWPathMonitor`를 `unsatisfied`로, **그리고 기존 연결 절단** | 앱-내부 dylib (`../bin/libtapflow-nethook.dylib`) | 실증 완료 |
+
+1층 단독(= RocketSim)은 `NWPathMonitor`를 못 바꾼다 — 트래픽은 죽는데 앱은 `satisfied`를 계속 믿는다.
+2층 단독은 트래픽을 못 막는다 — `nw_path_get_status`를 속여도 URLSession은 커널의 진짜 경로를 보고
+요청을 보낸다. **둘 다 실측이고, 그래서 결합이 이 설계의 핵심이다.**
+
+**기존 연결은 1층이 끊을 수 없다.** Apple이 명시한다 — *"Once you've allowed a connection to proceed,
+there's no way to go back on that decision. That's true for both content filter and transparent
+proxy."* ([forums/710166](https://developer.apple.com/forums/thread/710166)). 그래서 2층이 offline
+전환 시 앱 프로세스 안에서 자기 소켓을 `shutdown`한다.
+
+## 구조
+
+```
+ios-netfilter/
+  project.yml                    # xcodegen (xctest-runner와 같은 모델)
+  TapflowNetFilter.xcodeproj/    # committed (runtime에 xcodegen 안 돌린다)
+  Host/                          # 컨테이너 앱: sysext 설치·활성화·룰 기록. ios-agent가 실행
+  Extension/                     # NEFilterDataProvider (Provider.swift). 판별과 drop
+  build.sh                       # Developer ID 서명 + notarize + staple
+  build/                         # gitignored
+```
+
+- **컨테이너 앱이 필요한 이유**: `OSSystemExtensionRequest`는 앱 번들 안에서만 호출된다. ios-agent는
+  node라 앱이 아니므로, agent가 이 작은 `Host.app`을 실행해 설치·중개한다.
+- **Provider가 UDID를 스스로 알아낸다.** flow의 `sourceAppAuditToken` → pid →
+  `sysctl(KERN_PROC)`로 부모를 타고 올라가 `launchd_sim`을 찾고 →
+  `sysctl(KERN_PROCARGS2)`로 그 argv에서 `/Devices/<UDID>/`를 읽는다. UDID가 있는 곳은 argv뿐이다
+  (실행 파일 경로도 cwd도 아니다). 호스트 flow는 조상이 `launchd_sim`이 아니라 자연히 걸러진다.
+- **룰 주입은 `NEFilterProviderConfiguration.vendorConfiguration`**. 컨테이너 앱이 쓰고 프레임워크가
+  provider에 전달한다 — **실행 중인 provider에 도달하며 재시작이 없다**(토글 3회 내내 pid 불변).
+  XPC mach service는 system domain 등록에 실패했고, 이 경로는 애초에 그것이 필요 없다.
+- **loopback은 예외 코드가 필요 없다**: content filter가 루프백 flow를 아예 받지 않는다(실측 —
+  offline 지정된 시뮬의 `127.0.0.1` 요청 5회 전부 성공, 같은 구간 `handleNewFlow` 0건). Metro dev
+  서버와 XCUITest tree runner가 이 경로다.
+
+## 사용
+
+```bash
+# 룰 설정 (인자 없으면 빈 집합 = 전부 온라인)
+/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --offline <udid>[,<udid>…]
+```
+
+**프로세스 종료는 적용 완료가 아니다** — exec한 프로세스가 룰이 기록되기 전에 반환한다(측정: 반환
+0.05s < 기록 0.08s). exit code를 확인으로 쓰지 말 것.
+
+## 빌드
+
+```bash
+export DEVELOPMENT_TEAM=<10자리 Team ID>
+./build.sh
+```
+
+`build.sh` 헤더에 one-time 셋업(App ID + NE capability, notarytool 자격증명)이 있다.
+
+**★설치할 때 두 가지를 반드시 지킨다** — 둘 다 어기면 증상이 같다(새 빌드인데 옛 코드가 조용히 돈다):
+
+1. **`CFBundleVersion`을 올린다.** 버전이 같으면 activation이 `result 0`을 돌려주면서도 번들 교체를
+   조용히 건너뛴다. `build.sh`가 매 빌드 유니크 버전을 주입한다(xcodegen이 버전을 리터럴로 박아
+   build setting override가 안 먹으므로 generate 후 `plutil` 필수).
+2. **컨테이너 앱을 먼저 죽인다.** 이미 실행 중인 앱에 `open`/exec을 하면 `main`을 다시 안 타므로
+   `OSSystemExtensionRequest` 자체가 발생하지 않는다.
+   ```bash
+   pkill -f "TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter"
+   ```
+
+확인 세 가지: `systemextensionsctl list`의 활성 버전이 방금 빌드한 값인가, provider pid가 바뀌었나,
+`/tmp/tapflow-netfilter-host.log` 마지막 줄 시각이 방금인가.
+
+앱은 `/Applications`에 있어야 activation `code=3`을 피한다. `ditto`로 복사한다(서명 보존).
+
+**notarize가 `timestamps differ by N seconds - check your system clock`으로 실패하면 시계를 만지지
+말 것.** 실측 시 시계 오차는 0.14초였고, Apple 타임스탬프 서버 응답이 615초 걸린 것이었다. 재시도로
+통과한다.
+
+## 배포 — ad-hoc 불가, 정식 서명 prebuilt
+
+sysext는 다른 헬퍼(`bin/`의 ad-hoc prebuilt)와 달리 **ad-hoc으로 로드되지 않는다**(실측). 그래서:
+
+- **소스는 committed** (xctest-runner처럼), 하지만 **사용자가 빌드하지 않는다** — 서명할 수 없기 때문.
+- **프로젝트가 Developer ID로 서명 + notarize한 단일 바이너리**를 배포한다 (LuLu 모델). NE
+  content-filter entitlement는 셀프서비스라 별도 Apple 승인 폼은 없다.
+
+## 관측
+
+```bash
+log show --start "<시각>" --predicate 'subsystem == "dev.tapflow.netfilter"' --info --debug --style compact
+```
+
+**반드시 스크립트 파일에 넣어 실행한다** — zsh가 predicate의 중첩 따옴표를 깨뜨린다. `--info --debug`
+없이는 `.default` 레벨도 안 보인다. `log stream`이 아니라 `log show`를 쓰면 **재부팅 전 기록까지**
+나온다(unified log는 디스크에 남는다).
+
+## Open Questions
+
+- **배포 매체** — `bin/` committed prebuilt vs CI release asset.
+- **에러 코드** — 1층이 주는 것은 `-1005`(연결이 끊김)이고 신호 없는 실기는 `-1009`(인터넷 없음)다.
+  앱의 오프라인 분기가 후자로 쓰여 있으면 다른 가지를 탄다.
+- **`NENetworkRule` init** — macOS 15에서 deprecated. 지금은 룰 없이 `defaultAction: .filterData`로
+  전량을 `handleNewFlow`에 받으므로 쓰지 않는다. 룰 기반으로 좁힐 때 최신 API를 확인할 것.
