@@ -73,6 +73,17 @@ describe('resolveRelayDisplayHost', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('concrete non-localhost DNS SAN'))
   })
 
+  it.each([
+    ['an IP-only SAN', fixture('tls-cert-san-ip.pem')],
+    ['malformed certificate material', 'not a certificate'],
+  ])('falls back without warning for %s', (_case, cert) => {
+    const tls = { mode: 'import-cert', certPath: '/cert.pem', keyPath: '/key.pem' } as const
+    const warn = vi.fn()
+
+    expect(resolveRelayDisplayHost(tls, cert, warn)).toBe('localhost')
+    expect(warn).not.toHaveBeenCalled()
+  })
+
   it('keeps the configured domain authoritative for managed certificates', () => {
     const tls = { mode: 'byo-api-token', domain: 'managed.example.com', dnsProvider: 'cloudflare' } as const
     expect(resolveRelayDisplayHost(tls, certPem)).toBe('managed.example.com')
