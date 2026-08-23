@@ -24,11 +24,11 @@ is drawn as what it is: actionable. It keeps its plain action name rather than t
 which claims a previous attempt that never happened, and a device taken offline here stays amber,
 because it really is offline.
 
-**A control tapflow cannot currently steer is now drawn as unusable at every position**, where the
-offline one was left washed out — the same faint rendering that reads as disabled on a button that
-still works, in another hue. Separating out the ordinary opening seconds of a session is what makes
-that safe: colouring those as an error is how a colour stops meaning anything by the time a real
-failure uses it.
+**A control tapflow cannot currently steer is drawn as unusable wherever the device is pointing**,
+where before it was drawn that way only at `online` and left washed out at `offline` — the same faint
+rendering that reads as disabled on a button that still works, in another hue. A device whose state
+has not been read yet is untouched by this and stays muted: it has had no attempt, so drawing one as
+a failure claims something that never happened, in the opening seconds of every session.
 
 That colour says the control is unusable **now**, and deliberately not that the device will never do
 it. The dashboard reads this one member and still ignores the rest of the set, for the reason

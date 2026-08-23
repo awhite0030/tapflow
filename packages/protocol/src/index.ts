@@ -603,9 +603,18 @@ export type NetworkUnavailableReason =
    * *believe* it, which is the half the sentence has to carry.
    */
   | 'awaiting-app'
-  /** This device cannot do it at all: an Android image whose `cmd connectivity` predates the API.
-   *  Unlike every other member, nothing the tester does will change it — not a retry, not a reboot,
-   *  not launching an app. */
+  /**
+   * What it is *meant* to name: a device that cannot do this at all — an Android image whose
+   * `cmd connectivity` predates the API. Alone among these members, nothing the tester does would
+   * change that.
+   *
+   * **What it currently means on the wire is wider, and a consumer must read it as the wider thing**
+   * (#618). `AndroidAgent` emits it from every failed read and every unconfirmed write as well, so a
+   * device that is merely rebooting, or one whose adb connection dropped, arrives here too — and both
+   * of those a retry does fix. Until that set is split, a consumer that renders this as permanent is
+   * telling a tester "this will never work" about a device that is coming back up, which is why the
+   * dashboard declines to name any reason from this set except `awaiting-app`.
+   */
   | 'unsupported-device'
 
 /**

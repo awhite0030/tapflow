@@ -98,11 +98,19 @@ const MUTED = 'text-muted-foreground hover:text-muted-foreground';
  * the ordinary opening seconds of every iOS session as an error is how a colour stops meaning
  * anything by the time a real failure uses it.
  *
- * **One rule, at every position.** This started at `online` only, leaving an unsteerable *offline*
- * device drawn in amber at 60% — which is the same washed-out grey that sent this control back for
- * rework in the first place, in another hue, and it read as disabled on a button that still works.
- * The position is carried by the icon and by the first sentence of the status; the colour is free to
- * describe the control.
+ * **One rule at both settled positions — and deliberately not at the other two.** This started at
+ * `online` only, leaving an unsteerable *offline* device drawn in amber at 60%: the same washed-out
+ * rendering that sent this control back for rework in the first place, in another hue, and it read
+ * as disabled on a button that still works.
+ *
+ * `waiting` and `unknown` stay muted however `steerable` reads, on the argument `networkAction` makes
+ * below for refusing `Retry:` there — a position-less state has had no attempt, so drawing one as a
+ * failure claims something no channel can explain, in the opening seconds of every session.
+ *
+ * What is left carrying the position at the two that do take this colour is **the icon, and only the
+ * icon**, for a sighted mouse or touch user: the status sentence is `sr-only` and the tooltip does
+ * not open on touch. `Radio` against `RadioOff` is a real difference and it is asserted in the tests
+ * rather than assumed, because unifying them would silently remove the last channel.
  */
 const FAILED = 'text-destructive hover:text-destructive';
 
@@ -139,7 +147,8 @@ function networkLook({ position, steerable, awaitingApp }: Pick<NetworkControl, 
       return {
         Icon: RadioOff,
         // Still amber while waiting for an app: the device really is offline, which is the thing this
-        // colour is for. An unsteerable control overrides it, and `RadioOff` keeps saying offline.
+        // colour is for. An unsteerable control overrides it, and `RadioOff` is then the only thing
+        // left saying offline — see `FAILED`.
         className: steerable || awaitingApp ? 'text-amber-500 hover:text-amber-500' : FAILED,
         status: `Device is offline.${caveat}`,
       };

@@ -366,12 +366,10 @@ describe('SimulatorToolbar — network control', () => {
     return found
   }
 
-  it('paints an unsteerable control the same way wherever the device is pointing', () => {
-    // It was red at `online` and amber at 60% at `offline` — one rule reaching one of the four
-    // combinations. The faint half is the defect this control was already sent back for once: a
-    // washed-out icon reads as a disabled button, and this button still works. Which way the device
-    // is pointing is carried by the icon and by the first sentence of the status, so the colour is
-    // free to describe the control instead of competing with the position for it.
+  it('paints an unsteerable control the same way at both settled positions', () => {
+    // It was red at `online` and amber at 60% at `offline`. The faint half is the defect this control
+    // was already sent back for once: a washed-out icon reads as a disabled button, and this button
+    // still works.
     //
     // Mutation: restoring `text-amber-500/60` at the offline position fails here, and so does
     // dropping the failure colour from either position.
@@ -379,6 +377,37 @@ describe('SimulatorToolbar — network control', () => {
     const offline = stateColour(control({ position: 'offline', steerable: false }))
     expect(online).toBe('text-destructive')
     expect(offline).toBe(online)
+  })
+
+  it.each(['waiting', 'unknown'] as const)('leaves %s muted, steerable or not', (position) => {
+    // **The other two positions do not take the failure colour, and that is the rule rather than an
+    // omission.** `networkAction` already refuses to prefix `Retry:` here, for a reason it states:
+    // a position-less state has had no attempt, so claiming a failed one asserts something no
+    // channel can explain. Painting it as a failure would make exactly that claim in colour — on the
+    // opening seconds of a session, where it would be the first thing a tester sees.
+    //
+    // There was no case in this file pairing either position with `steerable: false`, so a reading of
+    // "one rule, every position" that added `FAILED` to the switch's other two branches would have
+    // been green — and would have produced a red button named "Toggle device network".
+    expect(stateColour(control({ position }))).toBe('text-muted-foreground')
+    expect(stateColour(control({ position, steerable: false }))).toBe('text-muted-foreground')
+  })
+
+  it('keeps a visual channel for the position when both look like failures', () => {
+    // With one colour for "unsteerable" at both settled positions, the icon is the ONLY channel left
+    // that separates offline from online for a sighted mouse or touch user — the status sentence is
+    // `sr-only` and the tooltip does not open on touch.
+    //
+    // So it is asserted rather than assumed. Nothing else in this file would notice `RadioOff` being
+    // unified with `Radio`.
+    const svg = (c: NetworkControl) => {
+      const { unmount } = toolbar(c)
+      const html = networkButton()!.querySelector('svg')!.outerHTML
+      unmount()
+      return html
+    }
+    expect(svg(control({ position: 'offline', steerable: false })))
+      .not.toBe(svg(control({ position: 'online', steerable: false })))
   })
 
   it('draws no position faint', () => {
