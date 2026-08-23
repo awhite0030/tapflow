@@ -14,6 +14,8 @@ status: living
 
 `AndroidAgent`: controls Android emulators/devices via ADB and streams H.264 video over two backends — **gRPC host-encode** (emulators, the default) and **scrcpy** (real devices, and the fallback when gRPC is unavailable). Runs alongside `ios-agent` on the same Mac.
 
+It also toggles **airplane mode** per device (#607) — the Android half of the network control. Unlike iOS, the device has a radio, so one `cmd connectivity` call is the whole mechanism.
+
 ## HOW
 
 - ADB commands are isolated in `AdbWrapper`, swappable with an `AdbRunner` mock in tests.
