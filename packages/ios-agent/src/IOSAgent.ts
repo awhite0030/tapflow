@@ -1748,11 +1748,11 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
    * is whether that device is up.
    */
   async setNetworkOffline(offline: boolean): Promise<NetworkStatePayload> {
-    return this.network.setOffline(this.soleDeviceState().deviceId, offline)
+    return this.network.setOffline(await this.soleLiveDeviceId(), offline)
   }
 
   async networkState(): Promise<NetworkStatePayload> {
-    return this.network.state(this.soleDeviceState().deviceId)
+    return this.network.state(await this.soleLiveDeviceId())
   }
 
   async launchApp(bundleId: string): Promise<void> {
@@ -1767,6 +1767,18 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     return live.length === 1 ? live[0] : undefined
   }
 
+  /** The one device out of `live`, or the refusal. Factored so the async resolver below answers
+   *  ambiguity with the same words rather than its own. */
+  private soleOf(live: DeviceState[]): DeviceState {
+    if (live.length === 0) throw new ValidationError('no booted device — call connect() first')
+    // Refusing beats guessing: this interface has no way to say which device is meant, and picking
+    // one silently is the whole defect being fixed here.
+    if (live.length > 1) {
+      throw new ValidationError(`${live.length} booted devices — this entry point cannot choose between them`)
+    }
+    return live[0]!
+  }
+
   private soleDeviceState(): DeviceState {
     // `deviceStates` holds one entry per *registered* simulator, not per running one — the relay
     // opens a session for every device in `agent:register` and this Mac reports dozens. Taking the
@@ -1775,14 +1787,36 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     // that was actually up. `booted` is set by handleDeviceBoot, so filtering on it is the liveness
     // check `AndroidAgent` gets for free from `getSerial` (its serial map is only populated on
     // launch).
-    const live = [...this.deviceStates.values()].filter((s) => s.booted)
-    if (live.length === 0) throw new ValidationError('no booted device — call connect() first')
-    // Refusing beats guessing: this interface has no way to say which device is meant, and picking
-    // one silently is the whole defect being fixed here.
-    if (live.length > 1) {
-      throw new ValidationError(`${live.length} booted devices — this entry point cannot choose between them`)
-    }
-    return live[0]!
+    return this.soleOf([...this.deviceStates.values()].filter((s) => s.booted))
+  }
+
+  /**
+   * `soleDeviceState`, but **it asks simctl before believing that nothing is booted**.
+   *
+   * `booted` is a cache and `initDeviceStates` clears it on `agent:registered` — every reconnect,
+   * not only the first connection. So after a relay restart every flag reads false while the
+   * simulators are still running, and a resolver that trusts the cache refuses a live device until
+   * something else happens to refresh it. On the wire path that is `deviceFor`; these two entry
+   * points have no such path, so they are the ones that stay broken.
+   *
+   * Only the empty case pays for the `listDevices` call: a cache that already names a booted device
+   * is not wrong, just possibly incomplete, and the ambiguity refusal is stricter for having fewer
+   * candidates rather than looser.
+   *
+   * **The other five entry points still read the cache directly**, and the fix cannot simply be
+   * moved into `soleDeviceState`: `stream()` is synchronous and is part of `DeviceAgent`, so making
+   * the resolver async is an interface change rather than a repair. That is filed separately.
+   */
+  private async soleLiveDeviceId(): Promise<string> {
+    const cached = [...this.deviceStates.values()].filter((s) => s.booted)
+    if (cached.length > 0) return this.soleOf(cached).deviceId
+
+    const booted = new Set(
+      (await this.simctl.listDevices()).filter((d) => d.status === 'booted').map((d) => d.id),
+    )
+    const live = this.soleOf([...this.deviceStates.values()].filter((s) => booted.has(s.deviceId)))
+    live.booted = true   // same cache write `ackInput` makes, so the next call skips simctl
+    return live.deviceId
   }
 
   private soleDeviceId(): string { return this.soleDeviceState().deviceId }

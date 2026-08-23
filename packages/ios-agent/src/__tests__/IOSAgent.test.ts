@@ -2358,6 +2358,37 @@ describe('IOSAgent', () => {
       browser.close()
     })
 
+    it('resolves the capability entry points against simctl when the cache says nothing is up', async () => {
+      // `setNetworkOffline`/`networkState` are the MCP path — no session id, so they have to *find*
+      // the device. They read `booted`, which `initDeviceStates` clears on every reconnect, so after
+      // a relay restart they refused a simulator that was still running. The wire path is rescued by
+      // `deviceFor`; these two have no equivalent and stayed broken until something else happened to
+      // refresh the flag.
+      //
+      // Mutation: dropping the `listDevices` fallback from `soleLiveDeviceId` fails here.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      await agent.connect(`ws://localhost:${port}`)
+      const browser = await bootedSession(agent)
+
+      for (const state of internals(agent).deviceStates.values()) state.booted = false
+
+      await expect(agent.networkState()).resolves.toMatchObject({ offline: false })
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('still refuses when simctl agrees nothing is booted', async () => {
+      // The other half, and it is what keeps the fallback from becoming "pick something". A cache
+      // that says nothing and a simctl that says nothing is genuinely nothing.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(false))
+      await agent.connect(`ws://localhost:${port}`)
+
+      await expect(agent.networkState()).rejects.toThrow(/no booted device/i)
+
+      agent.disconnect()
+    })
+
     it('refuses a toggle for a device that has been shut down', async () => {
       // `deviceStates` holds one entry per *registered* simulator, so the session survives the
       // shutdown and its `deviceId` with it. Answering from that entry wrote the kernel rule for a
