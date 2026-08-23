@@ -85,6 +85,26 @@ ios-netfilter/
 
 디바이스가 실제로 오프라인인지는 이 코드가 아니라 시뮬레이터 안에서 dylib이 남긴 verdict로 판단한다.
 
+## provider가 남기는 상태 파일
+
+`/Library/Application Support/tapflow/tapflow-netfilter-state.json` — root 소유, 644. 에이전트가
+읽는다. 초당 한 번(룰이 바뀌면 즉시) 갱신된다.
+
+```json
+{"at":1787500575,"rule":[],
+ "flows":{"simulator":116,"host":90,"unresolved":0,"dropped":24},
+ "attribution":{"walks":206,"avgMicros":319.7}}
+```
+
+- `rule` — **실행 중인 provider가 실제로 들고 있는 offline 집합.** 저장된 설정이 아니라 집행 중인
+  것이라, exit code가 못 하는 말을 한다. 이게 없으면 필터가 죽어도 컨트롤은 "조종 가능"이라고 한다.
+- `unresolved` — 귀속이 **실패한** flow. 호스트 flow와 다르다. 여전히 allow하지만(아래) 셀 수 있다.
+- `avgMicros` — flow당 부모 walk 비용. 캐시를 붙일지 판단하려면 이 숫자가 먼저다.
+
+**해결 불가 flow는 allow한다.** `sysctl` 일시 오류에 fail-closed하면 사용자 브라우저를 끊는다 — 이
+필터는 호스트 전역이고, 기능의 약속은 "토글한 시뮬만 영향받는다"이다. 구멍인 것은 맞고, 그래서
+error 레벨로 로그하고 세는 것이다.
+
 ## 빌드
 
 ```bash

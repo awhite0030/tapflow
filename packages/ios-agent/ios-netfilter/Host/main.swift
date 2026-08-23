@@ -63,8 +63,11 @@ private let approvalDeadline: TimeInterval = 120
  * a code alone does not say *which* preference failed or what the framework said about it. #639,
  * which is about reporting layer 1's health, will read from here rather than invent a channel.
  *
- * The host runs as uid 501, so `/tmp` is writable here. The system extension is root and cannot
- * write it; its own lines come through the NE framework log instead.
+ * The host runs as uid 501, so `/tmp` is writable here. **The claim that used to sit on this line —
+ * that the extension, being root, cannot write `/tmp` — was never tested and is false.** The
+ * provider now writes its own state file, and the path it picked was measured rather than assumed:
+ * `/Library/Application Support/tapflow/tapflow-netfilter-state.json`, root-owned and world-readable,
+ * which is how the agent sees what the running filter is holding.
  *
  * **Bounded, because nothing else bounds it.** `arm()` runs on every device boot, so this appends a
  * handful of lines per boot for as long as the Mac is up — and while macOS clears `/tmp` across
