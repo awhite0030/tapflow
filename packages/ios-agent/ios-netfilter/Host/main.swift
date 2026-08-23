@@ -78,7 +78,7 @@ private func hlog(_ s: String) {
     let url = URL(fileURLWithPath: "/tmp/tapflow-netfilter-host.log")
     guard let line = (s + "\n").data(using: .utf8) else { return }
     let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
-    if (size ?? 0) > logSizeLimit { try? FileManager.default.removeItem(at: url) }
+    if size > logSizeLimit { try? FileManager.default.removeItem(at: url) }
     if let fh = try? FileHandle(forWritingTo: url) { defer { try? fh.close() }; fh.seekToEndOfFile(); fh.write(line) }
     else { try? line.write(to: url) }
 }
