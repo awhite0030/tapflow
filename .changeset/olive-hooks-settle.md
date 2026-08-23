@@ -12,8 +12,10 @@ owner said it should.
 
 **Cutting the app's open connections says when it might have cut the wrong one.** A file descriptor
 is read twice — once to check where it points, once to shut it down — and nothing stops another
-thread reusing it in between. That window cannot be closed from outside the process, so it is
-checked afterwards and reported instead of passing silently.
+thread reusing it in between, in which case something else's connection goes down. That window
+cannot be closed from outside the process, so the descriptor is identified by something the cut
+itself does not destroy and re-checked afterwards, and a mismatch is reported instead of passing
+silently.
 
 **And a branch that had never run is gone.** The injected library was reaching for an app's WebView
 processes, which measurement showed it never loads into. One consequence is worth stating plainly:

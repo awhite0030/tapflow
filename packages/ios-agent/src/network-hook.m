@@ -192,8 +192,10 @@ static BOOL tf_blocking(void) {
  * That is not a loss, because blocking traffic is no longer this dylib's job. The host content
  * filter (`ios-netfilter`) drops the flows, at the kernel, for **every** process in the simulator
  * rather than the one app these hooks reach — which is strictly wider, and is what covers the web
- * half of a hybrid app that this library was measured never to load into (#635). The plan recorded that hand-off on 2026-08-22 ("앱-내부 dylib으로 실제 트래픽을 끊는
- * 길이 불가로 확정된 뒤의 재설계"); this file, written the day before, had not caught up.
+ * half of a hybrid app that this library was measured never to load into (#635).
+ *
+ * The plan recorded that hand-off on 2026-08-22 ("앱-내부 dylib으로 실제 트래픽을 끊는 길이 불가로
+ * 확정된 뒤의 재설계"); this file, written the day before, had not caught up.
  *
  * What is left here is the half only an in-process hook can do: **what the app is told.**
  */
@@ -253,8 +255,17 @@ static dispatch_queue_t g_handler_queue;
  * in the app under test and would be blamed on tapflow, rightly.
  *
  * Keyed by the monitor's pointer rather than index-aligned, because the two setters may be called in
- * either order — and often are. The monitors are retained for the life of the process in
- * `g_monitors`, so the pointer stays a valid key.
+ * either order — and often are.
+ *
+ * **A freed monitor's address can be reused, and that is harmless here rather than merely unlikely.**
+ * `nw_path_monitor_start` requires a queue, so any monitor created after these hooks are live calls
+ * this one before it can deliver anything — overwriting a stale entry at that address before it could
+ * be read. An entry that is never overwritten belongs to a monitor that never started, whose path
+ * stays `NSNull`, and the replay skips those. tapflow's own self-check bypasses this hook entirely so
+ * it cannot contribute the one entry that would otherwise be guaranteed and stale.
+ *
+ * What is left is a bounded leak of the same shape as `g_monitors`: one entry per monitor that sets a
+ * queue and never a handler, which is a monitor that can report nothing.
  */
 static void tf_nw_path_monitor_set_queue(nw_path_monitor_t monitor, dispatch_queue_t queue) {
   if (monitor != NULL && queue != NULL) {
@@ -415,12 +426,18 @@ static BOOL tf_peer_is_loopback(const struct sockaddr *addr) {
  * So the descriptor is re-read afterwards. That does not undo anything; it turns a silent,
  * unreproducible failure into a line naming the descriptor.
  *
- * **The comparison has to know what success looks like, and the first version did not.** After
- * `shutdown(SHUT_RDWR)` the socket is disconnected, so `getpeername` answers `ENOTCONN` — which is
- * the *expected* outcome of a cut that worked. Treating any changed answer as a race flagged all
- * four connections on the first real run, which is a diagnostic that cries wolf every time it is
- * right. Only three things mean the descriptor moved: it is no longer a socket at all, it is a
- * different kind of socket, or it is still connected to a *different* peer.
+ * **The identity has to be something our own `shutdown` does not destroy, and two earlier versions
+ * of this check got that wrong in opposite directions.** The first compared the *peer* and treated
+ * any change as a race — but a successful cut disconnects the socket, so the peer always changes,
+ * and it reported all four connections as raced. The second excluded that case and became blind:
+ * with the peer unreadable after a cut, the only window it could still see was the harmless one
+ * *after* the `shutdown`, while the window that does the damage is between `getpeername` and
+ * `shutdown`. A counter that cannot observe the failure it is named for reads zero forever.
+ *
+ * The **local** address is what survives. Measured on macOS: after `shutdown(SHUT_RDWR)`,
+ * `getpeername` fails (`EINVAL`) while `getsockname` returns the same address and port it did
+ * before. A descriptor recycled in either window is a different socket with a different local port,
+ * so comparing that is a check with something to say.
  */
 static void tf_cut_open_connections(void) {
   struct rlimit rl;
@@ -443,19 +460,27 @@ static void tf_cut_open_connections(void) {
     if (peer.ss_family != AF_INET && peer.ss_family != AF_INET6) continue;   // AF_UNIX is not the internet
     if (tf_peer_is_loopback((struct sockaddr *)&peer)) continue;             // Metro, and our own runner
 
+    // Taken **before** the cut, because this is the identity the cut is checked against.
+    struct sockaddr_storage self;
+    socklen_t slen = sizeof(self);
+    BOOL have_self = getsockname(fd, (struct sockaddr *)&self, &slen) == 0;
+
     if (shutdown(fd, SHUT_RDWR) != 0) continue;
     cut++;
 
-    // Did we cut what we looked at? `ENOTCONN` here is the cut having worked, not a race.
+    // Is this still the socket we decided about? The local address outlives our own shutdown; the
+    // peer does not.
     int atype = 0;
     socklen_t atlen = sizeof(atype);
     struct sockaddr_storage after;
     socklen_t alen = sizeof(after);
     const char *moved = NULL;
-    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &atype, &atlen) != 0) moved = "no longer a socket";
-    else if (atype != type) moved = "a different kind of socket";
-    else if (getpeername(fd, (struct sockaddr *)&after, &alen) == 0
-             && (alen != plen || memcmp(&after, &peer, plen) != 0)) moved = "connected to a different peer";
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &atype, &atlen) != 0) moved = "is no longer a socket";
+    else if (atype != type) moved = "is a different kind of socket";
+    else if (have_self) {
+      if (getsockname(fd, (struct sockaddr *)&after, &alen) != 0) moved = "lost the local address we read";
+      else if (alen != slen || memcmp(&after, &self, slen) != 0) moved = "is bound somewhere else";
+    }
     if (moved != NULL) {
       raced++;
       os_log_error(tf_log(), "fd %{public}d %{public}s under the cut — it was not the socket we checked",
@@ -491,10 +516,18 @@ static void tf_start_watching(void) {
     if (now == last) return;
     last = now;
     os_log(tf_log(), "condition changed: offline=%{public}d — pushing path update", now);
-    tf_push_path_update();
-    // Only on the way *into* offline. Coming back needs nothing torn down — the app reconnects on its
-    // next request, and the push above has already told it the path is satisfied again.
+    // **Cut first, then tell — and the order is explicit because it stopped being implicit.**
+    // `tf_push_path_update` used to call the app's handlers synchronously, so the cut ran after they
+    // had returned. It now hands them to their own queues (#640) and returns immediately, which left
+    // these two racing: the scan walked descriptors while a just-notified handler was opening new
+    // ones, and the comment here still claimed a sequence that no longer existed.
+    //
+    // Cutting first is the half that has to be ordered. The scan should act on the connections the
+    // app held when it went offline; a handler told first can start a request the scan then sees
+    // half-open, which is the descriptor race above with the odds raised deliberately.
     if (now) tf_cut_open_connections();
+    // Coming back needs nothing torn down — the app reconnects on its next request.
+    tf_push_path_update();
   });
   dispatch_resume(timer);
 }
@@ -539,7 +572,10 @@ static BOOL tf_self_check(void) {
   __block BOOL layer2 = NO;
 
   nw_path_monitor_t monitor = nw_path_monitor_create();
-  nw_path_monitor_set_queue(monitor, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+  // Through the ORIGINAL, for the same reason the handler below bypasses its hook: this monitor is
+  // tapflow's, it is cancelled before this function returns, and registering its queue would leave a
+  // permanent entry keyed on an address that is about to be freed.
+  o_nw_path_monitor_set_queue(monitor, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
   dispatch_semaphore_t sawPath = dispatch_semaphore_create(0);
   // **Registered through the original, so this handler is never captured.** It is tapflow's, not the
   // app's: there is no reason to re-fire it later, and capturing it made `tf_push_path_update` call

@@ -579,12 +579,14 @@ writes it — the file is keyed by udid alone, so any other process writing it w
 that never ran. Since #635 no other process activates at all: the library is delivered
 simulator-wide, but the gate admits one bundle id.
 
+`awaiting-app` is not an edge case: it is the state every iOS session is in between the device
+booting and its app launching, because the library is armed at boot and can only name its target at
+launch.
+
 **A hybrid app's web half is not told it is offline**, and that is a limitation rather than an
 unfound bug. WebKit's processes were measured never to load the library — dyld drops `DYLD_*` for
 them — so a WebView renders no `navigator.onLine` banner. Its traffic still fails, because layer 1
-works at the kernel for every process. `awaiting-app` is not an edge case: it is the state every iOS session is in between the
-device booting and its app launching, because the library is armed at boot and can only name its
-target at launch.
+works at the kernel for every process.
 
 The container app's **exit 0 means the save was accepted and nothing more.** The framework hands
 `vendorConfiguration` to the running provider afterwards with no acknowledgement, and the whole run
