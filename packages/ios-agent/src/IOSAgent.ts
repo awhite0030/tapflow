@@ -108,6 +108,9 @@ export interface IOSAgentOptions {
   token?: string
   /** Handshake(연결~agent:registered) 타임아웃 ms. 기본 10초, 테스트용 주입 가능. */
   handshakeTimeoutMs?: number
+  /** The three-layer network control (#607). Injectable so a test can point it somewhere harmless;
+   *  defaults to one wired to this agent's simctl (and, under vitest, to nothing real). */
+  network?: SimulatorNetwork
 }
 
 interface DeviceState {
@@ -222,7 +225,20 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
       throw new PlatformError('IOSAgent requires macOS (xcrun simctl is macOS-only)')
     }
     this.simctl = simctl ?? new SimctlWrapper()
-    this.network = new SimulatorNetwork(this.simctl)
+    // **Never the real filter under vitest.** Layer 1 is a system extension installed on the
+    // developer's Mac, and `arm()` runs on every boot — so a suite that booted a mock device was
+    // launching the notarized container app and rewriting the host's live filter configuration, once
+    // per boot test, on any machine where tapflow's own filter is installed. Nothing in the suite
+    // said so, because the class reports a missing container app rather than failing.
+    //
+    // Pointed at a path that does not exist rather than stubbed out: that is the same state a machine
+    // without the app is in, so the tests exercise the real class along its real reporting path
+    // (`not-armed`) instead of a double that could drift from it. Same shape, and the same reason, as
+    // `sleepBlocker` below.
+    this.network = options.network ?? new SimulatorNetwork(
+      this.simctl,
+      process.env.VITEST ? { filterHostBinary: path.join(tmpdir(), 'tapflow-no-filter-host') } : {},
+    )
     this.fps = options.fps ?? 30
     this.intervalMs = options.intervalMs
     this.reconnectDelays = options.reconnectDelays ?? [1000, 2000, 4000, 8000, 16000, 30000]
@@ -804,6 +820,16 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     if (!state) return
 
     this.bumpBootSeq(state, 'shut-down')
+    // **Said here as well as in `cleanupDeviceState`, because this path does not go through it.**
+    // The teardown below is a copy of that method's, and the copy is older than the network rule —
+    // so a device shut down from the dashboard while offline kept its udid in the host filter for
+    // the rest of the Mac's uptime, and its next boot came up with traffic dead and nothing on
+    // screen saying why. The two bodies have already diverged in another respect (this one does not
+    // stop the audio tap), which is why this is a call rather than a merge: unifying them changes
+    // audio teardown on a path nobody asked about.
+    void this.network.forget(deviceId).catch((e: unknown) => {
+      logger.warn('could not clear the network rule for a shut-down device:', (e as Error).message)
+    })
     void state.streamReader?.cancel()
     state.streamReader = null
     state.captureStreamer = null // reader.cancel() kills the helper proc; drop the ref so a stale requestKeyframe() no-ops
@@ -1645,8 +1671,21 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
   // means, and what the session is told afterwards.
 
   /** The device a session is driving, or undefined when nothing is booted. */
+  /**
+   * The session's device, **only while it is up**.
+   *
+   * `deviceStates` holds one entry per *registered* simulator, not per running one, so this used to
+   * answer for a device that was shut down — or never booted. The network path is where that costs
+   * something: a toggle after a shutdown writes the kernel rule for a dead udid, and `arm()` is the
+   * only thing that clears it, which now happens on the *next* boot of that device. Until then the
+   * host is dropping flows for nothing, and a simulator that reuses the udid comes up offline.
+   *
+   * `booted` is set by `handleDeviceBoot` and cleared by the shutdown path — the same signal
+   * `liveDeviceState` filters on, which is the check `AndroidAgent` gets for free from `getSerial`.
+   */
   private deviceFor(sessionId: string): string | undefined {
-    return this.deviceStates.get(sessionId)?.deviceId
+    const state = this.deviceStates.get(sessionId)
+    return state?.booted ? state.deviceId : undefined
   }
 
   /**

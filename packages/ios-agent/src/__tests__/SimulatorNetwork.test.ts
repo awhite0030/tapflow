@@ -14,12 +14,21 @@ const OTHER = 'BBBBBBBB-5555-6666-7777-888888888888'
  * layer ordering assertable at all: the files are written by this process, so their order relative to
  * the rule is invisible unless something observes it from the outside.
  */
-function fakeHostBinary(dir: string, log: string): string {
-  const path = join(dir, 'fake-filter-host')
+function fakeHostBinary(dir: string, log: string, sleepMs = 0): string {
+  const path = join(dir, `fake-filter-host${sleepMs}`)
   // `--offline` may be empty, which is how the rule is cleared; `${2-}` keeps that from failing.
+  // Exits non-zero while a sentinel file exists, so a test can take the container app away between
+  // one toggle and the next — which is the only way to reach the failure path from a device that is
+  // already offline, and that starting state is where the bug was.
+  //
+  // `enter:` is logged on the way IN and the rule on the way out, so a test can see two runs
+  // overlapping. Without both marks, concurrent runs and serialised ones leave the same log.
   writeFileSync(
     path,
-    `#!/bin/sh\nprintf 'rule:%s cond:%s\\n' "\${2-}" "$(ls "${dir}" | grep -c '^tapflow-offline-')" >> "${log}"\n`,
+    `#!/bin/sh\n`
+    + `[ -e "${dir}/BREAK" ] && exit 1\n`
+    + (sleepMs > 0 ? `printf 'enter:%s\\n' "\${2-}" >> "${log}"\nsleep ${sleepMs / 1000}\n` : '')
+    + `printf 'rule:%s cond:%s\\n' "\${2-}" "$(ls "${dir}" | grep -c '^tapflow-offline-')" >> "${log}"\n`,
     { mode: 0o755 },
   )
   return path
@@ -134,6 +143,36 @@ describe('SimulatorNetwork', () => {
     expect(existsSync(conditionPath(OTHER))).toBe(true)
   })
 
+  it('does not report an offline device as online when the rule cannot be written', async () => {
+    // The failure path used to delete from the set unconditionally and answer `offline: false`, so a
+    // device that was already offline came back as online here **and from every later `state()`** —
+    // with the rule and the condition file still saying otherwise. The one test that covered this
+    // path started from a device that had never been offline, where deleting is accidentally right,
+    // so inverting the line changed nothing.
+    armed()
+    const net = make()
+    await net.setOffline(UDID, true)
+
+    writeFileSync(join(dir, 'BREAK'), '')   // the container app stops working
+    const after = await net.setOffline(UDID, false)
+
+    expect(after).toEqual({ offline: true, available: false, reason: 'not-armed' })
+    expect(net.state(UDID).offline).toBe(true)
+  })
+
+  it('does not report an online device as offline when the rule cannot be written', async () => {
+    // The other direction of the same restore: a device that was online must not be left in the set
+    // by a request that did not land.
+    armed()
+    const net = make()
+
+    writeFileSync(join(dir, 'BREAK'), '')
+    const after = await net.setOffline(UDID, true)
+
+    expect(after).toEqual({ offline: false, available: false, reason: 'not-armed' })
+    expect(net.state(UDID).offline).toBe(false)
+  })
+
   it('does not claim offline when the container app is not installed', async () => {
     armed()
     const net = make(join(dir, 'does-not-exist'))
@@ -226,15 +265,56 @@ describe('SimulatorNetwork', () => {
       expect(env.some(e => e.includes('TAPFLOW_TARGET_BUNDLE'))).toBe(false)
     })
 
-    it('forgets an offline device it is re-arming', async () => {
+    it('forgets an offline device it is re-arming, in the rule and not only in memory', async () => {
       armed()
       const net = make()
       await net.setOffline(UDID, true)
 
       await net.arm(UDID)
 
-      // The device rebooted; whatever it was before, it is online now and the rule has to agree.
+      // The device rebooted; whatever it was before, it is online now and **the rule has to agree**.
+      // Asserting `state()` alone was what let this through: the in-memory set was cleared and the
+      // host rule still named the device, so the simulator came up with its traffic dead while this
+      // reported it online and steerable.
       expect(net.state(UDID).offline).toBe(false)
+      expect(rules().at(-1)).toBe('rule: cond:0')
+    })
+
+    it('clears a rule left behind by a previous process', async () => {
+      // An agent that crashed while a device was offline leaves the rule on the host and takes its
+      // memory with it. The replacement knows of no offline device, and writing what it knows is
+      // what recovers the simulator — so the rule is rewritten unconditionally, not only when this
+      // instance happens to remember putting the device in it.
+      const net = make()
+      await net.arm(UDID)
+      expect(rules()).toEqual(['rule: cond:0'])
+    })
+
+    it('takes the status bar down when a device is retired', async () => {
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      statusBar.length = 0
+
+      await net.forget(UDID)
+
+      // `setStatusBarOffline` had exactly one caller, so a device retired while offline kept showing
+      // no service for as long as it stayed booted — a relay disconnect was enough.
+      expect(statusBar).toEqual([`${UDID}:false`])
+    })
+
+    it('finishes retiring a device whose status bar can no longer be set', async () => {
+      // The usual case: the simulator is already gone, so `status_bar clear` fails. The rule and the
+      // condition file still have to come off.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      simctl.setStatusBarOffline = vi.fn(async () => { throw new Error('device shut down') })
+
+      await expect(net.forget(UDID)).resolves.toBeUndefined()
+
+      expect(rules().at(-1)).toBe('rule: cond:1')
+      expect(existsSync(conditionPath(UDID))).toBe(false)
     })
   })
 
@@ -244,6 +324,44 @@ describe('SimulatorNetwork', () => {
       await net.target(UDID, 'com.example.app')
       expect(env).toEqual([`${UDID}:TAPFLOW_TARGET_BUNDLE=com.example.app`])
     })
+
+    it('does not answer for the next app on the previous one\'s evidence', async () => {
+      // A verdict is one process's report about its own hooks, and that process is gone by the time a
+      // second app is launched. Left behind it said `available: true` before the new app had written
+      // anything — and kept saying it for the whole session if the new app's hooks failed.
+      //
+      // Mutation: dropping the `rmSync` from `target` fails here.
+      const net = make()
+      await net.arm(UDID)
+      armed()
+      expect(net.state(UDID)).toEqual({ offline: false, available: true })
+
+      await net.target(UDID, 'com.example.second')
+      expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'awaiting-app' })
+    })
+  })
+
+  it('runs the container app one at a time', async () => {
+    // The host takes the whole offline set on each run and the last writer wins, so two in flight
+    // decide the rule by which subprocess finishes last rather than by which request came last. Both
+    // runs read a correct set, which is what makes the wrong outcome invisible afterwards.
+    //
+    // The fake host sleeps, so an unserialised implementation interleaves: the assertion is that the
+    // LAST line is the last request's set, and that no run started before its predecessor finished.
+    //
+    // Mutation: awaiting `runFilterHost` directly instead of chaining fails here.
+    armed()
+    armed(OTHER)
+    const net = make(fakeHostBinary(dir, log, 60))
+    await Promise.all([net.setOffline(UDID, true), net.setOffline(OTHER, true)])
+
+    const marks = readAll().split('\n').filter(l => l.startsWith('rule:') || l.startsWith('enter:'))
+    for (let i = 0; i < marks.length; i += 2) {
+      expect(marks[i], `overlapping host runs in ${JSON.stringify(marks)}`).toMatch(/^enter:/)
+      expect(marks[i + 1], `overlapping host runs in ${JSON.stringify(marks)}`).toMatch(/^rule:/)
+    }
+    expect(rules().at(-1)).toContain(OTHER)
+    expect(rules().at(-1)).toContain(UDID)
   })
 
   it('drops a forgotten device out of the rule', async () => {

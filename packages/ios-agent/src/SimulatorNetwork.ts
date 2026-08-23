@@ -40,6 +40,10 @@ export interface SimulatorNetworkOptions {
 
 const DEFAULT_HOST_BINARY = '/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter'
 
+/** How long the filter host gets. It activates a system extension, which is a few hundred ms when
+ *  nothing is wrong and unbounded when a user is being asked to approve something. */
+const FILTER_HOST_TIMEOUT_MS = 15_000
+
 /** The simctl calls this needs. Narrower than `SimctlWrapper` so a test can stand in for it. */
 interface SimctlForNetwork {
   setStatusBarOffline(udid: string, offline: boolean): Promise<void>
@@ -57,6 +61,8 @@ export class SimulatorNetwork {
   /** Devices whose injection is actually in place. Separates "nothing was delivered" from "delivered,
    *  no app has run under it yet" — two states with different remedies, and a reason each. */
   private readonly armed = new Set<string>()
+  /** Serialises the host runs. See `applyFilterRule`. */
+  private filterQueue: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly simctl: SimctlForNetwork,
@@ -85,6 +91,18 @@ export class SimulatorNetwork {
     this.armed.delete(udid)
     this.setCondition(udid, false)
     rmSync(this.verdictPath(udid), { force: true })
+
+    // **The rule is rewritten, not merely forgotten.** Clearing the in-memory set and the condition
+    // file used to be the whole of this, which left the one layer that actually stops traffic still
+    // naming the device: a simulator toggled offline, shut down and booted again came up with its
+    // traffic dead while this class reported it online and steerable, and nothing recovered it short
+    // of toggling twice.
+    //
+    // Unconditional rather than only when this device was in the set, because the set is this
+    // process's memory and the rule is the host's. An agent that restarted knows of no offline
+    // device, and writing what it knows is what clears a rule left behind by the process before it.
+    await this.applyFilterRule()
+
     // Recorded only after the call returns. A device whose environment could not be set has had
     // nothing delivered, and saying otherwise would report it as merely waiting for an app — a state
     // whose remedy is to launch one, which would never help.
@@ -98,8 +116,16 @@ export class SimulatorNetwork {
    * **Must be called before the app is launched.** dyld reads the environment when a process starts,
    * so naming the target afterwards arms the *next* launch and leaves the running one unhooked —
    * reporting `available: true` for an app that would never see a path update.
+   *
+   * **The previous app's verdict goes with it.** A verdict is one process's report that its own hooks
+   * took, and that process has exited by the time a second app is launched. Leaving the file behind
+   * answered for the new app on the old one's evidence: `available: true` before the new process had
+   * written anything, and — if its hooks fail — for as long as it runs. The gap where `state()`
+   * answers `awaiting-app` for a launch already in flight is the correct reading of that moment;
+   * inheriting a stale `ok` is not.
    */
   async target(udid: string, bundleId: string): Promise<void> {
+    rmSync(this.verdictPath(udid), { force: true })
     await this.simctl.setSimulatorEnv(udid, 'TAPFLOW_TARGET_BUNDLE', bundleId)
   }
 
@@ -118,16 +144,24 @@ export class SimulatorNetwork {
    * is true.
    */
   async setOffline(udid: string, offline: boolean): Promise<NetworkStatePayload> {
+    const was = this.offline.has(udid)
     if (offline) this.offline.add(udid)
     else this.offline.delete(udid)
 
     const applied = await this.applyFilterRule()
     if (!applied) {
-      // The rule did not land, so the device's traffic is whatever it already was. Reporting the
-      // request back as if it had taken is how a tester ends up filing bugs against an app that was
-      // never offline.
-      this.offline.delete(udid)
-      return { offline: false, available: false, reason: 'not-armed' }
+      // The rule did not land, so the device is wherever it already was — **which is not necessarily
+      // online.** This used to delete unconditionally and answer `offline: false`, so a device that
+      // was already offline came back as online here and from every later `state()` call, with the
+      // rule and the condition file still saying otherwise. The comment below was already the
+      // argument against it and the code broke it in the other direction.
+      //
+      // Reporting the request back as if it had taken is how a tester ends up filing bugs against an
+      // app that was never offline; reporting it as online when it is offline sends them to file
+      // against one that cannot reach anything.
+      if (was) this.offline.add(udid)
+      else this.offline.delete(udid)
+      return { offline: was, available: false, reason: 'not-armed' }
     }
 
     this.setCondition(udid, offline)
@@ -165,28 +199,60 @@ export class SimulatorNetwork {
    *  it — the filter would carry the udid for the rest of the host's uptime. */
   async forget(udid: string): Promise<void> {
     this.armed.delete(udid)
-    if (!this.offline.delete(udid)) {
-      this.setCondition(udid, false)
-      return
-    }
-    await this.applyFilterRule()
+    if (this.offline.delete(udid)) await this.applyFilterRule()
     this.setCondition(udid, false)
+    // **The status bar is part of what has to come back.** It was set by `setOffline` and had no
+    // other caller, so a device retired while offline kept showing no service for as long as it
+    // stayed booted — a relay disconnect was enough. That is the pixels-only false result this class
+    // exists to prevent, pointed the other way.
+    //
+    // Swallowed, and only here: a device being retired is often already gone, and `status_bar clear`
+    // against a shut-down simulator fails. Failing this call would abandon the rest of the cleanup
+    // for a layer that only reports.
+    await this.simctl.setStatusBarOffline(udid, false).catch(() => { /* device may already be gone */ })
   }
 
   // ── layer 1 ────────────────────────────────────────────────────────────────
 
   /**
-   * The container app writes the rule and exits.
+   * **Serialised, and bounded in time.**
    *
-   * **Its exit is not the confirmation.** The process returns before the save completes — measured at
-   * 0.05s against 0.08s for the rule actually landing — so the exit code says the launch worked and
-   * nothing more. What this checks is that it launched at all; whether the rule took is answered by
-   * `state()`, from evidence the dylib wrote.
+   * The host takes the whole offline set on each run and the last writer wins, so two of these in
+   * flight at once decide the rule by which subprocess happens to finish last rather than by which
+   * request came last. Two devices toggled in the same second is enough — and the set each one reads
+   * is correct, which is what makes the wrong outcome hard to see afterwards: both runs are internally
+   * consistent and one of them is stale.
+   *
+   * The timeout covers a host that never returns. It waits on `OSSystemExtensionRequest`, and one of
+   * its outcomes is a System Settings dialog nobody is standing in front of; the binary now exits
+   * itself on that path, but a timeout here is what keeps a wedge from taking the queue with it —
+   * everything after it is waiting on this chain.
    */
   private async applyFilterRule(): Promise<boolean> {
+    const run = this.filterQueue.then(() => this.runFilterHost())
+    // Keep the chain alive whatever this run did: a rejection left on it would fail every later call.
+    this.filterQueue = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  /**
+   * The container app writes the rule and exits.
+   *
+   * **Its exit is not the confirmation.** Zero means the container app launched and the framework
+   * accepted the save — the whole run is 27ms, measured — and the running provider is handed the new
+   * configuration afterwards, with nothing coming back to say it has it. So this answers "nothing
+   * refused"; whether the device is actually offline is answered by `state()`, from evidence the
+   * dylib wrote inside the simulator.
+   */
+  private async runFilterHost(): Promise<boolean> {
     if (!existsSync(this.hostBinary)) return false
     try {
-      await execFileAsync(this.hostBinary, ['--offline', [...this.offline].join(',')])
+      await execFileAsync(this.hostBinary, ['--offline', [...this.offline].join(',')], {
+        timeout: FILTER_HOST_TIMEOUT_MS,
+      })
       return true
     } catch {
       return false
