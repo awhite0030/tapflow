@@ -112,6 +112,7 @@ interface IOSAgentInternals {
   _reconnectTimer: ReturnType<typeof setTimeout> | null
   _reconnectAttempt: number
   _scheduleReconnect(): void
+  deviceStates: Map<string, { booted: boolean }>
 }
 const internals = (agent: IOSAgent): IOSAgentInternals => agent as unknown as IOSAgentInternals
 
@@ -2323,6 +2324,35 @@ describe('IOSAgent', () => {
       // answers are `not-armed` anyway, so removing the guard fails here only on the machines the
       // guard is for. That is the population that matters and it is not everyone.
       expect(reply.payload).toEqual({ offline: false, available: false, reason: 'not-armed' })
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('still answers for a device that stayed up across a reconnect', async () => {
+      // **`booted` is a cache, not the truth.** `initDeviceStates` runs on `agent:registered`, which
+      // is every reconnect and not only the first connection, so the flag is `false` for a simulator
+      // that has been running the whole time — the field's own comment says so, and `ackInput` carries
+      // a simctl fallback for exactly this.
+      //
+      // Gated on the flag alone, a relay restart made the toggle answer `No booted device` for a
+      // running device, and left `network:request-state` — the message a viewer's re-join sends,
+      // which exists for precisely this moment — unanswered, so the control never left `waiting`.
+      // That shipped once in this branch's own liveness fix.
+      //
+      // Driven by clearing the flag directly rather than by dropping the socket, because that is the
+      // state a reconnect leaves and the socket's own recovery is covered under `reconnect`.
+      //
+      // Mutation: dropping the `isBooted` fallback from `deviceFor` fails here.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      await agent.connect(`ws://localhost:${port}`)
+      const browser = await bootedSession(agent)
+
+      for (const state of internals(agent).deviceStates.values()) state.booted = false
+
+      browser.send(JSON.stringify({ type: 'network:set', requestId: 'rq-net-3', sessionId: agent.sessionId, payload: { offline: true } }))
+      const reply = await waitForType(browser, 'network:state')
+      expect(reply.requestId).toBe('rq-net-3')
 
       agent.disconnect()
       browser.close()

@@ -776,7 +776,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
       // The unsolicited report the protocol names on `device:ready`. It follows the ready rather than
       // riding inside it: a tester whose device just came up can arm the toggle in the same breath, and
       // a boot that armed nothing still has to say so rather than leaving the control blank.
-      this.reportNetworkState(sessionId)
+      void this.reportNetworkState(sessionId)
 
       // Sync AppleKeyboards after ready — fire-and-forget so streaming isn't delayed.
       // hw=Automatic lets the hardware layout follow the active input source on LANG1/CapsLock.
@@ -1371,7 +1371,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
       // The relay asks on a viewer's re-join (#614). Uncorrelated both ways: the reply is a report and
       // nothing is waiting on it, so a session with no booted device answers nothing at all.
       case 'network:request-state':
-        this.reportNetworkState(msg.sessionId)
+        void this.reportNetworkState(msg.sessionId)
         break
       case 'clipboard:read': {
         // `requestId: string`, matching the screenshot and ui:tree casts a few cases below — clipboard was
@@ -1680,12 +1680,24 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
    * only thing that clears it, which now happens on the *next* boot of that device. Until then the
    * host is dropping flows for nothing, and a simulator that reuses the udid comes up offline.
    *
-   * `booted` is set by `handleDeviceBoot` and cleared by the shutdown path — the same signal
-   * `liveDeviceState` filters on, which is the check `AndroidAgent` gets for free from `getSerial`.
+   * **`booted` alone is not the check, and reading it as one is a regression this shipped once.**
+   * The flag is a cache, not the truth: `initDeviceStates` runs on `agent:registered`, which is every
+   * *reconnect* and not only the first connection, so it is `false` for a simulator that has been up
+   * the whole time. Gated on the flag alone, a relay restart left the toggle answering
+   * `No booted device` for a running device and left `network:request-state` — the message a viewer's
+   * re-join sends, which exists precisely for this moment — silently unanswered, so the control never
+   * left `waiting`.
+   *
+   * So it falls back to asking simctl and caches the answer, which is what `ackInput` already does
+   * with the same flag and for the same reason. That is also why this is async.
    */
-  private deviceFor(sessionId: string): string | undefined {
+  private async deviceFor(sessionId: string): Promise<string | undefined> {
     const state = this.deviceStates.get(sessionId)
-    return state?.booted ? state.deviceId : undefined
+    if (!state) return undefined
+    if (state.booted) return state.deviceId
+    if (!(await this.isBooted(state.deviceId))) return undefined
+    state.booted = true
+    return state.deviceId
   }
 
   /**
@@ -1695,14 +1707,14 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
    * request anyone is waiting on. Silent with no device, for the same reason `network:error` would be
    * addressed to nobody.
    */
-  private reportNetworkState(sessionId: string): void {
-    const deviceId = this.deviceFor(sessionId)
+  private async reportNetworkState(sessionId: string): Promise<void> {
+    const deviceId = await this.deviceFor(sessionId)
     if (!deviceId) return
     this.sendMsg({ type: 'network:state', sessionId, payload: this.network.state(deviceId) })
   }
 
   private async handleNetworkSet(sessionId: string, offline: boolean, requestId: string): Promise<void> {
-    const deviceId = this.deviceFor(sessionId)
+    const deviceId = await this.deviceFor(sessionId)
     if (!deviceId) {
       this.sendMsg({
         type: 'network:error', sessionId, requestId,
@@ -1723,14 +1735,14 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
 
   async setNetworkOffline(offline: boolean): Promise<NetworkStatePayload> {
     const sessionId = this.deviceStates.keys().next().value
-    const deviceId = sessionId ? this.deviceFor(sessionId) : undefined
+    const deviceId = sessionId ? await this.deviceFor(sessionId) : undefined
     if (!deviceId) throw new PlatformError('No booted device')
     return this.network.setOffline(deviceId, offline)
   }
 
   async networkState(): Promise<NetworkStatePayload> {
     const sessionId = this.deviceStates.keys().next().value
-    const deviceId = sessionId ? this.deviceFor(sessionId) : undefined
+    const deviceId = sessionId ? await this.deviceFor(sessionId) : undefined
     if (!deviceId) throw new PlatformError('No booted device')
     return this.network.state(deviceId)
   }

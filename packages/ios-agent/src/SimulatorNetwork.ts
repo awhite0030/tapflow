@@ -161,6 +161,17 @@ export class SimulatorNetwork {
       // against one that cannot reach anything.
       if (was) this.offline.add(udid)
       else this.offline.delete(udid)
+      // **And the restored set is written back**, because the run that failed was not necessarily the
+      // only writer. The host reads `this.offline` when it *runs*, not when it was queued — correct,
+      // since the set is the authority — so with two toggles in flight an earlier run can already have
+      // committed a later one's set. Restoring in memory alone then leaves this device named offline
+      // here and absent from the kernel rule: traffic alive, and this class saying it is not, which is
+      // the direction the paragraph above calls filing bugs against an app that was never offline.
+      //
+      // Best-effort by definition — the write that just failed may fail again — and that is still
+      // strictly better than not trying, because the alternative is a divergence nothing revisits
+      // until the device is rebooted.
+      await this.applyFilterRule()
       return { offline: was, available: false, reason: 'not-armed' }
     }
 
@@ -199,7 +210,12 @@ export class SimulatorNetwork {
    *  it — the filter would carry the udid for the rest of the host's uptime. */
   async forget(udid: string): Promise<void> {
     this.armed.delete(udid)
-    if (this.offline.delete(udid)) await this.applyFilterRule()
+    // Unconditional, for the reason `arm()` gives at length: the set is this process's memory and the
+    // rule is the host's. An agent that restarted knows of no offline device, so `delete` answers
+    // false and the write was skipped — leaving the udid named in the rule for the rest of the Mac's
+    // uptime, which is the exact outcome this method's doc block says it exists to prevent.
+    this.offline.delete(udid)
+    await this.applyFilterRule()
     this.setCondition(udid, false)
     // **The status bar is part of what has to come back.** It was set by `setOffline` and had no
     // other caller, so a device retired while offline kept showing no service for as long as it

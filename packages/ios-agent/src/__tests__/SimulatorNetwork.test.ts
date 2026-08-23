@@ -14,8 +14,8 @@ const OTHER = 'BBBBBBBB-5555-6666-7777-888888888888'
  * layer ordering assertable at all: the files are written by this process, so their order relative to
  * the rule is invisible unless something observes it from the outside.
  */
-function fakeHostBinary(dir: string, log: string, sleepMs = 0): string {
-  const path = join(dir, `fake-filter-host${sleepMs}`)
+function fakeHostBinary(dir: string, log: string, sleepMs = 0, failNth = 0): string {
+  const path = join(dir, `fake-filter-host${sleepMs}-${failNth}`)
   // `--offline` may be empty, which is how the rule is cleared; `${2-}` keeps that from failing.
   // Exits non-zero while a sentinel file exists, so a test can take the container app away between
   // one toggle and the next — which is the only way to reach the failure path from a device that is
@@ -23,10 +23,17 @@ function fakeHostBinary(dir: string, log: string, sleepMs = 0): string {
   //
   // `enter:` is logged on the way IN and the rule on the way out, so a test can see two runs
   // overlapping. Without both marks, concurrent runs and serialised ones leave the same log.
+  // `failNth` fails one specific invocation and lets the rest through, which is what a *transient*
+  // failure looks like. A permanently broken app (the `BREAK` sentinel) cannot show the divergence
+  // this exists for, because the recovery write fails too.
   writeFileSync(
     path,
     `#!/bin/sh\n`
     + `[ -e "${dir}/BREAK" ] && exit 1\n`
+    + (failNth > 0
+      ? `N=$(cat "${dir}/runs" 2>/dev/null || echo 0); N=$((N+1)); echo $N > "${dir}/runs"\n`
+        + `[ "$N" = "${failNth}" ] && exit 1\n`
+      : '')
     + (sleepMs > 0 ? `printf 'enter:%s\\n' "\${2-}" >> "${log}"\nsleep ${sleepMs / 1000}\n` : '')
     + `printf 'rule:%s cond:%s\\n' "\${2-}" "$(ls "${dir}" | grep -c '^tapflow-offline-')" >> "${log}"\n`,
     { mode: 0o755 },
@@ -158,6 +165,17 @@ describe('SimulatorNetwork', () => {
 
     expect(after).toEqual({ offline: true, available: false, reason: 'not-armed' })
     expect(net.state(UDID).offline).toBe(true)
+
+    // **Only `.offline` is compared, and that is a known gap rather than an oversight** (#638).
+    // `state()` never looks at the container app, so for this device — dylib fine, filter host gone —
+    // it answers `available: true` in the same second the call above answered `false`. Asserting the
+    // whole payload here would fail on that divergence, and hiding it behind a one-field read is what
+    // a comment is for.
+    //
+    // The `reason` above is wrong for the same cause: `not-armed` prescribes a reboot, and a missing
+    // container app is not something a reboot installs. Both need a reason member that does not exist
+    // yet, which is two packages and #638's whole subject.
+    expect(net.state(UDID).available).toBe(true)
   })
 
   it('does not report an online device as offline when the rule cannot be written', async () => {
@@ -171,6 +189,43 @@ describe('SimulatorNetwork', () => {
 
     expect(after).toEqual({ offline: false, available: false, reason: 'not-armed' })
     expect(net.state(UDID).offline).toBe(false)
+  })
+
+  it('writes the rule back when a run fails after another has already committed', async () => {
+    // **The failure serialising the runs introduced**, and it needs all three of concurrency, the
+    // set being read at run time, and a transient failure — which is why the first attempt at this
+    // test passed with the fix removed.
+    //
+    // Run 2 reads `this.offline` when it RUNS, by which point request 3 has already deleted UDID from
+    // it — so it commits a set that request 3 asked for and request 2 did not. Request 3 then fails
+    // and puts UDID back in memory. Without a further write the kernel rule says `OTHER` while this
+    // class says UDID is offline: traffic alive, drawn as offline, which is the direction `setOffline`
+    // calls filing bugs against an app that was never offline.
+    //
+    // Mutation: removing the `applyFilterRule()` from the restore branch fails here.
+    armed()
+    armed(OTHER)
+    const net = make(fakeHostBinary(dir, log, 0, 3))
+    await net.setOffline(UDID, true)                       // run 1
+    await Promise.all([
+      net.setOffline(OTHER, true),                         // run 2 — commits {OTHER}
+      net.setOffline(UDID, false),                         // run 3 — fails, restores UDID
+    ])
+
+    expect(net.state(UDID).offline, 'the failed request must leave the device where it was').toBe(true)
+    expect(rules().at(-1), 'the rule disagrees with the set').toContain(UDID)
+  })
+
+  it('drops a retired device from the rule even when this process never put it there', async () => {
+    // An agent that restarted knows of no offline device, so `delete` answers false — and the write
+    // used to be conditional on it. The rule is the host's, not this process's memory, so skipping it
+    // left the udid named for the rest of the Mac's uptime, which is the outcome `forget` exists to
+    // prevent.
+    //
+    // Mutation: restoring `if (this.offline.delete(udid))` fails here.
+    const net = make()
+    await net.forget(UDID)
+    expect(rules(), 'forget wrote no rule at all').not.toEqual([])
   })
 
   it('does not claim offline when the container app is not installed', async () => {
