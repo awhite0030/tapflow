@@ -56,6 +56,23 @@ export interface NetworkControl {
 }
 
 /**
+ * Muted, **and pinned against hover**.
+ *
+ * The `ghost` variant carries `hover:text-accent-foreground`, which outranks a plain
+ * `text-muted-foreground` — so pointing at the control repainted it as an ordinary enabled button and
+ * the state vanished exactly while someone was looking at it. The offline position already defends
+ * itself this way (`hover:text-amber-500`); the three muted positions did not, and the one that is
+ * reachable on every iOS session before an app is launched is among them.
+ *
+ * A constant rather than the string three times: the failure here was one branch remembering and
+ * three forgetting, so a fourth position cannot be added without carrying the pin.
+ *
+ * Only the text is pinned. The background still lights up on hover, because these positions stay
+ * clickable — the paragraph below is about why.
+ */
+const MUTED = 'text-muted-foreground hover:text-muted-foreground';
+
+/**
  * Four positions, and **none of them disables the button**.
  *
  * #447 settled that a control nothing acts on should be absent rather than disabled, because a
@@ -86,11 +103,11 @@ function networkLook({ position, steerable }: Pick<NetworkControl, 'position' | 
         status: `Device is offline.${cannot}`,
       };
     case 'online':
-      return { Icon: Radio, className: steerable ? '' : 'text-muted-foreground', status: `Device is on the network.${cannot}` };
+      return { Icon: Radio, className: steerable ? '' : MUTED, status: `Device is on the network.${cannot}` };
     case 'waiting':
-      return { Icon: Radio, className: 'text-muted-foreground animate-pulse', status: 'Checking the network state.' };
+      return { Icon: Radio, className: `${MUTED} animate-pulse`, status: 'Checking the network state.' };
     case 'unknown':
-      return { Icon: Radio, className: 'text-muted-foreground', status: 'No network state has been reported.' };
+      return { Icon: Radio, className: MUTED, status: 'No network state has been reported.' };
   }
 }
 

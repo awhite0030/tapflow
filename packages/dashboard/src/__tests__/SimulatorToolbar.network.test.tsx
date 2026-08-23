@@ -291,4 +291,34 @@ describe('SimulatorToolbar — network control', () => {
     toolbar(control({ position: 'offline', pending: true }))
     expect(networkButton()).toBeTruthy()
   })
+
+  // Every position that carries a colour has to survive being pointed at. The `ghost` variant sets
+  // `hover:text-accent-foreground`, so a state class with no hover of its own is repainted as an
+  // ordinary enabled button — the state disappears exactly while someone is looking at it. `offline`
+  // defended itself from the start and the three muted positions did not, which is why this asserts
+  // over the whole set rather than the one that was reported.
+  //
+  // Mutation: dropping `hover:` from any single position fails here.
+  it.each([
+    ['online, not steerable', control({ steerable: false })],
+    ['waiting', control({ position: 'waiting' })],
+    ['unknown', control({ position: 'unknown' })],
+    ['offline', control({ position: 'offline' })],
+    ['offline, not steerable', control({ position: 'offline', steerable: false })],
+  ])('pins its colour against hover: %s', (_name, c) => {
+    const { unmount } = toolbar(c)
+    const cls = networkButton()!.className
+    const colour = cls.split(/\s+/).find(t => /^text-(muted-foreground|amber-500(\/\d+)?)$/.test(t))
+    expect(colour, `no state colour in "${cls}"`).toBeTruthy()
+    expect(cls).toContain(`hover:${colour}`)
+    unmount()
+  })
+
+  it('leaves hover alone where there is no state colour to protect', () => {
+    // The settled, steerable position is drawn like every other button in the toolbar, so it should
+    // take the variant's hover exactly as they do. Pinning it here would be the opposite defect:
+    // a control that looks inert while it is the one thing fully working.
+    toolbar(control())
+    expect(networkButton()!.className).not.toContain('hover:text-muted-foreground')
+  })
 })
