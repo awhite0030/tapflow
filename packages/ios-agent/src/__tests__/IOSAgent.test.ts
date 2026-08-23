@@ -112,6 +112,7 @@ interface IOSAgentInternals {
   _reconnectTimer: ReturnType<typeof setTimeout> | null
   _reconnectAttempt: number
   _scheduleReconnect(): void
+  deviceStates: Map<string, { booted: boolean }>
 }
 const internals = (agent: IOSAgent): IOSAgentInternals => agent as unknown as IOSAgentInternals
 
@@ -178,6 +179,10 @@ function mockSimctl(booted: boolean | 'unknown' = false): SimctlWrapper {
     }),
     getPasteboard: vi.fn(async () => pasteboard),
     stopKeyboardDaemon: vi.fn(),
+    // The network layers (#607). Absent, the agent's `arm()` threw into a `.catch` and every network
+    // assertion below read a state assembled from a failure nobody could see.
+    setStatusBarOffline: vi.fn().mockResolvedValue(undefined),
+    setSimulatorEnv: vi.fn().mockResolvedValue(undefined),
   } as unknown as SimctlWrapper
   // `handleDeviceBoot` awaits this before it announces readiness (#486). The real one polls
   // `listDevices` until the device reports `booted`, so the double reads the same list — a test that
@@ -2273,6 +2278,136 @@ describe('IOSAgent', () => {
       // exactly one erase + one retry — bounded, no infinite loop
       expect(simctl.erase).toHaveBeenCalledTimes(1)
       expect(simctl.boot).toHaveBeenCalledTimes(2)
+
+      agent.disconnect()
+      browser.close()
+    })
+  })
+
+  describe('network control (#607)', () => {
+    /** Boot dev-1 and return the browser socket the replies land on. */
+    async function bootedSession(agent: IOSAgent): Promise<WebSocket> {
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-net-boot', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:ready')
+      // The unsolicited report that follows `device:ready` — drained here so the tests below read the
+      // reply to the request they sent rather than this one. That it is uncorrelated is the point of
+      // it: nobody asked, so nothing is waiting, and it is what moves the dashboard's control out of
+      // `waiting` for a device whose tester never touches the button.
+      const opening = await waitForType(browser, 'network:state')
+      expect(opening.requestId, 'the opening report answers a request nobody made').toBeUndefined()
+      return browser
+    }
+
+    it('answers a toggle for a booted device with a state', async () => {
+      // The control for the test below, and it is not a formality: `network:error` is also what an
+      // agent that never wired the handler at all produces, so an assertion that a dead device gets
+      // an error passes just as well on an agent where nothing works. This is what says the path
+      // exists. The state itself is `not-armed` here because the container app is not installed on a
+      // test machine, which the class reports rather than pretends about.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(false))
+      await agent.connect(`ws://localhost:${port}`)
+      const browser = await bootedSession(agent)
+
+      browser.send(JSON.stringify({ type: 'network:set', requestId: 'rq-net-1', sessionId: agent.sessionId, payload: { offline: true } }))
+      const reply = await waitForType(browser, 'network:state')
+      expect(reply.requestId).toBe('rq-net-1')
+      // **And it reached no filter.** Layer 1 is a system extension on the developer's Mac; without
+      // the guard in the constructor this line ran the notarized container app and rewrote the host's
+      // live configuration, once per boot test. `not-armed` is what a machine without that app
+      // reports, so this pins the two to the same answer.
+      //
+      // Worth knowing what this does *not* catch: on a machine where the app is not installed both
+      // answers are `not-armed` anyway, so removing the guard fails here only on the machines the
+      // guard is for. That is the population that matters and it is not everyone.
+      expect(reply.payload).toEqual({ offline: false, available: false, reason: 'not-armed' })
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('still answers for a device that stayed up across a reconnect', async () => {
+      // **`booted` is a cache, not the truth.** `initDeviceStates` runs on `agent:registered`, which
+      // is every reconnect and not only the first connection, so the flag is `false` for a simulator
+      // that has been running the whole time — the field's own comment says so, and `ackInput` carries
+      // a simctl fallback for exactly this.
+      //
+      // Gated on the flag alone, a relay restart made the toggle answer `No booted device` for a
+      // running device, and left `network:request-state` — the message a viewer's re-join sends,
+      // which exists for precisely this moment — unanswered, so the control never left `waiting`.
+      // That shipped once in this branch's own liveness fix.
+      //
+      // Driven by clearing the flag directly rather than by dropping the socket, because that is the
+      // state a reconnect leaves and the socket's own recovery is covered under `reconnect`.
+      //
+      // Mutation: dropping the `isBooted` fallback from `deviceFor` fails here.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      await agent.connect(`ws://localhost:${port}`)
+      const browser = await bootedSession(agent)
+
+      for (const state of internals(agent).deviceStates.values()) state.booted = false
+
+      browser.send(JSON.stringify({ type: 'network:set', requestId: 'rq-net-3', sessionId: agent.sessionId, payload: { offline: true } }))
+      const reply = await waitForType(browser, 'network:state')
+      expect(reply.requestId).toBe('rq-net-3')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('resolves the capability entry points against simctl when the cache says nothing is up', async () => {
+      // `setNetworkOffline`/`networkState` are the MCP path — no session id, so they have to *find*
+      // the device. They read `booted`, which `initDeviceStates` clears on every reconnect, so after
+      // a relay restart they refused a simulator that was still running. The wire path is rescued by
+      // `deviceFor`; these two have no equivalent and stayed broken until something else happened to
+      // refresh the flag.
+      //
+      // Mutation: dropping the `listDevices` fallback from `soleLiveDeviceId` fails here.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      await agent.connect(`ws://localhost:${port}`)
+      const browser = await bootedSession(agent)
+
+      for (const state of internals(agent).deviceStates.values()) state.booted = false
+
+      await expect(agent.networkState()).resolves.toMatchObject({ offline: false })
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('still refuses when simctl agrees nothing is booted', async () => {
+      // The other half, and it is what keeps the fallback from becoming "pick something". A cache
+      // that says nothing and a simctl that says nothing is genuinely nothing.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(false))
+      await agent.connect(`ws://localhost:${port}`)
+
+      await expect(agent.networkState()).rejects.toThrow(/no booted device/i)
+
+      agent.disconnect()
+    })
+
+    it('refuses a toggle for a device that has been shut down', async () => {
+      // `deviceStates` holds one entry per *registered* simulator, so the session survives the
+      // shutdown and its `deviceId` with it. Answering from that entry wrote the kernel rule for a
+      // dead udid — and `arm()` is the only thing that clears it, on the next boot of that device.
+      // Until then the host drops flows for a simulator that is not running, and one that reuses the
+      // udid comes up offline with nothing on screen saying why.
+      //
+      // Mutation: dropping the `booted` check in `deviceFor` fails here.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(false))
+      await agent.connect(`ws://localhost:${port}`)
+      const browser = await bootedSession(agent)
+
+      browser.send(JSON.stringify({ type: 'device:shutdown', requestId: 'rq-net-s', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:shutdown-done')
+
+      browser.send(JSON.stringify({ type: 'network:set', requestId: 'rq-net-2', sessionId: agent.sessionId, payload: { offline: true } }))
+      const reply = await waitForType(browser, 'network:error')
+      expect(reply.requestId).toBe('rq-net-2')
+      expect(String(reply['message'])).toContain('No booted device')
 
       agent.disconnect()
       browser.close()
