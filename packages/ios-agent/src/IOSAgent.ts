@@ -214,6 +214,12 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
    * Without it, a reconnect on a two-simulator desk left the capability entry points asking simctl,
    * getting two live devices, and refusing both. Written only where a boot succeeds; never by
    * `ackInput`, which verifies liveness and proves nothing about ownership.
+   *
+   * **The `DeviceAgent.boot`/`shutdown` delegates do not touch this**, and that is deliberate: they
+   * hand a device id straight to simctl without opening a session, so a device they start is not one
+   * this agent is driving. Nothing in the repo calls either — the same position `stream()` is in — so
+   * wiring ownership through them would be a mechanism built for a caller that does not exist. A
+   * future caller that wants both should go through the boot handler rather than around it.
    */
   private readonly ownedDevices = new Set<string>()
   // Last app launched per device (deviceId → bundleId). The XCUITest tree backend
@@ -787,7 +793,11 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
       // — never blocks/affects the video path.
       if (this.audioEnabled()) this.startAudioCapture(state, streamWs, deviceId)
       state.booted = true
-      this.ownedDevices.add(deviceId)   // survives the reconnect that clears the flag above
+      // **"Driving", not "transitioned from off to on".** A tester who picks a simulator that was
+      // already running is choosing the device tapflow should act on, and `simctl boot` is issued on
+      // every path precisely so that case reaches here. Requiring an off→on transition would leave
+      // that device unowned and put the resolvers back to refusing between two live simulators.
+      this.ownedDevices.add(deviceId)
       this.sendMsg({ type: 'device:ready', sessionId, requestId, payload: { deviceId } })
       // The unsolicited report the protocol names on `device:ready`. It follows the ready rather than
       // riding inside it: a tester whose device just came up can arm the toggle in the same breath, and
@@ -852,7 +862,6 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     state.touchHelper?.stop()
     state.touchHelper = null
     state.booted = false
-    this.ownedDevices.delete(deviceId)
     state.streamWs?.close()
     state.streamWs = null
     this.lastBundleIds.delete(deviceId)
@@ -862,6 +871,13 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
 
     try {
       await this.simctl.shutdown(deviceId)
+      // **After the shutdown lands, not with the teardown above.** Everything before this point is
+      // the session's state, which is correct to drop the moment a shutdown is asked for. Ownership
+      // is about the *device*, and a shutdown that throws leaves it running — forgetting it was ours
+      // there would hand an ambiguous choice back to the resolvers for a simulator tapflow is still
+      // driving. `cleanupDeviceState` deliberately does not clear it at all: that path is a relay
+      // disconnect, where the device outlives the session and ownership is the thing worth keeping.
+      this.ownedDevices.delete(deviceId)
       this.sendMsg({
         type: 'device:shutdown-done',
         sessionId,
