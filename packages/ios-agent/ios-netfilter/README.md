@@ -66,9 +66,17 @@ ios-netfilter/
 ## 사용
 
 ```bash
-# 룰 설정 (인자 없으면 빈 집합 = 전부 온라인)
-/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --offline <udid>[,<udid>…]
+B=/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter
+
+$B --install                    # 확장 활성화 + 설정. 릴리스당 한 번, 사람이 한다
+$B --offline <udid>[,<udid>…]   # 룰만 쓴다. 에이전트가 토글마다 부르는 경로
+$B                              # 인자 없음 = 빈 집합 = 전부 온라인
+$B --off                        # 필터 비활성화 (확장은 그대로 둔다)
 ```
+
+**활성화는 설정과 분리돼 있다.** 예전에는 매 실행이 `OSSystemExtensionRequest`를 보냈고, 에이전트가
+토글마다 이걸 부르므로 **설정 문자열 하나 바꾸려고 시스템 확장 설치·교체를 요청**하고 있었다. 불필요한
+데다, 그 요청이 무응답으로 끝나는 실패(exit 6)에 매번 노출된다.
 
 **exit 0은 "거부당하지 않았다"까지다.** 저장이 받아들여졌다는 뜻이고, 실행 중인 provider가 새 룰을
 들고 있다는 뜻은 아니다 — 프레임워크가 `vendorConfiguration`을 provider에 넘기는 것은 그 뒤이고
@@ -82,6 +90,7 @@ ios-netfilter/
 | 3 | preferences 저장 실패 (시스템 설정에서 거절한 경우가 여기) |
 | 4 | 승인 대기 30초 초과 — 시스템 설정에서 승인 후 다시 실행 |
 | 5 | 재부팅해야 새 확장이 뜬다 |
+| 6 | 45초 안에 시스템 확장 관리자가 아무 응답도 안 함 — 에러도 거절도 아니다 |
 
 디바이스가 실제로 오프라인인지는 이 코드가 아니라 시뮬레이터 안에서 dylib이 남긴 verdict로 판단한다.
 
@@ -111,6 +120,24 @@ error 레벨로 로그하고 세는 것이다.
 export DEVELOPMENT_TEAM=<10자리 Team ID>
 ./build.sh
 ```
+
+**교체가 그냥 무응답으로 끝날 수 있다.** `submitRequest`가 반환하고 delegate가 한 번도 안 불린다 —
+에러도 거절도 승인 프롬프트도 없다. 호스트가 45초에 끊고 exit 6을 내는 게 유일하게 이걸 보이게 하는
+장치다.
+
+**원인은 아직 모른다.** 처음엔 누적 14개 / 대기 13개 상태에서 나와서 누적이 원인처럼 보였다. 재부팅으로
+1개가 됐는데 **다음 교체가 똑같이 멈췄고**, `lsregister -f`도 소용없었다. 둘 다 사실이므로 둘 다 적는다.
+
+멈추면 볼 것 두 가지 (해결책은 아니다):
+
+```bash
+systemextensionsctl list | grep -c "waiting to uninstall on reboot"
+# System Settings > General > Login Items & Extensions > Network Extensions
+```
+
+교체마다 이전 버전이 재부팅까지 대기 상태로 남는 건 사실이므로, 편집마다 빌드하지 말고 묶는 편이
+낫다. 자가호스터는 릴리스당 한 번 설치하므로 이걸 만나지 않는다 — `ios-netfilter`를 건드리는 기여자가
+만난다.
 
 `build.sh` 헤더에 one-time 셋업(App ID + NE capability, notarytool 자격증명)이 있다.
 

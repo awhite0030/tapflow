@@ -604,5 +604,26 @@ the replacement when the version matches — keeping the old bundle and the runn
 returns success while nothing changed. xcodegen bakes the version in as a literal, which is why the
 script patches both `Info.plist`s after generating.
 
+**Replacing the extension can simply go unanswered, and that is the thing to know before you start
+iterating on it.** `submitRequest` returns and no delegate method is ever called — not an error, not
+a refusal, not an approval prompt. The host binary bounds it at 45s and exits 6, which is the only
+reason it is visible at all.
+
+**What triggers it is not settled.** It first appeared after a day of rebuilding, with 14 accumulated
+versions and 13 of them `terminated waiting to uninstall on reboot`, so accumulation looked like the
+cause — and this paragraph said so. A restart cleared the list to one, and the next replacement
+stalled identically with nothing queued; `lsregister -f` on the app changed nothing. Both facts are
+recorded rather than one of them being turned into a story.
+
+Two things worth checking when it happens, neither of them a cure:
+
+    systemextensionsctl list | grep -c "waiting to uninstall on reboot"
+    # System Settings > General > Login Items & Extensions > Network Extensions
+
+Every replacement does still leave the displaced version pending until reboot, so batching changes
+into one build is worth doing regardless. **A self-hoster meets none of this** — they install once
+per release. A contributor touching `ios-netfilter` meets it the same afternoon, which is why it is
+here rather than only in an issue.
+
 tapflow does not distribute this yet; #647 is that decision and the install documentation behind it.
 Until then an agent without the extension reports the control unavailable rather than failing.
