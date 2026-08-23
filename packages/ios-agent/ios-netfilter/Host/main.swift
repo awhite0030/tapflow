@@ -54,12 +54,31 @@ private func die(_ code: ExitCode, _ why: String) -> Never {
  */
 private let approvalDeadline: TimeInterval = 120
 
-// TEMP file log — os_log from these processes isn't surfacing in this host's log show. Host is uid 501,
-// so /tmp works here (the sysext, as root, cannot write /tmp — its logs come via the NE framework log).
+/**
+ * The host's log, and **not a temporary one** — it was labelled TEMP while it was a probe and then
+ * shipped, which is how a debugging aid becomes an unbounded file nobody owns.
+ *
+ * It exists because `os_log` from these processes does not surface in this host's `log show`
+ * (measured), and the exit reasons above have nowhere else to go: the agent `exec`s this binary and
+ * a code alone does not say *which* preference failed or what the framework said about it. #639,
+ * which is about reporting layer 1's health, will read from here rather than invent a channel.
+ *
+ * The host runs as uid 501, so `/tmp` is writable here. The system extension is root and cannot
+ * write it; its own lines come through the NE framework log instead.
+ *
+ * **Bounded, because nothing else bounds it.** `arm()` runs on every device boot, so this appends a
+ * handful of lines per boot for as long as the Mac is up — and while macOS clears `/tmp` across
+ * restarts, it does not do so within a session. Rotating at a size the last few runs always fit
+ * inside keeps the file useful for exactly what it is read for: what happened *this* time.
+ */
+private let logSizeLimit = 64 * 1024
+
 private func hlog(_ s: String) {
     os_log("%{public}@", log: log, type: .info, s)
     let url = URL(fileURLWithPath: "/tmp/tapflow-netfilter-host.log")
     guard let line = (s + "\n").data(using: .utf8) else { return }
+    let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+    if (size ?? 0) > logSizeLimit { try? FileManager.default.removeItem(at: url) }
     if let fh = try? FileHandle(forWritingTo: url) { defer { try? fh.close() }; fh.seekToEndOfFile(); fh.write(line) }
     else { try? line.write(to: url) }
 }
