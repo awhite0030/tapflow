@@ -202,6 +202,26 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     ws.send(JSON.stringify(msg))
   }
   private deviceStates = new Map<string, DeviceState>()
+  /**
+   * Devices **this agent booted**, by device id.
+   *
+   * Separate from `DeviceState.booted` because the two answer different questions and have different
+   * lifetimes. `booted` is liveness and is a cache: `initDeviceStates` rebuilds the whole map on
+   * every `agent:registered`, so it does not survive a reconnect. This does — the agent process is
+   * the same one across a reconnect — and it is what says *which* device is tapflow's when a
+   * developer has a second simulator of their own open.
+   *
+   * Without it, a reconnect on a two-simulator desk left the capability entry points asking simctl,
+   * getting two live devices, and refusing both. Written only where a boot succeeds; never by
+   * `ackInput`, which verifies liveness and proves nothing about ownership.
+   *
+   * **The `DeviceAgent.boot`/`shutdown` delegates do not touch this**, and that is deliberate: they
+   * hand a device id straight to simctl without opening a session, so a device they start is not one
+   * this agent is driving. Nothing in the repo calls either — the same position `stream()` is in — so
+   * wiring ownership through them would be a mechanism built for a caller that does not exist. A
+   * future caller that wants both should go through the boot handler rather than around it.
+   */
+  private readonly ownedDevices = new Set<string>()
   // Last app launched per device (deviceId → bundleId). The XCUITest tree backend
   // queries by bundleId; kept outside DeviceState so it survives a relay reconnect
   // (which clears deviceStates) while the app keeps running in the simulator.
@@ -385,6 +405,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
       })
     })
   }
+
 
   disconnect(): void {
     this._stopping = true
@@ -772,6 +793,11 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
       // — never blocks/affects the video path.
       if (this.audioEnabled()) this.startAudioCapture(state, streamWs, deviceId)
       state.booted = true
+      // **"Driving", not "transitioned from off to on".** A tester who picks a simulator that was
+      // already running is choosing the device tapflow should act on, and `simctl boot` is issued on
+      // every path precisely so that case reaches here. Requiring an off→on transition would leave
+      // that device unowned and put the resolvers back to refusing between two live simulators.
+      this.ownedDevices.add(deviceId)
       this.sendMsg({ type: 'device:ready', sessionId, requestId, payload: { deviceId } })
       // The unsolicited report the protocol names on `device:ready`. It follows the ready rather than
       // riding inside it: a tester whose device just came up can arm the toggle in the same breath, and
@@ -845,6 +871,13 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
 
     try {
       await this.simctl.shutdown(deviceId)
+      // **After the shutdown lands, not with the teardown above.** Everything before this point is
+      // the session's state, which is correct to drop the moment a shutdown is asked for. Ownership
+      // is about the *device*, and a shutdown that throws leaves it running — forgetting it was ours
+      // there would hand an ambiguous choice back to the resolvers for a simulator tapflow is still
+      // driving. `cleanupDeviceState` deliberately does not clear it at all: that path is a relay
+      // disconnect, where the device outlives the session and ownership is the thing worth keeping.
+      this.ownedDevices.delete(deviceId)
       this.sendMsg({
         type: 'device:shutdown-done',
         sessionId,
@@ -1662,7 +1695,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
    *  (`AndroidAgent.ts:1429`); these do the same. Throwing beats falling back to simctl's `booted`
    *  alias, which would quietly act on whichever simulator happened to be up. */
   async installApp(appPath: string): Promise<void> {
-    await this.simctl.installApp(this.soleDeviceId(), appPath)
+    await this.simctl.installApp(await this.soleLiveDeviceId(), appPath)
   }
   // ── network control (#607) ─────────────────────────────────────────────────
   //
@@ -1756,7 +1789,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
   }
 
   async launchApp(bundleId: string): Promise<void> {
-    await this.simctl.launchApp(this.soleDeviceId(), bundleId)
+    await this.simctl.launchApp(await this.soleLiveDeviceId(), bundleId)
   }
 
   /** The one booted session, or undefined when there is no unambiguous answer. Callers that can
@@ -1779,6 +1812,25 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     return live[0]!
   }
 
+  /**
+   * **The synchronous resolver, and `stream()` is the only caller left.**
+   *
+   * Everything else that resolves a device for a capability call awaits `soleLiveDeviceState`,
+   * which asks simctl rather than trusting `booted` — a flag `initDeviceStates` clears on every
+   * reconnect. `stream()` returns a `ReadableStream` and is part of `DeviceAgent`, so it cannot
+   * await without changing that interface across both agents.
+   *
+   * **It is deliberately left with the stale flag, and nothing was added to paper over that.** A
+   * refresh that marked every simulator simctl reports as booted was written and removed: it also
+   * marked the ones a developer had open in Simulator.app, which destroys the very thing `booted`
+   * disambiguates by — *the device this agent booted* — and made all the callers above refuse with
+   * "2 booted devices" on the common two-simulator desk. Fire-and-forget, it could also resurrect a
+   * flag a `device:shutdown` had just cleared, with no path back.
+   *
+   * That was a mechanism for a method **nothing in this repo calls**. A future caller needs the
+   * interface decision, not a guess: make `stream()` async across `DeviceAgent`, or give it an
+   * explicit device argument.
+   */
   private soleDeviceState(): DeviceState {
     // `deviceStates` holds one entry per *registered* simulator, not per running one — the relay
     // opens a session for every device in `agent:register` and this Mac reports dozens. Taking the
@@ -1797,32 +1849,41 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
    * not only the first connection. So after a relay restart every flag reads false while the
    * simulators are still running, and a resolver that trusts the cache refuses a live device until
    * something else happens to refresh it. On the wire path that is `deviceFor`; these two entry
-   * points have no such path, so they are the ones that stay broken.
+   * points have no session id to work from, so without this they stay broken.
    *
    * Only the empty case pays for the `listDevices` call: a cache that already names a booted device
    * is not wrong, just possibly incomplete, and the ambiguity refusal is stricter for having fewer
    * candidates rather than looser.
    *
-   * **The other five entry points still read the cache directly**, and the fix cannot simply be
-   * moved into `soleDeviceState`: `stream()` is synchronous and is part of `DeviceAgent`, so making
-   * the resolver async is an interface change rather than a repair. That is filed separately.
+   * **Every entry point that can await now comes through here** — the network pair, `installApp`,
+   * `launchApp`, `queryUITree`, `screenshot`, `openUrl`. `stream()` cannot, and `soleDeviceState`
+   * above says what that costs and why nothing was bolted on to hide it.
    */
-  private async soleLiveDeviceId(): Promise<string> {
+  private async soleLiveDeviceState(): Promise<DeviceState> {
     const cached = [...this.deviceStates.values()].filter((s) => s.booted)
-    if (cached.length > 0) return this.soleOf(cached).deviceId
+    if (cached.length > 0) return this.soleOf(cached)
 
     const booted = new Set(
       (await this.simctl.listDevices()).filter((d) => d.status === 'booted').map((d) => d.id),
     )
-    const live = this.soleOf([...this.deviceStates.values()].filter((s) => booted.has(s.deviceId)))
+    const up = [...this.deviceStates.values()].filter((s) => booted.has(s.deviceId))
+    // **Ownership narrows liveness, and only when it can.** A developer with their own simulator open
+    // makes two devices live, and asking simctl alone would find both and refuse both — the reconnect
+    // case this whole path exists for. `ownedDevices` survives the reconnect and says which one is
+    // tapflow's. When it says nothing — a fresh agent process, or devices booted entirely outside
+    // tapflow — there is no ownership to apply and the refusal is the honest answer.
+    const mine = up.filter((s) => this.ownedDevices.has(s.deviceId))
+    const live = this.soleOf(mine.length > 0 ? mine : up)
     live.booted = true   // same cache write `ackInput` makes, so the next call skips simctl
-    return live.deviceId
+    return live
   }
 
-  private soleDeviceId(): string { return this.soleDeviceState().deviceId }
+  private async soleLiveDeviceId(): Promise<string> {
+    return (await this.soleLiveDeviceState()).deviceId
+  }
 
   async queryUITree(): Promise<UIElement[]> {
-    const state = this.soleDeviceState()
+    const state = await this.soleLiveDeviceState()
     return this.readUITree(state)
   }
 
@@ -1911,7 +1972,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
   }
   // async, not a bare `return`: `soleDeviceId` throws, and a synchronous throw out of a method
   // typed `Promise<T>` skips every caller's `.catch`.
-  async screenshot(): Promise<Buffer> { return this.simctl.screenshot(this.soleDeviceId()) }
+  async screenshot(): Promise<Buffer> { return this.simctl.screenshot(await this.soleLiveDeviceId()) }
   stream(): ReadableStream<Buffer> {
     const first = this.soleDeviceState()
     // DeviceAgent.stream() is the platform-neutral Buffer contract; unwrap StreamFrame payloads.
@@ -1936,8 +1997,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     return Promise.resolve()
   }
 
-  openUrl(url: string): Promise<void> {
-    const first = this.soleDeviceState()
-    return this.simctl.openUrl(first.deviceId, url)
+  async openUrl(url: string): Promise<void> {
+    return this.simctl.openUrl(await this.soleLiveDeviceId(), url)
   }
 }
