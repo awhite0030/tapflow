@@ -1,9 +1,11 @@
 import { execFile } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { join } from 'path'
 import { promisify } from 'util'
 import type { NetworkStatePayload } from '@tapflowio/agent-core'
 
 const execFileAsync = promisify(execFile)
+const NETHOOK_DYLIB = join(import.meta.dirname, '..', 'bin', 'libtapflow-nethook.dylib')
 
 /**
  * Take one simulator off the network, or put it back (#607).
@@ -32,29 +34,65 @@ export interface SimulatorNetworkOptions {
   conditionDir?: string
   /** Where the dylib writes what its self-check found. */
   verdictDir?: string
+  /** The injected library. Overridable so a test never arms a real simulator. */
+  nethookDylib?: string
 }
 
 const DEFAULT_HOST_BINARY = '/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter'
 
-interface StatusBarSetter {
+/** The simctl calls this needs. Narrower than `SimctlWrapper` so a test can stand in for it. */
+interface SimctlForNetwork {
   setStatusBarOffline(udid: string, offline: boolean): Promise<void>
+  setSimulatorEnv(udid: string, name: string, value: string): Promise<void>
 }
 
 export class SimulatorNetwork {
   private readonly hostBinary: string
   private readonly conditionDir: string
   private readonly verdictDir: string
+  private readonly dylib: string
   /** Every simulator currently offline. The filter takes the whole set on each call — it has no
    *  add/remove — so this is the authority for what the rule should say, not a cache of it. */
   private readonly offline = new Set<string>()
 
   constructor(
-    private readonly simctl: StatusBarSetter,
+    private readonly simctl: SimctlForNetwork,
     opts: SimulatorNetworkOptions = {},
   ) {
     this.hostBinary = opts.filterHostBinary ?? DEFAULT_HOST_BINARY
     this.conditionDir = opts.conditionDir ?? '/tmp'
     this.verdictDir = opts.verdictDir ?? '/tmp'
+    this.dylib = opts.nethookDylib ?? NETHOOK_DYLIB
+  }
+
+  /**
+   * Put the injection in place for a device that has just booted.
+   *
+   * **Clearing comes first, and it is not tidiness.** The condition file and the verdict both outlive
+   * the simulator that wrote them — they are on the host, keyed only by udid — so a device that boots
+   * into a leftover condition file is offline before anyone asked, and a leftover verdict answers for
+   * hooks that belong to a process which no longer exists.
+   *
+   * The library is armed here and the target app is not, because the target is not known yet. Until
+   * `target()` names one the dylib loads into every process in the simulator and hooks none of them,
+   * which is its designed default.
+   */
+  async arm(udid: string): Promise<void> {
+    this.offline.delete(udid)
+    this.setCondition(udid, false)
+    rmSync(this.verdictPath(udid), { force: true })
+    await this.simctl.setSimulatorEnv(udid, 'DYLD_INSERT_LIBRARIES', this.dylib)
+  }
+
+  /**
+   * Name the app the hooks may touch.
+   *
+   * **Must be called before the app is launched.** dyld reads the environment when a process starts,
+   * so naming the target afterwards arms the *next* launch and leaves the running one unhooked —
+   * reporting `available: true` for an app that would never see a path update.
+   */
+  async target(udid: string, bundleId: string): Promise<void> {
+    await this.simctl.setSimulatorEnv(udid, 'TAPFLOW_TARGET_BUNDLE', bundleId)
   }
 
   /**
@@ -160,8 +198,12 @@ export class SimulatorNetwork {
    * reboot so the boot re-arms it. Failed means the dylib ran and proved by trying that its hooks did
    * not take, which no amount of relaunching will change.
    */
+  private verdictPath(udid: string): string {
+    return `${this.verdictDir}/tapflow-nethook-${udid}.json`
+  }
+
   private readVerdict(udid: string): 'ok' | 'failed' | 'missing' {
-    const path = `${this.verdictDir}/tapflow-nethook-${udid}.json`
+    const path = this.verdictPath(udid)
     if (!existsSync(path)) return 'missing'
     try {
       const raw = JSON.parse(readFileSync(path, 'utf8')) as { installed?: unknown }

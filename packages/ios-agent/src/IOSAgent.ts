@@ -5,7 +5,7 @@ import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { spawnSync } from 'child_process'
 import { WebSocket } from 'ws'
-import type { BootAbandonReason, ClipboardErrorPayload, Device, DeviceAgent, UIElement } from '@tapflowio/agent-core'
+import type { BootAbandonReason, ClipboardErrorPayload, Device, DeviceAgent, NetworkControlCapability, NetworkStatePayload, UIElement } from '@tapflowio/agent-core'
 import { createLogger, PlatformError, ValidationError, bootAbandonMessage, BOOT_NO_SESSION_STATE } from '@tapflowio/agent-core'
 import type {
   AgentControlOutbound, InputErrorReason, ClipboardReplyBody, OpenUrlReplyBody,
@@ -17,7 +17,11 @@ const logger = createLogger('ios-agent')
 // Typed so a typo cannot ship silently — the viewer gates the whole clipboard bridge on this.
 // `full-reset` is honoured in `handleDeviceBoot`, which shuts a running device down before
 // `simctl erase` (which refuses anything but a shut-down device) and boots it again.
-const AGENT_CAPABILITIES: AgentCapability[] = ['clipboard', 'full-reset']
+// `network-control` claims what the other two claim: this agent has the code. Whether the injection
+// actually took is per device and per app, and `network:state.available` carries that — the split the
+// protocol documents. Added last, after the handler and the boot-time arming, because the string on
+// its own is what puts a control on screen.
+const AGENT_CAPABILITIES: AgentCapability[] = ['clipboard', 'full-reset', 'network-control']
 
 // Human prose for each reason. Not in `@tapflowio/protocol`: that package's main entry must stay
 // runtime-free so it erases under `import type` and never reaches the dashboard bundle — a lookup
@@ -66,6 +70,7 @@ import {
 } from '@tapflowio/agent-core/utils'
 import type { AudioFrame } from '@tapflowio/agent-core'
 import { SimctlWrapper, isDeviceMissingError, ClipboardTooLargeError, firstLine } from './SimctlWrapper.js'
+import { SimulatorNetwork } from './SimulatorNetwork.js'
 import {
   MAX_CLIPBOARD_BYTES, clipboardByteLength,
   CLIPBOARD_SENTINEL_PREFIX as SENTINEL_PREFIX, isClipboardSentinel as isSentinel,
@@ -153,8 +158,9 @@ interface DeviceState {
   audioVolume: number
 }
 
-export class IOSAgent implements DeviceAgent {
+export class IOSAgent implements DeviceAgent, NetworkControlCapability {
   private readonly simctl: SimctlWrapper
+  private readonly network: SimulatorNetwork
   private readonly fps: number
   private readonly intervalMs: number | undefined
   private readonly reconnectDelays: number[]
@@ -216,6 +222,7 @@ export class IOSAgent implements DeviceAgent {
       throw new PlatformError('IOSAgent requires macOS (xcrun simctl is macOS-only)')
     }
     this.simctl = simctl ?? new SimctlWrapper()
+    this.network = new SimulatorNetwork(this.simctl)
     this.fps = options.fps ?? 30
     this.intervalMs = options.intervalMs
     this.reconnectDelays = options.reconnectDelays ?? [1000, 2000, 4000, 8000, 16000, 30000]
@@ -434,6 +441,13 @@ export class IOSAgent implements DeviceAgent {
   }
 
   private cleanupDeviceState(state: DeviceState): void {
+    // Drop this device out of the filter rule. The rule lives on the host and is keyed only by udid,
+    // so a simulator that goes away while offline would otherwise keep its udid named there for the
+    // rest of the Mac's uptime — and the next boot of that same device would come up offline with
+    // nothing on screen saying why.
+    void this.network.forget(state.deviceId).catch((e: unknown) => {
+      logger.warn('could not clear the network rule for a retired device:', (e as Error).message)
+    })
     void state.streamReader?.cancel()
     state.streamReader = null
     state.captureStreamer = null // reader.cancel() kills the helper proc; drop the ref so a stale requestKeyframe() no-ops
@@ -716,6 +730,13 @@ export class IOSAgent implements DeviceAgent {
       // twice a second against a device that is now deliberately off — for the rest of the deadline,
       // with nothing left that wants the answer.
       const bootedDevice = await this.simctl.waitUntilBooted(deviceId, { isStale: () => seq !== state.bootSeq })
+      // Arm the network injection while nothing is running on the device yet — dyld reads the
+      // environment at process start, so anything launched before this is unhooked for its whole life.
+      // Best-effort: the network toggle is opt-in and a device that cannot be armed says so through
+      // `network:state.available`, which is a better answer than a boot that fails for it.
+      await this.network.arm(deviceId).catch((e: unknown) => {
+        logger.warn('could not arm the network injection:', (e as Error).message)
+      })
       // Another await — a multi-second one — and `sendChromeData` below starts a helper process. A
       // shutdown or a newer boot arriving in this gap would otherwise get a helper installed for the
       // device it is taking down — and one that revives itself, so the stale reference outlives the
@@ -736,6 +757,10 @@ export class IOSAgent implements DeviceAgent {
       if (this.audioEnabled()) this.startAudioCapture(state, streamWs, deviceId)
       state.booted = true
       this.sendMsg({ type: 'device:ready', sessionId, requestId, payload: { deviceId } })
+      // The unsolicited report the protocol names on `device:ready`. It follows the ready rather than
+      // riding inside it: a tester whose device just came up can arm the toggle in the same breath, and
+      // a boot that armed nothing still has to say so rather than leaving the control blank.
+      this.reportNetworkState(sessionId)
 
       // Sync AppleKeyboards after ready — fire-and-forget so streaming isn't delayed.
       // hw=Automatic lets the hardware layout follow the active input source on LANG1/CapsLock.
@@ -982,7 +1007,12 @@ export class IOSAgent implements DeviceAgent {
           respond({ type: 'app:launch-error', message: 'No booted device' })
           break
         }
-        this.simctl.launchApp(launchState.deviceId, bundleId)
+        // The target is named BEFORE the launch, and the order is the whole point: dyld reads the
+        // environment when the process starts, so naming it afterwards arms the next launch and leaves
+        // this one unhooked while `available` would still say true.
+        this.network.target(launchState.deviceId, bundleId)
+          .catch((e: unknown) => logger.warn('could not name the network target:', (e as Error).message))
+          .then(() => this.simctl.launchApp(launchState.deviceId, bundleId))
           .then(() => {
             // Track the foreground app so ui:tree:request can query it via XCUITest.
             this.lastBundleIds.set(launchState.deviceId, bundleId)
@@ -1295,6 +1325,28 @@ export class IOSAgent implements DeviceAgent {
       // cannot know when the key actually lands (a visible software keyboard makes this path
       // await hideSoftwareKeyboard first), and reading too early returns the PREVIOUS
       // pasteboard — a stale value the user would never notice.
+      case 'network:set': {
+        const requestId = this.correlatorOf(msg)
+        if (requestId === null) break
+        // `?? {}` and a re-check of a field the relay's schema already requires: this case owes a
+        // reply, and a cast that dereferences a missing payload throws into a dispatch that swallows
+        // it — answering nothing at all, the one failure a requester cannot tell from a hung device.
+        const { offline } = (msg.payload ?? {}) as { offline?: boolean }
+        if (typeof offline !== 'boolean') {
+          this.sendMsg({
+            type: 'network:error', sessionId: msg.sessionId, requestId,
+            message: 'network:set payload must carry a boolean `offline`.',
+          })
+          break
+        }
+        void this.handleNetworkSet(msg.sessionId, offline, requestId)
+        break
+      }
+      // The relay asks on a viewer's re-join (#614). Uncorrelated both ways: the reply is a report and
+      // nothing is waiting on it, so a session with no booted device answers nothing at all.
+      case 'network:request-state':
+        this.reportNetworkState(msg.sessionId)
+        break
       case 'clipboard:read': {
         // `requestId: string`, matching the screenshot and ui:tree casts a few cases below — clipboard was
         // the only one reading it as optional, for the same wire guarantee. `ClipboardRequest.requestId` is
@@ -1586,6 +1638,64 @@ export class IOSAgent implements DeviceAgent {
   async installApp(appPath: string): Promise<void> {
     await this.simctl.installApp(this.soleDeviceId(), appPath)
   }
+  // ── network control (#607) ─────────────────────────────────────────────────
+  //
+  // iOS has no airplane mode to ask for, so "offline" is three mechanisms applied together — see
+  // `SimulatorNetwork`, which owns the ordering. What lives here is the wire: which device a request
+  // means, and what the session is told afterwards.
+
+  /** The device a session is driving, or undefined when nothing is booted. */
+  private deviceFor(sessionId: string): string | undefined {
+    return this.deviceStates.get(sessionId)?.deviceId
+  }
+
+  /**
+   * Send the current state to a session.
+   *
+   * Uncorrelated on purpose: this answers `device:ready` and a viewer's re-join, neither of which is a
+   * request anyone is waiting on. Silent with no device, for the same reason `network:error` would be
+   * addressed to nobody.
+   */
+  private reportNetworkState(sessionId: string): void {
+    const deviceId = this.deviceFor(sessionId)
+    if (!deviceId) return
+    this.sendMsg({ type: 'network:state', sessionId, payload: this.network.state(deviceId) })
+  }
+
+  private async handleNetworkSet(sessionId: string, offline: boolean, requestId: string): Promise<void> {
+    const deviceId = this.deviceFor(sessionId)
+    if (!deviceId) {
+      this.sendMsg({
+        type: 'network:error', sessionId, requestId,
+        message: 'No booted device — boot one before changing its network.',
+      })
+      return
+    }
+    try {
+      const payload = await this.network.setOffline(deviceId, offline)
+      this.sendMsg({ type: 'network:state', sessionId, requestId, payload })
+    } catch (e: unknown) {
+      this.sendMsg({
+        type: 'network:error', sessionId, requestId,
+        message: e instanceof Error ? e.message : String(e),
+      })
+    }
+  }
+
+  async setNetworkOffline(offline: boolean): Promise<NetworkStatePayload> {
+    const sessionId = this.deviceStates.keys().next().value
+    const deviceId = sessionId ? this.deviceFor(sessionId) : undefined
+    if (!deviceId) throw new PlatformError('No booted device')
+    return this.network.setOffline(deviceId, offline)
+  }
+
+  async networkState(): Promise<NetworkStatePayload> {
+    const sessionId = this.deviceStates.keys().next().value
+    const deviceId = sessionId ? this.deviceFor(sessionId) : undefined
+    if (!deviceId) throw new PlatformError('No booted device')
+    return this.network.state(deviceId)
+  }
+
   async launchApp(bundleId: string): Promise<void> {
     await this.simctl.launchApp(this.soleDeviceId(), bundleId)
   }

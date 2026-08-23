@@ -29,7 +29,11 @@ describe('SimulatorNetwork', () => {
   let dir: string
   let log: string
   let statusBar: string[]
-  let simctl: { setStatusBarOffline: (udid: string, offline: boolean) => Promise<void> }
+  let env: string[]
+  let simctl: {
+    setStatusBarOffline: (udid: string, offline: boolean) => Promise<void>
+    setSimulatorEnv: (udid: string, name: string, value: string) => Promise<void>
+  }
 
   const verdictPath = (udid: string) => join(dir, `tapflow-nethook-${udid}.json`)
   const conditionPath = (udid: string) => join(dir, `tapflow-offline-${udid}`)
@@ -39,6 +43,7 @@ describe('SimulatorNetwork', () => {
       filterHostBinary: hostBinary ?? fakeHostBinary(dir, log),
       conditionDir: dir,
       verdictDir: dir,
+      nethookDylib: '/fake/libtapflow-nethook.dylib',
     })
 
   /** The hooks reported themselves installed — the ordinary case for a device with an app running. */
@@ -48,7 +53,11 @@ describe('SimulatorNetwork', () => {
     dir = mkdtempSync(join(tmpdir(), 'tapflow-net-'))
     log = join(dir, 'calls.log')
     statusBar = []
+    env = []
     simctl = {
+      setSimulatorEnv: vi.fn(async (udid: string, name: string, value: string) => {
+        env.push(`${udid}:${name}=${value}`)
+      }),
       setStatusBarOffline: vi.fn(async (udid: string, offline: boolean) => {
         // Appended to the same log as the filter rule so the ORDER between layers is observable —
         // that ordering is this class's actual contract, not an implementation detail.
@@ -166,6 +175,47 @@ describe('SimulatorNetwork', () => {
     // `offline` describes the device, not the request. Reporting false here would draw "online" over
     // an app that can reach nothing.
     expect(net.state(UDID)).toEqual({ offline: true, available: false, reason: 'not-armed' })
+  })
+
+  describe('arm', () => {
+    it('inserts the library and clears what a previous boot left behind', async () => {
+      // Both files live on the host and are keyed only by udid, so they outlive the simulator that
+      // wrote them: a device booting into a leftover condition file is offline before anyone asked.
+      writeFileSync(conditionPath(UDID), '')
+      writeFileSync(verdictPath(UDID), JSON.stringify({ installed: true }))
+      const net = make()
+
+      await net.arm(UDID)
+
+      expect(existsSync(conditionPath(UDID))).toBe(false)
+      expect(existsSync(verdictPath(UDID))).toBe(false)
+      expect(env).toEqual([`${UDID}:DYLD_INSERT_LIBRARIES=/fake/libtapflow-nethook.dylib`])
+    })
+
+    it('does not name a target app, because none is known yet at boot', async () => {
+      const net = make()
+      await net.arm(UDID)
+      expect(env.some(e => e.includes('TAPFLOW_TARGET_BUNDLE'))).toBe(false)
+    })
+
+    it('forgets an offline device it is re-arming', async () => {
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+
+      await net.arm(UDID)
+
+      // The device rebooted; whatever it was before, it is online now and the rule has to agree.
+      expect(net.state(UDID).offline).toBe(false)
+    })
+  })
+
+  describe('target', () => {
+    it('names the app the hooks may touch', async () => {
+      const net = make()
+      await net.target(UDID, 'com.example.app')
+      expect(env).toEqual([`${UDID}:TAPFLOW_TARGET_BUNDLE=com.example.app`])
+    })
   })
 
   it('drops a forgotten device out of the rule', async () => {
