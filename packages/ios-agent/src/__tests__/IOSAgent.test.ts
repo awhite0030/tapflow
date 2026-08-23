@@ -112,7 +112,7 @@ interface IOSAgentInternals {
   _reconnectTimer: ReturnType<typeof setTimeout> | null
   _reconnectAttempt: number
   _scheduleReconnect(): void
-  deviceStates: Map<string, { booted: boolean }>
+  deviceStates: Map<string, { booted: boolean; deviceId: string }>
 }
 const internals = (agent: IOSAgent): IOSAgentInternals => agent as unknown as IOSAgentInternals
 
@@ -2411,6 +2411,137 @@ describe('IOSAgent', () => {
 
       agent.disconnect()
       browser.close()
+    })
+  })
+
+  describe('capability entry points after a reconnect (#646)', () => {
+    // `initDeviceStates` runs on `agent:registered`, which fires on every reconnect — so `booted` is
+    // false for simulators that never stopped running. Every entry point that resolved a device from
+    // that flag alone refused a live device until an input or a boot happened to correct it.
+
+    it('resolves a device for a non-network entry point when the cache says nothing is up', async () => {
+      // `screenshot` stands for the five that can await. Before the fix it threw
+      // `no booted device — call connect() first` against a running simulator.
+      //
+      // Mutation: reverting `screenshot` to the synchronous resolver fails here.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      await agent.connect(`ws://localhost:${port}`)
+      for (const state of internals(agent).deviceStates.values()) state.booted = false
+
+      await expect(agent.screenshot()).resolves.toBeInstanceOf(Buffer)
+
+      agent.disconnect()
+    })
+
+    it('still refuses when simctl agrees the device is down', async () => {
+      // The control. Without it the test above passes on a resolver that stopped checking anything.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(false))
+      await agent.connect(`ws://localhost:${port}`)
+
+      await expect(agent.screenshot()).rejects.toThrow(/no booted device/i)
+
+      agent.disconnect()
+    })
+
+    it('still resolves after a reconnect when a second simulator is also live', async () => {
+      // **The case the simctl fallback alone could not answer.** After a reconnect every `booted`
+      // flag is false, so the fallback asks simctl — and on a desk with the developer's own
+      // simulator open it gets two live devices and refuses both. The five entry points stayed
+      // broken in exactly the situation the fallback was added for.
+      //
+      // `ownedDevices` survives the map rebuild because the agent process does, so the boot this
+      // agent performed still names its device.
+      //
+      // Mutation: dropping the `ownedDevices` filter from `soleLiveDeviceState` fails here with
+      // "2 booted devices".
+      const simctl = mockSimctl(true)
+      ;(simctl.listDevices as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' },
+        { id: 'dev-2', name: 'iPhone 16', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' },
+      ])
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-own', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:ready')
+
+      // What a reconnect does: the map is rebuilt and every liveness flag goes with it.
+      for (const state of internals(agent).deviceStates.values()) state.booted = false
+
+      await expect(agent.screenshot()).resolves.toBeInstanceOf(Buffer)
+      expect(simctl.screenshot).toHaveBeenCalledWith('dev-1')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('keeps ownership when the shutdown itself fails', async () => {
+      // Ownership is about the device, and a shutdown that throws leaves it running. Clearing it with
+      // the session teardown — which is right to drop the moment a shutdown is asked for — handed an
+      // ambiguous choice back to the resolvers for a simulator tapflow was still driving.
+      //
+      // Mutation: moving the `ownedDevices.delete` back above the `await` fails here.
+      const simctl = mockSimctl(true)
+      ;(simctl.shutdown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('device busy'))
+      ;(simctl.listDevices as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' },
+        { id: 'dev-2', name: 'iPhone 16', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' },
+      ])
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-sf', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:ready')
+
+      browser.send(JSON.stringify({ type: 'device:shutdown', requestId: 'rq-sf2', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await vi.waitFor(() => expect(simctl.shutdown).toHaveBeenCalledWith('dev-1'), { timeout: 2000 })
+
+      // The device is still up, so it is still the one tapflow means.
+      for (const state of internals(agent).deviceStates.values()) state.booted = false
+      await expect(agent.screenshot()).resolves.toBeInstanceOf(Buffer)
+      expect(simctl.screenshot).toHaveBeenCalledWith('dev-1')
+
+      agent.disconnect()
+      browser.close()
+    })
+
+    it('prefers the device this agent booted when another simulator is also up', async () => {
+      // **The case both of the author's mutations were blind to: two simulators.** A developer with
+      // Simulator.app open has a second device booted that tapflow did not boot, and `deviceStates`
+      // holds an entry for it because the agent registers every device it can see.
+      //
+      // `booted` is what tells those apart — it means *this agent booted it* — so the cached branch
+      // finds exactly one and answers. A "refresh" that marked everything simctl calls booted was
+      // written, and removed: it erased that distinction and made all five refuse with
+      // "2 booted devices" on an ordinary desk, permanently, with no path back.
+      //
+      // Mutation: marking both states booted before the call fails here, which is what re-adding
+      // such a refresh would do.
+      const simctl = mockSimctl(true)
+      ;(simctl.listDevices as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' },
+        { id: 'dev-2', name: 'iPhone 16', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' },
+      ])
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+
+      const states = [...internals(agent).deviceStates.values()]
+      expect(states.length, 'both devices should be registered').toBe(2)
+      // Only the one this agent booted carries the flag, which is the contract `device:boot` sets.
+      states.forEach((st, i) => { st.booted = i === 0 })
+      const mine = (states[0] as unknown as { deviceId: string }).deviceId
+
+      await expect(agent.screenshot()).resolves.toBeInstanceOf(Buffer)
+      expect(simctl.screenshot).toHaveBeenCalledWith(mine)
+
+      agent.disconnect()
     })
   })
 
