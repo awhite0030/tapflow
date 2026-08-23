@@ -1733,18 +1733,26 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     }
   }
 
+  /**
+   * The two capability entry points, which resolve their device the way every other one on this class
+   * does — **`soleDeviceState`, not the first key in the map.**
+   *
+   * `deviceStates` holds one entry per *registered* simulator and this Mac reports dozens, so
+   * `keys().next()` is whichever simctl listed first, almost always a shut-down one. That was wrong
+   * before the liveness check and became a hard failure after it: `deviceFor` answers `undefined` for
+   * a shut-down device, so both of these threw `No booted device` while a booted device sat right
+   * there. `soleDeviceState` filters on `booted` and refuses to guess between two, which is the
+   * policy this class already settled and wrote down — these were simply not using it.
+   *
+   * `deviceFor` stays for the wire path, where the caller names a session and the only open question
+   * is whether that device is up.
+   */
   async setNetworkOffline(offline: boolean): Promise<NetworkStatePayload> {
-    const sessionId = this.deviceStates.keys().next().value
-    const deviceId = sessionId ? await this.deviceFor(sessionId) : undefined
-    if (!deviceId) throw new PlatformError('No booted device')
-    return this.network.setOffline(deviceId, offline)
+    return this.network.setOffline(this.soleDeviceState().deviceId, offline)
   }
 
   async networkState(): Promise<NetworkStatePayload> {
-    const sessionId = this.deviceStates.keys().next().value
-    const deviceId = sessionId ? await this.deviceFor(sessionId) : undefined
-    if (!deviceId) throw new PlatformError('No booted device')
-    return this.network.state(deviceId)
+    return this.network.state(this.soleDeviceState().deviceId)
   }
 
   async launchApp(bundleId: string): Promise<void> {

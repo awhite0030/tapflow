@@ -4,8 +4,19 @@
 시뮬레이터의 flow를 drop하고, 나머지는 손대지 않고 통과시킨다. **시뮬 단위** 격리를 flow의 프로세스
 계보로 해낸다 — RocketSim은 bundle id로만 필터해 같은 앱 두 시뮬을 구분하지 못한다.
 
-설계 전문: [`.work/2026-08-22-ios-transparent-proxy-plan.md`](../../../.work/2026-08-22-ios-transparent-proxy-plan.md).
-왜 다른 방법이 전부 안 되는지: [`.work/2026-08-22-nefilter-content-filter-research.md`](../../../.work/2026-08-22-nefilter-content-filter-research.md).
+**왜 content filter인가** — 처음 만든 건 `NETransparentProxyProvider`였고, 시뮬레이터 flow를 하나도
+못 봤다(실측: handler에 217건이 도달했고 전부 호스트 프로세스). `NEFilterDataProvider`는 본다.
+
+**왜 호스트만으로는 안 되는가** — `handleNewFlow`의 `.drop()`은 **새 flow에만** 걸린다. `URLSession`의
+keep-alive 연결은 새 flow를 안 만들어서 계속 통신한다. `filterDataVerdict`로 데이터 계층을 붙잡아
+보려 했으나 양쪽 설정 다 못 쓴다 — peek 8192는 데이터 콜백 0건, peek 1은 40초에 815,869건(1바이트씩)
+이면서 앱의 재사용 연결에서는 outbound 콜백이 한 번도 안 왔다. Apple DTS도 명시적이다: 허용한 연결은
+되돌릴 수 없다. 그래서 기존 연결 절단은 호스트가 아니라 주입된 dylib이 앱 프로세스 안에서 한다.
+
+**왜 fishhook이 아니라 inline patch인가** — fishhook은 Mach-O의 indirect symbol pointer를 다시 쓰는데,
+dyld shared cache **밖의** 이미지에만 닿는다. 실제 `.app`에서 측정: 시스템 프레임워크는 서로를 캐시
+안에서 direct branch로 부르므로 socket 계층도 path 계층도 안 잡혔다. 잡힌 것처럼 보인 건 우리 dylib
+자신의 import였고, 그게 첫 self-check가 false positive였던 이유다. 근거는 `src/inline-hook.h`에 있다.
 
 > **transparent proxy가 아니다.** `NETransparentProxyProvider`로 먼저 만들었고, 실측 결과 시뮬레이터
 > 앱의 flow를 **하나도 보지 못했다** — `handleNewFlow`에 잡힌 217건이 전부 호스트 macOS 프로세스였다.
@@ -29,7 +40,7 @@ proxy."* ([forums/710166](https://developer.apple.com/forums/thread/710166)). �
 
 ## 구조
 
-```
+```text
 ios-netfilter/
   project.yml                    # xcodegen (xctest-runner와 같은 모델)
   TapflowNetFilter.xcodeproj/    # committed (runtime에 xcodegen 안 돌린다)

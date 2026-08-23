@@ -81,7 +81,27 @@ static BOOL tf_is_target_app(void) {
   return me != nil && [me isEqualToString:@(target)];
 }
 
+/**
+ * The simulator this process belongs to, or `NULL`.
+ *
+ * **Everything this library writes is keyed by it, so without it there is nothing safe to do.** The
+ * host's `/tmp` is the same `/tmp` inside every simulator on the Mac, and both the condition file and
+ * the verdict used to fall back to a literal `"unknown"` when the variable was missing — one shared
+ * path for every session, which is precisely the collision the udid exists to prevent. A fallback
+ * that defeats the invariant its own doc block states is worse than no fallback.
+ *
+ * CoreSimulator sets this in every process it launches, so the absence is not a case anyone has seen.
+ * It is refused rather than papered over because this file's rule is that a hook which cannot be
+ * installed correctly is not installed.
+ */
+static const char *tf_udid(void) {
+  const char *udid = getenv("SIMULATOR_UDID");
+  return (udid != NULL && *udid != '\0') ? udid : NULL;
+}
+
 static BOOL tf_should_activate(void) {
+  // Before anything else: no udid means no per-simulator namespace, and this library has no other.
+  if (tf_udid() == NULL) return NO;
   if (tf_is_target_app()) return YES;
 
   const char *target = getenv("TAPFLOW_TARGET_BUNDLE");
@@ -113,8 +133,9 @@ static const char *tf_condition_path(void) {
   static char path[PATH_MAX];
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    const char *udid = getenv("SIMULATOR_UDID");
-    snprintf(path, sizeof(path), "/tmp/tapflow-offline-%s", udid && *udid ? udid : "unknown");
+    // `tf_should_activate` has already refused a process with no udid, so this cannot be NULL by
+    // the time anything calls it.
+    snprintf(path, sizeof(path), "/tmp/tapflow-offline-%s", tf_udid());
   });
   return path;
 }
@@ -136,7 +157,22 @@ static BOOL tf_offline(void) {
 // that every other process reads.
 static atomic_bool g_forced_offline = ATOMIC_VAR_INIT(false);
 
+/**
+ * **"Every hook, or none" — the half that the loop below could not deliver on its own.**
+ *
+ * The install refuses as a set, but a refusal on the second target cannot undo the first: there is
+ * no uninstall, by design, so a partially patched process keeps whatever went in. That left
+ * `getaddrinfo` permanently live in a process whose verdict says `installed:false` — the agent
+ * reporting that layer 2 does not work while a piece of it quietly does.
+ *
+ * The patch cannot be removed, so the replacement is neutered instead: until this is set, every
+ * replacement behaves as the function it replaced. Set once, after the whole set is in.
+ */
+static atomic_bool g_hooks_live = ATOMIC_VAR_INIT(false);
+
 static BOOL tf_blocking(void) {
+  // A partially installed set never blocks anything. See `g_hooks_live`.
+  if (!atomic_load_explicit(&g_hooks_live, memory_order_acquire)) return NO;
   return atomic_load_explicit(&g_forced_offline, memory_order_relaxed) || tf_offline();
 }
 
@@ -442,9 +478,8 @@ static BOOL tf_self_check(void) {
  * different things, and only one of them is "no app has run yet".
  */
 static void tf_write_verdict(BOOL ok) {
-  const char *udid = getenv("SIMULATOR_UDID");
   char path[PATH_MAX];
-  snprintf(path, sizeof(path), "/tmp/tapflow-nethook-%s.json", udid && *udid ? udid : "unknown");
+  snprintf(path, sizeof(path), "/tmp/tapflow-nethook-%s.json", tf_udid());
 
   NSString *bundle = NSBundle.mainBundle.bundleIdentifier ?: @"";
   NSString *json = [NSString stringWithFormat:
@@ -513,6 +548,12 @@ static void tf_install(void) {
   // The self-check is inside the same condition rather than beside it. It blocks a dyld initialiser
   // on a 3s semaphore, and running that in every WebKit process the simulator starts delays web view
   // creation for no answer anyone reads.
+  // **Before the self-check, and that order is required rather than tidy.** The check drives
+  // `g_forced_offline` through the hooked `nw_path_get_status`, which reads the gate below — so a
+  // store placed after it would make the check assert against neutered replacements and fail every
+  // time.
+  if (installed) atomic_store_explicit(&g_hooks_live, true, memory_order_release);
+
   BOOL isTarget = tf_is_target_app();
   BOOL ok = installed;
   if (isTarget) {
