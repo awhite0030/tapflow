@@ -31,7 +31,8 @@ app keep talking over the socket it already had while only *new* requests failed
 this — Apple is explicit that allowing a connection is one-way, and keeping every flow under a data
 verdict instead was built and measured unusable — so the injected library shuts down the app's own
 non-loopback sockets when it goes offline. `shutdown`, not `close`: the owner sees the connection go
-away, which is what losing signal looks like, and nothing can reuse the descriptor underneath it.
+away, which is what losing signal looks like, and the call does not hand the descriptor's number back
+for something else to be opened onto — which closing it would.
 
 **Loopback keeps working**, so a dev build talking to Metro on the host, and tapflow's own
 in-simulator instrumentation, are unaffected.
