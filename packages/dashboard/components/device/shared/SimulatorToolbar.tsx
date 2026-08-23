@@ -51,6 +51,14 @@ export interface NetworkControl {
   /** Whether tapflow can still change it. Separate from where it is, because the protocol makes them
    *  separate — a device it can no longer steer still has a network state, and still shows it. */
   steerable: boolean;
+  /** The injection is in place and no app has run under it yet — `awaiting-app` on the wire.
+   *
+   *  **Not a kind of `steerable: false`, even though it arrives inside one.** Traffic control works
+   *  in this state: a device taken offline here really does stop reaching the network. What does not
+   *  work is telling the app, and drawing that as a dead control said the opposite of what a click
+   *  would do. It is the state every iOS session is in until its app starts, so it is the first thing
+   *  a tester sees. */
+  awaitingApp?: boolean;
   pending: boolean;
   onToggle: () => void;
 }
@@ -73,6 +81,16 @@ export interface NetworkControl {
 const MUTED = 'text-muted-foreground hover:text-muted-foreground';
 
 /**
+ * A state the tester cannot fix by waiting, pinned the same way.
+ *
+ * Reserved for the reasons that are actually failures — nothing delivered, hooks refused, a device
+ * that will never do it. It deliberately excludes `awaitingApp`, which resolves itself the moment an
+ * app starts: colouring the ordinary opening seconds of every iOS session as an error is how a colour
+ * stops meaning anything by the time a real failure uses it.
+ */
+const FAILED = 'text-destructive hover:text-destructive';
+
+/**
  * Four positions, and **none of them disables the button**.
  *
  * #447 settled that a control nothing acts on should be absent rather than disabled, because a
@@ -87,23 +105,34 @@ const MUTED = 'text-muted-foreground hover:text-muted-foreground';
  * each other because saying "could not read" about a device that is merely slow is a claim made
  * before anything was asked.
  */
-function networkLook({ position, steerable }: Pick<NetworkControl, 'position' | 'steerable'>) {
+function networkLook({ position, steerable, awaitingApp }: Pick<NetworkControl, 'position' | 'steerable' | 'awaitingApp'>) {
   // Said after the position, never instead of it. A device tapflow cannot steer is still somewhere,
   // and an earlier draft that replaced the position with "could not be read" made the control a
   // one-way ratchet — from that rendering every click asked for offline again, so a device taken
   // offline on an unconfirmed write could not be brought back.
-  const cannot = steerable ? '' : ' tapflow can no longer change it.';
+  // Three sentences where there was one, because the remedies differ. "tapflow can no longer change
+  // it" was said for all of them, and for the waiting-for-an-app state it was wrong twice over:
+  // nothing had been armed, so there was no "no longer", and clicking does change the device.
+  const caveat = steerable ? ''
+    : awaitingApp ? ' Launch an app through tapflow so it is told too.'
+      : ' tapflow can no longer change it.';
   switch (position) {
     case 'offline':
       // The only position with colour. It is a state a tester deliberately put the device into and
       // will forget about, and forgetting is what makes the next hour of testing confusing.
       return {
         Icon: RadioOff,
-        className: steerable ? 'text-amber-500 hover:text-amber-500' : 'text-amber-500/60 hover:text-amber-500/60',
-        status: `Device is offline.${cannot}`,
+        // Still amber while waiting for an app: the device really is offline, which is the thing this
+        // colour is for. Only a genuine failure overrides it.
+        className: steerable || awaitingApp ? 'text-amber-500 hover:text-amber-500' : 'text-amber-500/60 hover:text-amber-500/60',
+        status: `Device is offline.${caveat}`,
       };
     case 'online':
-      return { Icon: Radio, className: steerable ? '' : MUTED, status: `Device is on the network.${cannot}` };
+      return {
+        Icon: Radio,
+        className: steerable || awaitingApp ? '' : FAILED,
+        status: `Device is on the network.${caveat}`,
+      };
     case 'waiting':
       return { Icon: Radio, className: `${MUTED} animate-pulse`, status: 'Checking the network state.' };
     case 'unknown':
@@ -125,7 +154,7 @@ function networkLook({ position, steerable }: Pick<NetworkControl, 'position' | 
  * this is what says it to everyone else, and unlike the description beside it a name cannot be
  * turned off by a verbosity setting.
  */
-function networkAction({ position, steerable }: Pick<NetworkControl, 'position' | 'steerable'>) {
+function networkAction({ position, steerable, awaitingApp }: Pick<NetworkControl, 'position' | 'steerable' | 'awaitingApp'>) {
   const action = position === 'offline' ? 'Bring device online'
     : position === 'online' ? 'Take device offline'
       : 'Toggle device network';
@@ -140,8 +169,11 @@ function networkAction({ position, steerable }: Pick<NetworkControl, 'position' 
   // channel explains, which is the claim-from-silence the rest of this file is built to avoid. The
   // combination is unreachable through `useNetworkControl`, where any report settles the position;
   // this component takes the two as independent props and has to be right on its own terms.
+  // `awaitingApp` keeps the plain name too. "Retry" claims a previous attempt that did not land, and
+  // waiting for an app is not a failed attempt — it is a click that will work, on a device nobody has
+  // opened an app on yet.
   const settled = position === 'online' || position === 'offline';
-  return steerable || !settled ? action : `Retry: ${action.toLowerCase()}`;
+  return steerable || awaitingApp || !settled ? action : `Retry: ${action.toLowerCase()}`;
 }
 
 export function SimulatorToolbar({
@@ -247,6 +279,8 @@ export function SimulatorToolbar({
           // Whether the *visible* tooltip needs the sentence too. A settled, steerable position says
           // enough in the name; the two with no position and the ones tapflow cannot change do not,
           // and a tooltip carrying a sentence for every position would be noise on the common one.
+          // `awaitingApp` counts here even though it keeps a normal colour and a plain name: the
+          // whole point of that state is that the sentence carries what the rendering does not.
           const unsettled = network.position === 'waiting' || network.position === 'unknown' || !network.steerable;
           return (
             <Tooltip>

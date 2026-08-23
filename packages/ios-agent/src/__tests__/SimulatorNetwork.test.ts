@@ -147,8 +147,33 @@ describe('SimulatorNetwork', () => {
     expect(statusBar).toEqual([])
   })
 
-  it('says not-armed when no app has run under the injection', () => {
+  it('says not-armed when nothing was delivered to the device', () => {
+    // Never armed: the remedy is a reboot, which is what this reason prescribes.
     const net = make()
+    expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'not-armed' })
+  })
+
+  it('says awaiting-app once the injection is in place but no app has run', async () => {
+    // The common case, not an edge one — every iOS session looks like this between the device coming
+    // up and its app starting. Reported as `not-armed` it prescribed a reboot, which fixes nothing,
+    // and drew a control that does work as one that cannot.
+    const net = make()
+    await net.arm(UDID)
+    expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'awaiting-app' })
+  })
+
+  it('does not claim the injection is in place when the environment could not be set', async () => {
+    simctl.setSimulatorEnv = vi.fn(async () => { throw new Error('simctl spawn failed') })
+    const net = make()
+    await expect(net.arm(UDID)).rejects.toThrow()
+    // Nothing was delivered, so "waiting for an app" would send the tester to launch one forever.
+    expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'not-armed' })
+  })
+
+  it('stops claiming the injection after the device is retired', async () => {
+    const net = make()
+    await net.arm(UDID)
+    await net.forget(UDID)
     expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'not-armed' })
   })
 
@@ -167,14 +192,17 @@ describe('SimulatorNetwork', () => {
   it('still reports a device offline after it stops being steerable', async () => {
     armed()
     const net = make()
+    await net.arm(UDID)
+    armed()   // arm() clears what a previous boot left; this is the app running again
     await net.setOffline(UDID, true)
 
-    // The app exits and the boot re-arm has not run: the hooks are gone, the filter rule is not.
+    // The app exits and takes its verdict with it. The injection is still in place, so the remedy is
+    // to launch an app again — not to reboot.
     rmSync(verdictPath(UDID))
 
     // `offline` describes the device, not the request. Reporting false here would draw "online" over
     // an app that can reach nothing.
-    expect(net.state(UDID)).toEqual({ offline: true, available: false, reason: 'not-armed' })
+    expect(net.state(UDID)).toEqual({ offline: true, available: false, reason: 'awaiting-app' })
   })
 
   describe('arm', () => {

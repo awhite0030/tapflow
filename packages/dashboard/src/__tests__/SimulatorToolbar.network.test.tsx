@@ -301,6 +301,7 @@ describe('SimulatorToolbar — network control', () => {
   // Mutation: dropping `hover:` from any single position fails here.
   it.each([
     ['online, not steerable', control({ steerable: false })],
+    ['online, waiting for an app', control({ steerable: false, awaitingApp: true, position: 'offline' })],
     ['waiting', control({ position: 'waiting' })],
     ['unknown', control({ position: 'unknown' })],
     ['offline', control({ position: 'offline' })],
@@ -308,10 +309,52 @@ describe('SimulatorToolbar — network control', () => {
   ])('pins its colour against hover: %s', (_name, c) => {
     const { unmount } = toolbar(c)
     const cls = networkButton()!.className
-    const colour = cls.split(/\s+/).find(t => /^text-(muted-foreground|amber-500(\/\d+)?)$/.test(t))
+    const colour = cls.split(/\s+/).find(t => /^text-(muted-foreground|destructive|amber-500(\/\d+)?)$/.test(t))
     expect(colour, `no state colour in "${cls}"`).toBeTruthy()
     expect(cls).toContain(`hover:${colour}`)
     unmount()
+  })
+
+  describe('waiting for an app to run under the injection', () => {
+    // The state every iOS session is in between the device coming up and its app starting. It arrives
+    // inside `steerable: false`, and everything below is about it not being drawn like the failures
+    // that share that flag: traffic control works here, so a dead-looking control says the opposite
+    // of what a click does.
+    const awaiting = (over: Partial<NetworkControl> = {}) =>
+      control({ steerable: false, awaitingApp: true, ...over })
+
+    it('is not painted as a failure', () => {
+      const { unmount } = toolbar(awaiting())
+      const cls = networkButton()!.className
+      expect(cls).not.toContain('text-destructive')
+      expect(cls).not.toContain('text-muted-foreground')
+      unmount()
+    })
+
+    it('still paints an offline device amber, because it really is offline', () => {
+      toolbar(awaiting({ position: 'offline' }))
+      expect(networkButton()!.className).toContain('text-amber-500')
+    })
+
+    it('says what is missing rather than that nothing can be done', () => {
+      toolbar(awaiting())
+      // "tapflow can no longer change it" was wrong twice here: nothing had been armed, so there was
+      // no "no longer", and clicking does change the device.
+      const said = screen.getByRole('status').textContent ?? ''
+      expect(said).toContain('Launch an app')
+      expect(said).not.toContain('no longer')
+    })
+
+    it('keeps the plain action name, because this is not a failed attempt', () => {
+      toolbar(awaiting())
+      expect(networkButton()!.getAttribute('aria-label')).toBe('Take device offline')
+    })
+
+    it('leaves the real failures painted as failures', () => {
+      // The contrast that makes the colour mean something: same `steerable: false`, no `awaitingApp`.
+      toolbar(control({ steerable: false }))
+      expect(networkButton()!.className).toContain('text-destructive')
+    })
   })
 
   it('leaves hover alone where there is no state colour to protect', () => {

@@ -78,6 +78,14 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
   // Whether tapflow can still change it — a separate axis from where it is, because the protocol
   // makes them separate. Only the button's sentence depends on this; the position it draws does not.
   const [steerable, setSteerable] = useState(true)
+  // **Only `awaiting-app` is read, and the rest of the set is still ignored.** The paragraph in the
+  // report handler says why naming a reason is normally a lie here: every Android read failure
+  // arrives as `unsupported-device` (#618), so the value cannot be trusted to mean what it says. That
+  // argument is about a set that conflates, and this member does not — an agent emits it only when it
+  // has put the injection in place and is waiting for an app, which is a fact it knows rather than a
+  // fallback it reached for. Narrowing to the one trustworthy member says nothing false and lets the
+  // control stop drawing a working state as a dead one.
+  const [awaitingApp, setAwaitingApp] = useState(false)
   const [pending, setPending] = useState(false)
   const requestId = useRef<string | null>(null)
   // Read through a ref so a caller passing an inline closure does not re-register the handler on
@@ -91,6 +99,7 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
   useEffect(() => {
     setPosition('waiting')
     setSteerable(true)
+    setAwaitingApp(false)
     setPending(false)
     requestId.current = null
   }, [sessionId])
@@ -125,6 +134,7 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
       // that set is split; the value is on the wire for when it is.
       setPosition(msg.payload.offline ? 'offline' : 'online')
       setSteerable(msg.payload.available)
+      setAwaitingApp(!msg.payload.available && msg.payload.reason === 'awaiting-app')
       if (msg.requestId !== undefined && msg.requestId === requestId.current) {
         requestId.current = null
         setPending(false)
@@ -187,5 +197,5 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
     return () => clearTimeout(timer)
   }, [inFlight])
 
-  return { position, steerable, pending, toggle }
+  return { position, steerable, awaitingApp, pending, toggle }
 }

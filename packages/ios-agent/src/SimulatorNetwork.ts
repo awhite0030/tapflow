@@ -54,6 +54,9 @@ export class SimulatorNetwork {
   /** Every simulator currently offline. The filter takes the whole set on each call — it has no
    *  add/remove — so this is the authority for what the rule should say, not a cache of it. */
   private readonly offline = new Set<string>()
+  /** Devices whose injection is actually in place. Separates "nothing was delivered" from "delivered,
+   *  no app has run under it yet" — two states with different remedies, and a reason each. */
+  private readonly armed = new Set<string>()
 
   constructor(
     private readonly simctl: SimctlForNetwork,
@@ -79,9 +82,14 @@ export class SimulatorNetwork {
    */
   async arm(udid: string): Promise<void> {
     this.offline.delete(udid)
+    this.armed.delete(udid)
     this.setCondition(udid, false)
     rmSync(this.verdictPath(udid), { force: true })
+    // Recorded only after the call returns. A device whose environment could not be set has had
+    // nothing delivered, and saying otherwise would report it as merely waiting for an app — a state
+    // whose remedy is to launch one, which would never help.
     await this.simctl.setSimulatorEnv(udid, 'DYLD_INSERT_LIBRARIES', this.dylib)
+    this.armed.add(udid)
   }
 
   /**
@@ -139,7 +147,16 @@ export class SimulatorNetwork {
     const offline = this.offline.has(udid)
     const verdict = this.readVerdict(udid)
 
-    if (verdict === 'missing') return { offline, available: false, reason: 'not-armed' }
+    // The three answers differ by what the tester has to do, which is what the reason set is for.
+    // An absent verdict means two different things and they were reported as one: nothing was
+    // delivered (reboot), or it was delivered and no app has exercised it yet (launch one). The
+    // second is what every iOS session looks like before its app starts, so folding it into
+    // `not-armed` put the wrong remedy on the common case.
+    if (verdict === 'missing') {
+      return this.armed.has(udid)
+        ? { offline, available: false, reason: 'awaiting-app' }
+        : { offline, available: false, reason: 'not-armed' }
+    }
     if (verdict === 'failed') return { offline, available: false, reason: 'hooks-not-installed' }
     return { offline, available: true }
   }
@@ -147,6 +164,7 @@ export class SimulatorNetwork {
   /** Called when a device goes away, so a shutdown simulator does not keep a rule alive that names
    *  it — the filter would carry the udid for the rest of the host's uptime. */
   async forget(udid: string): Promise<void> {
+    this.armed.delete(udid)
     if (!this.offline.delete(udid)) {
       this.setCondition(udid, false)
       return
@@ -194,9 +212,10 @@ export class SimulatorNetwork {
   /**
    * `missing` and `failed` are different answers and a tester needs both.
    *
-   * Missing means no app has run under the injection on this device — the fix is to launch one, or to
-   * reboot so the boot re-arms it. Failed means the dylib ran and proved by trying that its hooks did
-   * not take, which no amount of relaunching will change.
+   * Missing is not by itself an answer — it is the same file being absent whether the injection was
+   * never delivered or is simply waiting for its first app, which is why `state` reads it against
+   * `armed` rather than reporting it directly. Failed means the dylib ran and proved by trying that
+   * its hooks did not take, which no amount of relaunching will change.
    */
   private verdictPath(udid: string): string {
     return `${this.verdictDir}/tapflow-nethook-${udid}.json`

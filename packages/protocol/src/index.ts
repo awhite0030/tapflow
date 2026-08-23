@@ -587,6 +587,22 @@ export type NetworkUnavailableReason =
   /** Nothing was delivered for this boot — a re-arm that did not happen, or a device booted outside
    *  tapflow. Distinct from the above because the answer is to reboot the device, not to give up. */
   | 'not-armed'
+  /**
+   * Delivered, and waiting for an app to run under it.
+   *
+   * **The member that separates the two above from a device that is simply not being used yet.** On
+   * iOS the injection is put in place when the device boots but can only name its target when an app
+   * is launched, so between those two moments nothing has been proved either way — and both of the
+   * reasons above would say something false about it. `not-armed` prescribes a reboot, which fixes
+   * nothing here; `hooks-not-installed` claims a failure that was never attempted.
+   *
+   * What a consumer must do differently: **say what is missing, and do not draw the control as
+   * dead.** Traffic-level control does work in this state — a device taken offline here really does
+   * stop reaching the network — so a rendering that reads "tapflow cannot change this" is wrong in
+   * the one direction that makes a working control look broken. What it cannot do is make the app
+   * *believe* it, which is the half the sentence has to carry.
+   */
+  | 'awaiting-app'
   /** This device cannot do it at all: an Android image whose `cmd connectivity` predates the API.
    *  Unlike the other two, retrying anything will not change it. */
   | 'unsupported-device'
