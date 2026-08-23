@@ -14,6 +14,8 @@ status: living
 
 `AndroidAgent`: controls Android emulators/devices via ADB and streams H.264 video over two backends — **gRPC host-encode** (emulators, the default) and **scrcpy** (real devices, and the fallback when gRPC is unavailable). Runs alongside `ios-agent` on the same Mac.
 
+It also toggles **airplane mode** per device (#607) — the Android half of the network control. Unlike iOS, the device has a radio, so `cmd connectivity airplane-mode` is the whole mechanism — but `AdbWrapper.setAirplaneMode` writes and then **reads back**, and the read-back is the load-bearing half: it is what produces `confirmed`, and an unconfirmed write is reported as unavailable rather than as success. An image that accepts the command and does nothing looks exactly like one that worked, until you ask.
+
 ## HOW
 
 - ADB commands are isolated in `AdbWrapper`, swappable with an `AdbRunner` mock in tests.
