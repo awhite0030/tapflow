@@ -3,7 +3,7 @@ import { initDb } from './db.js'
 import { RelayServer } from './RelayServer.js'
 import { config, loadedEnvPath } from './lib/config.js'
 import { buildCorsOrigins, proxyWithoutPublicUrlWarning } from './lib/proxyConfig.js'
-import { createCertProvider } from './lib/cert/index.js'
+import { createCertProvider, resolveRelayDisplayHost } from './lib/cert/index.js'
 import { startTlsBackgroundTasks } from './lib/tlsTasks.js'
 import { createLogger } from '@tapflowio/agent-core'
 
@@ -24,11 +24,13 @@ if (proxyWarning) logger.warn(proxyWarning)
 async function main(): Promise<void> {
   let tls: { cert: string; key: string } | undefined
   let provider: ReturnType<typeof createCertProvider> | null = null
+  let displayHost = 'localhost'
 
   if (config.tls) {
     provider = createCertProvider(config.tls, { dataDir })
     const material = await provider.ensureCert()
     tls = { cert: material.cert, key: material.key }
+    displayHost = resolveRelayDisplayHost(config.tls, material.cert, (message) => logger.warn(message))
   } else {
     logger.info(
       'TLS disabled — serving HTTP. Secure-context features (e.g. WebCodecs hardware decode) require HTTPS; ' +
@@ -38,7 +40,7 @@ async function main(): Promise<void> {
 
   const server = new RelayServer({ port, uploadsDir, wsBackpressureBytes: config.local.wsBackpressureBytes, trustedProxies: config.local.trustedProxies, corsOrigins, tls })
   await server.start()
-  logger.info(`tapflow relay running on port ${port} (${tls ? 'https' : 'http'})`)
+  logger.info(`tapflow relay running at ${tls ? 'https' : 'http'}://${displayHost}:${port}`)
 
   const stopTls = provider ? startTlsBackgroundTasks(provider, server, config.tls) : null
 
