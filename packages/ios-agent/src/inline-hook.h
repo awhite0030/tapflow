@@ -27,19 +27,25 @@ typedef enum {
   TF_HOOK_ERR_WRITE,           // the page refused to become writable
 } tf_hook_error_t;
 
-typedef struct tf_hook tf_hook_t;
-
 /**
- * Route `target` to `replacement`, and hand back a handle whose `tf_hook_original` reaches the
- * unhooked code.
+ * Route `target` to `replacement`, publishing the way back through `*original`.
  *
- * Returns `NULL` and sets `*err` when it refuses. **Refusal is a normal outcome** — the caller
+ * Returns `false` and sets `*err` when it refuses. **Refusal is a normal outcome** — the caller
  * reports it rather than proceeding as if the hook were live.
+ *
+ * **`original` is a parameter and not a return value, and that is the whole design of this call.**
+ * A replacement reaches the real function through that slot, and the patch goes live inside here —
+ * so any arrangement where the caller stores the pointer *afterwards* leaves a window in which
+ * another thread enters the replacement and tail-calls address zero. The earlier shape handed back
+ * a handle to read the pointer out of, which made the correct order something the caller had to
+ * know rather than something the signature required; a crash of exactly this class already shipped
+ * on this branch, from a different slot published late. Written before the store that activates the
+ * patch, it is never observed empty by a caller that is running.
+ *
+ * The slot must outlive the process's use of the hook — a static or a global, never a local. There
+ * is no uninstall: the patch and its trampoline are permanent.
  */
-tf_hook_t *tf_hook_install(void *target, void *replacement, tf_hook_error_t *err);
-
-/** Call this to reach the original function. Valid for the life of the process. */
-void *tf_hook_original(const tf_hook_t *hook);
+bool tf_hook_install(void *target, void *replacement, void **original, tf_hook_error_t *err);
 
 /** Human-readable reason, for logging **after** any thread suspension has ended. */
 const char *tf_hook_strerror(tf_hook_error_t err);

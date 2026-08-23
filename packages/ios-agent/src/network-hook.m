@@ -53,29 +53,50 @@ static os_log_t tf_log(void) {
 // ── what makes this process a target ─────────────────────────────────────────
 
 /**
- * The dylib is delivered simulator-wide (`launchctl setenv DYLD_INSERT_LIBRARIES`), which is the
- * only way to reach an app's WebView: `WebKit.Networking` is a **sibling** process under
- * `launchd_sim`, not a child of the app, so `SIMCTL_CHILD_…` never reaches it. A hybrid app with
- * half its screen still online is the kind of half-truth this feature exists to prevent.
+ * The dylib is delivered simulator-wide (`launchctl setenv DYLD_INSERT_LIBRARIES`), so it loads in
+ * every process in the simulator — SpringBoard, backboardd, the lot — and the defence is **this
+ * function, not the delivery**. Anything not recognised gets no hooks at all.
  *
- * So the dylib loads in every process in the simulator — SpringBoard, backboardd, the lot — and the
- * defence is **this function, not the delivery**. Anything not recognised gets no hooks at all.
+ * **The reason originally given for that breadth has been measured false.** It said simulator-wide
+ * delivery was the only way to reach an app's WebView, `WebKit.Networking` being a sibling process
+ * under `launchd_sim` that `SIMCTL_CHILD_…` could not follow. The sibling part is true; the reach is
+ * not. Measured 2026-08-23 with an app holding a real `WKWebView`: `WebKit.Networking`,
+ * `WebKit.WebContent` and `WebKit.GPU` all spawned, and **not one of them loaded this library** —
+ * they are restricted enough that dyld drops `DYLD_*`. Ordinary daemons in the same simulator loaded
+ * it in the same run, so the delivery itself works.
+ *
+ * Two things follow, and neither is fixed here. The `com.apple.WebKit.` branch below has never
+ * matched anything, and a hybrid app's web half is **not** told it is offline — its traffic is still
+ * blocked, because the host content filter works at the kernel for every process, but the path it
+ * reads is real. And simulator-wide delivery no longer has the justification it was chosen for, which
+ * matters because it is the mechanism that can take a whole simulator down at once.
  *
  * **The default is off.** With no target named, or no bundle identifier to compare, this returns
  * false: a bug in the identification leaves the simulator unhooked rather than hooking the system.
  */
-static BOOL tf_should_activate(void) {
+static BOOL tf_is_target_app(void) {
   const char *target = getenv("TAPFLOW_TARGET_BUNDLE");
   if (target == NULL || *target == '\0') return NO;
+  NSString *me = NSBundle.mainBundle.bundleIdentifier;
+  return me != nil && [me isEqualToString:@(target)];
+}
 
+static BOOL tf_should_activate(void) {
+  if (tf_is_target_app()) return YES;
+
+  const char *target = getenv("TAPFLOW_TARGET_BUNDLE");
+  if (target == NULL || *target == '\0') return NO;
   NSString *me = NSBundle.mainBundle.bundleIdentifier;
   if (me == nil) return NO;
 
-  if ([me isEqualToString:@(target)]) return YES;
-  // The app's own WebView helpers. One session holds one simulator, so the prefix is enough to
-  // separate "this app's WebView" from another session's — there is no other session on this device.
-  if ([me hasPrefix:@"com.apple.WebKit."]) return YES;
-  return NO;
+  // The app's WebView helpers — **measured never to reach here**, see above. Kept rather than
+  // deleted because the branch is what a future runtime that stops restricting those processes would
+  // need, and because deleting it would leave nothing saying the coverage is absent. It is not a
+  // claim that the coverage exists.
+  //
+  // Were it ever reached, the prefix would not separate this app's WebView from Safari's, which is
+  // one reason the verdict is written only by the target app.
+  return [me hasPrefix:@"com.apple.WebKit."];
 }
 
 // ── the condition file ───────────────────────────────────────────────────────
@@ -470,21 +491,42 @@ static void tf_install(void) {
       break;
     }
     tf_hook_error_t err;
-    tf_hook_t *hook = tf_hook_install(target, wanted[i].replacement, &err);
-    if (hook == NULL) {
+    // The slot is handed over rather than assigned from the result: the patch goes live inside this
+    // call, so anything written after it returns is written a thread too late.
+    if (!tf_hook_install(target, wanted[i].replacement, wanted[i].original, &err)) {
       // Logged after the fact by design — `tf_hook_install` never logs from inside a thread
       // suspension, where `os_log` would deadlock on a lock a stopped thread holds.
       os_log_error(tf_log(), "%{public}s: refused — %{public}s", wanted[i].name, tf_hook_strerror(err));
       installed = NO;
       break;
     }
-    *wanted[i].original = tf_hook_original(hook);
   }
 
-  BOOL ok = installed && tf_self_check();
-  tf_write_verdict(ok);
+  // **The verdict is the target app's answer, and only the target app writes it.**
+  //
+  // The file is keyed by udid alone, and `tf_should_activate` above admits every WebKit process in
+  // the simulator — so whichever wrote last used to win. A web view starting anywhere could report
+  // `installed:true` while the app under test had never run, and the control then claimed hooks over
+  // an app that had none: the exact sign-off this file's preamble calls the worst failure available.
+  // The reverse was reachable too, a helper's failure overwriting a healthy app's success.
+  //
+  // The self-check is inside the same condition rather than beside it. It blocks a dyld initialiser
+  // on a 3s semaphore, and running that in every WebKit process the simulator starts delays web view
+  // creation for no answer anyone reads.
+  BOOL isTarget = tf_is_target_app();
+  BOOL ok = installed;
+  if (isTarget) {
+    ok = installed && tf_self_check();
+    tf_write_verdict(ok);
+  }
+  // Two words for two claims. "verified" is the target app's, and it means the check below actually
+  // drove `nw_path_monitor` and saw `unsatisfied`; a helper only ever gets "installed", because
+  // nothing proved anything about it.
   os_log(tf_log(), "hooks %{public}s in %{public}@",
-         ok ? "verified" : "DID NOT INSTALL", NSBundle.mainBundle.bundleIdentifier);
+         ok ? (isTarget ? "verified" : "installed") : "DID NOT INSTALL",
+         NSBundle.mainBundle.bundleIdentifier);
 
+  // Watching is gated on the hooks being in, not on the verdict: a WebView helper has to react to the
+  // condition file the same way the app does, and it never runs the check that would produce one.
   if (ok) tf_start_watching();
 }

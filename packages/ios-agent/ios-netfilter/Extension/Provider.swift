@@ -136,12 +136,33 @@ private func asidFromToken(_ data: Data) -> UInt32 {
 // Parent lookup goes through sysctl(KERN_PROC), which the sysext sandbox permits — measured against both
 // a host process (a Chrome helper resolved to the Chrome browser process) and simulator flows (all 231
 // resolved to launchd_sim).
-private func ppidSysctl(_ pid: pid_t) -> pid_t? {
+/**
+ * A process's parent and its **start time**, read together from one `sysctl`.
+ *
+ * The start time is what makes a pid an identity. macOS reuses pids, and `launchd_sim`'s is reused
+ * readily — every simulator boot starts one, and a Mac that has booted a few dozen wraps the range.
+ * A cache keyed on the number alone therefore answers for a simulator that no longer exists, and the
+ * consequence is not a stale label: it is `handleNewFlow` cutting a device nobody asked to cut, with
+ * every log line agreeing that the udid was right. `(pid, start)` is unique for the life of the Mac.
+ *
+ * Not `pidversion` from the audit token, which is there at word 7 and would be the obvious source:
+ * it identifies the *flow's* process, and what has to be identified is its `launchd_sim` ancestor,
+ * which has no token here.
+ */
+private struct ProcIdentity: Hashable {
+    let pid: pid_t
+    let startSec: Int64
+    let startUsec: Int32
+}
+
+private func procSysctl(_ pid: pid_t) -> (ppid: pid_t, identity: ProcIdentity)? {
     var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
     var kp = kinfo_proc()
-    var len = MemoryLayout<kinfo_proc>.stride
-    guard sysctl(&mib, u_int(mib.count), &kp, &len, nil, 0) == 0, len > 0 else { return nil }
-    return kp.kp_eproc.e_ppid
+    var size = MemoryLayout<kinfo_proc>.stride
+    guard sysctl(&mib, u_int(mib.count), &kp, &size, nil, 0) == 0, size > 0 else { return nil }
+    let start = kp.kp_proc.p_un.__p_starttime
+    return (kp.kp_eproc.e_ppid,
+            ProcIdentity(pid: pid, startSec: Int64(start.tv_sec), startUsec: start.tv_usec))
 }
 
 private func pidPath(_ pid: pid_t) -> String? {
@@ -174,21 +195,29 @@ private func extractUDID(from text: String) -> String? {
     return udid.count == 36 ? String(udid) : nil
 }
 
-// launchd_sim outlives every flow of the simulator it hosts, so caching by its pid holds for the whole
-// boot and the per-flow cost stays at the parent walk. Only positive results are cached: a host flow is
-// rejected by the launchd_sim path check before any argument read, so it never pays for the miss.
+// launchd_sim outlives every flow of the simulator it hosts, so caching by its identity holds for the
+// whole boot and the per-flow cost stays at the parent walk. Only positive results are cached: a host
+// flow is rejected by the launchd_sim path check before any argument read, so it never pays for the
+// miss.
+//
+// **Keyed on the identity and not the pid**, for the reason on `ProcIdentity`. Entries are never
+// evicted, which is affordable because the key is a boot rather than a process — one per simulator
+// started while the provider has been running — and because it is *wrong* to evict on the same signal
+// that inserts: a pid whose entry is dropped is looked up again and re-cached from `KERN_PROCARGS2`,
+// which reads the CURRENT process's arguments. The stale answer would simply be re-derived. Keying it
+// away is the only fix that does not depend on noticing the exit.
 private final class UDIDCache {
-    private var byRootPID: [pid_t: String] = [:]
+    private var byRoot: [ProcIdentity: String] = [:]
     private let lock = NSLock()
 
-    func lookup(_ pid: pid_t) -> String? {
+    func lookup(_ root: ProcIdentity) -> String? {
         lock.lock(); defer { lock.unlock() }
-        return byRootPID[pid]
+        return byRoot[root]
     }
 
-    func store(_ pid: pid_t, _ udid: String) {
+    func store(_ root: ProcIdentity, _ udid: String) {
         lock.lock(); defer { lock.unlock() }
-        byRootPID[pid] = udid
+        byRoot[root] = udid
     }
 }
 
@@ -197,7 +226,7 @@ private let udidCache = UDIDCache()
 private func udidForPID(_ pid: pid_t) -> String? {
     guard let root = simulatorRootPID(pid) else { return nil }
     if let cached = udidCache.lookup(root) { return cached }
-    guard let udid = procArgs(root).flatMap(extractUDID) else { return nil }
+    guard let udid = procArgs(root.pid).flatMap(extractUDID) else { return nil }
     udidCache.store(root, udid)
     return udid
 }
@@ -206,15 +235,18 @@ private func udidForPID(_ pid: pid_t) -> String? {
 // not launchd_sim rules the flow out before any argument read; an unreadable path falls through, because
 // the UDID pattern in the arguments is the stronger check and there is no reason to lose a flow to it.
 // The loop is bounded against a cycle in the reported parent chain.
-private func simulatorRootPID(_ pid: pid_t) -> pid_t? {
+private func simulatorRootPID(_ pid: pid_t) -> ProcIdentity? {
     var current = pid
     for _ in 0..<32 {
-        guard let ppid = ppidSysctl(current) else { return nil }
-        if ppid <= 1 {
+        guard let info = procSysctl(current) else { return nil }
+        if info.ppid <= 1 {
             if let path = pidPath(current), !path.hasSuffix("/launchd_sim") { return nil }
-            return current
+            // The identity is read in the same `sysctl` as the parent that ended the walk, so it
+            // describes the process this walk actually reached rather than whatever holds the number
+            // by the time it is stored.
+            return info.identity
         }
-        current = ppid
+        current = info.ppid
     }
     return nil
 }

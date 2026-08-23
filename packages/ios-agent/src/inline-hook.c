@@ -194,22 +194,17 @@ static bool tf_suspend_and_write(void *target, const void *bytes, size_t len) {
 
 // ── install ──────────────────────────────────────────────────────────────────
 
-struct tf_hook {
-  void *trampoline;
-};
-
-tf_hook_t *tf_hook_install(void *target, void *replacement, tf_hook_error_t *err) {
+bool tf_hook_install(void *target, void *replacement, void **original, tf_hook_error_t *err) {
   tf_hook_error_t ignored;
   if (err == NULL) err = &ignored;
 
   uint32_t i0;
   memcpy(&i0, target, sizeof(i0));
-  if (!tf_relocatable(i0)) { *err = TF_HOOK_ERR_UNRELOCATABLE; return NULL; }
+  if (!tf_relocatable(i0)) { *err = TF_HOOK_ERR_UNRELOCATABLE; return false; }
 
   // Prepared before anything is patched, and before any thread is suspended.
-  tf_hook_t *hook = calloc(1, sizeof(*hook));
   uint32_t *tramp = tf_alloc_exec(tf_page());
-  if (hook == NULL || tramp == NULL) { free(hook); *err = TF_HOOK_ERR_NO_MEMORY; return NULL; }
+  if (tramp == NULL) { *err = TF_HOOK_ERR_NO_MEMORY; return false; }
 
   void *island = tf_alloc_island((uintptr_t)target);
   uint32_t branch = 0;
@@ -228,13 +223,19 @@ tf_hook_t *tf_hook_install(void *target, void *replacement, tf_hook_error_t *err
     uint32_t rest[3];
     memcpy(rest, (uint8_t *)target + 4, sizeof(rest));
     for (int i = 0; i < 3; i++) {
-      if (!tf_relocatable(rest[i])) { free(hook); *err = TF_HOOK_ERR_UNRELOCATABLE; return NULL; }
+      if (!tf_relocatable(rest[i])) { *err = TF_HOOK_ERR_UNRELOCATABLE; return false; }
     }
     memcpy(&tramp[1], rest, sizeof(rest));
     tf_emit_abs_jump(&tramp[4], (uintptr_t)target + TF_PATCH_BYTES);
   }
-  if (!tf_make_exec(tramp, tf_page())) { free(hook); *err = TF_HOOK_ERR_NO_MEMORY; return NULL; }
+  if (!tf_make_exec(tramp, tf_page())) { *err = TF_HOOK_ERR_NO_MEMORY; return false; }
   __builtin___clear_cache((char *)tramp, (char *)tramp + tf_page());
+
+  // **Published before the patch, never after.** From the store below, another thread can be inside
+  // `replacement` on its next instruction; a replacement that tail-calls through this slot would
+  // branch to zero. Everything above this line is preparation nothing can observe, so the last
+  // moment the slot can be filled unobserved is here.
+  if (original != NULL) *original = tramp;
 
   bool ok;
   if (island != NULL) {
@@ -242,7 +243,7 @@ tf_hook_t *tf_hook_install(void *target, void *replacement, tf_hook_error_t *err
     uint32_t jump[4];
     tf_emit_abs_jump(jump, (uintptr_t)replacement);
     memcpy(island, jump, sizeof(jump));
-    if (!tf_make_exec(island, tf_page())) { free(hook); *err = TF_HOOK_ERR_NO_MEMORY; return NULL; }
+    if (!tf_make_exec(island, tf_page())) { *err = TF_HOOK_ERR_NO_MEMORY; return false; }
     __builtin___clear_cache((char *)island, (char *)island + sizeof(jump));
 
     // **One aligned four-byte store**, which arm64 does not tear. A thread inside the function sees
@@ -253,16 +254,13 @@ tf_hook_t *tf_hook_install(void *target, void *replacement, tf_hook_error_t *err
     uint32_t jump[4];
     tf_emit_abs_jump(jump, (uintptr_t)replacement);
     ok = tf_suspend_and_write(target, jump, sizeof(jump));
-    if (!ok) { free(hook); *err = TF_HOOK_ERR_BUSY; return NULL; }
+    if (!ok) { *err = TF_HOOK_ERR_BUSY; return false; }
   }
 
-  if (!ok) { free(hook); *err = TF_HOOK_ERR_WRITE; return NULL; }
-  hook->trampoline = tramp;
+  if (!ok) { *err = TF_HOOK_ERR_WRITE; return false; }
   *err = TF_HOOK_OK;
-  return hook;
+  return true;
 }
-
-void *tf_hook_original(const tf_hook_t *hook) { return hook->trampoline; }
 
 const char *tf_hook_strerror(tf_hook_error_t err) {
   switch (err) {
