@@ -384,6 +384,33 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
         audioVolume: 1,
       })
     })
+    void this.refreshBootedFlags()
+  }
+
+  /**
+   * Ask simctl which of the registered devices are actually up, once, right after registering.
+   *
+   * **`booted: false` above is a starting point, not a reading.** This runs on `agent:registered`,
+   * which fires on every *reconnect* and not only the first connection — so without this a relay
+   * restart left every flag false while the simulators kept running, and `stream()` refused a live
+   * device until an input or a boot happened to correct it.
+   *
+   * Fire-and-forget rather than awaited: the handshake resolves as soon as the agent is registered,
+   * and holding that open for an `xcrun` round trip would delay every reconnect for a flag only one
+   * caller still reads. Failures are swallowed — a flag that stays false is exactly where this
+   * started, and the awaiting resolvers do not depend on it.
+   */
+  private async refreshBootedFlags(): Promise<void> {
+    try {
+      const booted = new Set(
+        (await this.simctl.listDevices()).filter((d) => d.status === 'booted').map((d) => d.id),
+      )
+      // Only ever sets it true. A device this misses is one `soleLiveDeviceState` will ask about
+      // anyway; a device it wrongly cleared would be one nothing could recover.
+      for (const state of this.deviceStates.values()) {
+        if (booted.has(state.deviceId)) state.booted = true
+      }
+    } catch { /* the flag stays false, which is where this began */ }
   }
 
   disconnect(): void {
@@ -1662,7 +1689,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
    *  (`AndroidAgent.ts:1429`); these do the same. Throwing beats falling back to simctl's `booted`
    *  alias, which would quietly act on whichever simulator happened to be up. */
   async installApp(appPath: string): Promise<void> {
-    await this.simctl.installApp(this.soleDeviceId(), appPath)
+    await this.simctl.installApp(await this.soleLiveDeviceId(), appPath)
   }
   // ── network control (#607) ─────────────────────────────────────────────────
   //
@@ -1756,7 +1783,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
   }
 
   async launchApp(bundleId: string): Promise<void> {
-    await this.simctl.launchApp(this.soleDeviceId(), bundleId)
+    await this.simctl.launchApp(await this.soleLiveDeviceId(), bundleId)
   }
 
   /** The one booted session, or undefined when there is no unambiguous answer. Callers that can
@@ -1779,6 +1806,19 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     return live[0]!
   }
 
+  /**
+   * **The synchronous resolver, and `stream()` is the only caller left.**
+   *
+   * Everything else that resolves a device for a capability call now awaits `soleLiveDeviceState`,
+   * which asks simctl rather than trusting `booted` — a flag `initDeviceStates` clears on every
+   * reconnect. `stream()` returns a `ReadableStream` and is part of `DeviceAgent`, so it cannot
+   * await without changing that interface, which is a decision rather than a repair.
+   *
+   * What covers it instead is `refreshBootedFlags` below: the cache is warmed once as soon as the
+   * agent registers, so this reads a fresh answer rather than a cleared one. That closes the
+   * lasting version of the bug — a flag that stayed wrong until something else happened to fix it —
+   * and leaves a sub-second window right at reconnect, which the awaiting callers do not have.
+   */
   private soleDeviceState(): DeviceState {
     // `deviceStates` holds one entry per *registered* simulator, not per running one — the relay
     // opens a session for every device in `agent:register` and this Mac reports dozens. Taking the
@@ -1807,22 +1847,24 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
    * moved into `soleDeviceState`: `stream()` is synchronous and is part of `DeviceAgent`, so making
    * the resolver async is an interface change rather than a repair. That is filed separately.
    */
-  private async soleLiveDeviceId(): Promise<string> {
+  private async soleLiveDeviceState(): Promise<DeviceState> {
     const cached = [...this.deviceStates.values()].filter((s) => s.booted)
-    if (cached.length > 0) return this.soleOf(cached).deviceId
+    if (cached.length > 0) return this.soleOf(cached)
 
     const booted = new Set(
       (await this.simctl.listDevices()).filter((d) => d.status === 'booted').map((d) => d.id),
     )
     const live = this.soleOf([...this.deviceStates.values()].filter((s) => booted.has(s.deviceId)))
     live.booted = true   // same cache write `ackInput` makes, so the next call skips simctl
-    return live.deviceId
+    return live
   }
 
-  private soleDeviceId(): string { return this.soleDeviceState().deviceId }
+  private async soleLiveDeviceId(): Promise<string> {
+    return (await this.soleLiveDeviceState()).deviceId
+  }
 
   async queryUITree(): Promise<UIElement[]> {
-    const state = this.soleDeviceState()
+    const state = await this.soleLiveDeviceState()
     return this.readUITree(state)
   }
 
@@ -1911,7 +1953,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
   }
   // async, not a bare `return`: `soleDeviceId` throws, and a synchronous throw out of a method
   // typed `Promise<T>` skips every caller's `.catch`.
-  async screenshot(): Promise<Buffer> { return this.simctl.screenshot(this.soleDeviceId()) }
+  async screenshot(): Promise<Buffer> { return this.simctl.screenshot(await this.soleLiveDeviceId()) }
   stream(): ReadableStream<Buffer> {
     const first = this.soleDeviceState()
     // DeviceAgent.stream() is the platform-neutral Buffer contract; unwrap StreamFrame payloads.
@@ -1936,8 +1978,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     return Promise.resolve()
   }
 
-  openUrl(url: string): Promise<void> {
-    const first = this.soleDeviceState()
-    return this.simctl.openUrl(first.deviceId, url)
+  async openUrl(url: string): Promise<void> {
+    return this.simctl.openUrl(await this.soleLiveDeviceId(), url)
   }
 }

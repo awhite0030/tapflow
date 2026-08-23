@@ -113,6 +113,7 @@ interface IOSAgentInternals {
   _reconnectAttempt: number
   _scheduleReconnect(): void
   deviceStates: Map<string, { booted: boolean }>
+  refreshBootedFlags(): Promise<void>
 }
 const internals = (agent: IOSAgent): IOSAgentInternals => agent as unknown as IOSAgentInternals
 
@@ -2411,6 +2412,68 @@ describe('IOSAgent', () => {
 
       agent.disconnect()
       browser.close()
+    })
+  })
+
+  describe('capability entry points after a reconnect (#646)', () => {
+    // `initDeviceStates` runs on `agent:registered`, which fires on every reconnect — so `booted` is
+    // false for simulators that never stopped running. Every entry point that resolved a device from
+    // that flag alone refused a live device until an input or a boot happened to correct it.
+
+    it('resolves a device for a non-network entry point when the cache says nothing is up', async () => {
+      // `screenshot` stands for the five that can await. Before the fix it threw
+      // `no booted device — call connect() first` against a running simulator.
+      //
+      // Mutation: reverting `screenshot` to the synchronous resolver fails here.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      await agent.connect(`ws://localhost:${port}`)
+      for (const state of internals(agent).deviceStates.values()) state.booted = false
+
+      await expect(agent.screenshot()).resolves.toBeInstanceOf(Buffer)
+
+      agent.disconnect()
+    })
+
+    it('still refuses when simctl agrees the device is down', async () => {
+      // The control. Without it the test above passes on a resolver that stopped checking anything.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(false))
+      await agent.connect(`ws://localhost:${port}`)
+
+      await expect(agent.screenshot()).rejects.toThrow(/no booted device/i)
+
+      agent.disconnect()
+    })
+
+    it('warms the booted flags on registration, for the one caller that cannot await', async () => {
+      // `stream()` returns a `ReadableStream` and is part of `DeviceAgent`, so it cannot ask simctl
+      // itself without changing that interface. What covers it is this refresh — the flag is a
+      // reading by the time anything looks, rather than the `false` the map is built with.
+      //
+      // Mutation: dropping the `refreshBootedFlags()` call from `initDeviceStates` fails here.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      await agent.connect(`ws://localhost:${port}`)
+
+      await vi.waitFor(() => {
+        const flags = [...internals(agent).deviceStates.values()].map((s) => s.booted)
+        expect(flags).toContain(true)
+      }, { timeout: 2000 })
+
+      agent.disconnect()
+    })
+
+    it('never clears a flag it did not set', async () => {
+      // The refresh only ever writes `true`. A device it misses is one the awaiting resolvers ask
+      // about anyway; a device it wrongly cleared would be one nothing could recover.
+      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(false))
+      await agent.connect(`ws://localhost:${port}`)
+      for (const state of internals(agent).deviceStates.values()) state.booted = true
+
+      await internals(agent).refreshBootedFlags()
+
+      const flags = [...internals(agent).deviceStates.values()].map((s) => s.booted)
+      expect(flags.every(Boolean), 'the refresh cleared a flag').toBe(true)
+
+      agent.disconnect()
     })
   })
 
