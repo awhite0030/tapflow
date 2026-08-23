@@ -33,12 +33,33 @@ private enum ExitCode: Int32 {
     case savePreferencesFailed = 3
     case needsUserApproval = 4
     case completesAfterReboot = 5
+    case activationStalled = 6
 }
 
 private func die(_ code: ExitCode, _ why: String) -> Never {
     hlog("exiting \(code.rawValue): \(why)")
     exit(code.rawValue)
 }
+
+/**
+ * **An overall deadline on the activation, because the approval one is not enough.**
+ *
+ * The approval timeout arms inside `requestNeedsUserApproval`, so it exists only once macOS has
+ * asked for approval. An `OSSystemExtensionRequest` that never calls *any* delegate method had no
+ * bound at all — and that is a real, reproducible state: `submitRequest` returns and nothing is ever
+ * called back.
+ *
+ * **What causes it is not settled, and this comment used to say it was.** It was first seen with 14
+ * accumulated versions, 13 of them "waiting to uninstall on reboot", so the accumulation looked like
+ * the cause. A restart cleared the list to one — and the very next replacement stalled the same way,
+ * with nothing queued, `lsregister -f` on the app making no difference. So the honest statement is
+ * that a replacement can go unanswered and we do not yet know why; the deadline exists because the
+ * failure is **silent**, not because it is understood.
+ *
+ * This is the case the approval deadline claimed to close and did not: it closed one branch. This
+ * bounds the whole request from the moment it is submitted, and every delegate path cancels it.
+ */
+private let activationDeadline: TimeInterval = 45
 
 /**
  * How long to wait for a user who has been sent to System Settings.
@@ -63,8 +84,11 @@ private let approvalDeadline: TimeInterval = 120
  * a code alone does not say *which* preference failed or what the framework said about it. #639,
  * which is about reporting layer 1's health, will read from here rather than invent a channel.
  *
- * The host runs as uid 501, so `/tmp` is writable here. The system extension is root and cannot
- * write it; its own lines come through the NE framework log instead.
+ * The host runs as uid 501, so `/tmp` is writable here. **The claim that used to sit on this line —
+ * that the extension, being root, cannot write `/tmp` — was never tested and is false.** The
+ * provider now writes its own state file, and the path it picked was measured rather than assumed:
+ * `/Library/Application Support/tapflow/tapflow-netfilter-state.json`, root-owned and world-readable,
+ * which is how the agent sees what the running filter is holding.
  *
  * **Bounded, because nothing else bounds it.** `arm()` runs on every device boot, so this appends a
  * handful of lines per boot for as long as the Mac is up — and while macOS clears `/tmp` across
@@ -87,6 +111,9 @@ final class Host: NSObject, OSSystemExtensionRequestDelegate {
     private let offline: [String]
     /// The approval deadline, held only so both terminal callbacks can cancel it.
     private var approvalTimeout: DispatchWorkItem?
+    /// The overall activation deadline. Cancelled by every delegate callback, including the one that
+    /// only reports approval is needed — from there the longer, human-scale deadline takes over.
+    private var activationTimeout: DispatchWorkItem?
 
     init(offline: [String]) {
         self.offline = offline
@@ -98,6 +125,16 @@ final class Host: NSObject, OSSystemExtensionRequestDelegate {
         let request = OSSystemExtensionRequest.activationRequest(
             forExtensionWithIdentifier: extensionBundleID, queue: .main)
         request.delegate = self
+        // Armed before submitting, so a request that is never answered is still bounded.
+        let stalled = DispatchWorkItem {
+            die(.activationStalled, "no answer from the system extension manager within "
+                + "\(Int(activationDeadline))s — not a refusal, no delegate callback at all. "
+                + "Check `systemextensionsctl list` for versions waiting to uninstall on reboot, and "
+                + "System Settings > General > Login Items & Extensions > Network Extensions for an "
+                + "approval nobody granted. A restart clears the first.")
+        }
+        activationTimeout = stalled
+        DispatchQueue.main.asyncAfter(deadline: .now() + activationDeadline, execute: stalled)
         OSSystemExtensionManager.shared.submitRequest(request)
     }
 
@@ -108,6 +145,7 @@ final class Host: NSObject, OSSystemExtensionRequestDelegate {
     }
 
     func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
+        activationTimeout?.cancel()   // the system answered; the human-scale deadline takes over
         hlog("needs user approval in System Settings")
         // Approval is a human walking to System Settings, and it may never come.
         //
@@ -126,6 +164,7 @@ final class Host: NSObject, OSSystemExtensionRequestDelegate {
     func request(_ request: OSSystemExtensionRequest,
                  didFinishWithResult result: OSSystemExtensionRequest.Result) {
         hlog("sysext activated (result \(result.rawValue))")
+        activationTimeout?.cancel()
         approvalTimeout?.cancel()
         // **A result is not automatically a success**, and `willCompleteAfterReboot` is the one that
         // is not: the extension this build installed is not the one that will run until the Mac
@@ -154,6 +193,7 @@ final class Host: NSObject, OSSystemExtensionRequestDelegate {
     }
 
     func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
+        activationTimeout?.cancel()
         approvalTimeout?.cancel()
         hlog("sysext activation FAILED: \((error as NSError).domain) code=\((error as NSError).code): \(error.localizedDescription)")
         die(.activationFailed, error.localizedDescription)
@@ -183,6 +223,54 @@ private func cleanupOldProxy(_ done: @escaping () -> Void) {
 // The offline set arrives on the command line: `TapflowNetFilter [--offline <udid>[,<udid>…]]`.
 // No argument means an EMPTY set, not "leave what is there" — this binary is how the rule is changed,
 // so a plain launch must clear a stale rule rather than preserve one nobody asked for.
+/**
+ * **Activation is a setup step, not something every rule write should do.**
+ *
+ * This binary used to submit an `OSSystemExtensionRequest` on every invocation, and the agent runs
+ * it on every single network toggle — so each toggle asked macOS to install or replace a system
+ * extension in order to change one string in a configuration. That is a lot of machinery for a rule
+ * write, and it is exposure to a failure that has been measured: the request can go unanswered
+ * entirely, which the deadline now catches but cannot fix.
+ *
+ * So the modes are separated. `--install` activates and configures — the once-per-release path a
+ * person or `tapflow setup` runs. Everything else touches only `NEFilterManager`, which is what the
+ * agent needs and is the fast, boring path.
+ */
+private enum Mode { case install, configure, disable }
+
+private func parseMode() -> Mode {
+    if CommandLine.arguments.contains("--off") { return .disable }
+    if CommandLine.arguments.contains("--install") { return .install }
+    return .configure
+}
+
+/// `--off` disables the filter without uninstalling the extension.
+///
+/// It exists for two reasons and both are worth stating. A self-hoster needs a way to turn this off
+/// that is not "remove a system extension", and `stopFilter` — the path that removes the provider's
+/// state file — had no way to be exercised at all. `SIGKILL` does not reach it: measured, the
+/// provider dies, the file freezes, and launchd restarts it about seven seconds later.
+private func disableFilter() {
+    let manager = NEFilterManager.shared()
+    manager.loadFromPreferences { error in
+        if let error { die(.loadPreferencesFailed, error.localizedDescription) }
+        // **Nothing to turn off is a success, not a failure.** `saveToPreferences` needs a
+        // `providerConfiguration` and there is none when no filter was ever configured — so saving
+        // here would fail and report "could not disable" about a filter that does not exist.
+        // Turning something off twice has to be allowed to succeed twice.
+        guard manager.providerConfiguration != nil else {
+            hlog("no filter configuration — nothing to disable")
+            exit(ExitCode.ok.rawValue)
+        }
+        manager.isEnabled = false
+        manager.saveToPreferences { error in
+            if let error { die(.savePreferencesFailed, error.localizedDescription) }
+            hlog("filter disabled")
+            exit(ExitCode.ok.rawValue)
+        }
+    }
+}
+
 private func parseOfflineUDIDs() -> [String] {
     let args = CommandLine.arguments
     guard let flag = args.firstIndex(of: "--offline"), flag + 1 < args.count else { return [] }
@@ -224,6 +312,16 @@ private func configureFilter(offline: [String], exitCode: ExitCode) {
 }
 
 hlog("host launched at \(Bundle.main.bundlePath) args=\(CommandLine.arguments.dropFirst())")
-let host = Host(offline: parseOfflineUDIDs())
-host.activate()
+switch parseMode() {
+case .disable:
+    // No activation request: turning the filter off must not also install or replace the extension.
+    disableFilter()
+case .install:
+    let host = Host(offline: parseOfflineUDIDs())
+    host.activate()
+case .configure:
+    // The agent's path. The extension is already installed by the time anyone is toggling a
+    // simulator's network, so this writes the rule and leaves the extension alone.
+    configureFilter(offline: parseOfflineUDIDs(), exitCode: .ok)
+}
 RunLoop.main.run()

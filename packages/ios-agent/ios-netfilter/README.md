@@ -66,9 +66,17 @@ ios-netfilter/
 ## 사용
 
 ```bash
-# 룰 설정 (인자 없으면 빈 집합 = 전부 온라인)
-/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --offline <udid>[,<udid>…]
+B=/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter
+
+$B --install                    # 확장 활성화 + 설정. 릴리스당 한 번, 사람이 한다
+$B --offline <udid>[,<udid>…]   # 룰만 쓴다. 에이전트가 토글마다 부르는 경로
+$B                              # 인자 없음 = 빈 집합 = 전부 온라인
+$B --off                        # 필터 비활성화 (확장은 그대로 둔다)
 ```
+
+**활성화는 설정과 분리돼 있다.** 예전에는 매 실행이 `OSSystemExtensionRequest`를 보냈고, 에이전트가
+토글마다 이걸 부르므로 **설정 문자열 하나 바꾸려고 시스템 확장 설치·교체를 요청**하고 있었다. 불필요한
+데다, 그 요청이 무응답으로 끝나는 실패(exit 6)에 매번 노출된다.
 
 **exit 0은 "거부당하지 않았다"까지다.** 저장이 받아들여졌다는 뜻이고, 실행 중인 provider가 새 룰을
 들고 있다는 뜻은 아니다 — 프레임워크가 `vendorConfiguration`을 provider에 넘기는 것은 그 뒤이고
@@ -80,10 +88,46 @@ ios-netfilter/
 | 1 | sysext 활성화 실패 |
 | 2 | preferences 읽기 실패 |
 | 3 | preferences 저장 실패 (시스템 설정에서 거절한 경우가 여기) |
-| 4 | 승인 대기 30초 초과 — 시스템 설정에서 승인 후 다시 실행 |
+| 4 | 승인 대기 120초 초과 — 시스템 설정에서 승인 후 다시 실행 |
 | 5 | 재부팅해야 새 확장이 뜬다 |
+| 6 | 45초 안에 시스템 확장 관리자가 아무 응답도 안 함 — 에러도 거절도 아니다 |
 
 디바이스가 실제로 오프라인인지는 이 코드가 아니라 시뮬레이터 안에서 dylib이 남긴 verdict로 판단한다.
+
+## provider가 남기는 상태 파일
+
+`/Library/Application Support/tapflow/tapflow-netfilter-state.json` — root 소유, 644. 에이전트가
+읽는다.
+
+```json
+{"at":1787503422,"pulseSeconds":5,"rule":[],
+ "flows":{"simulator":116,"host":90,"unresolved":0,"dropped":24},
+ "attribution":{"walks":206,"avgMicros":319.7}}
+```
+
+**갱신 주기는 두 가지다.** flow가 들어오면 최대 초당 한 번, 그리고 트래픽과 무관하게 `pulseSeconds`
+(5초)마다. **조용한 Mac에서는 후자만 돈다** — 초당 갱신을 전제로 staleness 임계값을 잡으면 살아 있는
+provider를 죽은 것으로 본다. 그래서 그 값이 파일 안에 있다.
+
+**임계값은 최소 3박동(15초)으로 잡는다.** 실측: provider를 `SIGKILL`하면 파일이 굳고 launchd가 약
+**7초** 뒤에 되살린다. 그보다 짧은 임계값은 시스템이 정상 재시작할 때마다 "필터 없음"을 보고한다.
+
+읽는 쪽이 판단하는 법:
+
+| 파일 | 뜻 |
+|---|---|
+| 있고 신선함 | provider가 살아서 `rule`을 집행 중 |
+| 있고 3박동 넘게 오래됨 | provider가 죽었다 (재시작 대기 중이거나) |
+| 없음 | 필터가 정상 정지했다 (`stopFilter`가 지운다) |
+
+- `rule` — **실행 중인 provider가 실제로 들고 있는 offline 집합.** 저장된 설정이 아니라 집행 중인
+  것이라, exit code가 못 하는 말을 한다. 이게 없으면 필터가 죽어도 컨트롤은 "조종 가능"이라고 한다.
+- `unresolved` — 귀속이 **실패한** flow. 호스트 flow와 다르다. 여전히 allow하지만(아래) 셀 수 있다.
+- `avgMicros` — flow당 부모 walk 비용. 캐시를 붙일지 판단하려면 이 숫자가 먼저다.
+
+**해결 불가 flow는 allow한다.** `sysctl` 일시 오류에 fail-closed하면 사용자 브라우저를 끊는다 — 이
+필터는 호스트 전역이고, 기능의 약속은 "토글한 시뮬만 영향받는다"이다. 구멍인 것은 맞고, 그래서
+error 레벨로 로그하고 세는 것이다.
 
 ## 빌드
 
@@ -91,6 +135,24 @@ ios-netfilter/
 export DEVELOPMENT_TEAM=<10자리 Team ID>
 ./build.sh
 ```
+
+**교체가 그냥 무응답으로 끝날 수 있다.** `submitRequest`가 반환하고 delegate가 한 번도 안 불린다 —
+에러도 거절도 승인 프롬프트도 없다. 호스트가 45초에 끊고 exit 6을 내는 게 유일하게 이걸 보이게 하는
+장치다.
+
+**원인은 아직 모른다.** 처음엔 누적 14개 / 대기 13개 상태에서 나와서 누적이 원인처럼 보였다. 재부팅으로
+1개가 됐는데 **다음 교체가 똑같이 멈췄고**, `lsregister -f`도 소용없었다. 둘 다 사실이므로 둘 다 적는다.
+
+멈추면 볼 것 두 가지 (해결책은 아니다):
+
+```bash
+systemextensionsctl list | grep -c "waiting to uninstall on reboot"
+# System Settings > General > Login Items & Extensions > Network Extensions
+```
+
+교체마다 이전 버전이 재부팅까지 대기 상태로 남는 건 사실이므로, 편집마다 빌드하지 말고 묶는 편이
+낫다. 자가호스터는 릴리스당 한 번 설치하므로 이걸 만나지 않는다 — `ios-netfilter`를 건드리는 기여자가
+만난다.
 
 `build.sh` 헤더에 one-time 셋업(App ID + NE capability, notarytool 자격증명)이 있다.
 
