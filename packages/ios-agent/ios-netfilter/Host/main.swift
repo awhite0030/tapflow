@@ -10,6 +10,40 @@ import os.log
 private let log = OSLog(subsystem: "dev.tapflow.netfilter", category: "host")
 private let extensionBundleID = "dev.tapflow.netfilter.ext"
 
+/**
+ * **Every failure exits with its own code, and none of them exits 0.**
+ *
+ * This used to `exit(0)` from the configuration completion whether the preferences loaded, saved, or
+ * failed. A user who declines the filter in System Settings makes the save fail, and the process
+ * still reported success — so the agent wrote a rule nothing was enforcing and the control said
+ * `available: true` over a kernel dropping nothing.
+ *
+ * **Zero still is not a confirmation that the rule is being enforced.** It now means the save was
+ * accepted — every exit runs from inside a completion handler — and no further. The framework hands
+ * `vendorConfiguration` to the running provider afterwards, on its own schedule and with no
+ * acknowledgement coming back, and the whole run returns in 27ms (measured). So the claim an exit
+ * status can carry here is "nothing refused", which is smaller than "it works" and is the reason the
+ * agent decides `available` from the dylib's verdict instead of from this. Reporting layer 1's own
+ * health needs an artefact the agent can read, which is a separate issue and not this.
+ */
+private enum ExitCode: Int32 {
+    case ok = 0
+    case activationFailed = 1
+    case loadPreferencesFailed = 2
+    case savePreferencesFailed = 3
+    case needsUserApproval = 4
+    case completesAfterReboot = 5
+}
+
+private func die(_ code: ExitCode, _ why: String) -> Never {
+    hlog("exiting \(code.rawValue): \(why)")
+    exit(code.rawValue)
+}
+
+/// How long to wait for a user who has been sent to System Settings. Without a bound the process sits
+/// in its run loop forever, and an agent that waits on it waits with it.
+private let approvalDeadline: TimeInterval = 30
+
 // TEMP file log — os_log from these processes isn't surfacing in this host's log show. Host is uid 501,
 // so /tmp works here (the sysext, as root, cannot write /tmp — its logs come via the NE framework log).
 private func hlog(_ s: String) {
@@ -44,11 +78,23 @@ final class Host: NSObject, OSSystemExtensionRequestDelegate {
 
     func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
         hlog("needs user approval in System Settings")
+        // Approval is a human walking to System Settings, and it may never come. Nothing else here
+        // ends the run loop on that path, so without this the process — and anything waiting on it —
+        // stays for the life of the machine.
+        DispatchQueue.main.asyncAfter(deadline: .now() + approvalDeadline) {
+            die(.needsUserApproval, "no approval within \(Int(approvalDeadline))s — approve the extension in System Settings and try again")
+        }
     }
 
     func request(_ request: OSSystemExtensionRequest,
                  didFinishWithResult result: OSSystemExtensionRequest.Result) {
         hlog("sysext activated (result \(result.rawValue))")
+        // **A result is not automatically a success.** `willCompleteAfterReboot` says the extension
+        // this build installed is not the one running, so writing a rule now configures a filter that
+        // will not enforce it until the machine restarts — reported as working the whole time.
+        if result == .willCompleteAfterReboot {
+            die(.completesAfterReboot, "the extension will not run until this Mac is restarted")
+        }
         // The earlier transparent-proxy attempt left a NETunnelProvider config behind, and
         // NETunnelProvider keeps its provider PROCESS alive as long as that config exists — which is
         // why replacing the bundle never swapped in the new content-filter code. Remove it first so
@@ -57,13 +103,13 @@ final class Host: NSObject, OSSystemExtensionRequestDelegate {
         // a resident container app would buy nothing — and leaving one behind is what made `open` a
         // silent no-op on the next invocation (it activates a running app instead of re-running main).
         cleanupOldProxy { [offline] in
-            configureFilter(offline: offline) { exit(0) }
+            configureFilter(offline: offline)
         }
     }
 
     func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
         hlog("sysext activation FAILED: \((error as NSError).domain) code=\((error as NSError).code): \(error.localizedDescription)")
-        exit(1)
+        die(.activationFailed, error.localizedDescription)
     }
 }
 
@@ -100,13 +146,11 @@ private func parseOfflineUDIDs() -> [String] {
 // the framework provides for exactly this. The XPC mach service never registered in the system domain,
 // and this needs no service at all: the host writes the configuration, the framework hands it to the
 // provider.
-private func configureFilter(offline: [String], _ done: @escaping () -> Void) {
+private func configureFilter(offline: [String]) {
     let manager = NEFilterManager.shared()
     manager.loadFromPreferences { error in
         if let error {
-            hlog("load prefs failed: \(error.localizedDescription)")
-            done()
-            return
+            die(.loadPreferencesFailed, error.localizedDescription)
         }
         // vendorConfiguration must be set on every run, not only when the configuration is first
         // created — otherwise the second invocation, the one that actually changes the rule, is a no-op.
@@ -118,12 +162,13 @@ private func configureFilter(offline: [String], _ done: @escaping () -> Void) {
         manager.localizedDescription = "tapflow network filter"
         manager.isEnabled = true
         manager.saveToPreferences { error in
+            // The branch that mattered: declining the filter in System Settings lands here, and it
+            // used to log and exit 0 like the success beside it.
             if let error {
-                hlog("save prefs failed: \(error.localizedDescription)")
-            } else {
-                hlog("filter enabled, offline=\(offline)")
+                die(.savePreferencesFailed, error.localizedDescription)
             }
-            done()
+            hlog("filter enabled, offline=\(offline)")
+            exit(ExitCode.ok.rawValue)
         }
     }
 }

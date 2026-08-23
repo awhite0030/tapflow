@@ -59,8 +59,20 @@ ios-netfilter/
 /Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --offline <udid>[,<udid>…]
 ```
 
-**프로세스 종료는 적용 완료가 아니다** — exec한 프로세스가 룰이 기록되기 전에 반환한다(측정: 반환
-0.05s < 기록 0.08s). exit code를 확인으로 쓰지 말 것.
+**exit 0은 "거부당하지 않았다"까지다.** 저장이 받아들여졌다는 뜻이고, 실행 중인 provider가 새 룰을
+들고 있다는 뜻은 아니다 — 프레임워크가 `vendorConfiguration`을 provider에 넘기는 것은 그 뒤이고
+돌아오는 확인은 없다(전체 실행 27ms, 측정). 실패는 각각 다른 코드로 나온다.
+
+| exit | 뜻 |
+|---|---|
+| 0 | 저장까지 받아들여짐 |
+| 1 | sysext 활성화 실패 |
+| 2 | preferences 읽기 실패 |
+| 3 | preferences 저장 실패 (시스템 설정에서 거절한 경우가 여기) |
+| 4 | 승인 대기 30초 초과 — 시스템 설정에서 승인 후 다시 실행 |
+| 5 | 재부팅해야 새 확장이 뜬다 |
+
+디바이스가 실제로 오프라인인지는 이 코드가 아니라 시뮬레이터 안에서 dylib이 남긴 verdict로 판단한다.
 
 ## 빌드
 
