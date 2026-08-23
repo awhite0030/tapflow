@@ -465,9 +465,20 @@ static void tf_cut_open_connections(void) {
     // opposite sides of the window that matters: a descriptor recycled there was classified as the
     // old socket, identified as the new one, cut, and then compared new-against-new — reporting no
     // race while cutting the loopback connection the peer check exists to protect.
+    //
+    // **A descriptor that cannot be identified is not cut at all.** `getsockname` does not fail on a
+    // connected socket for any ordinary reason — an unbound one answers with `AF_UNSPEC` rather than
+    // erroring — so a failure here means the fd went away between the type check and this line.
+    // Treating that as "carry on without the identity" was the worse of the two options: it disabled
+    // every later check as well, so `shutdown` could land on whatever took the descriptor's place,
+    // judged by the *previous* socket's type, with nothing left to notice that it had.
     struct sockaddr_storage self0;
     socklen_t s0len = sizeof(self0);
-    BOOL have_self = getsockname(fd, (struct sockaddr *)&self0, &s0len) == 0;
+    if (getsockname(fd, (struct sockaddr *)&self0, &s0len) != 0) {
+      raced++;
+      os_log_error(tf_log(), "fd %{public}d went away before it could be identified — not cutting it", fd);
+      continue;
+    }
 
     struct sockaddr_storage peer;
     socklen_t plen = sizeof(peer);
@@ -478,22 +489,21 @@ static void tf_cut_open_connections(void) {
     // Re-read immediately before acting. This window can be *avoided* rather than only reported:
     // if the descriptor moved while we were classifying it, the verdict belongs to a socket that is
     // gone, and cutting anyway is the damage.
-    if (have_self) {
-        struct sockaddr_storage self1;
-        socklen_t s1len = sizeof(self1);
-        if (getsockname(fd, (struct sockaddr *)&self1, &s1len) != 0
-            || s1len != s0len || memcmp(&self1, &self0, s0len) != 0) {
-            raced++;
-            os_log_error(tf_log(), "fd %{public}d moved while being classified — not cutting it", fd);
-            continue;
-        }
+    struct sockaddr_storage self1;
+    socklen_t s1len = sizeof(self1);
+    if (getsockname(fd, (struct sockaddr *)&self1, &s1len) != 0
+        || s1len != s0len || memcmp(&self1, &self0, s0len) != 0) {
+      raced++;
+      os_log_error(tf_log(), "fd %{public}d moved while being classified — not cutting it", fd);
+      continue;
     }
 
     if (shutdown(fd, SHUT_RDWR) != 0) continue;
     cut++;
 
     // Is this still the socket we decided about? The local address outlives our own shutdown; the
-    // peer does not.
+    // peer does not. **This last window can only be reported** — the two checks above avoid a cut,
+    // this one happens after it, and there is no undoing a `shutdown`.
     int atype = 0;
     socklen_t atlen = sizeof(atype);
     struct sockaddr_storage after;
@@ -501,10 +511,8 @@ static void tf_cut_open_connections(void) {
     const char *moved = NULL;
     if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &atype, &atlen) != 0) moved = "is no longer a socket";
     else if (atype != type) moved = "is a different kind of socket";
-    else if (have_self) {
-      if (getsockname(fd, (struct sockaddr *)&after, &alen) != 0) moved = "lost the local address we read";
-      else if (alen != s0len || memcmp(&after, &self0, s0len) != 0) moved = "is bound somewhere else";
-    }
+    else if (getsockname(fd, (struct sockaddr *)&after, &alen) != 0) moved = "lost the local address we read";
+    else if (alen != s0len || memcmp(&after, &self0, s0len) != 0) moved = "is bound somewhere else";
     if (moved != NULL) {
       raced++;
       os_log_error(tf_log(), "fd %{public}d %{public}s under the cut — it was not the socket we checked",
