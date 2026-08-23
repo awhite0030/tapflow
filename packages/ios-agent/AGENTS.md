@@ -617,8 +617,10 @@ recorded rather than one of them being turned into a story.
 
 Two things worth checking when it happens, neither of them a cure:
 
-    systemextensionsctl list | grep -c "waiting to uninstall on reboot"
-    # System Settings > General > Login Items & Extensions > Network Extensions
+```bash
+systemextensionsctl list | grep -c "waiting to uninstall on reboot"
+# System Settings > General > Login Items & Extensions > Network Extensions
+```
 
 Every replacement does still leave the displaced version pending until reboot, so batching changes
 into one build is worth doing regardless. **A self-hoster meets none of this** — they install once

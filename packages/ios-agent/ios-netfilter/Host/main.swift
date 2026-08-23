@@ -254,6 +254,14 @@ private func disableFilter() {
     let manager = NEFilterManager.shared()
     manager.loadFromPreferences { error in
         if let error { die(.loadPreferencesFailed, error.localizedDescription) }
+        // **Nothing to turn off is a success, not a failure.** `saveToPreferences` needs a
+        // `providerConfiguration` and there is none when no filter was ever configured — so saving
+        // here would fail and report "could not disable" about a filter that does not exist.
+        // Turning something off twice has to be allowed to succeed twice.
+        guard manager.providerConfiguration != nil else {
+            hlog("no filter configuration — nothing to disable")
+            exit(ExitCode.ok.rawValue)
+        }
         manager.isEnabled = false
         manager.saveToPreferences { error in
             if let error { die(.savePreferencesFailed, error.localizedDescription) }

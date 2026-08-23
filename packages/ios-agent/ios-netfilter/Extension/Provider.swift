@@ -92,6 +92,12 @@ private final class Heartbeat {
 
     private var path: String?
     private var probed = false
+    /// Set once the filter has stopped. **Checked on the `io` queue, not at the call site**, because
+    /// the call site is not where the ordering problem is: `pulse?.cancel()` does not stop a handler
+    /// already running, and `handleNewFlow` can be mid-flight on another thread. Either could enqueue
+    /// a write *after* `remove()` and recreate the file — leaving a fresh-looking state that claims
+    /// the provider is enforcing a rule, which is the one thing this file must never say.
+    private var stopped = false
     private var lastWrite: CFAbsoluteTime = 0
 
     private var flowsSimulator = 0
@@ -173,8 +179,9 @@ private final class Heartbeat {
 
     /// Absence is the signal a stopped filter should leave behind.
     func remove() {
-        lock.lock(); let p = resolvePath(); lock.unlock()
+        lock.lock(); stopped = true; let p = resolvePath(); lock.unlock()
         guard let p else { return }
+        // Last on the queue, so anything already enqueued runs first and is then undone by this.
         io.async { try? FileManager.default.removeItem(atPath: p) }
     }
 
@@ -199,8 +206,9 @@ private final class Heartbeat {
 
     private func publish(_ json: String) {
         io.async { [self] in
-            lock.lock(); let p = resolvePath(); lock.unlock()
-            guard let p else { return }
+            lock.lock(); let done = stopped; let p = resolvePath(); lock.unlock()
+            // Re-checked here rather than before enqueuing: the stop can land while this is queued.
+            guard !done, let p else { return }
             try? Data(json.utf8).write(to: URL(fileURLWithPath: p), options: .atomic)
         }
     }
