@@ -202,6 +202,20 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     ws.send(JSON.stringify(msg))
   }
   private deviceStates = new Map<string, DeviceState>()
+  /**
+   * Devices **this agent booted**, by device id.
+   *
+   * Separate from `DeviceState.booted` because the two answer different questions and have different
+   * lifetimes. `booted` is liveness and is a cache: `initDeviceStates` rebuilds the whole map on
+   * every `agent:registered`, so it does not survive a reconnect. This does — the agent process is
+   * the same one across a reconnect — and it is what says *which* device is tapflow's when a
+   * developer has a second simulator of their own open.
+   *
+   * Without it, a reconnect on a two-simulator desk left the capability entry points asking simctl,
+   * getting two live devices, and refusing both. Written only where a boot succeeds; never by
+   * `ackInput`, which verifies liveness and proves nothing about ownership.
+   */
+  private readonly ownedDevices = new Set<string>()
   // Last app launched per device (deviceId → bundleId). The XCUITest tree backend
   // queries by bundleId; kept outside DeviceState so it survives a relay reconnect
   // (which clears deviceStates) while the app keeps running in the simulator.
@@ -773,6 +787,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
       // — never blocks/affects the video path.
       if (this.audioEnabled()) this.startAudioCapture(state, streamWs, deviceId)
       state.booted = true
+      this.ownedDevices.add(deviceId)   // survives the reconnect that clears the flag above
       this.sendMsg({ type: 'device:ready', sessionId, requestId, payload: { deviceId } })
       // The unsolicited report the protocol names on `device:ready`. It follows the ready rather than
       // riding inside it: a tester whose device just came up can arm the toggle in the same breath, and
@@ -837,6 +852,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     state.touchHelper?.stop()
     state.touchHelper = null
     state.booted = false
+    this.ownedDevices.delete(deviceId)
     state.streamWs?.close()
     state.streamWs = null
     this.lastBundleIds.delete(deviceId)
@@ -1834,7 +1850,14 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     const booted = new Set(
       (await this.simctl.listDevices()).filter((d) => d.status === 'booted').map((d) => d.id),
     )
-    const live = this.soleOf([...this.deviceStates.values()].filter((s) => booted.has(s.deviceId)))
+    const up = [...this.deviceStates.values()].filter((s) => booted.has(s.deviceId))
+    // **Ownership narrows liveness, and only when it can.** A developer with their own simulator open
+    // makes two devices live, and asking simctl alone would find both and refuse both — the reconnect
+    // case this whole path exists for. `ownedDevices` survives the reconnect and says which one is
+    // tapflow's. When it says nothing — a fresh agent process, or devices booted entirely outside
+    // tapflow — there is no ownership to apply and the refusal is the honest answer.
+    const mine = up.filter((s) => this.ownedDevices.has(s.deviceId))
+    const live = this.soleOf(mine.length > 0 ? mine : up)
     live.booted = true   // same cache write `ackInput` makes, so the next call skips simctl
     return live
   }

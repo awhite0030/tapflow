@@ -2443,6 +2443,42 @@ describe('IOSAgent', () => {
       agent.disconnect()
     })
 
+    it('still resolves after a reconnect when a second simulator is also live', async () => {
+      // **The case the simctl fallback alone could not answer.** After a reconnect every `booted`
+      // flag is false, so the fallback asks simctl — and on a desk with the developer's own
+      // simulator open it gets two live devices and refuses both. The five entry points stayed
+      // broken in exactly the situation the fallback was added for.
+      //
+      // `ownedDevices` survives the map rebuild because the agent process does, so the boot this
+      // agent performed still names its device.
+      //
+      // Mutation: dropping the `ownedDevices` filter from `soleLiveDeviceState` fails here with
+      // "2 booted devices".
+      const simctl = mockSimctl(true)
+      ;(simctl.listDevices as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' },
+        { id: 'dev-2', name: 'iPhone 16', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' },
+      ])
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-own', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await waitForType(browser, 'device:ready')
+
+      // What a reconnect does: the map is rebuilt and every liveness flag goes with it.
+      for (const state of internals(agent).deviceStates.values()) state.booted = false
+
+      await expect(agent.screenshot()).resolves.toBeInstanceOf(Buffer)
+      expect(simctl.screenshot).toHaveBeenCalledWith('dev-1')
+
+      agent.disconnect()
+      browser.close()
+    })
+
     it('prefers the device this agent booted when another simulator is also up', async () => {
       // **The case both of the author's mutations were blind to: two simulators.** A developer with
       // Simulator.app open has a second device booted that tapflow did not boot, and `deviceStates`

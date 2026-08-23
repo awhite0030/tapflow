@@ -11,7 +11,10 @@ booted device" about one running in front of you: taking a screenshot, launching
 UI tree, opening a URL, installing a build. It stayed wrong until something else happened to correct
 it, which for an idle session could be never.
 
-Those five now ask the simulator rather than trusting the flag. The sixth, the raw video stream,
+Those five now ask the simulator rather than trusting the flag — and, because the agent process
+survives a reconnect even though its notes do not, it still knows which simulator it booted. Without
+that, a developer with their own simulator open made the question ambiguous again and all five
+refused rather than choosing. The sixth, the raw video stream,
 cannot ask without changing an interface both platforms implement — and nothing in tapflow calls it,
 so it keeps the old path rather than gaining a workaround built for a caller that does not exist.
 
