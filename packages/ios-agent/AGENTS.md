@@ -559,17 +559,34 @@ Four rules there are load-bearing, and each is a hole something already fell int
   enters the replacement and tail-calls address zero.
 - **Every hook, or none — enforced, not just stated.** There is no uninstall, so a refusal on the
   second target cannot undo the first. The replacements are neutered by `g_hooks_live` until the whole
-  set is in.
+  set is in. `nw_path_monitor_set_queue` is in that set for a reason of its own: without it a replayed
+  handler has nowhere correct to run.
+- **A replayed handler runs on the queue its owner chose**, recorded from
+  `nw_path_monitor_set_queue` (#640). Firing on tapflow's own queue instead could run a third-party
+  handler concurrently with the framework's, and put UI work off the main thread — a crash in the app
+  under test, blamed on tapflow.
+- **Cutting a socket reads the descriptor twice and cannot pin it**, so the cut re-checks afterwards
+  and logs a mismatch (#643). `ENOTCONN` there is the cut having worked, not a race — the first
+  version of that check did not know the difference and flagged all four connections on its first
+  real run.
 - **No `SIMULATOR_UDID`, no activation.** Everything this library writes is keyed by it, and the
   host's `/tmp` is the same `/tmp` inside every simulator on the Mac.
 
 #### What the agent trusts, and what it must not
 
 `state()` decides `available` from a **verdict file the dylib writes**, and only the target app
-writes it — the file is keyed by udid alone, so any other process writing it answers for an app that
-never ran. `awaiting-app` is not an edge case: it is the state every iOS session is in between the
-device booting and its app launching, because the library is armed at boot and can only name its
-target at launch.
+writes it — the file is keyed by udid alone, so any other process writing it would answer for an app
+that never ran. Since #635 no other process activates at all: the library is delivered
+simulator-wide, but the gate admits one bundle id.
+
+`awaiting-app` is not an edge case: it is the state every iOS session is in between the device
+booting and its app launching, because the library is armed at boot and can only name its target at
+launch.
+
+**A hybrid app's web half is not told it is offline**, and that is a limitation rather than an
+unfound bug. WebKit's processes were measured never to load the library — dyld drops `DYLD_*` for
+them — so a WebView renders no `navigator.onLine` banner. Its traffic still fails, because layer 1
+works at the kernel for every process.
 
 The container app's **exit 0 means the save was accepted and nothing more.** The framework hands
 `vendorConfiguration` to the running provider afterwards with no acknowledgement, and the whole run
