@@ -604,7 +604,8 @@ export type NetworkUnavailableReason =
    */
   | 'awaiting-app'
   /** This device cannot do it at all: an Android image whose `cmd connectivity` predates the API.
-   *  Unlike the other two, retrying anything will not change it. */
+   *  Unlike every other member, nothing the tester does will change it — not a retry, not a reboot,
+   *  not launching an app. */
   | 'unsupported-device'
 
 /**

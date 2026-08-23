@@ -57,8 +57,12 @@ export interface NetworkControl {
    *  in this state: a device taken offline here really does stop reaching the network. What does not
    *  work is telling the app, and drawing that as a dead control said the opposite of what a click
    *  would do. It is the state every iOS session is in until its app starts, so it is the first thing
-   *  a tester sees. */
-  awaitingApp?: boolean;
+   *  a tester sees.
+   *
+   *  **Required, not optional.** Its siblings are, and leaving this one out defaulted a consumer to
+   *  the failure rendering for the state every iOS session opens in — the one case where getting it
+   *  wrong is guaranteed rather than unlikely. Both call sites already passed it. */
+  awaitingApp: boolean;
   pending: boolean;
   onToggle: () => void;
 }
@@ -81,12 +85,24 @@ export interface NetworkControl {
 const MUTED = 'text-muted-foreground hover:text-muted-foreground';
 
 /**
- * A state the tester cannot fix by waiting, pinned the same way.
+ * A control tapflow cannot currently steer, pinned the same way.
  *
- * Reserved for the reasons that are actually failures — nothing delivered, hooks refused, a device
- * that will never do it. It deliberately excludes `awaitingApp`, which resolves itself the moment an
- * app starts: colouring the ordinary opening seconds of every iOS session as an error is how a colour
- * stops meaning anything by the time a real failure uses it.
+ * **It says the control is unusable now, not that the device is broken forever** — and the
+ * distinction is forced rather than chosen. Every Android read failure arrives as
+ * `unsupported-device` (#618), a rebooting device included, so the dashboard has no member of that
+ * set it can safely translate into permanence. The hook declines to name a reason for the same
+ * reason; this colour is the same restraint in a different medium, and the prose beside it says only
+ * "tapflow can no longer change it".
+ *
+ * It deliberately excludes `awaitingApp`, which resolves itself the moment an app starts: colouring
+ * the ordinary opening seconds of every iOS session as an error is how a colour stops meaning
+ * anything by the time a real failure uses it.
+ *
+ * **One rule, at every position.** This started at `online` only, leaving an unsteerable *offline*
+ * device drawn in amber at 60% — which is the same washed-out grey that sent this control back for
+ * rework in the first place, in another hue, and it read as disabled on a button that still works.
+ * The position is carried by the icon and by the first sentence of the status; the colour is free to
+ * describe the control.
  */
 const FAILED = 'text-destructive hover:text-destructive';
 
@@ -123,8 +139,8 @@ function networkLook({ position, steerable, awaitingApp }: Pick<NetworkControl, 
       return {
         Icon: RadioOff,
         // Still amber while waiting for an app: the device really is offline, which is the thing this
-        // colour is for. Only a genuine failure overrides it.
-        className: steerable || awaitingApp ? 'text-amber-500 hover:text-amber-500' : 'text-amber-500/60 hover:text-amber-500/60',
+        // colour is for. An unsteerable control overrides it, and `RadioOff` keeps saying offline.
+        className: steerable || awaitingApp ? 'text-amber-500 hover:text-amber-500' : FAILED,
         status: `Device is offline.${caveat}`,
       };
     case 'online':

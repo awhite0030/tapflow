@@ -24,11 +24,15 @@ is drawn as what it is: actionable. It keeps its plain action name rather than t
 which claims a previous attempt that never happened, and a device taken offline here stays amber,
 because it really is offline.
 
-**The reasons that are genuine failures are now drawn as failures.** Separating out the ordinary
-opening seconds of a session is what makes that safe: colouring those as an error is how a colour
-stops meaning anything by the time a real failure uses it.
+**A control tapflow cannot currently steer is now drawn as unusable at every position**, where the
+offline one was left washed out — the same faint rendering that reads as disabled on a button that
+still works, in another hue. Separating out the ordinary opening seconds of a session is what makes
+that safe: colouring those as an error is how a colour stops meaning anything by the time a real
+failure uses it.
 
-The dashboard reads this one member and still ignores the rest of the set, for the reason recorded
-where it ignores them: every Android read failure currently arrives as `unsupported-device`, so
-naming a reason from that set would tell a tester "this device will never do it" about one that is
-merely rebooting. This member does not conflate — an agent emits it only about a fact it knows.
+That colour says the control is unusable **now**, and deliberately not that the device will never do
+it. The dashboard reads this one member and still ignores the rest of the set, for the reason
+recorded where it ignores them: every Android read failure currently arrives as `unsupported-device`,
+so a rebooting device and a permanently incapable one are indistinguishable here, and nothing the
+dashboard draws may tell those apart. `awaiting-app` is not in that set — an agent emits it only
+about a fact it knows — which is what makes it safe to read alone.

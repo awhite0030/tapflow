@@ -128,10 +128,15 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
       // longer steer still has a network state, and the protocol carries the field on both members
       // for exactly that. What `available` changes is what the button can promise, not where it points.
       //
-      // The `reason` is **not read at all**. Every read failure currently arrives as
-      // `unsupported-device` (#618), so naming it would tell a tester "this device will never do it"
-      // about one that is merely rebooting. Saying less is the only way to say nothing false until
-      // that set is split; the value is on the wire for when it is.
+      // **`reason` is read for exactly one member and no others**, and the asymmetry is the point.
+      // Every read *failure* currently arrives as `unsupported-device` (#618), so naming one of those
+      // would tell a tester "this device will never do it" about one that is merely rebooting. Saying
+      // less is the only way to say nothing false until that set is split.
+      //
+      // `awaiting-app` is not in that set. An agent emits it only about a fact it knows — the
+      // injection is in place, nothing has run under it — so it conflates nothing, and it carries the
+      // one remedy a tester can act on. The rest of the set stays on the wire for when it can be
+      // trusted, which is why this compares against the member rather than switching on the field.
       setPosition(msg.payload.offline ? 'offline' : 'online')
       setSteerable(msg.payload.available)
       setAwaitingApp(!msg.payload.available && msg.payload.reason === 'awaiting-app')

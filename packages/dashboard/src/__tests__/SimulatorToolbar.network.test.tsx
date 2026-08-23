@@ -20,7 +20,7 @@ function toolbar(network?: NetworkControl, recordState: RecordState = 'idle') {
 }
 
 const control = (over: Partial<NetworkControl> = {}): NetworkControl =>
-  ({ position: 'online', steerable: true, pending: false, onToggle: () => {}, ...over })
+  ({ position: 'online', steerable: true, awaitingApp: false, pending: false, onToggle: () => {}, ...over })
 
 /** The button, found by whichever action its current position offers. */
 const networkButton = () =>
@@ -355,6 +355,46 @@ describe('SimulatorToolbar — network control', () => {
       toolbar(control({ steerable: false }))
       expect(networkButton()!.className).toContain('text-destructive')
     })
+  })
+
+  /** The state colour a position renders with, or undefined if it has none. */
+  const stateColour = (c: NetworkControl) => {
+    const { unmount } = toolbar(c)
+    const found = networkButton()!.className.split(/\s+/)
+      .find(t => /^text-(muted-foreground|destructive|amber-500)(\/\d+)?$/.test(t))
+    unmount()
+    return found
+  }
+
+  it('paints an unsteerable control the same way wherever the device is pointing', () => {
+    // It was red at `online` and amber at 60% at `offline` — one rule reaching one of the four
+    // combinations. The faint half is the defect this control was already sent back for once: a
+    // washed-out icon reads as a disabled button, and this button still works. Which way the device
+    // is pointing is carried by the icon and by the first sentence of the status, so the colour is
+    // free to describe the control instead of competing with the position for it.
+    //
+    // Mutation: restoring `text-amber-500/60` at the offline position fails here, and so does
+    // dropping the failure colour from either position.
+    const online = stateColour(control({ steerable: false }))
+    const offline = stateColour(control({ position: 'offline', steerable: false }))
+    expect(online).toBe('text-destructive')
+    expect(offline).toBe(online)
+  })
+
+  it('draws no position faint', () => {
+    // The whole reason the rule above exists. A `/60` on any state colour is the rendering a tester
+    // reads as "this button is disabled", and none of these four is.
+    //
+    // Mutation: any single position reintroducing an opacity suffix fails here.
+    const colours = ([
+      control({ steerable: false }),
+      control({ position: 'offline', steerable: false }),
+      control({ position: 'offline' }),
+      control({ position: 'waiting' }),
+      control({ position: 'unknown' }),
+    ]).map(stateColour)
+    expect(colours.every(Boolean), 'a position has no state colour').toBe(true)
+    expect(colours.filter(c => c?.includes('/'))).toEqual([])
   })
 
   it('leaves hover alone where there is no state colour to protect', () => {

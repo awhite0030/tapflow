@@ -122,12 +122,17 @@ describe('useNetworkControl', () => {
     expect(view.result.current.steerable).toBe(true)
   })
 
-  it('renders the same way whatever reason it is given', () => {
+  it('draws the same position whatever reason it is given', () => {
     // **The control for #618.** Every read failure currently arrives as `unsupported-device`, so a
-    // rendering that varied by reason would be varying by a value that carries no information yet —
+    // *position* that varied by reason would be varying by a value that carries no information yet —
     // and would tell a tester "this device will never do it" about one that is rebooting.
     //
-    // Mutation: branching on `reason` anywhere in the hook fails here.
+    // **This used to say "branching on `reason` anywhere in the hook fails here", and that was false
+    // the moment the hook began reading `awaiting-app`** — it asserts `position`, which no reason has
+    // ever moved. A comment claiming a mutation is caught reads as though the mutation was tried; the
+    // one below is the assertion that actually holds a reason branch.
+    //
+    // Mutation: making `position` depend on `reason` fails here.
     const { view, report } = setup()
     report(unsteerable(false))
     const first = view.result.current.position
@@ -135,6 +140,31 @@ describe('useNetworkControl', () => {
     expect(view.result.current.position).toBe(first)
     report({ offline: false, available: false, reason: 'hooks-not-installed' })
     expect(view.result.current.position).toBe(first)
+  })
+
+  it('tells the one reason it reads apart from the ones it does not', () => {
+    // The hook's only reason branch, and it had no test at all: replacing it with `false` — deleting
+    // the dashboard's half of `awaiting-app` outright — left the whole suite green, because the
+    // toolbar's tests inject the prop directly and never exercise the wire→prop step.
+    //
+    // Both directions matter. Widening the branch to "any reason but `unsupported-device`" is as
+    // wrong as removing it: the point is that this member is the only one an agent emits about a
+    // fact it knows.
+    const { view, report } = setup()
+
+    report({ offline: false, available: false, reason: 'awaiting-app' })
+    expect(view.result.current.awaitingApp).toBe(true)
+
+    for (const reason of ['not-armed', 'hooks-not-installed', 'unsupported-device'] as const) {
+      report({ offline: false, available: false, reason })
+      expect(view.result.current.awaitingApp, `reason ${reason}`).toBe(false)
+    }
+
+    // And a steerable report clears it, so a device that launches its app stops being drawn as
+    // waiting for one.
+    report({ offline: false, available: false, reason: 'awaiting-app' })
+    report(steerable(false))
+    expect(view.result.current.awaitingApp).toBe(false)
   })
 
   it('does not move the toggle when the click is sent', () => {
