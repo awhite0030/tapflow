@@ -65,11 +65,21 @@ static os_log_t tf_log(void) {
  * they are restricted enough that dyld drops `DYLD_*`. Ordinary daemons in the same simulator loaded
  * it in the same run, so the delivery itself works.
  *
- * Two things follow, and neither is fixed here. The `com.apple.WebKit.` branch below has never
- * matched anything, and a hybrid app's web half is **not** told it is offline — its traffic is still
- * blocked, because the host content filter works at the kernel for every process, but the path it
- * reads is real. And simulator-wide delivery no longer has the justification it was chosen for, which
- * matters because it is the mechanism that can take a whole simulator down at once.
+ * **The `com.apple.WebKit.` branch that measurement made dead is gone** (#635), and with it the only
+ * reason this file ever had two kinds of activated process. What is left is one: the target app.
+ *
+ * **A hybrid app's web half is therefore not told it is offline**, and that is a limitation rather
+ * than a bug to find later. Its traffic is still blocked — the host content filter works at the
+ * kernel, for every process — so a `fetch` inside the web view fails. What it does not get is the
+ * path status, so a WebView that renders its own offline banner from `navigator.onLine` will not
+ * show it. Nothing in this process can reach that one.
+ *
+ * **Simulator-wide delivery stays, on a different reason than it was chosen for.** The WebView reach
+ * is gone, but the breadth still buys the case per-launch environment cannot: a tester who taps the
+ * app's icon on the springboard, rather than launching it through tapflow, gets a hooked app.
+ * `simctl launch --env` would cover only the launches tapflow itself performs, and a manual relaunch
+ * mid-session is ordinary. The cost is that this is the mechanism that could take a whole simulator
+ * down at once, which is why the gate below refuses by default.
  *
  * **The default is off.** With no target named, or no bundle identifier to compare, this returns
  * false: a bug in the identification leaves the simulator unhooked rather than hooking the system.
@@ -99,24 +109,15 @@ static const char *tf_udid(void) {
   return (udid != NULL && *udid != '\0') ? udid : NULL;
 }
 
+/**
+ * **The target app, and nothing else.** The WebKit branch this used to carry was measured never to
+ * match (#635), so activation and "is the target" are now the same question — which is why the
+ * verdict, the self-check and the watcher below need no second case.
+ */
 static BOOL tf_should_activate(void) {
   // Before anything else: no udid means no per-simulator namespace, and this library has no other.
   if (tf_udid() == NULL) return NO;
-  if (tf_is_target_app()) return YES;
-
-  const char *target = getenv("TAPFLOW_TARGET_BUNDLE");
-  if (target == NULL || *target == '\0') return NO;
-  NSString *me = NSBundle.mainBundle.bundleIdentifier;
-  if (me == nil) return NO;
-
-  // The app's WebView helpers — **measured never to reach here**, see above. Kept rather than
-  // deleted because the branch is what a future runtime that stops restricting those processes would
-  // need, and because deleting it would leave nothing saying the coverage is absent. It is not a
-  // claim that the coverage exists.
-  //
-  // Were it ever reached, the prefix would not separate this app's WebView from Safari's, which is
-  // one reason the verdict is written only by the target app.
-  return [me hasPrefix:@"com.apple.WebKit."];
+  return tf_is_target_app();
 }
 
 // ── the condition file ───────────────────────────────────────────────────────
@@ -190,8 +191,8 @@ static BOOL tf_blocking(void) {
  *
  * That is not a loss, because blocking traffic is no longer this dylib's job. The host content
  * filter (`ios-netfilter`) drops the flows, at the kernel, for **every** process in the simulator
- * rather than the target app and its WebKit helpers — which is strictly wider than these hooks ever
- * reached. The plan recorded that hand-off on 2026-08-22 ("앱-내부 dylib으로 실제 트래픽을 끊는
+ * rather than the one app these hooks reach — which is strictly wider, and is what covers the web
+ * half of a hybrid app that this library was measured never to load into (#635). The plan recorded that hand-off on 2026-08-22 ("앱-내부 dylib으로 실제 트래픽을 끊는
  * 길이 불가로 확정된 뒤의 재설계"); this file, written the day before, had not caught up.
  *
  * What is left here is the half only an in-process hook can do: **what the app is told.**
@@ -228,6 +229,7 @@ static int tf_getaddrinfo(const char *node, const char *service,
  */
 static nw_path_status_t (*o_nw_path_get_status)(nw_path_t);
 static void (*o_nw_path_monitor_set_update_handler)(nw_path_monitor_t, nw_path_monitor_update_handler_t);
+static void (*o_nw_path_monitor_set_queue)(nw_path_monitor_t, dispatch_queue_t);
 
 static nw_path_status_t tf_nw_path_get_status(nw_path_t path) {
   if (tf_blocking()) return nw_path_status_unsatisfied;
@@ -239,7 +241,27 @@ static nw_path_status_t tf_nw_path_get_status(nw_path_t path) {
 static NSMutableArray *g_handlers;   // of nw_path_monitor_update_handler_t (copied)
 static NSMutableArray *g_paths;      // of nw_path_t, index-aligned with the above
 static NSMutableArray *g_monitors;   // of nw_path_monitor_t, index-aligned with the above
+static NSMutableDictionary *g_queues;   // monitor pointer → the dispatch queue its owner set
 static dispatch_queue_t g_handler_queue;
+
+/**
+ * Record the queue the owner chose, so `tf_push_path_update` can fire on it.
+ *
+ * **`NWPathMonitor` promises the handler runs on this queue, and until now tapflow broke that
+ * promise** (#640): it re-fired on its own utility queue, which can run a third-party handler
+ * concurrently with the framework's own call and puts UI work off the main thread. A crash there is
+ * in the app under test and would be blamed on tapflow, rightly.
+ *
+ * Keyed by the monitor's pointer rather than index-aligned, because the two setters may be called in
+ * either order — and often are. The monitors are retained for the life of the process in
+ * `g_monitors`, so the pointer stays a valid key.
+ */
+static void tf_nw_path_monitor_set_queue(nw_path_monitor_t monitor, dispatch_queue_t queue) {
+  if (monitor != NULL && queue != NULL) {
+    dispatch_sync(g_handler_queue, ^{ g_queues[@((uintptr_t)monitor)] = queue; });
+  }
+  o_nw_path_monitor_set_queue(monitor, queue);
+}
 
 static void tf_nw_path_monitor_set_update_handler(nw_path_monitor_t monitor,
                                                   nw_path_monitor_update_handler_t handler) {
@@ -285,18 +307,45 @@ static void tf_nw_path_monitor_set_update_handler(nw_path_monitor_t monitor,
  * code: a handler that registers another monitor — `URLSession` does — would re-enter this serial
  * queue through `dispatch_sync` and deadlock the app inside its own network callback.
  */
+/**
+ * Replay each captured handler with the last path its monitor delivered — **on that monitor's own
+ * queue** (#640).
+ *
+ * `nw_path_monitor_set_queue` is what the owner used to say where its handler runs, and this used to
+ * ignore it and call inline on tapflow's utility queue. Two things were wrong with that: the handler
+ * could run concurrently with a genuine framework callback, and a handler that touches UI — a normal
+ * thing for a path handler to do — did it off the main thread.
+ *
+ * `dispatch_async`, not `sync`: this is called from the condition-file watcher, and a handler that
+ * blocks on its own queue would otherwise stall the watcher for every later monitor. It also removes
+ * any chance of deadlocking against a queue the app already holds.
+ *
+ * **A monitor with no recorded queue is skipped rather than fired anywhere.** It should not be
+ * reachable — `nw_path_monitor_start` requires a queue, and a path is only recorded once the monitor
+ * has delivered one, so anything replayed here has started. It would mean a monitor built before
+ * these hooks installed, and the honest answer for that case is that we do not know where its
+ * handler belongs; guessing is what this change exists to stop.
+ */
 static void tf_push_path_update(void) {
-  __block NSArray *handlers, *paths;
+  __block NSArray *handlers, *paths, *monitors;
+  __block NSDictionary *queues;
   dispatch_sync(g_handler_queue, ^{
     handlers = [g_handlers copy];
     paths = [g_paths copy];
+    monitors = [g_monitors copy];
+    queues = [g_queues copy];
   });
 
   for (NSUInteger i = 0; i < handlers.count; i++) {
     id path = paths[i];
     if (path == [NSNull null]) continue;   // never delivered one; nothing to replay
+    dispatch_queue_t q = queues[@((uintptr_t)monitors[i])];
+    if (q == nil) {
+      os_log_error(tf_log(), "no queue recorded for a started monitor — not re-firing its handler");
+      continue;
+    }
     nw_path_monitor_update_handler_t h = handlers[i];
-    h((nw_path_t)path);
+    dispatch_async(q, ^{ h((nw_path_t)path); });
   }
 }
 
@@ -347,12 +396,41 @@ static BOOL tf_peer_is_loopback(const struct sockaddr *addr) {
  *  - `getpeername` fails with `ENOTCONN` on a listening or unconnected socket, so tapflow's own
  *    in-simulator listener (the UI-tree runner, #433) is never touched
  */
+/** The scan bound, and what it costs when it truncates. `RLIMIT_NOFILE` can be enormous
+ *  (`OPEN_MAX`), and walking millions of descriptors on a toggle is worse than missing the tail of a
+ *  process holding more than this. When it does truncate, it says so — a silent cap would look
+ *  exactly like a process with nothing left to cut. */
+#define TF_MAX_FD_SCAN 8192
+
+/**
+ * Shut down the app's own external TCP connections.
+ *
+ * **The descriptor is read twice and can change underneath, which cannot be closed — only narrowed
+ * and made visible** (#643). Nothing pins an fd across two syscalls: another thread may close and
+ * reopen it between the peer check and the `shutdown`, in which case the verdict formed about one
+ * socket lands on whatever now holds that number. Inside a simulator the realistic damage is a
+ * loopback connection cut on an external socket's verdict — Metro, or tapflow's own in-simulator
+ * runner, going down while the tester is looking at something else.
+ *
+ * So the descriptor is re-read afterwards. That does not undo anything; it turns a silent,
+ * unreproducible failure into a line naming the descriptor.
+ *
+ * **The comparison has to know what success looks like, and the first version did not.** After
+ * `shutdown(SHUT_RDWR)` the socket is disconnected, so `getpeername` answers `ENOTCONN` — which is
+ * the *expected* outcome of a cut that worked. Treating any changed answer as a race flagged all
+ * four connections on the first real run, which is a diagnostic that cries wolf every time it is
+ * right. Only three things mean the descriptor moved: it is no longer a socket at all, it is a
+ * different kind of socket, or it is still connected to a *different* peer.
+ */
 static void tf_cut_open_connections(void) {
   struct rlimit rl;
   int max = (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) ? (int)rl.rlim_cur : 1024;
-  if (max > 8192) max = 8192;   // a bounded scan; an app does not hold more than this
+  if (max > TF_MAX_FD_SCAN) {
+    os_log(tf_log(), "fd scan capped at %{public}d of %{public}d", TF_MAX_FD_SCAN, max);
+    max = TF_MAX_FD_SCAN;
+  }
 
-  int cut = 0;
+  int cut = 0, raced = 0;
   for (int fd = 0; fd < max; fd++) {
     int type = 0;
     socklen_t tlen = sizeof(type);
@@ -365,9 +443,26 @@ static void tf_cut_open_connections(void) {
     if (peer.ss_family != AF_INET && peer.ss_family != AF_INET6) continue;   // AF_UNIX is not the internet
     if (tf_peer_is_loopback((struct sockaddr *)&peer)) continue;             // Metro, and our own runner
 
-    if (shutdown(fd, SHUT_RDWR) == 0) cut++;
+    if (shutdown(fd, SHUT_RDWR) != 0) continue;
+    cut++;
+
+    // Did we cut what we looked at? `ENOTCONN` here is the cut having worked, not a race.
+    int atype = 0;
+    socklen_t atlen = sizeof(atype);
+    struct sockaddr_storage after;
+    socklen_t alen = sizeof(after);
+    const char *moved = NULL;
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &atype, &atlen) != 0) moved = "no longer a socket";
+    else if (atype != type) moved = "a different kind of socket";
+    else if (getpeername(fd, (struct sockaddr *)&after, &alen) == 0
+             && (alen != plen || memcmp(&after, &peer, plen) != 0)) moved = "connected to a different peer";
+    if (moved != NULL) {
+      raced++;
+      os_log_error(tf_log(), "fd %{public}d %{public}s under the cut — it was not the socket we checked",
+                   fd, moved);
+    }
   }
-  os_log(tf_log(), "cut %{public}d open connection(s)", cut);
+  os_log(tf_log(), "cut %{public}d open connection(s), %{public}d raced", cut, raced);
 }
 
 /**
@@ -504,6 +599,7 @@ static void tf_install(void) {
   g_handlers = [NSMutableArray array];
   g_paths = [NSMutableArray array];
   g_monitors = [NSMutableArray array];
+  g_queues = [NSMutableDictionary dictionary];
   g_handler_queue = dispatch_queue_create("io.tapflow.nethook.handlers", DISPATCH_QUEUE_SERIAL);
 
   // Every hook, or none — and the rule is narrower now than the set it used to guard, not weaker.
@@ -515,6 +611,10 @@ static void tf_install(void) {
     {"nw_path_get_status", tf_nw_path_get_status, (void **)&o_nw_path_get_status},
     {"nw_path_monitor_set_update_handler", tf_nw_path_monitor_set_update_handler,
      (void **)&o_nw_path_monitor_set_update_handler},
+    // Part of the all-or-none set: without it the re-fire has nowhere correct to run, and firing
+    // anywhere else is the defect #640 closed.
+    {"nw_path_monitor_set_queue", tf_nw_path_monitor_set_queue,
+     (void **)&o_nw_path_monitor_set_queue},
   };
 
   BOOL installed = YES;
@@ -537,45 +637,32 @@ static void tf_install(void) {
     }
   }
 
-  // **The verdict is the target app's answer, and only the target app writes it.**
+  // **The verdict is the target app's answer, and now only the target app can write it** — because
+  // only the target app activates at all (#635).
   //
-  // The file is keyed by udid alone, and `tf_should_activate` above admits every WebKit process in
-  // the simulator — so whichever wrote last used to win. A web view starting anywhere could report
-  // `installed:true` while the app under test had never run, and the control then claimed hooks over
-  // an app that had none: the exact sign-off this file's preamble calls the worst failure available.
-  // The reverse was reachable too, a helper's failure overwriting a healthy app's success.
-  //
-  // The self-check is inside the same condition rather than beside it. It blocks a dyld initialiser
-  // on a 3s semaphore, and running that in every WebKit process the simulator starts delays web view
-  // creation for no answer anyone reads.
+  // That was not always true, and the file is keyed by udid alone, so whichever process wrote last
+  // used to win: a web view starting anywhere could report `installed:true` while the app under test
+  // had never run, and the control then claimed hooks over an app that had none — the exact sign-off
+  // this file's preamble calls the worst failure available. The gate is what closes it; the scoping
+  // here is the second lock and stays, because a future reason to widen activation must not silently
+  // reopen the first one.
   // **Before the self-check, and that order is required rather than tidy.** The check drives
   // `g_forced_offline` through the hooked `nw_path_get_status`, which reads the gate below — so a
   // store placed after it would make the check assert against neutered replacements and fail every
   // time.
   if (installed) atomic_store_explicit(&g_hooks_live, true, memory_order_release);
 
-  BOOL isTarget = tf_is_target_app();
-  BOOL ok = installed;
-  if (isTarget) {
-    ok = installed && tf_self_check();
-    tf_write_verdict(ok);
-  }
-  // Two words for two claims. "verified" is the target app's, and it means the check below actually
-  // drove `nw_path_monitor` and saw `unsatisfied`; a helper only ever gets "installed", because
-  // nothing proved anything about it.
+  // Only the target app reaches here, so there is one answer rather than two: the hooks went in and
+  // the check drove them, or they did not.
+  BOOL ok = installed && tf_self_check();
+  tf_write_verdict(ok);
   os_log(tf_log(), "hooks %{public}s in %{public}@",
-         ok ? (isTarget ? "verified" : "installed") : "DID NOT INSTALL",
-         NSBundle.mainBundle.bundleIdentifier);
+         ok ? "verified" : "DID NOT INSTALL", NSBundle.mainBundle.bundleIdentifier);
 
-  // **Gated on `ok`, which is not the same thing in both kinds of process — and the sentence here used
-  // to say it was.** For a helper `ok` is just "the hooks went in", and that is the point: it has to
-  // react to the condition file the same way the app does, and it never runs the check that would
-  // produce a verdict. For the target app `ok` also carries the self-check, so a 3s timeout there
-  // leaves the hooks live and the watcher never started.
-  //
-  // That is deliberate rather than an oversight: the same failure makes the agent report
-  // `hooks-not-installed`, so the control is drawn as unusable and layer 2 is in fact unusable. The
-  // alternative — watching while reporting failure — is the half-state this file's preamble is about,
-  // pointed the other way.
+  // **Gated on the self-check, not merely on the hooks going in**, so a 3s timeout leaves the hooks
+  // live and the watcher never started. Deliberate: the same failure makes the agent report
+  // `hooks-not-installed`, so the control is drawn as unusable and layer 2 genuinely is. Watching
+  // while reporting failure would be the half-state this file's preamble is about, pointed the other
+  // way.
   if (ok) tf_start_watching();
 }
