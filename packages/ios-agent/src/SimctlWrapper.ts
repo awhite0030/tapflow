@@ -358,6 +358,30 @@ export class SimctlWrapper {
     await execFileAsync(ROTATION_HELPER, [orientation, udid])
   }
 
+  /**
+   * Make the status bar read as a device with no service, or hand it back (#607).
+   *
+   * **Never on its own.** This changes pixels and nothing else, so a device showing no bars while
+   * its app still loads is the exact false result the network feature exists to prevent — which is
+   * why the only caller is `SimulatorNetwork`, where it goes with the two layers that do the work.
+   *
+   * `clear` removes **every** override, not only the three set here; there is no per-key release.
+   * That is correct today because these are the only overrides tapflow sets, and it is the thing to
+   * check first if a later feature starts overriding the clock or the battery.
+   */
+  async setStatusBarOffline(udid: string, offline: boolean): Promise<void> {
+    if (!offline) {
+      await this.runner.exec('status_bar', udid, 'clear')
+      return
+    }
+    await this.runner.exec(
+      'status_bar', udid, 'override',
+      '--dataNetwork', 'hide',
+      '--wifiMode', 'failed',
+      '--cellularMode', 'notSupported',
+    )
+  }
+
   async showSoftwareKeyboard(udid: string): Promise<void> {
     await this.kbd.show(udid)
   }
