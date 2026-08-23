@@ -112,8 +112,7 @@ interface IOSAgentInternals {
   _reconnectTimer: ReturnType<typeof setTimeout> | null
   _reconnectAttempt: number
   _scheduleReconnect(): void
-  deviceStates: Map<string, { booted: boolean }>
-  refreshBootedFlags(): Promise<void>
+  deviceStates: Map<string, { booted: boolean; deviceId: string }>
 }
 const internals = (agent: IOSAgent): IOSAgentInternals => agent as unknown as IOSAgentInternals
 
@@ -2444,34 +2443,34 @@ describe('IOSAgent', () => {
       agent.disconnect()
     })
 
-    it('warms the booted flags on registration, for the one caller that cannot await', async () => {
-      // `stream()` returns a `ReadableStream` and is part of `DeviceAgent`, so it cannot ask simctl
-      // itself without changing that interface. What covers it is this refresh — the flag is a
-      // reading by the time anything looks, rather than the `false` the map is built with.
+    it('prefers the device this agent booted when another simulator is also up', async () => {
+      // **The case both of the author's mutations were blind to: two simulators.** A developer with
+      // Simulator.app open has a second device booted that tapflow did not boot, and `deviceStates`
+      // holds an entry for it because the agent registers every device it can see.
       //
-      // Mutation: dropping the `refreshBootedFlags()` call from `initDeviceStates` fails here.
-      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(true))
+      // `booted` is what tells those apart — it means *this agent booted it* — so the cached branch
+      // finds exactly one and answers. A "refresh" that marked everything simctl calls booted was
+      // written, and removed: it erased that distinction and made all five refuse with
+      // "2 booted devices" on an ordinary desk, permanently, with no path back.
+      //
+      // Mutation: marking both states booted before the call fails here, which is what re-adding
+      // such a refresh would do.
+      const simctl = mockSimctl(true)
+      ;(simctl.listDevices as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { id: 'dev-1', name: 'iPhone 15', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' },
+        { id: 'dev-2', name: 'iPhone 16', platform: 'ios', status: 'booted', osVersion: 'iOS 18.3' },
+      ])
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
       await agent.connect(`ws://localhost:${port}`)
 
-      await vi.waitFor(() => {
-        const flags = [...internals(agent).deviceStates.values()].map((s) => s.booted)
-        expect(flags).toContain(true)
-      }, { timeout: 2000 })
+      const states = [...internals(agent).deviceStates.values()]
+      expect(states.length, 'both devices should be registered').toBe(2)
+      // Only the one this agent booted carries the flag, which is the contract `device:boot` sets.
+      states.forEach((st, i) => { st.booted = i === 0 })
+      const mine = (states[0] as unknown as { deviceId: string }).deviceId
 
-      agent.disconnect()
-    })
-
-    it('never clears a flag it did not set', async () => {
-      // The refresh only ever writes `true`. A device it misses is one the awaiting resolvers ask
-      // about anyway; a device it wrongly cleared would be one nothing could recover.
-      const agent = new IOSAgent({ intervalMs: 50 }, mockSimctl(false))
-      await agent.connect(`ws://localhost:${port}`)
-      for (const state of internals(agent).deviceStates.values()) state.booted = true
-
-      await internals(agent).refreshBootedFlags()
-
-      const flags = [...internals(agent).deviceStates.values()].map((s) => s.booted)
-      expect(flags.every(Boolean), 'the refresh cleared a flag').toBe(true)
+      await expect(agent.screenshot()).resolves.toBeInstanceOf(Buffer)
+      expect(simctl.screenshot).toHaveBeenCalledWith(mine)
 
       agent.disconnect()
     })

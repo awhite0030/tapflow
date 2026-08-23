@@ -11,10 +11,9 @@ booted device" about one running in front of you: taking a screenshot, launching
 UI tree, opening a URL, installing a build. It stayed wrong until something else happened to correct
 it, which for an idle session could be never.
 
-Those five now ask the simulator rather than trusting the flag. The sixth, the video stream, cannot
-ask without changing an interface both platforms implement, so the flag is instead refreshed once as
-soon as the agent registers — which closes the version of this that lasted, and leaves only the
-moment of reconnect itself.
+Those five now ask the simulator rather than trusting the flag. The sixth, the raw video stream,
+cannot ask without changing an interface both platforms implement — and nothing in tapflow calls it,
+so it keeps the old path rather than gaining a workaround built for a caller that does not exist.
 
 You would have seen this as a tool or an MCP call failing after a reconnect while the screen kept
 streaming normally.

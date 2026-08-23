@@ -384,34 +384,8 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
         audioVolume: 1,
       })
     })
-    void this.refreshBootedFlags()
   }
 
-  /**
-   * Ask simctl which of the registered devices are actually up, once, right after registering.
-   *
-   * **`booted: false` above is a starting point, not a reading.** This runs on `agent:registered`,
-   * which fires on every *reconnect* and not only the first connection — so without this a relay
-   * restart left every flag false while the simulators kept running, and `stream()` refused a live
-   * device until an input or a boot happened to correct it.
-   *
-   * Fire-and-forget rather than awaited: the handshake resolves as soon as the agent is registered,
-   * and holding that open for an `xcrun` round trip would delay every reconnect for a flag only one
-   * caller still reads. Failures are swallowed — a flag that stays false is exactly where this
-   * started, and the awaiting resolvers do not depend on it.
-   */
-  private async refreshBootedFlags(): Promise<void> {
-    try {
-      const booted = new Set(
-        (await this.simctl.listDevices()).filter((d) => d.status === 'booted').map((d) => d.id),
-      )
-      // Only ever sets it true. A device this misses is one `soleLiveDeviceState` will ask about
-      // anyway; a device it wrongly cleared would be one nothing could recover.
-      for (const state of this.deviceStates.values()) {
-        if (booted.has(state.deviceId)) state.booted = true
-      }
-    } catch { /* the flag stays false, which is where this began */ }
-  }
 
   disconnect(): void {
     this._stopping = true
@@ -1809,15 +1783,21 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
   /**
    * **The synchronous resolver, and `stream()` is the only caller left.**
    *
-   * Everything else that resolves a device for a capability call now awaits `soleLiveDeviceState`,
+   * Everything else that resolves a device for a capability call awaits `soleLiveDeviceState`,
    * which asks simctl rather than trusting `booted` — a flag `initDeviceStates` clears on every
    * reconnect. `stream()` returns a `ReadableStream` and is part of `DeviceAgent`, so it cannot
-   * await without changing that interface, which is a decision rather than a repair.
+   * await without changing that interface across both agents.
    *
-   * What covers it instead is `refreshBootedFlags` below: the cache is warmed once as soon as the
-   * agent registers, so this reads a fresh answer rather than a cleared one. That closes the
-   * lasting version of the bug — a flag that stayed wrong until something else happened to fix it —
-   * and leaves a sub-second window right at reconnect, which the awaiting callers do not have.
+   * **It is deliberately left with the stale flag, and nothing was added to paper over that.** A
+   * refresh that marked every simulator simctl reports as booted was written and removed: it also
+   * marked the ones a developer had open in Simulator.app, which destroys the very thing `booted`
+   * disambiguates by — *the device this agent booted* — and made all the callers above refuse with
+   * "2 booted devices" on the common two-simulator desk. Fire-and-forget, it could also resurrect a
+   * flag a `device:shutdown` had just cleared, with no path back.
+   *
+   * That was a mechanism for a method **nothing in this repo calls**. A future caller needs the
+   * interface decision, not a guess: make `stream()` async across `DeviceAgent`, or give it an
+   * explicit device argument.
    */
   private soleDeviceState(): DeviceState {
     // `deviceStates` holds one entry per *registered* simulator, not per running one — the relay
@@ -1837,15 +1817,15 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
    * not only the first connection. So after a relay restart every flag reads false while the
    * simulators are still running, and a resolver that trusts the cache refuses a live device until
    * something else happens to refresh it. On the wire path that is `deviceFor`; these two entry
-   * points have no such path, so they are the ones that stay broken.
+   * points have no session id to work from, so without this they stay broken.
    *
    * Only the empty case pays for the `listDevices` call: a cache that already names a booted device
    * is not wrong, just possibly incomplete, and the ambiguity refusal is stricter for having fewer
    * candidates rather than looser.
    *
-   * **The other five entry points still read the cache directly**, and the fix cannot simply be
-   * moved into `soleDeviceState`: `stream()` is synchronous and is part of `DeviceAgent`, so making
-   * the resolver async is an interface change rather than a repair. That is filed separately.
+   * **Every entry point that can await now comes through here** — the network pair, `installApp`,
+   * `launchApp`, `queryUITree`, `screenshot`, `openUrl`. `stream()` cannot, and `soleDeviceState`
+   * above says what that costs and why nothing was bolted on to hide it.
    */
   private async soleLiveDeviceState(): Promise<DeviceState> {
     const cached = [...this.deviceStates.values()].filter((s) => s.booted)
