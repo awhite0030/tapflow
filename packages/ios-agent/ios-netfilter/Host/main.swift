@@ -40,9 +40,19 @@ private func die(_ code: ExitCode, _ why: String) -> Never {
     exit(code.rawValue)
 }
 
-/// How long to wait for a user who has been sent to System Settings. Without a bound the process sits
-/// in its run loop forever, and an agent that waits on it waits with it.
-private let approvalDeadline: TimeInterval = 30
+/**
+ * How long to wait for a user who has been sent to System Settings.
+ *
+ * **Sized for the caller that can actually approve, which is not the agent.** `SimulatorNetwork`
+ * kills this process at 15s, so approval never completes on that path and exit 4 never reaches it —
+ * the agent's own timeout is what bounds it there, and the tester is not looking at a terminal
+ * anyway. The caller this serves is a person running the binary by hand to install the filter, and
+ * for them the number has to cover opening System Settings and authenticating. Shortening it to fit
+ * under the agent's ceiling would only kill approvals that were about to succeed.
+ *
+ * The bound exists at all because nothing else ends the run loop on that path.
+ */
+private let approvalDeadline: TimeInterval = 120
 
 // TEMP file log — os_log from these processes isn't surfacing in this host's log show. Host is uid 501,
 // so /tmp works here (the sysext, as root, cannot write /tmp — its logs come via the NE framework log).
@@ -56,6 +66,8 @@ private func hlog(_ s: String) {
 
 final class Host: NSObject, OSSystemExtensionRequestDelegate {
     private let offline: [String]
+    /// The approval deadline, held only so both terminal callbacks can cancel it.
+    private var approvalTimeout: DispatchWorkItem?
 
     init(offline: [String]) {
         self.offline = offline
@@ -78,23 +90,38 @@ final class Host: NSObject, OSSystemExtensionRequestDelegate {
 
     func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
         hlog("needs user approval in System Settings")
-        // Approval is a human walking to System Settings, and it may never come. Nothing else here
-        // ends the run loop on that path, so without this the process — and anything waiting on it —
-        // stays for the life of the machine.
-        DispatchQueue.main.asyncAfter(deadline: .now() + approvalDeadline) {
-            die(.needsUserApproval, "no approval within \(Int(approvalDeadline))s — approve the extension in System Settings and try again")
+        // Approval is a human walking to System Settings, and it may never come.
+        //
+        // **Held so it can be cancelled, and cancelled the moment the request resolves.** A bare
+        // `asyncAfter` cannot be called off, so it fired on a run that had already been approved and
+        // was part-way through writing the rule — killing it with "no approval came" while the
+        // approval was granted and the configuration was half-written. Approving takes tens of
+        // seconds, so that window is the normal case for this path, not an edge of it.
+        let deadline = DispatchWorkItem {
+            die(.needsUserApproval, "no approval within \(Int(approvalDeadline))s — approve the extension in System Settings and run this again")
         }
+        approvalTimeout = deadline
+        DispatchQueue.main.asyncAfter(deadline: .now() + approvalDeadline, execute: deadline)
     }
 
     func request(_ request: OSSystemExtensionRequest,
                  didFinishWithResult result: OSSystemExtensionRequest.Result) {
         hlog("sysext activated (result \(result.rawValue))")
-        // **A result is not automatically a success.** `willCompleteAfterReboot` says the extension
-        // this build installed is not the one running, so writing a rule now configures a filter that
-        // will not enforce it until the machine restarts — reported as working the whole time.
-        if result == .willCompleteAfterReboot {
-            die(.completesAfterReboot, "the extension will not run until this Mac is restarted")
-        }
+        approvalTimeout?.cancel()
+        // **A result is not automatically a success**, and `willCompleteAfterReboot` is the one that
+        // is not: the extension this build installed is not the one that will run until the Mac
+        // restarts. It used to exit 0 here like any other result, so a tester was told the new filter
+        // was in place when the old one was still the one enforcing.
+        //
+        // **But it must not skip the rule.** A first draft exited immediately, and that was worse
+        // than the silence it replaced. This binary takes the whole offline set on every run and is
+        // therefore the only way a device is put back *online* — so exiting here left the previous
+        // provider running with the previous rule, still dropping, with nothing able to clear it
+        // short of a reboot. The premise was wrong too: `willCompleteAfterReboot` means the old
+        // extension is alive and enforcing, and it reads `vendorConfiguration` like any other.
+        //
+        // So the rule is written either way and only the exit code differs.
+        let pendingReboot = result == .willCompleteAfterReboot
         // The earlier transparent-proxy attempt left a NETunnelProvider config behind, and
         // NETunnelProvider keeps its provider PROCESS alive as long as that config exists — which is
         // why replacing the bundle never swapped in the new content-filter code. Remove it first so
@@ -103,11 +130,12 @@ final class Host: NSObject, OSSystemExtensionRequestDelegate {
         // a resident container app would buy nothing — and leaving one behind is what made `open` a
         // silent no-op on the next invocation (it activates a running app instead of re-running main).
         cleanupOldProxy { [offline] in
-            configureFilter(offline: offline)
+            configureFilter(offline: offline, exitCode: pendingReboot ? .completesAfterReboot : .ok)
         }
     }
 
     func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
+        approvalTimeout?.cancel()
         hlog("sysext activation FAILED: \((error as NSError).domain) code=\((error as NSError).code): \(error.localizedDescription)")
         die(.activationFailed, error.localizedDescription)
     }
@@ -146,7 +174,7 @@ private func parseOfflineUDIDs() -> [String] {
 // the framework provides for exactly this. The XPC mach service never registered in the system domain,
 // and this needs no service at all: the host writes the configuration, the framework hands it to the
 // provider.
-private func configureFilter(offline: [String]) {
+private func configureFilter(offline: [String], exitCode: ExitCode) {
     let manager = NEFilterManager.shared()
     manager.loadFromPreferences { error in
         if let error {
@@ -168,7 +196,10 @@ private func configureFilter(offline: [String]) {
                 die(.savePreferencesFailed, error.localizedDescription)
             }
             hlog("filter enabled, offline=\(offline)")
-            exit(ExitCode.ok.rawValue)
+            // Not always `.ok`: the rule is written on the reboot path too, and the code is what says
+            // which provider will be enforcing it.
+            if exitCode == .ok { exit(ExitCode.ok.rawValue) }
+            die(exitCode, "rule written, but the extension that will run it needs this Mac restarted")
         }
     }
 }

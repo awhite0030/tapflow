@@ -526,7 +526,15 @@ static void tf_install(void) {
          ok ? (isTarget ? "verified" : "installed") : "DID NOT INSTALL",
          NSBundle.mainBundle.bundleIdentifier);
 
-  // Watching is gated on the hooks being in, not on the verdict: a WebView helper has to react to the
-  // condition file the same way the app does, and it never runs the check that would produce one.
+  // **Gated on `ok`, which is not the same thing in both kinds of process — and the sentence here used
+  // to say it was.** For a helper `ok` is just "the hooks went in", and that is the point: it has to
+  // react to the condition file the same way the app does, and it never runs the check that would
+  // produce a verdict. For the target app `ok` also carries the self-check, so a 3s timeout there
+  // leaves the hooks live and the watcher never started.
+  //
+  // That is deliberate rather than an oversight: the same failure makes the agent report
+  // `hooks-not-installed`, so the control is drawn as unusable and layer 2 is in fact unusable. The
+  // alternative — watching while reporting failure — is the half-state this file's preamble is about,
+  // pointed the other way.
   if (ok) tf_start_watching();
 }

@@ -42,6 +42,10 @@ typedef enum {
  * on this branch, from a different slot published late. Written before the store that activates the
  * patch, it is never observed empty by a caller that is running.
  *
+ * **A refusal leaves the slot `NULL`, whether or not it was briefly filled.** Three of the refusals
+ * happen after the publish, and none of them has touched the target — so a non-NULL slot means the
+ * hook is live, in both directions, and the caller needs no rule of its own about the order.
+ *
  * The slot must outlive the process's use of the hook — a static or a global, never a local. There
  * is no uninstall: the patch and its trampoline are permanent.
  */

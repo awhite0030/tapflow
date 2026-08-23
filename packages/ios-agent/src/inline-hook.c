@@ -194,6 +194,21 @@ static bool tf_suspend_and_write(void *target, const void *bytes, size_t len) {
 
 // ── install ──────────────────────────────────────────────────────────────────
 
+/**
+ * Take the slot back when an install is refused after it was filled.
+ *
+ * Publishing early is what closes the window in the header; it opens a smaller one in the other
+ * direction, because three refusals happen *after* that line — an island that would not turn
+ * executable, a thread parked in the patch site, a page that would not take the write. Leaving the
+ * trampoline visible there would make a non-NULL slot mean "installed" when nothing was installed.
+ *
+ * Safe on every one of those paths because none of them has written a byte to the target yet: the
+ * only `memcpy` into it is inside `tf_write_code`, past the point where all three have returned.
+ */
+static void tf_unpublish(void **original) {
+  if (original != NULL) *original = NULL;
+}
+
 bool tf_hook_install(void *target, void *replacement, void **original, tf_hook_error_t *err) {
   tf_hook_error_t ignored;
   if (err == NULL) err = &ignored;
@@ -243,7 +258,7 @@ bool tf_hook_install(void *target, void *replacement, void **original, tf_hook_e
     uint32_t jump[4];
     tf_emit_abs_jump(jump, (uintptr_t)replacement);
     memcpy(island, jump, sizeof(jump));
-    if (!tf_make_exec(island, tf_page())) { *err = TF_HOOK_ERR_NO_MEMORY; return false; }
+    if (!tf_make_exec(island, tf_page())) { tf_unpublish(original); *err = TF_HOOK_ERR_NO_MEMORY; return false; }
     __builtin___clear_cache((char *)island, (char *)island + sizeof(jump));
 
     // **One aligned four-byte store**, which arm64 does not tear. A thread inside the function sees
@@ -254,10 +269,10 @@ bool tf_hook_install(void *target, void *replacement, void **original, tf_hook_e
     uint32_t jump[4];
     tf_emit_abs_jump(jump, (uintptr_t)replacement);
     ok = tf_suspend_and_write(target, jump, sizeof(jump));
-    if (!ok) { *err = TF_HOOK_ERR_BUSY; return false; }
+    if (!ok) { tf_unpublish(original); *err = TF_HOOK_ERR_BUSY; return false; }
   }
 
-  if (!ok) { *err = TF_HOOK_ERR_WRITE; return false; }
+  if (!ok) { tf_unpublish(original); *err = TF_HOOK_ERR_WRITE; return false; }
   *err = TF_HOOK_OK;
   return true;
 }
