@@ -91,7 +91,7 @@ private final class Heartbeat {
     private let io = DispatchQueue(label: "dev.tapflow.netfilter.heartbeat", qos: .utility)
 
     private var path: String?
-    private var probed = false
+    private var warned = false
     /// Set once the filter has stopped. **Checked on the `io` queue, not at the call site**, because
     /// the call site is not where the ordering problem is: `pulse?.cancel()` does not stop a handler
     /// already running, and `handleNewFlow` can be mid-flight on another thread. Either could enqueue
@@ -121,6 +121,13 @@ private final class Heartbeat {
      * Measured: the first candidate works. `/tmp` has **not** been exercised — an earlier version of
      * this comment claimed the old "root cannot write /tmp" note was false, which the evidence did
      * not support, because the loop returns on the first success and never reached it.
+     *
+     * **Only success is remembered.** A `probed` flag used to be set before either candidate was
+     * tried, so one transient refusal — a full disk, a permission that had not settled yet — silenced
+     * the file for the rest of the provider's life, and the agent read that permanent silence as "not
+     * enforcing" while the filter went on dropping traffic. Re-probing costs four syscalls on the
+     * `io` queue at most once a pulse, and only while there is no path; the logs are what needed the
+     * guard, not the work.
      */
     private static let candidates = [
         "/Library/Application Support/tapflow",
@@ -128,8 +135,7 @@ private final class Heartbeat {
     ]
 
     private func resolvePath() -> String? {
-        if probed { return path }
-        probed = true
+        if let path { return path }
         for dir in Heartbeat.candidates {
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true,
                                                      attributes: [.posixPermissions: 0o755])
@@ -138,11 +144,17 @@ private final class Heartbeat {
                                               attributes: [.posixPermissions: 0o644]) {
                 os_log("heartbeat path: %{public}@", log: log, type: .default, candidate)
                 path = candidate
+                warned = false
                 return path
             }
-            os_log("heartbeat path refused: %{public}@", log: log, type: .default, candidate)
+            if !warned {
+                os_log("heartbeat path refused: %{public}@", log: log, type: .default, candidate)
+            }
         }
-        os_log("no writable heartbeat path — the agent cannot see this provider", log: log, type: .error)
+        if !warned {
+            warned = true
+            os_log("no writable heartbeat path — the agent cannot see this provider", log: log, type: .error)
+        }
         return nil
     }
 
@@ -163,18 +175,17 @@ private final class Heartbeat {
             walks += 1
             self.walkNanos += nanos
         }
-        let json = dueLocked(force: ruleChanged) ? renderLocked(rule: rule) : nil
+        // Enqueued while the lock is still held. See `publish`.
+        if dueLocked(force: ruleChanged) { publish(renderLocked(rule: rule)) }
         lock.unlock()
-        if let json { publish(json) }
     }
 
     /// The pulse, and the one-off writes around the provider's life.
     func publishNow(rule: Set<String>) {
         lock.lock()
         lastWrite = CFAbsoluteTimeGetCurrent()
-        let json = renderLocked(rule: rule)
+        publish(renderLocked(rule: rule))
         lock.unlock()
-        publish(json)
     }
 
     /// Absence is the signal a stopped filter should leave behind.
@@ -194,16 +205,26 @@ private final class Heartbeat {
 
     private func renderLocked(rule: Set<String>) -> String {
         let avg = walks > 0 ? Double(walkNanos) / Double(walks) / 1000.0 : 0
-        let rules = rule.sorted().map { "\"\($0)\"" }.joined(separator: ",")
+        // The rule arrives through `vendorConfiguration`, which this provider does not write and
+        // cannot constrain. Hand-quoting it made the whole file invalid JSON for any value carrying a
+        // quote or a backslash, and an unparseable file reads as "not enforcing" — the wrong answer,
+        // stated confidently, with nothing in the log to say why.
+        let rules = (try? JSONSerialization.data(withJSONObject: rule.sorted()))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         var json = "{\"at\":\(Int(Date().timeIntervalSince1970))"
         json += ",\"pulseSeconds\":\(Int(Heartbeat.pulseSeconds))"
-        json += ",\"rule\":[\(rules)]"
+        json += ",\"rule\":\(rules)"
         json += ",\"flows\":{\"simulator\":\(flowsSimulator),\"host\":\(flowsHost)"
         json += ",\"unresolved\":\(flowsUnresolved),\"dropped\":\(flowsDropped)}"
         json += ",\"attribution\":{\"walks\":\(walks),\"avgMicros\":\(String(format: "%.1f", avg))}}\n"
         return json
     }
 
+    /// **Called with `lock` held**, on purpose: rendering under the lock and enqueuing outside it let
+    /// two threads render A then B and enqueue B then A, so the file could move backwards — an older
+    /// `rule` landing last is a reader told the wrong thing about what is being enforced. `io.async`
+    /// only copies a block, and nothing here ever waits on `io`, so holding the lock across it cannot
+    /// deadlock.
     private func publish(_ json: String) {
         io.async { [self] in
             lock.lock(); let done = stopped; let p = resolvePath(); lock.unlock()
