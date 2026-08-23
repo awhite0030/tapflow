@@ -87,6 +87,7 @@ describe('a changeset that owes the root CHANGELOG an entry', () => {
     'mixed-fence.md': cs('"@tapflowio/relay": patch') + '\n```md\n~~~\n<!-- changelog: internal -->\n~~~\n```\n',
     'after-fence.md': cs('"@tapflowio/protocol": patch') + '\n```md\nexample\n```\n<!-- changelog: internal -->\n',
     'indented-fence.md': cs('"@tapflowio/protocol": patch') + '\n    ```md\n<!-- changelog: internal -->\n    ```\n',
+    'indented-marker.md': `${cs('"@tapflowio/protocol": patch')}\n  <!-- changelog: internal -->  \n`,
   })[f]
 
   it('owes one for a plain changeset', () => {
@@ -113,6 +114,9 @@ describe('a changeset that owes the root CHANGELOG an entry', () => {
   })
   it('is released by an unindented marker between four-space-indented fence-like lines', () => {
     expect(changelogEntryOwed(['indented-fence.md'], read)).toEqual([])
+  })
+  it('is released by the marker even with leading/trailing spaces', () => {
+    expect(changelogEntryOwed(['indented-marker.md'], read)).toEqual([])
   })
 })
 

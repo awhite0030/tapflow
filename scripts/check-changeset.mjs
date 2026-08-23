@@ -403,8 +403,8 @@ export function ignoredOnlyChangesets(files, ignored, read) {
  */
 export function changelogEntryOwed(files, read) {
   return files.filter((f) => {
-    for (const { raw } of proseLines(read(f), { skipFrontmatter: true })) {
-      if (/^<!--\s*changelog:\s*internal\b.*-->$/.test(raw)) return false
+    for (const { line } of proseLines(read(f), { skipFrontmatter: true })) {
+      if (/^<!--\s*changelog:\s*internal\b.*-->$/.test(line)) return false
     }
     return true
   })
