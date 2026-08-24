@@ -5,7 +5,7 @@ import os.log
 
 // Container app: installs the content-filter system extension and enables the filter via NEFilterManager.
 // (Content filter, not transparent proxy — the proxy couldn't see simulator flows. See Provider.swift.)
-// Capture is observed via the NE framework log; no XPC needed for this probe.
+// Capture is observed via the NE framework log.
 
 private let log = OSLog(subsystem: "dev.tapflow.netfilter", category: "host")
 private let extensionBundleID = "dev.tapflow.netfilter.ext"
@@ -277,10 +277,15 @@ private func parseOfflineUDIDs() -> [String] {
     return args[flag + 1].split(separator: ",").map(String.init).filter { !$0.isEmpty }
 }
 
-// Rule injection (Open Q#3) goes through NEFilterProviderConfiguration.vendorConfiguration — the channel
-// the framework provides for exactly this. The XPC mach service never registered in the system domain,
-// and this needs no service at all: the host writes the configuration, the framework hands it to the
-// provider.
+// Rule injection goes through NEFilterProviderConfiguration.vendorConfiguration — the channel the
+// framework provides for exactly this, and the one that survives a provider restart, since the
+// provider re-reads it at `startFilter`.
+//
+// **It is durable and unacknowledged, and this comment used to claim there was no alternative.** It
+// said "the XPC mach service never registered in the system domain", which was measured false — the
+// extension vends it and answers in under a millisecond. What is true is that `saveToPreferences`
+// returning means only that the save was accepted: the framework hands the configuration on
+// afterwards with nothing coming back, so exit 0 here is not evidence the provider has the rule.
 private func configureFilter(offline: [String], exitCode: ExitCode) {
     let manager = NEFilterManager.shared()
     manager.loadFromPreferences { error in
@@ -317,8 +322,23 @@ case .disable:
     // No activation request: turning the filter off must not also install or replace the extension.
     disableFilter()
 case .install:
-    let host = Host(offline: parseOfflineUDIDs())
-    host.activate()
+    // **Held for the life of the process, and that is the whole fix for exit 6.**
+    //
+    // `OSSystemExtensionRequest.delegate` is **weak**. This used to be a `let` local to the case, and
+    // nothing else retained it — the stall timer is a `DispatchWorkItem` calling a global `die`, so it
+    // captures no `self`, and `activationTimeout` points the other way. So the delegate was gone the
+    // moment `activate()` returned.
+    //
+    // What that produced looked like a system fault and was ours. Replacing an installed extension
+    // makes `sysextd` ask the app which one to keep — `initial activation decision:
+    // requestAppReplaceAction`, logged as an "activation conflict" — and with the delegate collected
+    // there was nobody to answer, so the framework cancelled the connection and **no callback of any
+    // kind ever fired.** The 45s deadline was the only thing left to report, which is why this was
+    // recorded three times as "cause unknown; the deadline exists because the failure is silent".
+    //
+    // It only ever bit a *replace* because a first install has no existing entry to ask about.
+    installHost = Host(offline: parseOfflineUDIDs())
+    installHost?.activate()
 case .configure:
     // The agent's path. The extension is already installed by the time anyone is toggling a
     // simulator's network, so this writes the rule and leaves the extension alone.
