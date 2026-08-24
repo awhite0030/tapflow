@@ -187,6 +187,16 @@ If the emulator is still slow when the Mac is unattended, check the following.
 | **Power adapter connected** | Battery mode lowers CPU performance — `caffeinate` does not override this scaling. |
 | **Laptop lid is open** | Closing the lid triggers clamshell sleep, which `caffeinate` cannot prevent. |
 
+## The network button says "This Mac can't take devices offline" {#network-not-set-up}
+
+Taking an iOS simulator off the network needs a system extension installed on the Mac once, and that
+has not been done. **It is a state, not a bug** — and the person seeing it in a browser cannot fix it.
+Whoever is at the Mac running the agent has to.
+
+It does not apply to Android, which uses airplane mode and needs no setup.
+
+Installing, approving and removing it are in [Taking a device off the network](/guide/network-control).
+
 ## `tapflow doctor` failures
 
 ### All iOS checks fail
