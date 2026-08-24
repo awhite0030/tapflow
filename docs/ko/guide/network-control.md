@@ -14,6 +14,10 @@ iOS 시뮬레이터에서 네트워크 제어를 하려면 tapflow 네트워크 
 
 설치와 승인은 에이전트 맥에서 하며 관리자 권한이 필요합니다. 절차는 [문제 해결](/ko/guide/troubleshooting#network-not-set-up)에 있습니다.
 
+::: warning 하이브리드 앱의 WebView는 오프라인 배너를 그리지 않습니다
+WebView 안에서 도는 화면에는 오프라인 통지가 닿지 않아 배너가 뜨지 않습니다. 알려진 제약입니다. WebView의 네트워크 요청 자체는 다른 요청과 똑같이 실패합니다. 그 화면의 오프라인 동작은 배너가 아니라 요청 실패로 확인하세요.
+:::
+
 ::: tip 오류 코드가 실기기와 다릅니다
 iOS 시뮬레이터에서는 `NSURLErrorNetworkConnectionLost`(`-1005`)가 납니다. 실기기를 기내 모드로 두었을 때 나오는 `NSURLErrorNotConnectedToInternet`(`-1009`)와 다른 값이므로 오류 코드로 분기하는 앱이라면 두 값을 모두 처리하는지 확인하세요.
 :::

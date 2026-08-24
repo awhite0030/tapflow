@@ -238,18 +238,6 @@ Logs are at `/tmp/tapflow-netfilter-host.log`.
 
 For the feature itself, see [Network Control](/guide/network-control).
 
-## iOS: the device is offline but the app still says it is online {#network-hooks-failed}
-
-The traffic is cut and only the app has not noticed.
-
-**Reboot the simulator.** It is put back in place at boot, so a reboot recovers it in most cases.
-
-If it repeats on every boot, the simulator runtime is probably not compatible. If you have just moved to a new Xcode or a new simulator runtime, please [open an issue](https://github.com/jo-duchan/tapflow/issues). Until then, confirm offline behaviour by whether network requests fail, not by the offline banner the app draws.
-
-::: tip A hybrid app's WebView is never told
-Screens running inside a WebView do not draw an offline banner. That is a known limitation rather than a fault. The WebView's own network requests still fail as expected.
-:::
-
 ## `tapflow doctor` failures
 
 ### All iOS checks fail

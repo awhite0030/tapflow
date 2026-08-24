@@ -14,6 +14,10 @@ Network control on an iOS simulator requires the tapflow network extension to be
 
 Installing and approving it happens on the agent Mac and needs administrator rights. The steps are in [Troubleshooting](/guide/troubleshooting#network-not-set-up).
 
+::: warning A hybrid app's WebView draws no offline banner
+Screens running inside a WebView are not reached by the offline notification, so no banner appears. This is a known limitation. The WebView's own network requests fail like any other, so confirm offline behaviour on those screens by the failed requests rather than by a banner.
+:::
+
 ::: tip Error codes differ from a real device
 An iOS simulator reports `NSURLErrorNetworkConnectionLost` (`-1005`), not the `NSURLErrorNotConnectedToInternet` (`-1009`) a real device in airplane mode gives, so if your app branches on the error code, check that it handles both.
 :::
