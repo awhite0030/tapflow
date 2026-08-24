@@ -58,7 +58,9 @@ ios-netfilter/
   (실행 파일 경로도 cwd도 아니다). 호스트 flow는 조상이 `launchd_sim`이 아니라 자연히 걸러진다.
 - **룰 주입은 `NEFilterProviderConfiguration.vendorConfiguration`**. 컨테이너 앱이 쓰고 프레임워크가
   provider에 전달한다 — **실행 중인 provider에 도달하며 재시작이 없다**(토글 3회 내내 pid 불변).
-  XPC mach service는 system domain 등록에 실패했고, 이 경로는 애초에 그것이 필요 없다.
+  전달까지 **55ms 이하**(실측). 다만 `saveToPreferences`의 성공은 저장이 받아들여졌다는 뜻뿐이고
+  확인 응답이 없다. **"XPC mach service가 등록에 실패했다"고 적혀 있던 것은 틀렸다** — 리스너를 켠
+  빌드는 1ms 안에 답한다(프로브 실측 0.26–0.74ms). 이 빌드는 리스너를 켜지 않는다.
 - **loopback은 예외 코드가 필요 없다**: content filter가 루프백 flow를 아예 받지 않는다(실측 —
   offline 지정된 시뮬의 `127.0.0.1` 요청 5회 전부 성공, 같은 구간 `handleNewFlow` 0건). Metro dev
   서버와 XCUITest tree runner가 이 경로다.
@@ -96,8 +98,8 @@ $B --off                        # 필터 비활성화 (확장은 그대로 둔�
 
 ## provider가 남기는 상태 파일
 
-`/Library/Application Support/tapflow/tapflow-netfilter-state.json` — root 소유, 644. 에이전트가
-읽는다.
+`/Library/Application Support/tapflow/tapflow-netfilter-state.json` — root 소유, 644.
+**에이전트가 읽는 코드는 아직 없다 — 그게 #639다.** 아래는 그 판독기가 기대야 할 규약이다.
 
 ```json
 {"at":1787503422,"pulseSeconds":5,"rule":[],

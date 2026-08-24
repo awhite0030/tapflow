@@ -292,15 +292,19 @@ class Provider: NEFilterDataProvider {
     override func startFilter(completionHandler: @escaping (Error?) -> Void) {
         os_log("startFilter entered, offline=%{public}@", log: log, type: .default,
                offlineUDIDs(filterConfiguration).sorted().joined(separator: ","))
-        // The filter can be stopped and started again inside one process, and both of these carry
-        // state that a stop tore down. Re-established here rather than in `init`, which does not run
-        // again.
-        heartbeat.resume()
         let settings = NEFilterSettings(rules: [], defaultAction: .filterData)
         apply(settings) { [weak self] error in
             if let error {
                 os_log("startFilter failed: %{public}@", log: log, type: .error, error.localizedDescription)
             } else {
+                // **After `apply` succeeds, not before it.** The filter can be stopped and started
+                // again inside one process, so a stop's `remove()` has to be undone somewhere — but
+                // undoing it before the filter is actually running opens a window for a writer left
+                // over from the *previous* session: `pulse?.cancel()` does not stop a handler already
+                // executing, and `handleNewFlow` can be mid-flight. Either reaching `publish` after
+                // `stopped` was cleared recreates the file for a filter that never started, which a
+                // reader takes as evidence of an active one.
+                heartbeat.resume()
                 os_log("startFilter applied OK", log: log, type: .default)
                 self?.startPulse()
             }
