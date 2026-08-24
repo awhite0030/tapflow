@@ -189,7 +189,7 @@ If the emulator is still slow when the Mac is unattended, check the following.
 
 ## The network button cannot take an iOS device offline {#network-not-set-up}
 
-Taking an iOS simulator offline needs the tapflow network extension installed on the agent Mac. It does not apply to Android, which uses airplane mode.
+Taking an iOS simulator offline needs the tapflow network extension installed on the agent Mac.
 
 **The person seeing this in a browser cannot fix it.** Everything below happens at the Mac running the agent, and needs administrator rights.
 
