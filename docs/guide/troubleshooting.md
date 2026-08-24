@@ -187,15 +187,60 @@ If the emulator is still slow when the Mac is unattended, check the following.
 | **Power adapter connected** | Battery mode lowers CPU performance — `caffeinate` does not override this scaling. |
 | **Laptop lid is open** | Closing the lid triggers clamshell sleep, which `caffeinate` cannot prevent. |
 
-## The network button says "This Mac can't take devices offline" {#network-not-set-up}
+## The network button cannot take an iOS device offline {#network-not-set-up}
 
-Taking an iOS simulator off the network needs a system extension installed on the Mac once, and that
-has not been done. **It is a state, not a bug** — and the person seeing it in a browser cannot fix it.
-Whoever is at the Mac running the agent has to.
+Taking an iOS simulator offline needs the tapflow network extension installed on the agent Mac. It does not apply to Android, which uses airplane mode.
 
-It does not apply to Android, which uses airplane mode and needs no setup.
+**The person seeing this in a browser cannot fix it.** Everything below happens at the Mac running the agent, and needs administrator rights.
 
-Installing, approving and removing it are in [Taking a device off the network](/guide/network-control).
+Without the extension the button still presses and the app still draws its offline screen, but its requests keep succeeding — offline behaviour confirmed in that state cannot be trusted.
+
+::: warning Not distributed yet
+tapflow does not distribute this extension yet. For now it has to be built from the repository; `packages/ios-agent/ios-netfilter/README.md` covers how.
+:::
+
+### 1. Check whether it is installed
+
+```sh
+systemextensionsctl list
+```
+
+`dev.tapflow.netfilter.ext` showing as `[activated enabled]` means it is installed. If it is not listed, install it.
+
+```sh
+/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --install
+```
+
+### 2. Approve it
+
+Requesting the install makes macOS raise an approval prompt. **There is no CLI equivalent.**
+
+Go to **System Settings → General → Login Items & Extensions → Network Extensions** and switch the tapflow entry on. It asks for an administrator password.
+
+The prompt only ever appears on the Mac running the agent. Someone connected from a browser elsewhere sees nothing, which is why the dashboard offers no retry button.
+
+### 3. When a restart is needed
+
+Replacing an already-installed extension finishes only after the Mac restarts (exit code `5`). Until then the previous version keeps running.
+
+Removal works the same way: an extension switched off in System Settings stays `waiting to uninstall on reboot` until the Mac restarts. That is expected.
+
+### If it still does not work
+
+`--install` ends with a distinct code per kind of failure.
+
+| Code | Meaning |
+|---|---|
+| 1 | Activation failed |
+| 2 | Could not read the configuration |
+| 3 | Could not save the configuration |
+| 4 | Not approved within 120 seconds. Approve it in System Settings and run it again |
+| 5 | The Mac has to restart for this to finish |
+| 6 | The system extension manager gave no answer within 45 seconds |
+
+Logs are at `/tmp/tapflow-netfilter-host.log`.
+
+For the feature itself, see [Network Control](/guide/network-control).
 
 ## `tapflow doctor` failures
 

@@ -1,120 +1,47 @@
-# Taking a device off the network
+# Network Control
 
-Offline banners, failed retries, stale cached screens — the things your app does on a real phone in a
-lift, seen from a browser. The network button in the toolbar is what does it.
+The network button in the device toolbar takes one device offline, so offline banners, retry logic and stale cached screens — the things an app only does with no connection — can be checked from the browser.
 
-**Android needs no setup.** It puts the emulator into airplane mode, which works with what tapflow
-already has.
+## Using it
 
-**iOS needs a one-time setup on the Mac.** This page covers that, and what the control says before it
-is done.
+Press the network button in the device toolbar and that device goes offline. Press it again to bring it back.
 
-## Why only iOS needs setup
+The button works per device. However many devices a session holds, only the one you pressed is cut, and neither the other devices nor the agent Mac's own network is affected.
 
-An iOS simulator has no radio to switch off. It is processes on your Mac, **sharing your Mac's network
-stack**, so "offline" is assembled from three things.
+## What gets cut
 
-| | What it does |
-|---|---|
-| **1. host filter** | drops that simulator's traffic at the kernel |
-| **2. injected library** | tells the app its path is gone, and cuts the connections it already holds |
-| **3. status bar** | stops showing service |
+- New connections fail.
+- **Connections the app already holds are cut too**, so the app does not need restarting.
+- The app notices. An app watching path status is told the path is gone, so its offline banner actually appears.
+- The status bar stops showing service.
 
-**Each alone produces a result that is wrong.** With only layer 1 the traffic dies but the app believes
-it is online, so no offline banner appears. With only layer 2 the app draws its offline screen while
-**its requests keep succeeding** — a tester signs off on retry behaviour having confirmed nothing.
+**Localhost stays up.** A dev server such as Metro reaches the device over the Mac's loopback, so it stays connected while the device is offline — you can watch offline behaviour with a debug build still attached.
 
-Only **layer 1** needs setting up. It is a macOS system extension (a content filter). It installs
-Mac-wide, but its effect is limited to **the one simulator you toggled** — no other simulator is
-affected, and neither is your Mac's own network.
-
-## What the control says before it is set up
-
-The network button stays where it is and says what it cannot do.
-
-> **This Mac can't take devices offline.**
-> Ask whoever runs tapflow on this Mac to set it up.
-
-**That is a state, not a bug.** And the person who can see it in a browser cannot fix it — the setup
-below has to be done by **whoever is sitting at the Mac running the agent**.
-
-## Installing
-
-::: warning tapflow does not distribute this extension yet
-Which medium it should reach you by is being decided in
-[#647](https://github.com/jo-duchan/tapflow/issues/647). A binary signed by the project that filters
-traffic at the kernel is the largest thing tapflow would ask you to trust, so it is being settled as a
-decision rather than by default. Until then you build it yourself, and that **needs a paid Apple
-Developer account.**
+::: tip iOS error codes differ from a real device
+An iOS simulator reports `NSURLErrorNetworkConnectionLost` (`-1005`), not the `NSURLErrorNotConnectedToInternet` (`-1009`) a real device in airplane mode gives. If your app branches on the error code, check that it handles both.
 :::
 
-```sh
-export DEVELOPMENT_TEAM=YOUR_TEAM_ID
-packages/ios-agent/ios-netfilter/build.sh
-```
+## Requirements
 
-| What you need | Why |
-|---|---|
-| A paid Apple Developer account | macOS will not load a system extension without a Developer ID signature and notarization |
-| A 10-character Team ID | `DEVELOPMENT_TEAM` |
-| `notarytool` credentials | The script submits for notarization. Setting them up is covered in the header of `build.sh` |
+- **Android** — none. It puts the emulator into airplane mode.
+- **iOS** — the tapflow network extension has to be installed once on the agent Mac.
 
-When the build finishes, put the result in `/Applications` and activate it.
+An iOS simulator has no radio to switch off. It is a process on your Mac sharing your Mac's network stack, so cutting the traffic of one simulator and nothing else takes a system extension.
 
-```sh
-cp -R packages/ios-agent/ios-netfilter/build/stapled/TapflowNetFilter.app /Applications/
-/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --install
-```
+Installing it is a one-time job for an administrator at the Mac running the agent; someone connected from a browser cannot do it. The steps are in [Troubleshooting](/guide/troubleshooting#network-not-set-up).
 
-## Approving it — a person has to do this
+::: warning Without the extension, iOS offline is not real
+The button still presses on a Mac where the extension is not installed. The app draws its offline screen while its requests keep succeeding. Confirm the extension is installed before concluding that retry or offline behaviour has been verified.
+:::
 
-Requesting activation makes macOS raise an approval prompt. **There is no CLI equivalent for it.**
+## Troubleshooting
 
-Go to **System Settings → General → Login Items & Extensions → Network Extensions** and switch the
-tapflow entry on.
+**An iOS device does not go offline**
 
-This is why the step has to happen **on the Mac running the agent**. Someone connected from a browser
-elsewhere can click all they like; the prompt only ever appears on that Mac — which is also why the
-dashboard offers no retry button.
+- Check that the extension is installed and approved on the agent Mac. The steps are in [Troubleshooting](/guide/troubleshooting#network-not-set-up).
 
-Once approved, the command exits `0` and the network button works immediately.
+**Some requests still succeed while offline**
 
-## When it does not work — exit codes
+- Requests to localhost are let through deliberately. If anything else succeeds, the extension is not installed.
 
-`--install` and every rule write end with a distinct code per kind of failure.
-
-| Code | Meaning |
-|---|---|
-| 0 | Success |
-| 1 | Activation failed |
-| 2 | Could not read the configuration |
-| 3 | Could not save the configuration |
-| 4 | Nobody approved it within 120 seconds — approve it in System Settings and run it again |
-| 5 | The Mac has to be restarted for this to finish |
-| 6 | The system extension manager gave no answer within 45 seconds |
-
-Logs are at `/tmp/tapflow-netfilter-host.log`.
-
-## Removing it
-
-The extension is registered separately from the app in `/Applications`, so deleting the app is not
-enough.
-
-```sh
-systemextensionsctl list
-```
-
-Find `dev.tapflow.netfilter.ext` in the list, then switch it off in the same place in System Settings.
-A version you replaced or removed stays listed as `waiting to uninstall on reboot` **until you restart
-the Mac** — that is normal.
-
-## What you are trusting
-
-This extension **sees network flows at the kernel and drops them.** It installs Mac-wide and runs as
-root. That is the largest thing tapflow asks you to trust, so it is stated plainly.
-
-- **It does not read what is in a flow.** It works out which simulator the flow belongs to, and drops
-  it if that simulator is marked offline. That is all
-- **It sends nothing anywhere.** As with the rest of tapflow, app data does not leave your network
-- **The source is in `packages/ios-agent/ios-netfilter/`.** Building it yourself is the only route
-  today, so the only thing running on your Mac is the thing you signed
+See also: [Troubleshooting](/guide/troubleshooting).
