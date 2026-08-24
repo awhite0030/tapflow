@@ -41,6 +41,7 @@ Common rules are in the root [AGENTS.md](./AGENTS.md).
 |------|----------|
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | Branch, release, and commit conventions |
 | [packages/dashboard/DESIGN.md](./packages/dashboard/DESIGN.md) | Dashboard design system — color tokens, typography, elevation, component specs |
+| [packages/ios-agent/ios-netfilter/README.md](./packages/ios-agent/ios-netfilter/README.md) | The macOS network-filter system extension — why a content filter and not a transparent proxy, the container app's exit codes, and building it (paid Apple account, notarization, the load-bearing `CFBundleVersion` bump) |
 | [.internal/PRD.md](./.internal/PRD.md) | Product requirements (local only) |
 | [docs/AGENTS.md](./docs/AGENTS.md) | VitePress work rules — shiki code blocks, CSS customization notes |
 

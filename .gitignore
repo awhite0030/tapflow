@@ -72,3 +72,6 @@ cookies.txt
 # skills install artifacts (a11y-lens etc.)
 .agents/
 skills-lock.json
+
+# ios-netfilter: sysext build output (like xctest-runner/build)
+packages/ios-agent/ios-netfilter/build/

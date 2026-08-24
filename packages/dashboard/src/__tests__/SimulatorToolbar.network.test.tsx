@@ -20,7 +20,7 @@ function toolbar(network?: NetworkControl, recordState: RecordState = 'idle') {
 }
 
 const control = (over: Partial<NetworkControl> = {}): NetworkControl =>
-  ({ position: 'online', steerable: true, pending: false, onToggle: () => {}, ...over })
+  ({ position: 'online', steerable: true, awaitingApp: false, pending: false, onToggle: () => {}, ...over })
 
 /** The button, found by whichever action its current position offers. */
 const networkButton = () =>
@@ -290,5 +290,147 @@ describe('SimulatorToolbar — network control', () => {
     // name mid-request is unreachable for the duration.
     toolbar(control({ position: 'offline', pending: true }))
     expect(networkButton()).toBeTruthy()
+  })
+
+  // Every position that carries a colour has to survive being pointed at. The `ghost` variant sets
+  // `hover:text-accent-foreground`, so a state class with no hover of its own is repainted as an
+  // ordinary enabled button — the state disappears exactly while someone is looking at it. `offline`
+  // defended itself from the start and the three muted positions did not, which is why this asserts
+  // over the whole set rather than the one that was reported.
+  //
+  // Mutation: dropping `hover:` from any single position fails here.
+  it.each([
+    ['online, not steerable', control({ steerable: false })],
+    ['online, waiting for an app', control({ steerable: false, awaitingApp: true, position: 'offline' })],
+    ['waiting', control({ position: 'waiting' })],
+    ['unknown', control({ position: 'unknown' })],
+    ['offline', control({ position: 'offline' })],
+    ['offline, not steerable', control({ position: 'offline', steerable: false })],
+  ])('pins its colour against hover: %s', (_name, c) => {
+    const { unmount } = toolbar(c)
+    const cls = networkButton()!.className
+    const colour = cls.split(/\s+/).find(t => /^text-(muted-foreground|destructive|amber-500(\/\d+)?)$/.test(t))
+    expect(colour, `no state colour in "${cls}"`).toBeTruthy()
+    expect(cls).toContain(`hover:${colour}`)
+    unmount()
+  })
+
+  describe('waiting for an app to run under the injection', () => {
+    // The state every iOS session is in between the device coming up and its app starting. It arrives
+    // inside `steerable: false`, and everything below is about it not being drawn like the failures
+    // that share that flag: traffic control works here, so a dead-looking control says the opposite
+    // of what a click does.
+    const awaiting = (over: Partial<NetworkControl> = {}) =>
+      control({ steerable: false, awaitingApp: true, ...over })
+
+    it('is not painted as a failure', () => {
+      const { unmount } = toolbar(awaiting())
+      const cls = networkButton()!.className
+      expect(cls).not.toContain('text-destructive')
+      expect(cls).not.toContain('text-muted-foreground')
+      unmount()
+    })
+
+    it('still paints an offline device amber, because it really is offline', () => {
+      toolbar(awaiting({ position: 'offline' }))
+      expect(networkButton()!.className).toContain('text-amber-500')
+    })
+
+    it('says what is missing rather than that nothing can be done', () => {
+      toolbar(awaiting())
+      // "tapflow can no longer change it" was wrong twice here: nothing had been armed, so there was
+      // no "no longer", and clicking does change the device.
+      const said = screen.getByRole('status').textContent ?? ''
+      expect(said).toContain('Launch an app')
+      expect(said).not.toContain('no longer')
+    })
+
+    it('keeps the plain action name, because this is not a failed attempt', () => {
+      toolbar(awaiting())
+      expect(networkButton()!.getAttribute('aria-label')).toBe('Take device offline')
+    })
+
+    it('leaves the real failures painted as failures', () => {
+      // The contrast that makes the colour mean something: same `steerable: false`, no `awaitingApp`.
+      toolbar(control({ steerable: false }))
+      expect(networkButton()!.className).toContain('text-destructive')
+    })
+  })
+
+  /** The state colour a position renders with, or undefined if it has none. */
+  const stateColour = (c: NetworkControl) => {
+    const { unmount } = toolbar(c)
+    const found = networkButton()!.className.split(/\s+/)
+      .find(t => /^text-(muted-foreground|destructive|amber-500)(\/\d+)?$/.test(t))
+    unmount()
+    return found
+  }
+
+  it('paints an unsteerable control the same way at both settled positions', () => {
+    // It was red at `online` and amber at 60% at `offline`. The faint half is the defect this control
+    // was already sent back for once: a washed-out icon reads as a disabled button, and this button
+    // still works.
+    //
+    // Mutation: restoring `text-amber-500/60` at the offline position fails here, and so does
+    // dropping the failure colour from either position.
+    const online = stateColour(control({ steerable: false }))
+    const offline = stateColour(control({ position: 'offline', steerable: false }))
+    expect(online).toBe('text-destructive')
+    expect(offline).toBe(online)
+  })
+
+  it.each(['waiting', 'unknown'] as const)('leaves %s muted, steerable or not', (position) => {
+    // **The other two positions do not take the failure colour, and that is the rule rather than an
+    // omission.** `networkAction` already refuses to prefix `Retry:` here, for a reason it states:
+    // a position-less state has had no attempt, so claiming a failed one asserts something no
+    // channel can explain. Painting it as a failure would make exactly that claim in colour — on the
+    // opening seconds of a session, where it would be the first thing a tester sees.
+    //
+    // There was no case in this file pairing either position with `steerable: false`, so a reading of
+    // "one rule, every position" that added `FAILED` to the switch's other two branches would have
+    // been green — and would have produced a red button named "Toggle device network".
+    expect(stateColour(control({ position }))).toBe('text-muted-foreground')
+    expect(stateColour(control({ position, steerable: false }))).toBe('text-muted-foreground')
+  })
+
+  it('keeps a visual channel for the position when both look like failures', () => {
+    // With one colour for "unsteerable" at both settled positions, the icon is the ONLY channel left
+    // that separates offline from online for a sighted mouse or touch user — the status sentence is
+    // `sr-only` and the tooltip does not open on touch.
+    //
+    // So it is asserted rather than assumed. Nothing else in this file would notice `RadioOff` being
+    // unified with `Radio`.
+    const svg = (c: NetworkControl) => {
+      const { unmount } = toolbar(c)
+      const html = networkButton()!.querySelector('svg')!.outerHTML
+      unmount()
+      return html
+    }
+    expect(svg(control({ position: 'offline', steerable: false })))
+      .not.toBe(svg(control({ position: 'online', steerable: false })))
+  })
+
+  it('draws no position faint', () => {
+    // The whole reason the rule above exists. A `/60` on any state colour is the rendering a tester
+    // reads as "this button is disabled", and none of these four is.
+    //
+    // Mutation: any single position reintroducing an opacity suffix fails here.
+    const colours = ([
+      control({ steerable: false }),
+      control({ position: 'offline', steerable: false }),
+      control({ position: 'offline' }),
+      control({ position: 'waiting' }),
+      control({ position: 'unknown' }),
+    ]).map(stateColour)
+    expect(colours.every(Boolean), 'a position has no state colour').toBe(true)
+    expect(colours.filter(c => c?.includes('/'))).toEqual([])
+  })
+
+  it('leaves hover alone where there is no state colour to protect', () => {
+    // The settled, steerable position is drawn like every other button in the toolbar, so it should
+    // take the variant's hover exactly as they do. Pinning it here would be the opposite defect:
+    // a control that looks inert while it is the one thing fully working.
+    toolbar(control())
+    expect(networkButton()!.className).not.toContain('hover:text-muted-foreground')
   })
 })
