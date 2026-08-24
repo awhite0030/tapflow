@@ -186,6 +186,57 @@ tapflow는 에이전트가 실행되는 동안 호스트 Mac의 idle sleep을 �
 | **전원 어댑터 연결** | 배터리 모드에서는 macOS가 CPU 성능을 낮춥니다. `caffeinate`는 이 스케일링을 막지 못합니다. |
 | **노트북 덮개가 열려 있는지** | 덮개를 닫으면 macOS가 클램셸 잠자기로 전환합니다. 클램셸 잠자기는 `caffeinate`로도 막을 수 없습니다. |
 
+## iOS: 네트워크 확장이 설치되지 않았습니다 {#network-not-set-up}
+
+iOS 시뮬레이터에서 네트워크 제어를 하려면 에이전트 맥에 tapflow 네트워크 확장이 설치돼 있어야 합니다.
+
+**에이전트 맥에서 확장을 설치하고 승인하세요.** 두 단계 모두 관리자 권한이 필요합니다.
+
+::: warning 아직 배포 전입니다
+tapflow는 이 확장을 아직 배포하지 않습니다. 지금은 저장소에서 직접 빌드해야 하며 방법은 `packages/ios-agent/ios-netfilter/README.md`에 있습니다.
+:::
+
+### 1. 설치돼 있는지 확인
+
+```sh
+systemextensionsctl list
+```
+
+`dev.tapflow.netfilter.ext`가 `[activated enabled]`로 보이면 설치된 상태입니다. 목록에 없으면 설치가 필요합니다.
+
+```sh
+/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --install
+```
+
+### 2. 승인
+
+설치를 요청하면 macOS 승인 창이 뜹니다.
+
+**시스템 설정 → 일반 → 로그인 항목 및 확장 프로그램 → 네트워크 확장**에서 tapflow 항목을 켭니다. (관리자 암호가 필요합니다.)
+
+### 3. 재시작이 필요한 경우
+
+이미 설치된 확장을 교체하면 맥을 재시작해야 완료됩니다(종료 코드 `5`). 재시작 전까지는 이전 버전이 계속 동작합니다.
+
+제거할 때도 같습니다. 시스템 설정에서 끈 확장은 재시작 전까지 `waiting to uninstall on reboot` 상태로 남습니다. 정상입니다.
+
+### 그래도 안 될 때
+
+`--install`은 실패 종류마다 다른 코드로 끝납니다.
+
+| 코드 | 뜻 |
+|---|---|
+| 1 | 활성화 실패 |
+| 2 | 설정을 읽지 못함 |
+| 3 | 설정을 저장하지 못함 |
+| 4 | 120초 안에 승인되지 않음. 시스템 설정에서 승인하고 다시 실행하세요 |
+| 5 | 맥을 재시작해야 완료됩니다 |
+| 6 | 시스템 확장 관리자가 45초 안에 응답하지 않음 |
+
+로그는 `/tmp/tapflow-netfilter-host.log`에 있습니다.
+
+기능 자체는 [네트워크 제어](/ko/guide/network-control)를 참고하세요.
+
 ## `tapflow doctor` 실패
 
 ### iOS 항목이 모두 실패함
