@@ -136,19 +136,23 @@ export DEVELOPMENT_TEAM=<10자리 Team ID>
 ./build.sh
 ```
 
-**교체가 그냥 무응답으로 끝날 수 있다.** `submitRequest`가 반환하고 delegate가 한 번도 안 불린다 —
-에러도 거절도 승인 프롬프트도 없다. 호스트가 45초에 끊고 exit 6을 내는 게 유일하게 이걸 보이게 하는
-장치다.
+**교체가 무응답으로 끝나면 delegate가 수거된 것이다.** `submitRequest`가 반환하고 delegate가 한 번도
+안 불린다 — 에러도 거절도 승인 프롬프트도 없다. 호스트가 45초에 끊고 exit 6을 내는 게 유일하게 이걸
+보이게 하는 장치다.
 
-**원인은 아직 모른다.** 처음엔 누적 14개 / 대기 13개 상태에서 나와서 누적이 원인처럼 보였다. 재부팅으로
-1개가 됐는데 **다음 교체가 똑같이 멈췄고**, `lsregister -f`도 소용없었다. 둘 다 사실이므로 둘 다 적는다.
-
-멈추면 볼 것 두 가지 (해결책은 아니다):
+`OSSystemExtensionRequest`는 `delegate`를 **weak로 잡는다.** 설치된 확장을 교체할 때 `sysextd`가 앱에게
+어느 쪽을 남길지 묻는데(로그의 `requestAppReplaceAction` → `notifying client of activation conflict`),
+그 시점에 delegate가 수거돼 있으면 답할 게 없어서 프레임워크가 연결을 끊는다. **최초 설치에서는 안
+나온다** — 물어볼 기존 항목이 없기 때문이고, 그래서 반복 빌드를 시작해야 만난다.
 
 ```bash
-systemextensionsctl list | grep -c "waiting to uninstall on reboot"
-# System Settings > General > Login Items & Extensions > Network Extensions
+# 실패했을 때의 모습
+log show --last 5m --debug --predicate 'process == "sysextd"' | grep -i conflict
 ```
+
+틀린 추측 두 개를 적어 둔다. 시간을 썼기 때문이다: 누적 14개 / 대기 13개가 원인처럼 보였지만 재부팅으로
+1개가 된 뒤에도 다음 교체가 똑같이 멈췄고, `lsregister -f`도 소용없었다. 시스템 상태 문제가 아니었으니
+둘 다 도움이 될 수 없었다.
 
 교체마다 이전 버전이 재부팅까지 대기 상태로 남는 건 사실이므로, 편집마다 빌드하지 말고 묶는 편이
 낫다. 자가호스터는 릴리스당 한 번 설치하므로 이걸 만나지 않는다 — `ios-netfilter`를 건드리는 기여자가

@@ -49,12 +49,16 @@ private func die(_ code: ExitCode, _ why: String) -> Never {
  * bound at all — and that is a real, reproducible state: `submitRequest` returns and nothing is ever
  * called back.
  *
- * **What causes it is not settled, and this comment used to say it was.** It was first seen with 14
- * accumulated versions, 13 of them "waiting to uninstall on reboot", so the accumulation looked like
- * the cause. A restart cleared the list to one — and the very next replacement stalled the same way,
- * with nothing queued, `lsregister -f` on the app making no difference. So the honest statement is
- * that a replacement can go unanswered and we do not yet know why; the deadline exists because the
- * failure is **silent**, not because it is understood.
+ * **The cause is now known, and it was ours** — see `case .install`. `OSSystemExtensionRequest`
+ * holds its delegate weakly; the delegate was a local that went out of scope before `sysextd` asked
+ * which extension to keep, so nothing answered and the framework cancelled the connection. Two
+ * earlier guesses are recorded because they cost time and were both wrong: accumulated versions
+ * "waiting to uninstall on reboot" (a restart cleared the list to one and the next replacement
+ * stalled identically), and `lsregister -f` (no difference). Neither could have helped — nothing was
+ * wrong with the system's state.
+ *
+ * **The deadline stays.** It is the only bound on a request that calls no delegate method at all, and
+ * this cause is not proof there is no other.
  *
  * This is the case the approval deadline claimed to close and did not: it closed one branch. This
  * bounds the whole request from the moment it is submitted, and every delegate path cancels it.
@@ -129,9 +133,11 @@ final class Host: NSObject, OSSystemExtensionRequestDelegate {
         let stalled = DispatchWorkItem {
             die(.activationStalled, "no answer from the system extension manager within "
                 + "\(Int(activationDeadline))s — not a refusal, no delegate callback at all. "
-                + "Check `systemextensionsctl list` for versions waiting to uninstall on reboot, and "
-                + "System Settings > General > Login Items & Extensions > Network Extensions for an "
-                + "approval nobody granted. A restart clears the first.")
+                + "The known cause of this is a released delegate (`OSSystemExtensionRequest` holds "
+                + "it weakly); if you are reading this from a build that keeps it, check System "
+                + "Settings > General > Login Items & Extensions > Network Extensions for an "
+                + "approval nobody granted, and `systemextensionsctl list` for versions waiting to "
+                + "uninstall on reboot.")
         }
         activationTimeout = stalled
         DispatchQueue.main.asyncAfter(deadline: .now() + activationDeadline, execute: stalled)
@@ -282,8 +288,10 @@ private func parseOfflineUDIDs() -> [String] {
 // provider re-reads it at `startFilter`.
 //
 // **It is durable and unacknowledged, and this comment used to claim there was no alternative.** It
-// said "the XPC mach service never registered in the system domain", which was measured false — the
-// extension vends it and answers in under a millisecond. What is true is that `saveToPreferences`
+// said "the XPC mach service never registered in the system domain", which was measured false: a
+// build that starts a listener on `NEMachServiceName` answers in 0.26–0.74 ms. **This build starts
+// none** — the measurement is from a probe, and whether to adopt that channel is a separate
+// decision. What the old sentence did was stop anyone trying. What is true is that `saveToPreferences`
 // returning means only that the save was accepted: the framework hands the configuration on
 // afterwards with nothing coming back, so exit 0 here is not evidence the provider has the rule.
 private func configureFilter(offline: [String], exitCode: ExitCode) {
@@ -315,6 +323,12 @@ private func configureFilter(offline: [String], exitCode: ExitCode) {
         }
     }
 }
+
+/// The activation delegate, held for the process lifetime. See `case .install`.
+///
+/// **Declared above the `switch` on purpose**: top-level code in `main.swift` executes in order, so a
+/// declaration below its use is a use before declaration.
+private var installHost: Host?
 
 hlog("host launched at \(Bundle.main.bundlePath) args=\(CommandLine.arguments.dropFirst())")
 switch parseMode() {

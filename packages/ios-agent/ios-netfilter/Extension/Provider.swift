@@ -63,15 +63,17 @@ private let ruleWatch = RuleWatch()
  * "steerable" over a kernel dropping nothing.
  *
  * **This file is not the only channel there could be, and the note that used to say so was wrong.**
- * It read "the XPC mach service never registered", which was measured false: a content-filter
- * extension vends the service named by `NEMachServiceName` and answers a call from the container app
- * in **0.26–0.74 ms**. The same probe measured `vendorConfiguration` reaching a running provider in
- * **under 55 ms**, so "the container app exits before the provider has been handed the rule" was
- * wrong too. What is slow is the pulse below — ours, not the framework's.
+ * It read "the XPC mach service never registered", which was measured false: a build that starts a
+ * listener on `NEMachServiceName` answers a call from the container app in **0.26–0.74 ms**. The same
+ * probe measured `vendorConfiguration` reaching a running provider in **under 55 ms**, so "the
+ * container app exits before the provider has been handed the rule" was wrong too. What is slow is
+ * the pulse below — ours, not the framework's.
  *
- * The two are not alternatives, which is why this stays. A reply says *the rule arrived*; only the
- * file says *the filter is running*, because `stopFilter` removes it and a stopped provider still
- * answers XPC.
+ * **This build starts no listener**, and adopting that channel is a separate decision. Recorded here
+ * because the old sentence was the reason nobody looked. If it is adopted, the two are not
+ * alternatives and this file still has a job: a reply would say *the rule arrived*, while only this
+ * says *the filter is running* — `stopFilter` removes it, and the probe measured a stopped provider
+ * still answering XPC.
  *
  * **It pulses, and that is what makes absence mean something.** A first draft wrote only from
  * `handleNewFlow`, which is a heartbeat with no heart: a provider that died left its last file on
