@@ -202,7 +202,7 @@ tapflow는 이 확장을 아직 배포하지 않습니다. 지금은 저장소�
 systemextensionsctl list
 ```
 
-`dev.tapflow.netfilter.ext`가 `[activated enabled]`로 보이면 설치된 상태입니다. 목록에 없으면 설치합니다.
+`dev.tapflow.netfilter.ext`가 `[activated enabled]`로 보이면 설치된 상태입니다. 목록에 없으면 설치가 필요합니다.
 
 ```sh
 /Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --install
@@ -210,9 +210,9 @@ systemextensionsctl list
 
 ### 2. 승인
 
-설치를 요청하면 macOS가 승인 창을 띄웁니다. **CLI로 대신할 수 없습니다.**
+설치를 요청하면 macOS 승인 창이 뜹니다.
 
-**시스템 설정 → 일반 → 로그인 항목 및 확장 프로그램 → 네트워크 확장**에서 tapflow 항목을 켭니다. 관리자 암호를 묻습니다.
+**시스템 설정 → 일반 → 로그인 항목 및 확장 프로그램 → 네트워크 확장**에서 tapflow 항목을 켭니다. (관리자 암호가 필요합니다.)
 
 ### 3. 재시작이 필요한 경우
 

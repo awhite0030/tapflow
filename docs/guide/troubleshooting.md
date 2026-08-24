@@ -203,7 +203,7 @@ tapflow does not distribute this extension yet. For now it has to be built from 
 systemextensionsctl list
 ```
 
-`dev.tapflow.netfilter.ext` showing as `[activated enabled]` means it is installed. If it is not listed, install it.
+`dev.tapflow.netfilter.ext` showing as `[activated enabled]` means it is installed. If it is not listed, it needs installing.
 
 ```sh
 /Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --install
@@ -211,9 +211,9 @@ systemextensionsctl list
 
 ### 2. Approve it
 
-Requesting the install makes macOS raise an approval prompt. **There is no CLI equivalent.**
+Requesting the install brings up a macOS approval prompt.
 
-Go to **System Settings → General → Login Items & Extensions → Network Extensions** and switch the tapflow entry on. It asks for an administrator password.
+Go to **System Settings → General → Login Items & Extensions → Network Extensions** and switch the tapflow entry on. (An administrator password is required.)
 
 ### 3. When a restart is needed
 
