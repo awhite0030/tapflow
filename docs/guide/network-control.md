@@ -12,7 +12,7 @@ A dev server such as Metro reaches the device over the agent Mac's loopback, so 
 
 Network control on an iOS simulator requires the tapflow network extension to be installed once **on the agent Mac**. It installs on the Mac, not in the simulator: a simulator has no radio to switch off and shares the Mac's network.
 
-Installing and approving it happens on the agent Mac and needs administrator rights. The steps are in [Troubleshooting](/guide/troubleshooting#network-not-set-up).
+tapflow does not distribute this extension yet. How to obtain it, and the install and approval steps, are in [Troubleshooting](/guide/troubleshooting#network-not-set-up); they happen on the agent Mac and need administrator rights.
 
 ::: warning A hybrid app's WebView draws no offline banner
 Screens running inside a WebView are not reached by the offline notification, so no banner appears. This is a known limitation. The WebView's own network requests fail like any other, so confirm offline behaviour on those screens by the failed requests rather than by a banner.
