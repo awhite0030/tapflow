@@ -189,11 +189,9 @@ If the emulator is still slow when the Mac is unattended, check the following.
 
 ## iOS: the network extension is not installed {#network-not-set-up}
 
-Taking an iOS simulator offline needs the tapflow network extension installed on the agent Mac.
+Network control on an iOS simulator needs the tapflow network extension installed on the agent Mac.
 
-**The person seeing this in a browser cannot fix it.** Everything below happens at the Mac running the agent, and needs administrator rights.
-
-Without the extension the button still presses and the app still draws its offline screen, but its requests keep succeeding — offline behaviour confirmed in that state cannot be trusted.
+**Install and approve the extension on the agent Mac.** Both steps need administrator rights.
 
 ::: warning Not distributed yet
 tapflow does not distribute this extension yet. For now it has to be built from the repository; `packages/ios-agent/ios-netfilter/README.md` covers how.
@@ -216,8 +214,6 @@ systemextensionsctl list
 Requesting the install makes macOS raise an approval prompt. **There is no CLI equivalent.**
 
 Go to **System Settings → General → Login Items & Extensions → Network Extensions** and switch the tapflow entry on. It asks for an administrator password.
-
-The prompt only ever appears on the Mac running the agent. Someone connected from a browser elsewhere sees nothing, which is why the dashboard offers no retry button.
 
 ### 3. When a restart is needed
 
@@ -244,14 +240,14 @@ For the feature itself, see [Network Control](/guide/network-control).
 
 ## iOS: the device is offline but the app still says it is online {#network-hooks-failed}
 
-The extension is fine (the section above confirms it) and only the app has not noticed. This is a different failure from the network extension: the traffic really is cut, and what failed is the part that tells the app so.
+The traffic is cut and only the app has not noticed.
 
-**Restart the device.** That notification is put in place when the device boots, so a reboot recovers it in most cases.
+**Reboot the simulator.** It is put back in place at boot, so a reboot recovers it in most cases.
 
 If it repeats on every boot, the simulator runtime is probably not compatible. If you have just moved to a new Xcode or a new simulator runtime, please [open an issue](https://github.com/jo-duchan/tapflow/issues). Until then, confirm offline behaviour by whether network requests fail, not by the offline banner the app draws.
 
 ::: tip A hybrid app's WebView is never told
-Screens running inside a WebView do not draw an offline banner. The notification is not loaded into WebView processes, which is a known limitation rather than a fault. The WebView's own network requests still fail as expected.
+Screens running inside a WebView do not draw an offline banner. That is a known limitation rather than a fault. The WebView's own network requests still fail as expected.
 :::
 
 ## `tapflow doctor` failures
