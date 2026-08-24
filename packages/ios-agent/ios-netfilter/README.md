@@ -58,7 +58,9 @@ ios-netfilter/
   (실행 파일 경로도 cwd도 아니다). 호스트 flow는 조상이 `launchd_sim`이 아니라 자연히 걸러진다.
 - **룰 주입은 `NEFilterProviderConfiguration.vendorConfiguration`**. 컨테이너 앱이 쓰고 프레임워크가
   provider에 전달한다 — **실행 중인 provider에 도달하며 재시작이 없다**(토글 3회 내내 pid 불변).
-  XPC mach service는 system domain 등록에 실패했고, 이 경로는 애초에 그것이 필요 없다.
+  전달까지 **55ms 이하**(실측). 다만 `saveToPreferences`의 성공은 저장이 받아들여졌다는 뜻뿐이고
+  확인 응답이 없다. **"XPC mach service가 등록에 실패했다"고 적혀 있던 것은 틀렸다** — 리스너를 켠
+  빌드는 1ms 안에 답한다(프로브 실측 0.26–0.74ms). 이 빌드는 리스너를 켜지 않는다.
 - **loopback은 예외 코드가 필요 없다**: content filter가 루프백 flow를 아예 받지 않는다(실측 —
   offline 지정된 시뮬의 `127.0.0.1` 요청 5회 전부 성공, 같은 구간 `handleNewFlow` 0건). Metro dev
   서버와 XCUITest tree runner가 이 경로다.
@@ -96,8 +98,8 @@ $B --off                        # 필터 비활성화 (확장은 그대로 둔�
 
 ## provider가 남기는 상태 파일
 
-`/Library/Application Support/tapflow/tapflow-netfilter-state.json` — root 소유, 644. 에이전트가
-읽는다.
+`/Library/Application Support/tapflow/tapflow-netfilter-state.json` — root 소유, 644.
+**에이전트가 읽는 코드는 아직 없다 — 그게 #639다.** 아래는 그 판독기가 기대야 할 규약이다.
 
 ```json
 {"at":1787503422,"pulseSeconds":5,"rule":[],
@@ -136,19 +138,23 @@ export DEVELOPMENT_TEAM=<10자리 Team ID>
 ./build.sh
 ```
 
-**교체가 그냥 무응답으로 끝날 수 있다.** `submitRequest`가 반환하고 delegate가 한 번도 안 불린다 —
-에러도 거절도 승인 프롬프트도 없다. 호스트가 45초에 끊고 exit 6을 내는 게 유일하게 이걸 보이게 하는
-장치다.
+**교체가 무응답으로 끝나면 delegate가 수거된 것이다.** `submitRequest`가 반환하고 delegate가 한 번도
+안 불린다 — 에러도 거절도 승인 프롬프트도 없다. 호스트가 45초에 끊고 exit 6을 내는 게 유일하게 이걸
+보이게 하는 장치다.
 
-**원인은 아직 모른다.** 처음엔 누적 14개 / 대기 13개 상태에서 나와서 누적이 원인처럼 보였다. 재부팅으로
-1개가 됐는데 **다음 교체가 똑같이 멈췄고**, `lsregister -f`도 소용없었다. 둘 다 사실이므로 둘 다 적는다.
-
-멈추면 볼 것 두 가지 (해결책은 아니다):
+`OSSystemExtensionRequest`는 `delegate`를 **weak로 잡는다.** 설치된 확장을 교체할 때 `sysextd`가 앱에게
+어느 쪽을 남길지 묻는데(로그의 `requestAppReplaceAction` → `notifying client of activation conflict`),
+그 시점에 delegate가 수거돼 있으면 답할 게 없어서 프레임워크가 연결을 끊는다. **최초 설치에서는 안
+나온다** — 물어볼 기존 항목이 없기 때문이고, 그래서 반복 빌드를 시작해야 만난다.
 
 ```bash
-systemextensionsctl list | grep -c "waiting to uninstall on reboot"
-# System Settings > General > Login Items & Extensions > Network Extensions
+# 실패했을 때의 모습
+log show --last 5m --debug --predicate 'process == "sysextd"' | grep -i conflict
 ```
+
+틀린 추측 두 개를 적어 둔다. 시간을 썼기 때문이다: 누적 14개 / 대기 13개가 원인처럼 보였지만 재부팅으로
+1개가 된 뒤에도 다음 교체가 똑같이 멈췄고, `lsregister -f`도 소용없었다. 시스템 상태 문제가 아니었으니
+둘 다 도움이 될 수 없었다.
 
 교체마다 이전 버전이 재부팅까지 대기 상태로 남는 건 사실이므로, 편집마다 빌드하지 말고 묶는 편이
 낫다. 자가호스터는 릴리스당 한 번 설치하므로 이걸 만나지 않는다 — `ios-netfilter`를 건드리는 기여자가

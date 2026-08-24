@@ -60,8 +60,20 @@ private let ruleWatch = RuleWatch()
  * The agent runs on the host as the user and decides whether the network control is usable. Until
  * this file it decided entirely from the *dylib's* verdict, which is evidence about layer 2 — so a
  * filter that was killed, never approved, or running an older bundle left the control saying
- * "steerable" over a kernel dropping nothing. There was no channel: the XPC mach service never
- * registered, and the container app exits before the provider has even been handed the new rule.
+ * "steerable" over a kernel dropping nothing.
+ *
+ * **This file is not the only channel there could be, and the note that used to say so was wrong.**
+ * It read "the XPC mach service never registered", which was measured false: a build that starts a
+ * listener on `NEMachServiceName` answers a call from the container app in **0.26–0.74 ms**. The same
+ * probe measured `vendorConfiguration` reaching a running provider in **under 55 ms**, so "the
+ * container app exits before the provider has been handed the rule" was wrong too. What is slow is
+ * the pulse below — ours, not the framework's.
+ *
+ * **This build starts no listener**, and adopting that channel is a separate decision. Recorded here
+ * because the old sentence was the reason nobody looked. If it is adopted, the two are not
+ * alternatives and this file still has a job: a reply would say *the rule arrived*, while only this
+ * says *the filter is running* — `stopFilter` removes it, and the probe measured a stopped provider
+ * still answering XPC.
  *
  * **It pulses, and that is what makes absence mean something.** A first draft wrote only from
  * `handleNewFlow`, which is a heartbeat with no heart: a provider that died left its last file on
@@ -188,6 +200,18 @@ private final class Heartbeat {
         lock.unlock()
     }
 
+    /// Undo `remove()`, because a provider that is stopped can be started again in the same process.
+    ///
+    /// **`stopped` is process-wide and was one-way, which was a bug with the shape of the one it
+    /// fixed.** `remove()` sets it so nothing can recreate the file after a stop; nothing cleared it,
+    /// so the first `stopFilter` in a process killed the state file for good — and `startFilter` runs
+    /// again on the same process when the filter is re-enabled. Measured: the provider went on
+    /// answering `handleNewFlow` with no state file on disk, which is exactly the "enforcing while the
+    /// agent reads absence" that this file exists to make impossible.
+    func resume() {
+        lock.lock(); stopped = false; lock.unlock()
+    }
+
     /// Absence is the signal a stopped filter should leave behind.
     func remove() {
         lock.lock(); stopped = true; let p = resolvePath(); lock.unlock()
@@ -273,6 +297,14 @@ class Provider: NEFilterDataProvider {
             if let error {
                 os_log("startFilter failed: %{public}@", log: log, type: .error, error.localizedDescription)
             } else {
+                // **After `apply` succeeds, not before it.** The filter can be stopped and started
+                // again inside one process, so a stop's `remove()` has to be undone somewhere — but
+                // undoing it before the filter is actually running opens a window for a writer left
+                // over from the *previous* session: `pulse?.cancel()` does not stop a handler already
+                // executing, and `handleNewFlow` can be mid-flight. Either reaching `publish` after
+                // `stopped` was cleared recreates the file for a filter that never started, which a
+                // reader takes as evidence of an active one.
+                heartbeat.resume()
                 os_log("startFilter applied OK", log: log, type: .default)
                 self?.startPulse()
             }
