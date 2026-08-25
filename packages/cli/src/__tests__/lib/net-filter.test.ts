@@ -3,10 +3,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 vi.mock('node:child_process')
 vi.mock('node:fs')
 vi.mock('node:net')
+vi.mock('@clack/prompts', () => ({ confirm: vi.fn(), text: vi.fn(), isCancel: vi.fn(() => false) }))
+// Off, so the audio step neither prompts nor fires a real macOS permission request from a test run.
+vi.mock('@tapflowio/ios-agent', () => ({ isAudioSupported: vi.fn(() => false), requestAudioPermission: vi.fn() }))
 
 import { execFileSync, execSync, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { createServer } from 'node:net'
+import { confirm } from '@clack/prompts'
 import { join } from 'node:path'
 import { installNetFilter, readNetFilterState, NET_FILTER_APP } from '../../lib/net-filter.js'
 import { runDoctorChecks } from '../../lib/doctor.js'
@@ -18,6 +22,15 @@ const mockExistsSync = vi.mocked(existsSync)
 const mockChmodSync = vi.mocked(chmodSync)
 const mockReaddirSync = vi.mocked(readdirSync)
 const mockStatSync = vi.mocked(statSync)
+const mockConfirm = vi.mocked(confirm)
+
+/** `setup` gates every install on an interactive terminal; under vitest `isTTY` is neither. */
+const filterPrompts = () =>
+  mockConfirm.mock.calls.filter((c) => /network filter/i.test(String((c[0] as { message?: string })?.message ?? '')))
+
+function setTTY(v: boolean | undefined) {
+  Object.defineProperty(process.stdout, 'isTTY', { value: v, configurable: true })
+}
 
 /** A bundle shaped like the real one: an executable under `Contents/MacOS`, and one more inside the
  *  nested system extension. */
@@ -139,11 +152,30 @@ describe('net filter — reading what the Mac has', () => {
 
   it('says nothing rather than guessing when the command cannot run', () => {
     machine({})
+    // `endsWith`, not `===`: the code calls `/usr/bin/systemextensionsctl`, so an equality check on the
+    // bare name never matched. The test passed anyway — the mock's fallback returned a version string,
+    // `activatedVersion` found no bundle id in it and returned null from the loop exit. Green, and the
+    // `catch` this test is named after was never entered.
     mockExecFileSync.mockImplementation((cmd) => {
-      if (String(cmd) === 'systemextensionsctl') throw new Error('not found')
+      if (String(cmd).endsWith('/systemextensionsctl')) throw new Error('not found')
       return `${SHIPPED}\n` as never
     })
     expect(readNetFilterState().activated).toBeNull()
+    expect(mockExecFileSync.mock.calls.some((c) => String(c[0]).endsWith('/systemextensionsctl'))).toBe(true)
+  })
+
+  it('gives each probe a deadline, so a wedged Mac cannot hang the doctor', () => {
+    // **A shape check, and it says so.** That the process is actually killed is node's contract, not
+    // ours; what this discriminates is the deletion — a probe going back to no deadline at all, which
+    // is what both of these were.
+    machine({})
+    readNetFilterState()
+    const probes = mockExecFileSync.mock.calls.filter((c) =>
+      /systemextensionsctl|defaults/.test(String(c[0])))
+    expect(probes.length).toBeGreaterThan(1)
+    for (const [cmd, , opts] of probes) {
+      expect((opts as { timeout?: number })?.timeout, `${String(cmd)} can hang forever`).toBeGreaterThan(0)
+    }
   })
 })
 
@@ -300,6 +332,31 @@ describe('doctor — what it says about the filter', () => {
   })
 })
 
+describe('net filter — a version nobody can read', () => {
+  onMac()
+  beforeEach(() => { vi.resetAllMocks(); hostExits(0) })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('refuses to install an app that will not say what it is', () => {
+    // The guard used to sit under `if (shippedVersion)`, so the one artifact no comparison could judge
+    // was the one that installed unconditionally — over a filter that was working.
+    machine({ shipped: null, installed: NEWER, activated: NEWER })
+    mockExistsSync.mockImplementation((p) => String(p).includes('TapflowNetFilter.app'))
+    expect(installNetFilter()).toEqual({ status: 'no-artifact' })
+    expect(dittoCalls().length, 'it copied an unreadable bundle over a newer one').toBe(0)
+  })
+
+  it('does not send the user to a migrate the installer would refuse', async () => {
+    // doctor compared with its own `Number(a) > Number(b)`, which answers `false` for a pair neither
+    // side can parse while `isNewer` answers `true` and refuses. The two disagreeing produced advice
+    // with no exit: doctor says run migrate, migrate says it will not.
+    machine({ shipped: 'xyz', installed: 'def', activated: 'abc' })
+    const [, version] = await netFilterChecks()
+    expect(version?.detail).toMatch(/Upgrade this checkout/)
+    expect(version?.detail, 'it recommended the command that refuses').not.toMatch(/migrate net-filter/)
+  })
+})
+
 describe('setup and migrate share one install', () => {
   beforeEach(() => { vi.resetAllMocks() })
   afterEach(() => { vi.restoreAllMocks() })
@@ -321,6 +378,60 @@ describe('setup and migrate share one install', () => {
     }
   })
 
+  it('asks before installing a system extension, and installs when told to', async () => {
+    await onMacFor(async () => {
+      machine({ installed: null, activated: null })
+      mockExecSyncForIos()
+      hostExits(0)
+      setTTY(true)
+      mockConfirm.mockResolvedValue(true as never)
+      const step = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      expect(filterPrompts().length, 'it installed without asking').toBe(1)
+      expect(step).toMatchObject({ ok: true, state: 'created' })
+      expect(dittoCalls().length).toBe(1)
+    })
+  })
+
+  it('declining leaves the Mac alone and names the command that installs it later', async () => {
+    // **The step this file's siblings all had and this one did not.** Every other install in
+    // `setup.ts` is gated on `isTTY` + `confirm()`; written synchronously, this one went straight to
+    // activating a system extension that sees every flow the Mac attributes to a simulator.
+    await onMacFor(async () => {
+      machine({ installed: null, activated: null })
+      mockExecSyncForIos()
+      hostExits(0)
+      setTTY(true)
+      mockConfirm.mockResolvedValue(false as never)
+      const step = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      expect(dittoCalls().length, 'it installed anyway').toBe(0)
+      expect(step?.detail).toMatch(/migrate net-filter/)
+    })
+  })
+
+  it('does not ask about an install that would do nothing', async () => {
+    await onMacFor(async () => {
+      machine({})
+      mockExecSyncForIos()
+      setTTY(true)
+      mockConfirm.mockResolvedValue(true as never)
+      const step = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      expect(filterPrompts().length, 'a no-op install still stopped to ask').toBe(0)
+      expect(step).toMatchObject({ ok: true, state: 'found' })
+    })
+  })
+
+  it('does not install one in a non-interactive run', async () => {
+    await onMacFor(async () => {
+      machine({ installed: null, activated: null })
+      mockExecSyncForIos()
+      hostExits(0)
+      setTTY(false)
+      const step = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      expect(dittoCalls().length).toBe(0)
+      expect(step?.detail).toMatch(/non-interactive/)
+    })
+  })
+
   it('keeps the install in one place — neither command spawns anything itself', async () => {
     // The real `fs`: this reads the sources under test, and the mocked one returns nothing at all —
     // which would make every assertion below pass on an empty string.
@@ -338,6 +449,16 @@ describe('setup and migrate share one install', () => {
     expect(lib, 'the shared routine no longer copies anything').toMatch(/ditto/)
   })
 })
+
+/** `onMac()` is a hook pair and cannot wrap one test inside a describe that must stay cross-platform. */
+async function onMacFor(body: () => Promise<void>) {
+  const real = process.platform
+  Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+  try { await body() } finally {
+    Object.defineProperty(process, 'platform', { value: real, configurable: true })
+    setTTY(undefined)
+  }
+}
 
 /** iOS setup also probes brew/Xcode/simctl; none of that is this file's subject. */
 function mockExecSyncForIos() {

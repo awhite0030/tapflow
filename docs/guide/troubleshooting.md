@@ -215,7 +215,7 @@ Approval happens at the Mac. macOS offers no path a browser could click instead.
 
 ### 3. When a restart is needed
 
-Replacing an already-installed extension finishes only after the Mac restarts. **Until then the previous version keeps running** — the file on disk is the new one while the kernel is still running the old one, so the dashboard goes on saying the Mac is not set up.
+Replacing an already-installed extension finishes only after the Mac restarts. **Until then the previous version keeps running** — the file on disk is the new one while macOS is still running the old one, so the dashboard goes on saying the Mac is not set up.
 
 ### Checking what the Mac has
 
@@ -225,7 +225,7 @@ tapflow doctor ios
 
 It reports three things separately: whether it is **installed**, whether it is **approved**, and whether the extension currently running is the **same version this tapflow carries**. The last one is separate because the first two can both be right while the control still does not work — a replacement waiting for a restart is exactly that.
 
-If it reports a version mismatch, run `tapflow migrate net-filter` again; if it asks for a restart, restart the Mac.
+If it reports a version mismatch, what to do depends on which side is behind. If this tapflow carries the newer filter, `tapflow migrate net-filter` installs it. If the Mac runs the newer one, upgrade this checkout instead — migrate refuses that direction, because replacing a newer filter breaks the agent that depends on it. If it asks for a restart, restart the Mac.
 
 ### If it still does not work
 

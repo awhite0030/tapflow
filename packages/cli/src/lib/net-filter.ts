@@ -22,6 +22,10 @@ import { dirname, join } from 'node:path'
 export const NET_FILTER_APP = '/Applications/TapflowNetFilter.app'
 const EXT_BUNDLE_ID = 'dev.tapflow.netfilter.ext'
 
+/** How long a read-only probe of this Mac may take before it is treated as unanswerable. Generous
+ *  against a loaded machine, short against `doctor`'s promise to answer. */
+const PROBE_TIMEOUT_MS = 10_000
+
 export interface NetFilterState {
   /** The version this CLI's `@tapflowio/ios-agent` carries, or null when the package has no app. */
   shipped: string | null
@@ -38,6 +42,10 @@ export function bundleVersion(appPath: string): string | null {
   if (!existsSync(plist)) return null
   try {
     const out = execFileSync('/usr/bin/defaults', ['read', plist, 'CFBundleVersion'], {
+      // A read that hangs hangs `tapflow doctor ios` with it, and the command's whole job is to answer
+      // quickly about a machine that may be in a bad state. The throw lands in the `catch` below, so a
+      // hang reports the same "cannot tell" as a failure — which is what it is.
+      timeout: PROBE_TIMEOUT_MS,
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
     })
     return out.trim() || null
@@ -82,7 +90,11 @@ export function activatedVersion(): string | null {
   // that nothing was spawned, and asking macOS what it has activated must not break that.
   let out: string
   try {
-    out = execFileSync('/usr/bin/systemextensionsctl', ['list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    out = execFileSync('/usr/bin/systemextensionsctl', ['list'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: PROBE_TIMEOUT_MS,
+    })
   } catch {
     return null
   }
@@ -116,11 +128,22 @@ export function activatedVersion(): string | null {
  * would have made the downgrade guard fail *open* the day these stop being epoch seconds — the one
  * direction a guard must never fail in.
  */
-function isNewer(candidate: string, than: string): boolean {
+export function isNewer(candidate: string, than: string): boolean {
   const a = Number(candidate)
   const b = Number(than)
   if (!Number.isFinite(a) || !Number.isFinite(b)) return true
   return a > b
+}
+
+/**
+ * Nothing to install: the app on disk and the extension macOS is running are both this build.
+ *
+ * Exported because `setup ios` asks before each install and must not ask about one that would do
+ * nothing — and a second copy of this comparison in the caller is how the prompt and the installer
+ * would come to disagree about whether there was anything to consent to.
+ */
+export function isNetFilterCurrent(s: NetFilterState): boolean {
+  return s.shipped !== null && s.installed === s.shipped && s.activated === s.shipped
 }
 
 export function readNetFilterState(): NetFilterState {
@@ -163,22 +186,24 @@ export function installNetFilter(): InstallOutcome {
   const shippedVersion = bundleVersion(shipped)
   const installedVersion = bundleVersion(NET_FILTER_APP)
   const activated = activatedVersion()
-  if (shippedVersion) {
-    if (installedVersion === shippedVersion && activated === shippedVersion) {
-      return { status: 'already-current' }
-    }
-    // **A downgrade is refused rather than performed.** `/Applications` holds one copy for the whole
-    // Mac while the version each checkout judges it by comes from its own `node_modules`, so an older
-    // checkout running this would replace the app a newer agent depends on and break it.
-    //
-    // **What is protected is what the Mac is running, not the file on disk.** Reading the app alone
-    // left the guard skipped entirely whenever it was absent — and an app deleted from
-    // `/Applications` leaves the extension activated and enforcing, which is exactly when an older
-    // checkout would walk in and replace it.
-    const current = installedVersion ?? activated
-    if (current && isNewer(current, shippedVersion)) {
-      return { status: 'refused-downgrade', installed: current, shipped: shippedVersion }
-    }
+  // **An unreadable version refuses too.** Under `if (shippedVersion)` the whole guard below was
+  // skipped whenever the shipped app would not say what it was, so the one artifact no comparison can
+  // judge was the one that installed unconditionally — over a newer filter that was working.
+  if (!shippedVersion) return { status: 'no-artifact' }
+  if (isNetFilterCurrent({ shipped: shippedVersion, installed: installedVersion, activated })) {
+    return { status: 'already-current' }
+  }
+  // **A downgrade is refused rather than performed.** `/Applications` holds one copy for the whole
+  // Mac while the version each checkout judges it by comes from its own `node_modules`, so an older
+  // checkout running this would replace the app a newer agent depends on and break it.
+  //
+  // **What is protected is what the Mac is running, not the file on disk.** Reading the app alone
+  // left the guard skipped entirely whenever it was absent — and an app deleted from
+  // `/Applications` leaves the extension activated and enforcing, which is exactly when an older
+  // checkout would walk in and replace it.
+  const current = installedVersion ?? activated
+  if (current && isNewer(current, shippedVersion)) {
+    return { status: 'refused-downgrade', installed: current, shipped: shippedVersion }
   }
 
   const copy = spawnSync('/usr/bin/ditto', [shipped, NET_FILTER_APP], { encoding: 'utf8' })

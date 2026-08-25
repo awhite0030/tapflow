@@ -3,7 +3,16 @@ import { existsSync, readdirSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { readNetFilterState } from './net-filter.js'
+import { isNewer, readNetFilterState } from './net-filter.js'
+
+/**
+ * How long any one probe may take before `doctor` treats it as unanswerable.
+ *
+ * Every call below is a read, wrapped in a `catch` that reports "cannot tell". Without a timeout a
+ * hung `simctl` or a wedged `adb` hangs the whole command instead — and the machines where one of
+ * these hangs are exactly the machines someone runs `doctor` on.
+ */
+const PROBE_TIMEOUT_MS = 10_000
 
 export interface DoctorCheck {
   label: string
@@ -73,7 +82,7 @@ function buildNetFilterChecks(): DoctorCheck[] {
       label: 'Network filter',
       ok: false,
       warn: true,
-      detail: 'This tapflow install carries no filter app, so iOS network control cannot be set up. Reinstalling tapflow restores it.',
+      detail: 'This tapflow install carries no usable filter app, so iOS network control cannot be set up. Reinstalling tapflow restores it.',
     }]
   }
   if (s.installed === null) {
@@ -117,7 +126,10 @@ function buildNetFilterChecks(): DoctorCheck[] {
       detail: `Waiting for a restart: ${s.shipped} is installed but the Mac is still running ${s.activated}. Restart the Mac to finish.`,
     }]
   }
-  if (Number(s.activated) > Number(s.shipped)) {
+  // `isNewer`, not a second `Number() >` here: that one answered `false` for a version neither side
+  // could parse, while the installer's guard answers `true` and refuses. The two disagreeing sent the
+  // user to a `migrate net-filter` that would refuse the moment they ran it.
+  if (isNewer(s.activated, s.shipped)) {
     return [running, {
       label: 'Network filter version',
       ok: false,
@@ -212,7 +224,7 @@ function checkAdbStatus(adb: AdbResolution | null): DoctorCheck {
 
 function checkXcode(): DoctorCheck {
   try {
-    const out = execSync('xcodebuild -version', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+    const out = execSync('xcodebuild -version', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: PROBE_TIMEOUT_MS })
     const version = out.split('\n')[0]?.replace('Xcode ', '') ?? ''
     return { label: `Xcode ${version}`, ok: true }
   } catch {
@@ -233,7 +245,7 @@ function checkXcode(): DoctorCheck {
 
 function checkSimctl(): DoctorCheck {
   try {
-    execSync('xcrun simctl list --json', { stdio: 'pipe' })
+    execSync('xcrun simctl list --json', { stdio: 'pipe', timeout: PROBE_TIMEOUT_MS })
     return { label: 'xcrun simctl', ok: true }
   } catch {
     return {
@@ -247,7 +259,7 @@ function checkSimctl(): DoctorCheck {
 // 부팅은 QA Session 접속 시 relay가 on-demand로 한다 — 미부팅은 정상, 디바이스 존재만 확인.
 function checkBootedSimulator(): DoctorCheck {
   try {
-    const raw = execSync('xcrun simctl list devices --json', { encoding: 'utf8', stdio: 'pipe' })
+    const raw = execSync('xcrun simctl list devices --json', { encoding: 'utf8', stdio: 'pipe', timeout: PROBE_TIMEOUT_MS })
     const data = JSON.parse(raw) as { devices: Record<string, Array<{ name: string; state: string; udid: string }>> }
     const allDevices = Object.values(data.devices).flat()
     if (allDevices.length === 0) {
@@ -299,7 +311,7 @@ export interface AdbResolution {
 
 export function resolveAdb(): AdbResolution | null {
   try {
-    const found = execSync('which adb', { encoding: 'utf8', stdio: 'pipe' }).trim()
+    const found = execSync('which adb', { encoding: 'utf8', stdio: 'pipe', timeout: PROBE_TIMEOUT_MS }).trim()
     if (found) return { path: found, inPath: true }
   } catch {
     // PATH에 없으면 표준 SDK 위치 탐색으로 진행
@@ -333,7 +345,7 @@ function checkAvdAvailable(): DoctorCheck {
     return { label: 'AVD', ok: false, detail: 'Android SDK/emulator not found. Run: tapflow setup android' }
   }
   try {
-    const out = spawnSync(emulator, ['-list-avds'], { encoding: 'utf8' }).stdout ?? ''
+    const out = spawnSync(emulator, ['-list-avds'], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS }).stdout ?? ''
     const avds = out.trim() ? out.trim().split('\n').map((l) => l.trim()).filter(Boolean) : []
     if (avds.length > 0) {
       return { label: `AVD available: ${avds[0]}`, ok: true }

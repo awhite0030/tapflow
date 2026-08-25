@@ -79,7 +79,7 @@ export function cmdMigrateNetFilter(): void {
       return
     case 'no-artifact':
       banner('error', 'NO FILTER TO INSTALL', [
-        'This tapflow install carries no filter app, so there is nothing to migrate.',
+        'This tapflow install carries no usable filter app, so there is nothing to migrate.',
         'Reinstalling tapflow restores it.',
       ])
       process.exit(1)

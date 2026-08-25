@@ -41,7 +41,7 @@ Checks (a device/AVD only needs to *exist* — booting is on-demand via the rela
 - **Android**: Android SDK, adb, AVD
 
 The network filter is reported as two checks, because they fail for different reasons: whether it is
-**installed and approved**, and whether the extension macOS is *running* is the version this tapflow
+**installed and approved**, and whether macOS is *running* the version of the extension this tapflow
 carries. The second is not implied by the first — replacing an extension only finishes when the Mac
 restarts, so the app on disk can be current while the old one is still doing the filtering. Both are
 warnings rather than failures: a session works without the filter, and only iOS network control does
@@ -72,9 +72,10 @@ Runs in one pass, asking for consent before each install (interactive terminals 
 - **iOS**: opens the App Store for Xcode, accepts the license / runs first-launch (needs sudo), downloads a simulator runtime.
 - **Android**: installs a JDK, builds a self-contained SDK at `~/Library/Android/sdk` (command-line tools, platform-tools, emulator, system image — no Android Studio GUI), and creates a set of AVDs across form factors.
 
-On macOS, `setup ios` also installs the network filter that iOS network control needs, and tells you
-when macOS is waiting for you to approve it in System Settings. A Mac set up before that shipped uses
-[`tapflow migrate net-filter`](#tapflow-migrate-net-filter) instead, since setup runs only once.
+On macOS, `setup ios` also installs the network filter that iOS network control needs — it asks
+first, like every other install here, and tells you when macOS is waiting for you to approve it in
+System Settings. If you decline, or the Mac was set up before the filter shipped,
+[`tapflow migrate net-filter`](#tapflow-migrate-net-filter) installs it on its own.
 
 setup only ensures a bootable device/AVD exists; the relay boots it on demand when a session opens. After it registers `ANDROID_HOME`/PATH, open a new terminal (or `exec $SHELL`) before running `tapflow doctor`.
 
@@ -347,9 +348,10 @@ Install the iOS network filter on a Mac that was set up before tapflow shipped i
 tapflow migrate net-filter
 ```
 
-`tapflow setup ios` already installs the filter, but setup is a first-run command — a Mac configured
-before this existed never runs it again, so the extension would arrive in `node_modules` and never
-reach the Mac. This is the command for that.
+`tapflow setup ios` also installs the filter, but setup is the command you run to prepare a new
+machine. A Mac that is already configured has no reason to run it again, so the extension would
+arrive in `node_modules` and never reach the Mac. This is the command for that — and for a `setup`
+run where you declined the filter.
 
 It copies the signed extension that came with `@tapflowio/ios-agent` into `/Applications` and asks
 macOS to activate it. Approving it is a step you take at that Mac, in **System Settings → General →

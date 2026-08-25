@@ -34,7 +34,7 @@ If a notice tells you the device went back on the network on its own while you w
 
 ## What you are trusting
 
-This extension **filters traffic in the kernel**. It is the largest trust tapflow asks for, so here it is plainly.
+This extension is handed **every connection the simulator opens, before the traffic leaves the Mac**, and decides whether it goes through. It is the largest trust tapflow asks for, so here it is plainly.
 
 - **What it sees** — that a connection attributed to a simulator exists, and where it is going. It does not read contents.
 - **What leaves the Mac** — nothing. Every decision is made on the Mac, and the state file the extension writes is local.
@@ -47,9 +47,15 @@ codesign -dv --verbose=4 /Applications/TapflowNetFilter.app
 spctl -a -vv /Applications/TapflowNetFilter.app
 ```
 
-What they do **not** prove is that this binary was built from the Swift committed to the repository. The app is built on a maintainer's Mac and committed, and the signing key deliberately does not live in CI, because otherwise anyone who can push a tag could sign a kernel filter. The price of that choice is a build nobody can reproduce. To check the source-to-binary link yourself, read the sources and build it: that needs a paid Apple Developer account.
+What they do **not** prove is that this binary was built from the Swift committed to the repository. The app is built on a maintainer's Mac and committed, and the signing key deliberately does not live in CI, because otherwise anyone who can push a tag could sign a network filter. The price of that choice is a build nobody can reproduce. To check the source-to-binary link yourself, read the sources and build it: that needs a paid Apple Developer account.
 
-To remove it, switch the extension off in System Settings or use `systemextensionsctl`.
+**Switching it off and removing it are different things.** System Settings → General → Login Items & Extensions → Network Extensions turns it off and leaves it installed. To remove it:
+
+```sh
+systemextensionsctl uninstall 6FBS3QP893 dev.tapflow.netfilter.ext
+```
+
+Deleting `/Applications/TapflowNetFilter.app` on its own does not remove it. macOS keeps running an extension whose container app is gone, and `tapflow doctor ios` reports that state separately.
 
 ::: warning A hybrid app's WebView draws no offline banner
 Screens running inside a WebView are not reached by the offline notification, so no banner appears. This is a known limitation. The WebView's own network requests fail like any other, so confirm offline behaviour on those screens by the failed requests rather than by a banner.

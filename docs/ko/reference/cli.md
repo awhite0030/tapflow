@@ -67,7 +67,7 @@ tapflow setup android
 - **iOS**: App Store에서 Xcode 설치를 안내하고 라이선스 동의·초기 설정을 실행하며(sudo 필요) 시뮬레이터 런타임을 내려받습니다.
 - **Android**: JDK를 설치하고 `~/Library/Android/sdk`에 자기완결 SDK(명령행 도구·platform-tools·에뮬레이터·시스템 이미지 — Android Studio GUI 불필요)를 구성한 뒤 폼팩터별 AVD를 생성합니다.
 
-macOS에서 `setup ios`는 iOS 네트워크 제어에 필요한 네트워크 필터도 함께 설치하고, macOS가 시스템 설정에서 승인을 기다리는 중이면 그렇게 알려줍니다. 그 기능이 나오기 전에 설정한 맥은 setup을 다시 돌리지 않으므로 [`tapflow migrate net-filter`](#tapflow-migrate-net-filter)를 씁니다.
+macOS에서 `setup ios`는 iOS 네트워크 제어에 필요한 네트워크 필터도 설치하는데, 다른 설치와 마찬가지로 먼저 동의를 구하고 macOS가 시스템 설정에서 승인을 기다리는 중이면 그렇게 알려줍니다. 여기서 거절했거나 그 기능이 나오기 전에 설정한 맥이라면 [`tapflow migrate net-filter`](#tapflow-migrate-net-filter)로 따로 설치합니다.
 
 setup은 부팅 가능한 디바이스/AVD를 준비하는 데까지만 하며 실제 부팅은 세션 접속 시 릴레이가 처리합니다. `ANDROID_HOME`/PATH를 등록한 뒤에는 새 터미널을 열거나 `exec $SHELL`을 실행하고 `tapflow doctor`를 돌리세요.
 
@@ -340,7 +340,7 @@ tapflow가 iOS 네트워크 필터를 싣기 전에 설정한 맥에 그 필터�
 tapflow migrate net-filter
 ```
 
-`tapflow setup ios`도 필터를 설치하지만 setup은 최초 1회용입니다. 그 기능이 나오기 전에 설정한 맥은 setup을 다시 돌리지 않으므로, 확장이 `node_modules`에만 들어오고 맥에는 영영 올라가지 않습니다. 이 명령이 그 자리를 맡습니다.
+`tapflow setup ios`도 필터를 설치하지만, setup은 맥을 새로 준비할 때 돌리는 명령입니다. 이미 설정을 마친 맥은 setup을 다시 돌릴 이유가 없어서, 확장이 `node_modules`에만 들어오고 맥에는 올라가지 않습니다. 이 명령이 그 자리를 맡고, setup에서 필터 설치를 거절한 경우에도 같습니다.
 
 `@tapflowio/ios-agent`와 함께 온 서명된 확장을 `/Applications`로 복사하고 macOS에 활성화를 요청합니다. 승인은 그 맥 앞에서 **시스템 설정 → 일반 → 로그인 항목 및 확장 프로그램 → 네트워크 확장**에서 합니다. macOS가 명령행 대체를 제공하지 않으므로, 승인을 기다리는 중이면 명령이 그렇게 알려줍니다.
 

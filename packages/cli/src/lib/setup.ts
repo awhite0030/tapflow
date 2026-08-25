@@ -1,5 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process'
-import { installNetFilter } from './net-filter.js'
+import { installNetFilter, isNetFilterCurrent, readNetFilterState } from './net-filter.js'
 import { existsSync, readFileSync, appendFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -143,7 +143,7 @@ export async function runSetupIos(): Promise<SetupStepResult[]> {
   results.push(await checkXcodeActivation(xcode.ok))
   results.push(await checkAndFixSimulator())
   results.push(await checkAndFixAudioPermission())
-  results.push(setUpNetFilter())
+  results.push(await setUpNetFilter())
   return results
 }
 
@@ -158,8 +158,40 @@ export async function runSetupIos(): Promise<SetupStepResult[]> {
  * is correct rather than unfortunate: until the extension is approved, iOS network control does not
  * work. It is also rare — the host binary waits two minutes for the approval, so the common path here
  * is a plain success.
+ *
+ * **Asked for, like every other install in this file.** Written synchronously, this was the one step
+ * that skipped the `isTTY` + `confirm()` its siblings all use — and it is the step that installs a
+ * system extension seeing every flow the Mac attributes to a simulator, so it is the last one that
+ * should install unasked. macOS puts its own approval dialog after this, but that dialog arrives with
+ * no warning of what asked for it.
  */
-function setUpNetFilter(): SetupStepResult {
+async function setUpNetFilter(): Promise<SetupStepResult> {
+  // Asking about an install that would do nothing is noise, so the no-op case answers before the
+  // prompt. `isNetFilterCurrent` is the installer's own comparison, not a second copy of it.
+  if (process.platform === 'darwin' && isNetFilterCurrent(readNetFilterState())) {
+    return { label: 'Network filter', ok: true, state: 'found' }
+  }
+  if (process.platform === 'darwin') {
+    if (!process.stdout.isTTY) {
+      return {
+        label: 'Network filter',
+        ok: false,
+        warn: true,
+        detail: 'Run: tapflow migrate net-filter (skipped in non-interactive mode)',
+      }
+    }
+    const proceed = await confirm({
+      message: 'Install the tapflow network filter? It is a macOS system extension, needed for iOS network control, and macOS will ask you to approve it.',
+    })
+    if (isCancel(proceed) || !proceed) {
+      return {
+        label: 'Network filter',
+        ok: true,
+        warn: true,
+        detail: 'Skipped — iOS network control stays off until `tapflow migrate net-filter` installs it.',
+      }
+    }
+  }
   const outcome = installNetFilter()
   switch (outcome.status) {
     case 'installed':
@@ -174,7 +206,7 @@ function setUpNetFilter(): SetupStepResult {
         label: 'Network filter',
         ok: false,
         warn: true,
-        detail: 'This tapflow install carries no filter app, so iOS network control cannot be set up. Reinstalling tapflow restores it.',
+        detail: 'This tapflow install carries no usable filter app, so iOS network control cannot be set up. Reinstalling tapflow restores it.',
       }
     case 'refused-downgrade':
       // Not a failure of this machine: it is set up for a newer tapflow than this one.
