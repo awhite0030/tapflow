@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { judge, tokenize, issueCreateInvocations, bodyFileArg, hasParent, hasStandalone } from '../lib/issue-parent.mjs'
+import { judge, tokenize, issueCreateInvocations, bodyFileArg, hasParent, hasStandalone, heredocs } from '../lib/issue-parent.mjs'
 
 const REPO = path.resolve(import.meta.dirname, '../..')
 const PARENT = 'Parent: #607'
@@ -55,6 +55,22 @@ describe('which commands are issue creations', () => {
   }
 })
 
+describe('an invocation ends where the command does', () => {
+  it('does not borrow a later command\'s flags', () => {
+    // `words.slice(j)` ran to the end of the token list, so `echo`'s `--body` counted as the issue's
+    // and an invocation with no body at all was allowed.
+    expect(verdict('gh issue create --web && echo --body "Parent: #607"').blocked).toBe(true)
+    expect(verdict('gh issue create --web ; cat "Parent: #607"').blocked).toBe(true)
+  })
+
+  it('still judges each invocation in a chain on its own body', () => {
+    const both = 'gh issue create --body "Parent: #607" && gh issue create --body "Parent: #608"'
+    expect(verdict(both).blocked).toBe(false)
+    const second = 'gh issue create --body "Parent: #607" && gh issue create --body "a bug"'
+    expect(verdict(second).blocked, 'the second one names nothing').toBe(true)
+  })
+})
+
 describe('where the body comes from', () => {
   it('reads a quoted --body-file path whole', () => {
     // `-F "issue body.md"` used to be cut at the first space and read a file called `issue`, so a
@@ -84,6 +100,20 @@ describe('where the body comes from', () => {
   it('reads a heredoc, whose body exists only in the command', () => {
     expect(verdict(`gh issue create --body-file - <<EOF\n${PARENT}\nEOF`).blocked).toBe(false)
     expect(verdict('gh issue create --body-file - <<EOF\nnothing\nEOF').blocked).toBe(true)
+    expect(verdict(`gh issue create --body-file - <<'EOF'\n${PARENT}\nEOF`).blocked, 'quoted delimiter').toBe(false)
+  })
+
+  it('reads the payload rather than the command around it', () => {
+    // The title bypass again, one case over: `body = cmd` let a `Parent:` line in a title-side
+    // heredoc satisfy a check about the body.
+    const cmd = `gh issue create --title "$(cat <<T\n${PARENT}\nT\n)" --body-file - <<B\nno parent here\nB`
+    expect(heredocs(cmd), 'both payloads, in order').toEqual([PARENT, 'no parent here'])
+    expect(verdict(cmd).blocked).toBe(true)
+  })
+
+  it('blocks rather than guessing when a command carries several heredocs', () => {
+    // Picking one would be a guess, and the wrong guess is the permissive one.
+    expect(verdict(`gh issue create --body-file - <<A\n${PARENT}\nA\ncat <<B\nx\nB`).blocked).toBe(true)
   })
 })
 
@@ -91,6 +121,14 @@ describe('what counts as naming a parent', () => {
   it('takes the line on its own, with or without an owner/repo prefix', () => {
     expect(hasParent(`intro\n\n${PARENT}\n`)).toBe(true)
     expect(hasParent('Parent: jo-duchan/tapflow#607')).toBe(true)
+  })
+
+  it('refuses a half-written cross-repository reference', () => {
+    // The prefix used to be any run of the characters an owner/repo contains, so neither of these
+    // was a reference and both switched the gate off.
+    expect(hasParent('Parent: owner#607')).toBe(false)
+    expect(hasParent('Parent: /#607')).toBe(false)
+    expect(hasParent('Parent: owner/#607')).toBe(false)
   })
 
   const NOT_A_PARENT = {

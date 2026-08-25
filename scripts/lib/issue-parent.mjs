@@ -84,7 +84,12 @@ export function issueCreateInvocations(cmd) {
     let j = i
     while (j < words.length && (ASSIGNMENT.test(words[j]) || PASSTHROUGH.has(words[j]))) j++
     if (words[j] === 'gh' && words[j + 1] === 'issue' && (words[j + 2] === 'create' || words[j + 2] === 'new')) {
-      found.push(words.slice(j))
+      // **Stop at the next separator.** Running to the end of the token list meant a later command's
+      // flags counted as this one's: `gh issue create --web && echo --body "Parent: #607"` was
+      // allowed, because `bodyArg` found `echo`'s argument.
+      let end = j
+      while (end < words.length && !SEPARATOR.has(words[end])) end++
+      found.push(words.slice(j, end))
     }
     atStart = false
   }
@@ -121,7 +126,9 @@ export function bodyArg(words) {
  */
 export function hasParent(body) {
   for (const { line } of proseLines(body, { skipFrontmatter: true })) {
-    if (/^Parent:\s*[A-Za-z0-9_.\/-]*#\d+\s*$/.test(line)) return true
+    // The optional prefix is one whole `owner/repo`, not any run of the characters that appear in
+    // one — `Parent: owner#607` and `Parent: /#607` are neither form and both switched the gate off.
+    if (/^Parent:\s*(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#\d+\s*$/.test(line)) return true
   }
   return false
 }
@@ -134,6 +141,34 @@ export function hasStandalone(body) {
     if (m && m[1]) return true
   }
   return false
+}
+
+/**
+ * Every heredoc payload in a command, in order.
+ *
+ * Enough for `--body-file -`, which is the only reason this exists: `<<EOF`, `<<'EOF'`, `<<"EOF"`
+ * and `<<-EOF`, terminated by a line that is the delimiter alone. The caller blocks when a command
+ * carries more than one, because picking is guessing.
+ */
+export function heredocs(cmd) {
+  const lines = cmd.split(/\r?\n/)
+  const out = []
+  for (let i = 0; i < lines.length; i++) {
+    const m = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/.exec(lines[i])
+    if (!m) continue
+    const [, dash, , delim] = m
+    const body = []
+    let j = i + 1
+    for (; j < lines.length; j++) {
+      const candidate = dash ? lines[j].replace(/^\t+/, '') : lines[j]
+      if (candidate === delim) break
+      body.push(lines[j])
+    }
+    if (j >= lines.length) continue          // never terminated: not a payload anyone can read
+    out.push(body.join('\n'))
+    i = j
+  }
+  return out
 }
 
 /**
@@ -154,9 +189,14 @@ export function judge(cmd, readFile = (p) => fs.readFileSync(p, 'utf8')) {
       try { body = readFile(file) } catch { body = null }
     }
     if (body === null) body = bodyArg(words)
-    // A heredoc reaches `--body-file -`; its text is in the command and nowhere else, so that one
-    // case reads the command rather than losing the body entirely.
-    if (body === null && file === '-') body = cmd
+    // A heredoc reaches `--body-file -`; its text is in the command and nowhere else. Reading the
+    // whole command for it was the title bypass again one case over — a `Parent:` line in a
+    // title-side heredoc satisfied a check about the body — so the payload is extracted, and an
+    // ambiguous command is blocked rather than guessed at.
+    if (body === null && file === '-') {
+      const docs = heredocs(cmd)
+      body = docs.length === 1 ? docs[0] : null
+    }
 
     if (body === null) return { blocked: true, detail: 'no body could be read from the command' }
     if (!hasParent(body) && !hasStandalone(body)) return { blocked: true, detail: 'the body names no parent' }
