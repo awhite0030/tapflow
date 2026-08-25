@@ -574,10 +574,15 @@ Four rules there are load-bearing, and each is a hole something already fell int
 
 #### What the agent trusts, and what it must not
 
-`state()` decides `available` from a **verdict file the dylib writes**, and only the target app
-writes it — the file is keyed by udid alone, so any other process writing it would answer for an app
-that never ran. Since #635 no other process activates at all: the library is delivered
-simulator-wide, but the gate admits one bundle id.
+`state()` decides `available` from **two things, and layer 1 is asked first**. The dylib's verdict
+file answers for layer 2 — only the target app writes it, and the file is keyed by udid alone, so any
+other process writing it would answer for an app that never ran (since #635 no other process
+activates at all: the library is delivered simulator-wide, but the gate admits one bundle id).
+
+What layer 1 is doing cannot be read there at all, and `state()` is synchronous — every re-join,
+every `device:ready`, MCP's `networkState()` — so it **remembers** the last judgment instead. Without
+that memory one re-join repaints a Mac that cannot take devices offline as a healthy one, and the
+tester's toast is the only trace left that anything went wrong.
 
 `awaiting-app` is not an edge case: it is the state every iOS session is in between the device
 booting and its app launching, because the library is armed at boot and can only name its target at
@@ -591,8 +596,24 @@ works at the kernel for every process.
 The container app's **exit 0 means the save was accepted and nothing more.** The framework hands
 `vendorConfiguration` to the running provider afterwards with no acknowledgement, and the whole run
 returns in 27ms. Each failure has its own code (1 activation, 2 load, 3 save, 4 approval timed out,
-5 needs a reboot) — `ios-netfilter/README.md` has the table. Reporting layer 1's actual health needs
-an artefact the agent can read, which is #639.
+5 needs a reboot, 7 could not confirm) — `ios-netfilter/README.md` has the table.
+
+**So the rule is written and then confirmed** (#639). `--confirm` asks the running provider over XPC
+what it is holding — 0.26–0.74ms, measured — and `setOffline` refuses unless the answer says
+`enforcing` and names this device. Refusing matters more than it sounds: layers 2 and 3 work without
+layer 1 and neither blocks traffic, so applying them alone tells the app it is offline while every
+request it makes succeeds, which is the sign-off this feature exists to prevent.
+
+**The confirmation's timeout is the mechanism, not a backstop.** A call made while the provider is
+dead does not fail — measured 3/3, it blocks to the caller's own deadline, because launchd holds the
+mach name while the process is away. One second: about thirty times a healthy round trip and an
+eighth of the dashboard's request deadline.
+
+**And enforcement can stop after the fact**, which no confirmation can cover. Measured: killing the
+provider leaves the kernel passing that simulator's traffic for about 5.8 seconds before launchd has
+it back, 23–27 requests getting through each time. `SimulatorNetwork` watches the provider's state
+file while anything is offline and reports `enforcement-lost` — the one reason that invalidates work
+already done, so the dashboard interrupts rather than re-colours.
 
 #### Two things that will bite
 

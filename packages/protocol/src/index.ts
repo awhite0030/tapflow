@@ -604,18 +604,72 @@ export type NetworkUnavailableReason =
    */
   | 'awaiting-app'
   /**
-   * What it is *meant* to name: a device that cannot do this at all — an Android image whose
-   * `cmd connectivity` predates the API. Alone among these members, nothing the tester does would
-   * change that.
+   * **The device was asked, answered, and had not moved.** The write was accepted, the read-back
+   * *succeeded*, and it still reported the old value — a command that exists, is accepted, and does
+   * nothing. That observable is the whole of what this member claims (#618). Every other Android
+   * failure — a write that threw, a read that threw, an answer that did not parse — is
+   * `state-unconfirmed`.
    *
-   * **What it currently means on the wire is wider, and a consumer must read it as the wider thing**
-   * (#618). `AndroidAgent` emits it from every failed read and every unconfirmed write as well, so a
-   * device that is merely rebooting, or one whose adb connection dropped, arrives here too — and both
-   * of those a retry does fix. Until that set is split, a consumer that renders this as permanent is
-   * telling a tester "this will never work" about a device that is coming back up, which is why the
-   * dashboard declines to name any reason from this set except `awaiting-app`.
+   * **What it does not claim is a cause, and an earlier draft of this paragraph did.** It said this
+   * was an image whose `cmd connectivity` predates the API, which is the obvious reading and is
+   * contradicted by the repo's own measurement: such an image *throws from the write*
+   * (`AdbWrapper.test.ts`), so it arrives as `state-unconfirmed` and never here. What does land here
+   * — a policy restriction, a rule that has not taken effect yet — has not been measured, so nothing
+   * is known about whether it lasts.
+   *
+   * So a consumer must **not** render this as permanent, and should keep offering the retry. The
+   * distinction this member buys is that the device answered, which is worth a different sentence
+   * from "we could not tell"; it does not buy a verdict about the future.
    */
   | 'unsupported-device'
+  /**
+   * **Android only.** The adb round trip failed, so what the device is doing is not known: the write
+   * threw, or the read threw, or the answer did not parse. What it is *not* is a verdict about the
+   * device — the same failure is produced by a device mid-reboot, a dropped adb connection, and an
+   * image too old to have the command.
+   *
+   * What a consumer must do differently: **keep the position it already had and let the tester
+   * retry.** `offline` here is the freshest evidence there is rather than a fresh reading — the last
+   * confirmed value when a read failed, and the *requested* value when a write landed and could not be
+   * read back, because a write that was accepted is better evidence than the state before it. What it
+   * is never is `false` as a stand-in for "unknown": a device that went offline and then became
+   * unreadable is still offline.
+   *
+   * It must not be rendered as an unknown *position*. That was tried and reverted: from `unknown`
+   * every click asks for offline again, so nothing can bring the device back online through the UI.
+   * Say the uncertainty some other way — the position is not the channel for it.
+   */
+  | 'state-unconfirmed'
+  /**
+   * **iOS only.** This Mac cannot take a device offline: the host-side network filter is not
+   * installed, not approved, or not enforcing. Nothing about the device is wrong, and no device is
+   * affected — the request was **refused**, so no layer was applied and `offline` is `false`.
+   *
+   * Refusing is the point. Two of the three layers work without the filter and neither blocks
+   * traffic: the app would be told it is offline while its requests keep succeeding, which is
+   * precisely the sign-off a tester must never be able to give.
+   *
+   * What a consumer must do differently: **send the tester to the setup steps**, which happen on the
+   * agent Mac and need administrator rights. A retry from a browser cannot fix this and must not be
+   * offered.
+   */
+  | 'filter-unavailable'
+  /**
+   * **iOS only.** The device *was* offline and enforcement stopped underneath it — the filter died,
+   * was disabled, or came back holding a different rule. The layers have been taken down, so
+   * `offline` is `false` and the device is back on the network.
+   *
+   * **This one invalidates work that already happened**, which no other member does. Between the
+   * moment enforcement stopped and the moment it was noticed, requests the tester believed were
+   * blocked were succeeding. Measured on the reference Mac: a provider killed and restarted by
+   * launchd leaves the kernel passing traffic for about 5.8 seconds, and 23–27 requests got through
+   * per occurrence.
+   *
+   * So it is the one reason that has to interrupt rather than re-colour: a tester who has already
+   * signed off has to be told that what they saw did not hold. It arrives unsolicited — there is no
+   * request it answers.
+   */
+  | 'enforcement-lost'
 
 /**
  * What the device's network is doing, and whether tapflow can steer it.
@@ -646,7 +700,11 @@ export interface NetworkSteerable {
   available: true
 }
 
-/** Whatever the device's network is doing, tapflow can no longer change it — and this is why. */
+/** Whatever the device's network is doing, tapflow cannot steer it — and this is why.
+ *
+ * **Not "no longer".** That wording assumed the control had been working and stopped, which two
+ * members contradict: `filter-unavailable` is a Mac that never could, and `state-unconfirmed` is one
+ * adb round trip that failed under a control that is otherwise fine. */
 export interface NetworkNotSteerable {
   /** Still the device's real state. See `NetworkSteerable.offline`. */
   offline: boolean

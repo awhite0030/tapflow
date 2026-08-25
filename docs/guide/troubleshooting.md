@@ -233,6 +233,31 @@ Removal works the same way: an extension switched off in System Settings stays `
 | 4 | Not approved within 120 seconds. Approve it in System Settings and run it again |
 | 5 | The Mac has to restart for this to finish |
 | 6 | The system extension manager gave no answer within 45 seconds |
+| 7 | The running filter did not answer |
+
+## iOS: a device that was offline came back on the network by itself {#network-stopped}
+
+A notice saying the device went back on the network while you were checking means **the offline behaviour you have checked so far needs checking again.** Requests may have been succeeding between the moment traffic started passing and the moment the notice appeared.
+
+What stopped is the filter on the agent Mac that was blocking the traffic — either the extension was switched off in System Settings, or the filter process died and macOS is bringing it back. Bringing it back takes about six seconds, and nothing is blocked for any of them.
+
+**Check**
+
+```sh
+systemextensionsctl list
+```
+
+If `dev.tapflow.netfilter.ext` is not `[activated enabled]`, go back to [installing and approving it](#network-not-set-up).
+
+If it is enabled and this keeps happening, the filter process is dying repeatedly.
+
+```sh
+log show --last 10m --predicate 'subsystem == "dev.tapflow.netfilter"' --info --debug --style compact
+```
+
+**What to do**
+
+Take the device offline again and redo the check from the start. The button draws normally once the filter is back. If the same notice keeps appearing, offline checks on that Mac cannot be trusted until the cause is found, so use another agent Mac in the meantime.
 
 Logs are at `/tmp/tapflow-netfilter-host.log`.
 

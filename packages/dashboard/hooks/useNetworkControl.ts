@@ -1,4 +1,4 @@
-import type { BrowserToRelay, NetworkError, NetworkState } from '@tapflowio/protocol'
+import type { BrowserToRelay, NetworkError, NetworkState, NetworkUnavailableReason } from '@tapflowio/protocol'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
 import { newRequestId } from '@/lib/requestId'
@@ -37,8 +37,10 @@ interface Options {
   deviceReady: boolean
   /** `DeviceViewer` routes `network:*` here; the hook registers itself on mount. */
   handlerRef: MutableRefObject<NetworkMessageHandler | undefined>
-  /** Told when a request could not be dispatched. Nothing renders a `network:error` otherwise, and a
-   *  click that changes neither the toggle nor anything else is indistinguishable from a dead button. */
+  /** Told when something needs saying out loud rather than only rendering: a request that could not
+   *  be dispatched, or enforcement that stopped underneath a device that was offline. Nothing renders
+   *  a `network:error` otherwise, and a click that changes neither the toggle nor anything else is
+   *  indistinguishable from a dead button. */
   onError?: (message: string) => void
 }
 
@@ -78,14 +80,16 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
   // Whether tapflow can still change it — a separate axis from where it is, because the protocol
   // makes them separate. Only the button's sentence depends on this; the position it draws does not.
   const [steerable, setSteerable] = useState(true)
-  // **Only `awaiting-app` is read, and the rest of the set is still ignored.** The paragraph in the
-  // report handler says why naming a reason is normally a lie here: every Android read failure
-  // arrives as `unsupported-device` (#618), so the value cannot be trusted to mean what it says. That
-  // argument is about a set that conflates, and this member does not — an agent emits it only when it
-  // has put the injection in place and is waiting for an app, which is a fact it knows rather than a
-  // fallback it reached for. Narrowing to the one trustworthy member says nothing false and lets the
-  // control stop drawing a working state as a dead one.
-  const [awaitingApp, setAwaitingApp] = useState(false)
+  // **The whole reason now, where this used to keep only `awaiting-app`.** That narrowing was not
+  // caution about consumers, it was caution about the *set*: every Android read failure arrived as
+  // `unsupported-device` (#618), so naming one told a tester "this will never work" about a device
+  // that was rebooting. The set has been split — a failure that could be transient is
+  // `state-unconfirmed`, and `unsupported-device` now means the device was read and had not moved —
+  // so each member says something a consumer can act on differently, which is what the type is for.
+  const [reason, setReason] = useState<NetworkUnavailableReason | undefined>(undefined)
+  // What was last said, so an unsolicited report does not announce the same loss twice — a re-join
+  // asks for the state again, and the answer still carries the reason.
+  const lastReason = useRef<NetworkUnavailableReason | undefined>(undefined)
   const [pending, setPending] = useState(false)
   const requestId = useRef<string | null>(null)
   // Read through a ref so a caller passing an inline closure does not re-register the handler on
@@ -99,7 +103,8 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
   useEffect(() => {
     setPosition('waiting')
     setSteerable(true)
-    setAwaitingApp(false)
+    setReason(undefined)
+    lastReason.current = undefined
     setPending(false)
     requestId.current = null
   }, [sessionId])
@@ -128,18 +133,25 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
       // longer steer still has a network state, and the protocol carries the field on both members
       // for exactly that. What `available` changes is what the button can promise, not where it points.
       //
-      // **`reason` is read for exactly one member and no others**, and the asymmetry is the point.
-      // Every read *failure* currently arrives as `unsupported-device` (#618), so naming one of those
-      // would tell a tester "this device will never do it" about one that is merely rebooting. Saying
-      // less is the only way to say nothing false until that set is split.
-      //
-      // `awaiting-app` is not in that set. An agent emits it only about a fact it knows — the
-      // injection is in place, nothing has run under it — so it conflates nothing, and it carries the
-      // one remedy a tester can act on. The rest of the set stays on the wire for when it can be
-      // trusted, which is why this compares against the member rather than switching on the field.
+      // **The reason is passed through whole**, where this used to keep `awaiting-app` and drop the
+      // rest. What made dropping them right was a set that conflated — see `reason` above — and what
+      // makes passing them on right is that it no longer does. The rendering decisions stay in the
+      // component, which is where the sentences are.
+      const next = msg.payload.available ? undefined : msg.payload.reason
       setPosition(msg.payload.offline ? 'offline' : 'online')
       setSteerable(msg.payload.available)
-      setAwaitingApp(!msg.payload.available && msg.payload.reason === 'awaiting-app')
+      setReason(next)
+      // **The one reason that has to interrupt rather than re-colour.** It says a device that was
+      // offline stopped being enforced, so requests a tester believed were blocked had been
+      // succeeding — a finished test, invalidated. Everything else here changes what the control
+      // looks like; this changes what the tester has to do about work already done.
+      //
+      // Only on the way in. A re-join asks for the state again and the answer still carries it, and
+      // announcing the same loss on every re-join would train people to dismiss it.
+      if (next === 'enforcement-lost' && lastReason.current !== 'enforcement-lost') {
+        onErrorRef.current?.('The device went back on the network before you took it off. Anything checked while it was offline needs checking again.')
+      }
+      lastReason.current = next
       if (msg.requestId !== undefined && msg.requestId === requestId.current) {
         requestId.current = null
         setPending(false)
@@ -202,5 +214,5 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
     return () => clearTimeout(timer)
   }, [inFlight])
 
-  return { position, steerable, awaitingApp, pending, toggle }
+  return { position, steerable, reason, pending, toggle }
 }

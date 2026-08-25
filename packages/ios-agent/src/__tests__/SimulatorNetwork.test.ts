@@ -26,15 +26,38 @@ function fakeHostBinary(dir: string, log: string, sleepMs = 0, failNth = 0): str
   // `failNth` fails one specific invocation and lets the rest through, which is what a *transient*
   // failure looks like. A permanently broken app (the `BREAK` sentinel) cannot show the divergence
   // this exists for, because the recovery write fails too.
+  // It also stands in for the **provider**, because the class now asks one. `--confirm` answers from
+  // the rule this script last wrote, and a state file is refreshed beside it — the two artefacts a
+  // real provider produces. A fake that only recorded the write would let every confirmation fail and
+  // turn each of these tests green for the wrong reason.
+  //
+  // `--confirm` is answered before the failure counters, so `failNth` still counts rule writes only.
+  // `BREAK` comes first and takes the confirmation down with it: a container app that cannot run
+  // cannot answer either.
+  const ruleToJson = `awk -F, '{o="";for(i=1;i<=NF;i++){if($i!=""){o=o (o==""?"":",") "\\"" $i "\\""}} print "[" o "]"}'`
   writeFileSync(
     path,
     `#!/bin/sh\n`
     + `[ -e "${dir}/BREAK" ] && exit 1\n`
+    + `if [ "$1" = "--confirm" ]; then\n`
+    // Three sentinels, one per way a confirmation fails, because they are not the same code path in
+    // the class: no answer at all, an answer saying nothing is being enforced, and a call that hangs
+    // — which is what a dead provider actually does (measured 3/3, it blocks to the caller's
+    // deadline rather than erroring).
+    + `  [ -e "${dir}/NO_CONFIRM" ] && exit 7\n`
+    + `  [ -e "${dir}/CONFIRM_HANG" ] && sleep 5\n`
+    + `  if [ -e "${dir}/NOT_ENFORCING" ]; then printf '{"enforcing":false,"rule":[],"pid":1}\\n'; exit 0; fi\n`
+    + `  R=$(cat "${dir}/rule" 2>/dev/null || echo "")\n`
+    + `  printf '{"enforcing":true,"rule":%s,"pid":1}\\n' "$(echo "$R" | ${ruleToJson})"\n`
+    + `  exit 0\n`
+    + `fi\n`
     + (failNth > 0
       ? `N=$(cat "${dir}/runs" 2>/dev/null || echo 0); N=$((N+1)); echo $N > "${dir}/runs"\n`
         + `[ "$N" = "${failNth}" ] && exit 1\n`
       : '')
     + (sleepMs > 0 ? `printf 'enter:%s\\n' "\${2-}" >> "${log}"\nsleep ${sleepMs / 1000}\n` : '')
+    + `printf '%s' "\${2-}" > "${dir}/rule"\n`
+    + `printf '{"at":%s,"pulseSeconds":1,"rule":%s}\\n' "$(date +%s)" "$(printf '%s' "\${2-}" | ${ruleToJson})" > "${dir}/state.json"\n`
     + `printf 'rule:%s cond:%s\\n' "\${2-}" "$(ls "${dir}" | grep -c '^tapflow-offline-')" >> "${log}"\n`,
     { mode: 0o755 },
   )
@@ -54,13 +77,27 @@ describe('SimulatorNetwork', () => {
   const verdictPath = (udid: string) => join(dir, `tapflow-nethook-${udid}.json`)
   const conditionPath = (udid: string) => join(dir, `tapflow-offline-${udid}`)
 
-  const make = (hostBinary?: string) =>
-    new SimulatorNetwork(simctl, {
+  /** Every device this test reported as no longer enforced. */
+  let lost: string[]
+
+  const make = (hostBinary?: string) => {
+    const n = new SimulatorNetwork(simctl, {
       filterHostBinary: hostBinary ?? fakeHostBinary(dir, log),
       conditionDir: dir,
       verdictDir: dir,
       nethookDylib: '/fake/libtapflow-nethook.dylib',
+      // **Pointed at this test's own directory, and that is not only hygiene.** The default is the
+      // path the real provider writes on this Mac, so a suite left on the default would read whatever
+      // the developer's own filter happens to be enforcing — green or red depending on the machine.
+      filterStateFiles: [join(dir, 'state.json')],
+      onEnforcementLost: (udid) => { lost.push(udid) },
+      livenessIntervalMs: 20,
     })
+    made.push(n)
+    return n
+  }
+  /** Disposed in `afterEach`: the liveness watcher is the first thing here that outlives a test. */
+  let made: SimulatorNetwork[]
 
   /** The hooks reported themselves installed — the ordinary case for a device with an app running. */
   const armed = (udid = UDID) => writeFileSync(verdictPath(udid), JSON.stringify({ installed: true }))
@@ -70,6 +107,8 @@ describe('SimulatorNetwork', () => {
     log = join(dir, 'calls.log')
     statusBar = []
     env = []
+    lost = []
+    made = []
     simctl = {
       setSimulatorEnv: vi.fn(async (udid: string, name: string, value: string) => {
         env.push(`${udid}:${name}=${value}`)
@@ -83,7 +122,10 @@ describe('SimulatorNetwork', () => {
     }
   })
 
-  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+  afterEach(() => {
+    for (const n of made) n.dispose()
+    rmSync(dir, { recursive: true, force: true })
+  })
 
   function readAll(): string {
     return existsSync(log) ? readFileSync(log, 'utf8') : ''
@@ -163,19 +205,15 @@ describe('SimulatorNetwork', () => {
     writeFileSync(join(dir, 'BREAK'), '')   // the container app stops working
     const after = await net.setOffline(UDID, false)
 
-    expect(after).toEqual({ offline: true, available: false, reason: 'not-armed' })
-    expect(net.state(UDID).offline).toBe(true)
+    expect(after).toEqual({ offline: true, available: false, reason: 'filter-unavailable' })
 
-    // **Only `.offline` is compared, and that is a known gap rather than an oversight** (#638).
-    // `state()` never looks at the container app, so for this device — dylib fine, filter host gone —
-    // it answers `available: true` in the same second the call above answered `false`. Asserting the
-    // whole payload here would fail on that divergence, and hiding it behind a one-field read is what
-    // a comment is for.
-    //
-    // The `reason` above is wrong for the same cause: `not-armed` prescribes a reboot, and a missing
-    // container app is not something a reboot installs. Both need a reason member that does not exist
-    // yet, which is two packages and #638's whole subject.
-    expect(net.state(UDID).available).toBe(true)
+    // **The whole payload, and that is the gap #638 closed.** This used to compare `.offline` alone
+    // with a comment explaining why it had to: `state()` looked only at the dylib's verdict, so for
+    // this device — dylib fine, container app gone — it answered `available: true` in the same second
+    // the call above answered `false`, and the reason it could have given (`not-armed`) prescribed a
+    // reboot for something no reboot installs. `state()` now remembers what layer 1 was last found
+    // doing, which is what makes one assertion cover both.
+    expect(net.state(UDID)).toEqual({ offline: true, available: false, reason: 'filter-unavailable' })
   })
 
   it('does not report an online device as offline when the rule cannot be written', async () => {
@@ -187,7 +225,7 @@ describe('SimulatorNetwork', () => {
     writeFileSync(join(dir, 'BREAK'), '')
     const after = await net.setOffline(UDID, true)
 
-    expect(after).toEqual({ offline: false, available: false, reason: 'not-armed' })
+    expect(after).toEqual({ offline: false, available: false, reason: 'filter-unavailable' })
     expect(net.state(UDID).offline).toBe(false)
   })
 
@@ -233,7 +271,7 @@ describe('SimulatorNetwork', () => {
     const net = make(join(dir, 'does-not-exist'))
 
     await expect(net.setOffline(UDID, true)).resolves.toEqual({
-      offline: false, available: false, reason: 'not-armed',
+      offline: false, available: false, reason: 'filter-unavailable',
     })
     // Nothing else may be applied on that path: a condition file with no filter behind it is the
     // half-state that tells an app it is offline while its traffic flows.
@@ -437,5 +475,360 @@ describe('SimulatorNetwork', () => {
     await net.forget(UDID)
 
     expect(existsSync(conditionPath(UDID))).toBe(false)
+  })
+
+  // ── the rule is confirmed, not assumed (#639) ───────────────────────────────────────────────
+  //
+  // The container app exits when the framework *accepts* the save — 27ms for the whole run — and the
+  // provider is handed the configuration afterwards with nothing coming back. So every test here is
+  // about a write that succeeded and a rule that is not being enforced, which is precisely the state
+  // the old code reported as `available: true`.
+  describe('confirmation', () => {
+    /** Layers 2 and 3 must not have been applied. Asserted together because "refused" means both. */
+    const nothingApplied = () => {
+      expect(existsSync(conditionPath(UDID)), 'a condition file with no filter behind it').toBe(false)
+      expect(statusBar, 'the status bar claimed a state nothing was enforcing').toEqual([])
+    }
+
+    it('refuses when the provider does not answer', async () => {
+      armed()
+      writeFileSync(join(dir, 'NO_CONFIRM'), '')
+      const net = make()
+
+      await expect(net.setOffline(UDID, true)).resolves.toEqual({
+        offline: false, available: false, reason: 'filter-unavailable',
+      })
+      nothingApplied()
+    })
+
+    it('refuses when the provider answers that it is not enforcing', async () => {
+      // `rule: []` alone cannot carry this: an idle provider with no offline device says the same
+      // thing. Measured on a `--off` provider — alive, answering in 16ms, holding nothing — which is
+      // why `enforcing` is a field of its own rather than something derived from the rule.
+      armed()
+      writeFileSync(join(dir, 'NOT_ENFORCING'), '')
+      const net = make()
+
+      await expect(net.setOffline(UDID, true)).resolves.toEqual({
+        offline: false, available: false, reason: 'filter-unavailable',
+      })
+      nothingApplied()
+    })
+
+    it('refuses even when the rule already matches, if nothing is enforcing it', async () => {
+      // **The case `enforcing` exists for, and the one membership cannot cover.** Asking a device to
+      // come back online while the filter is stopped: the rule is empty and the request wants it
+      // empty, so a check comparing only membership calls that a success and reports a healthy control
+      // over a Mac that cannot take anything offline.
+      //
+      // Found by mutation: deleting the `enforcing` branch left the whole suite green, because the
+      // test above reaches the refusal through the membership mismatch instead.
+      armed()
+      writeFileSync(join(dir, 'NOT_ENFORCING'), '')
+      const net = make()
+
+      await expect(net.setOffline(UDID, false)).resolves.toEqual({
+        offline: false, available: false, reason: 'filter-unavailable',
+      })
+    })
+
+    it('refuses a confirmation that hangs rather than waiting it out', async () => {
+      // **The case the timeout exists for, and it is the common one.** A call made while the provider
+      // is dead does not fail — measured 3/3, it blocks to the caller's own deadline, because launchd
+      // holds the mach name while the process is away. A provider killed and restarted by launchd is
+      // gone for about 5.8s, so this is what a toggle during any restart runs into.
+      armed()
+      writeFileSync(join(dir, 'CONFIRM_HANG'), '')
+      const net = make()
+
+      const began = Date.now()
+      await expect(net.setOffline(UDID, true)).resolves.toEqual({
+        offline: false, available: false, reason: 'filter-unavailable',
+      })
+      // The fake sleeps 5s. Anything near that means the timeout did not fire and the dashboard's own
+      // 8s deadline would be deciding this instead.
+      expect(Date.now() - began, 'the confirmation was waited out instead of cut short').toBeLessThan(3_000)
+      nothingApplied()
+    })
+
+    it('keeps a device offline when a later request cannot be confirmed', async () => {
+      // The direction that matters: reporting `offline: false` here would draw an online control over
+      // a device whose app can reach nothing.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+
+      writeFileSync(join(dir, 'NO_CONFIRM'), '')
+      await expect(net.setOffline(UDID, false)).resolves.toEqual({
+        offline: true, available: false, reason: 'filter-unavailable',
+      })
+    })
+
+    it('remembers the refusal, so a re-join does not repaint the control as healthy', async () => {
+      // `state()` is synchronous and cannot ask the provider anything, and every re-join, every
+      // `device:ready` and MCP's `networkState()` come through it. Deriving layer 1's health from the
+      // dylib's verdict — which is fine here — answers `available: true` in the same second the call
+      // above answered `false`.
+      armed()
+      writeFileSync(join(dir, 'NO_CONFIRM'), '')
+      const net = make()
+      await net.setOffline(UDID, true)
+
+      expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'filter-unavailable' })
+    })
+  })
+
+  // ── enforcement that stops after the fact (#639) ────────────────────────────────────────────
+  describe('liveness', () => {
+    const staleState = (rule: string[], atOffsetSeconds: number, pulseSeconds = 1) =>
+      writeFileSync(join(dir, 'state.json'), JSON.stringify({
+        at: Math.floor(Date.now() / 1000) + atOffsetSeconds, pulseSeconds, rule,
+      }))
+
+    it('reports a device whose enforcement stopped and takes the other layers down', async () => {
+      // **The measurement this exists for**: killing the provider leaves the kernel passing that
+      // simulator's traffic for about 5.8 seconds, and 23–27 requests got through each time. The
+      // tester is looking at an offline control for all of it, and the sign-off they give covers
+      // requests that succeeded.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      expect(statusBar).toEqual([`${UDID}:true`])
+
+      staleState([UDID], -10)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+
+      // Telling the tester is the remedy; the layers coming down is the tidying up. Leaving them
+      // would add a second false state on top of the one being reported.
+      expect(existsSync(conditionPath(UDID))).toBe(false)
+      expect(statusBar.at(-1)).toBe(`${UDID}:false`)
+      expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'enforcement-lost' })
+    })
+
+    it('still says so on a re-join', async () => {
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      staleState([UDID], -10)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+
+      // A second read is what a re-join is. If this repainted healthy, the toast would be the only
+      // trace that anything had gone wrong.
+      expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'enforcement-lost' })
+    })
+
+    it('treats a timestamp in the future as untrustworthy, not as fresh', async () => {
+      // Clocks move backwards — an NTP correction, a Mac waking up. Reading `at > now` as very fresh
+      // would make a frozen file look perfect for as long as the skew lasted.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+
+      staleState([UDID], 3_600)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+    })
+
+    it('judges membership per device, not by comparing whole sets', async () => {
+      // Per-device membership, never set equality. The filter is host-wide and this agent is not
+      // guaranteed to be its only writer; comparing whole sets would report every device as
+      // unenforced the moment somebody else's appeared in the rule.
+      //
+      // **The wait is what puts this on the branch it is about.** `at` has one-second granularity and
+      // a file from the same second as the write is not judged at all, so without it both halves below
+      // would pass on a build with no membership test in it.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      await new Promise((r) => setTimeout(r, 1_100))
+
+      staleState([UDID, OTHER], 0)
+      await new Promise((r) => setTimeout(r, 100))
+      expect(lost, 'another simulator in the rule is not this one\'s problem').toEqual([])
+      expect(net.state(UDID)).toEqual({ offline: true, available: true })
+
+      // And the same file with this device dropped out of it is the failure being watched for.
+      staleState([OTHER], 0)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+    })
+
+    it('does not call a device lost on a file published before the write', async () => {
+      // What an idle provider's last publish looks like at the moment a device is toggled offline: a
+      // fresh, valid file that does not name it yet, because the provider has not pulsed since. Read
+      // as a disagreement it fires on **every** toggle — which is how it was found, by a test about
+      // something else whose rule this kept rewriting.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+
+      staleState([], -1)
+      await new Promise((r) => setTimeout(r, 100))
+
+      expect(lost).toEqual([])
+      expect(net.state(UDID)).toEqual({ offline: true, available: true })
+    })
+
+    it('reads the second candidate path when the first is absent', async () => {
+      armed()
+      const net = new SimulatorNetwork(simctl, {
+        filterHostBinary: fakeHostBinary(dir, log),
+        conditionDir: dir,
+        verdictDir: dir,
+        nethookDylib: '/fake/libtapflow-nethook.dylib',
+        filterStateFiles: [join(dir, 'nowhere.json'), join(dir, 'state.json')],
+        onEnforcementLost: (udid) => { lost.push(udid) },
+        livenessIntervalMs: 20,
+      })
+      made.push(net)
+      await net.setOffline(UDID, true)
+
+      staleState([UDID], -10)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+    })
+
+    it('takes the staleness threshold from the rate the file declares', async () => {
+      // The provider changes its own rate — one second while it is enforcing, five when idle — and
+      // publishes the one in force. A reader holding a constant instead is either too eager or blind:
+      // every test here used `pulseSeconds: 1`, so a hard-coded `3` was indistinguishable from reading
+      // the file, and the doc block's claim that the threshold comes out of the file was never run.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+
+      // Named, eight seconds old, declaring the five-second rate. Three of those is fifteen, so this
+      // is a provider that is alive and quiet — not a lost one. A constant three loses it here.
+      staleState([UDID], -8, 5)
+      await new Promise((r) => setTimeout(r, 200))
+      expect(lost, 'lost a device that was still inside its own declared threshold').toEqual([])
+
+      staleState([UDID], -20, 5)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+    })
+
+    it('reports a loss even when the last file was written at the idle rate', async () => {
+      // **The hole a review found, and it is the one this whole watcher exists for.** The rate in the
+      // file describes the rule the provider held *when it wrote*, so the last publish before a device
+      // goes offline declares the idle five seconds. A provider dying in the second after a toggle
+      // leaves that file as the newest one there is: not stale by its own rate for fifteen seconds,
+      // and not naming the device either. Both predicates false, nothing reported — while the kernel
+      // passes that simulator's traffic.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      writeFileSync(join(dir, 'state.json'), JSON.stringify({
+        at: Math.floor(Date.now() / 1000) - 1, pulseSeconds: 5, rule: [],
+      }))
+
+      // Not immediately: for about a second after any toggle this is exactly what a healthy provider
+      // that has not pulsed yet looks like, and firing there fires on every toggle.
+      await new Promise((r) => setTimeout(r, 1_500))
+      expect(lost, 'reported before the provider had its pulses to speak').toEqual([])
+
+      // But it does not wait fifteen seconds for a rate that no longer applies.
+      await vi.waitFor(() => expect(lost).toEqual([UDID]), { timeout: 6_000 })
+    })
+
+    it('does not report a device lost while its own toggle is still in flight', async () => {
+      // **Blocker found by review.** A device joins `this.offline` before its rule is written, so a
+      // liveness tick landing in between saw a device the file did not name and declared its
+      // enforcement lost — rewriting the rule without it, taking layers 2 and 3 down and telling every
+      // session. The confirmation then returned, agreed with the set the tick had just edited, and put
+      // layers 2 and 3 back **on** over a kernel rule that no longer named the device: the app told it
+      // is offline while every request succeeds, produced by the feature that exists to prevent it.
+      //
+      // The second device is what makes it reachable — the watcher only runs once something is
+      // offline — and the slow host is what makes the window wide enough to hit deterministically.
+      armed()
+      armed(OTHER)
+      const net = make(fakeHostBinary(dir, log, 600))
+      await net.setOffline(OTHER, true)
+      staleState([OTHER], 0)
+
+      const inFlight = net.setOffline(UDID, true)
+      await new Promise((r) => setTimeout(r, 300))
+      const result = await inFlight
+
+      // **Two guards close this and either one alone is enough**, which is worth knowing before
+      // mutating: reverting only the queueing of the liveness tick, or only the `?? now` fallback for a
+      // device with no confirmation yet, leaves this green. Reverting both fails it. That is the shape
+      // of the defect — it needed a tick to run mid-toggle *and* a predicate that read an absent
+      // confirmation as "long ago" — so a mutation of either line surviving is the design, not a hole.
+      expect(lost, 'a device was declared lost while its own toggle was still running').toEqual([])
+      expect(result).toEqual({ offline: true, available: true })
+      expect(existsSync(conditionPath(UDID)), 'layer 2 was applied over a rule that lost the device').toBe(true)
+      expect(rules().at(-1)).toContain(UDID)
+    })
+
+    it('keeps the layers agreeing when two toggles of one device overlap', async () => {
+      // The mirror of the case above, and the second blocker: the confirmation used to read what it
+      // wanted off the shared set at reply time rather than from its own request, so an overlapping
+      // toggle made one call's confirmation agree with the other call's rule. The loser then ran its
+      // success path for the wrong direction — a fully healthy-looking offline control with layer 2
+      // taken down under it.
+      //
+      // Asserted as an invariant rather than a sequence: whatever order they land in, what `state()`
+      // reports and what the three layers hold have to be the same thing.
+      armed()
+      const net = make(fakeHostBinary(dir, log, 200))
+      await net.setOffline(UDID, true)
+
+      await Promise.all([net.setOffline(UDID, false), net.setOffline(UDID, true)])
+
+      // Same redundancy as the test above, and the same warning. Serialising the whole operation and
+      // taking `wanted` from the request each close this alone; removing both reproduces the original
+      // failure and this fails on layer 1.
+      const settled = net.state(UDID)
+      expect(existsSync(conditionPath(UDID)), 'layer 2 disagrees with the reported state').toBe(settled.offline)
+      expect(statusBar.at(-1), 'layer 3 disagrees with the reported state').toBe(`${UDID}:${settled.offline}`)
+      expect(rules().at(-1)?.includes(UDID), 'layer 1 disagrees with the reported state').toBe(settled.offline)
+    })
+
+    it('is steerable again once the filter answers again', async () => {
+      // The recovery half, which nothing covered: every failure test wrote a sentinel and none removed
+      // one, so the line that clears the remembered verdict ran unobserved. Deleting it leaves a device
+      // permanently `filter-unavailable` after one refusal, with the whole suite green.
+      armed()
+      writeFileSync(join(dir, 'NO_CONFIRM'), '')
+      const net = make()
+      await net.setOffline(UDID, true)
+      expect(net.state(UDID).available).toBe(false)
+
+      rmSync(join(dir, 'NO_CONFIRM'), { force: true })
+
+      await expect(net.setOffline(UDID, true)).resolves.toEqual({ offline: true, available: true })
+      expect(net.state(UDID)).toEqual({ offline: true, available: true })
+    })
+
+    it('does not carry a lost verdict into the next boot', async () => {
+      // `state()` reads the remembered layer-1 judgment before every other piece of evidence, and
+      // nothing else clears it — a device that left `this.offline` is never looked at by the watcher
+      // again. So a rebooted simulator answered `enforcement-lost` from `device:ready` and from every
+      // re-join after it, and the dashboard interrupts on that reason rather than re-colouring: a new
+      // tester told to re-check work that belonged to a session which had already ended.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      staleState([UDID], -10)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+      expect(net.state(UDID)).toMatchObject({ reason: 'enforcement-lost' })
+
+      await net.arm(UDID)
+
+      expect(net.state(UDID)).not.toMatchObject({ reason: 'enforcement-lost' })
+    })
+
+    it('stops watching once nothing is offline', async () => {
+      // The watcher is the first thing here that outlives a call, so it has to end on its own — and
+      // a stale file after everything is back online is not an enforcement failure, it is a filter
+      // with nothing to do.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      await net.setOffline(UDID, false)
+
+      staleState([], -10)
+      await new Promise((r) => setTimeout(r, 100))
+
+      expect(lost).toEqual([])
+    })
   })
 })

@@ -34,6 +34,10 @@ private enum ExitCode: Int32 {
     case needsUserApproval = 4
     case completesAfterReboot = 5
     case activationStalled = 6
+    /// `--confirm` could not get an answer out of the provider. Says nothing about *why*, on purpose:
+    /// the caller's remedy is the same whether the filter was never installed, is disabled, or died a
+    /// second ago, and the states are not distinguishable from here anyway.
+    case notConfirmed = 7
 }
 
 private func die(_ code: ExitCode, _ why: String) -> Never {
@@ -242,9 +246,10 @@ private func cleanupOldProxy(_ done: @escaping () -> Void) {
  * person or `tapflow setup` runs. Everything else touches only `NEFilterManager`, which is what the
  * agent needs and is the fast, boring path.
  */
-private enum Mode { case install, configure, disable }
+private enum Mode { case install, configure, disable, confirm }
 
 private func parseMode() -> Mode {
+    if CommandLine.arguments.contains("--confirm") { return .confirm }
     if CommandLine.arguments.contains("--off") { return .disable }
     if CommandLine.arguments.contains("--install") { return .install }
     return .configure
@@ -324,6 +329,50 @@ private func configureFilter(offline: [String], exitCode: ExitCode) {
     }
 }
 
+/**
+ * `--confirm` — ask the running provider what it is enforcing, and print the answer.
+ *
+ * **This is the only thing that can answer "did the rule land".** `--offline` exits when the *save*
+ * was accepted; the framework hands `vendorConfiguration` to the running provider afterwards with
+ * nothing coming back, so the exit code of a configure run is "nothing refused" and no more.
+ *
+ * Prints one JSON line — `{"enforcing":Bool,"rule":[udid],"pid":Int}` — and exits 0. Any failure to
+ * get that answer exits 7 with nothing on stdout, because every one of them means the same thing to
+ * the caller.
+ *
+ * **The caller owns the real deadline, and it has to.** A call made while the provider is dead does
+ * not fail — it blocks, measured 3/3 to the caller's own timeout, with neither the invalidation nor
+ * the interruption handler firing, because launchd holds the mach name while the process is away. So
+ * the deadline below is a backstop for a process nobody is waiting on; the agent kills this binary on
+ * its own, much shorter, budget. Sizing this one *down* to be the effective bound would put a
+ * host-side number in charge of a decision the agent has to make.
+ */
+private func confirmEnforcement() {
+    let conn = NSXPCConnection(machServiceName: netFilterMachServiceName, options: [])
+    conn.remoteObjectInterface = NSXPCInterface(with: NetFilterControl.self)
+    // Both, and they cover different failures: `invalidation` is a service that is not there at all
+    // (never installed, or the extension disabled), `interruption` is a provider that died mid-call.
+    // Neither fires for the case above, which is why the deadline exists as well.
+    conn.invalidationHandler = { die(.notConfirmed, "no listener at \(netFilterMachServiceName)") }
+    conn.interruptionHandler = { die(.notConfirmed, "provider went away mid-call") }
+    conn.resume()
+
+    let proxy = conn.remoteObjectProxyWithErrorHandler { err in
+        die(.notConfirmed, "xpc error: \(err.localizedDescription)")
+    } as? NetFilterControl
+    guard let proxy else { die(.notConfirmed, "no proxy for \(netFilterMachServiceName)") }
+
+    proxy.ping { data in
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data("\n".utf8))
+        exit(ExitCode.ok.rawValue)
+    }
+
+    DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+        die(.notConfirmed, "no reply within 5s")
+    }
+}
+
 /// The activation delegate, held for the process lifetime. See `case .install`.
 ///
 /// **Declared above the `switch` on purpose**: top-level code in `main.swift` executes in order, so a
@@ -332,6 +381,9 @@ private var installHost: Host?
 
 hlog("host launched at \(Bundle.main.bundlePath) args=\(CommandLine.arguments.dropFirst())")
 switch parseMode() {
+case .confirm:
+    // Reads only. It must not configure anything on the way — a confirmation that writes is not one.
+    confirmEnforcement()
 case .disable:
     // No activation request: turning the filter off must not also install or replace the extension.
     disableFilter()
