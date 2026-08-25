@@ -313,7 +313,23 @@ export class SimulatorNetwork {
     if (offline) this.offlineSince.set(udid, Math.floor(Date.now() / 1000))
     else this.offlineSince.delete(udid)
     this.setCondition(udid, offline)
-    await this.simctl.setStatusBarOffline(udid, offline)
+    // **Layer 3 only reports, so its failure is not a reason and must not undo the two that do.**
+    // Unswallowed, one `status_bar` failure threw out of here with layers 1 and 2 already applied: the
+    // device really was offline and the caller was told the request failed, which is the direction
+    // that sends a tester to file against an app that was never online.
+    //
+    // Swallowed in both directions, and they fail differently. Going offline it errs *quietly* — the
+    // device is offline and the status bar has not caught up. Coming back it errs the other way: every
+    // layer is restored and the bar still shows no service, on a device whose requests now succeed.
+    // Neither is worth failing the call for. What puts the second one right is a later toggle writing
+    // the bar again — **a full cycle, not one press**, since the first press writes the value the bar
+    // is already stuck on. And it is not guaranteed: if layer 1 becomes unavailable in between, every
+    // later call returns above this line and the bar stays wrong until the device is retired. That
+    // gap, and the fact that swallowing also removes the `network:error` this used to raise, are
+    // recorded rather than solved here.
+    await this.simctl.setStatusBarOffline(udid, offline).catch((e: unknown) => {
+      console.warn(`[network] status bar for ${udid} could not be set: ${(e as Error).message}`)
+    })
     this.updateLiveness()
 
     return this.state(udid)
@@ -417,6 +433,18 @@ export class SimulatorNetwork {
         : { offline, available: false, reason: 'not-armed' }
     }
     if (verdict === 'failed') return { offline, available: false, reason: 'hooks-not-installed' }
+    // **`state-unconfirmed`, because that is what happened: a read that could not be confirmed.**
+    //
+    // Two members it is deliberately not. Not `awaiting-app`: resolving this against `armed` would
+    // land there almost every time — the library writes the file *because* an app is running, so
+    // `armed` is true — and `awaiting-app` is the one member drawn with a healthy control and "launch
+    // an app", which hands a normal-looking toggle to a device nobody can vouch for. And not
+    // `not-armed`, which the plan chose and a review overturned: its sentence is "restart the device",
+    // and the dominant cause here is a read landing inside a write that has already finished by the
+    // time the sentence renders. Rebooting a simulator mid-session destroys the app state under test,
+    // to fix nothing. `state-unconfirmed` says "could not confirm — try again", and looking again is
+    // exactly the remedy.
+    if (verdict === 'unreadable') return { offline, available: false, reason: 'state-unconfirmed' }
     return { offline, available: true }
   }
 
@@ -689,26 +717,38 @@ export class SimulatorNetwork {
   }
 
   /**
-   * `missing` and `failed` are different answers and a tester needs both.
+   * `missing`, `failed` and `unreadable` are three different answers and a tester needs all of them.
    *
    * Missing is not by itself an answer — it is the same file being absent whether the injection was
    * never delivered or is simply waiting for its first app, which is why `state` reads it against
    * `armed` rather than reporting it directly. Failed means the dylib ran and proved by trying that
    * its hooks did not take, which no amount of relaunching will change.
+   *
+   * Unreadable is neither, and folding it into `failed` was this reader claiming evidence it does not
+   * have: the library writes this file non-atomically (#653), so a truncated one is a read that landed
+   * mid-write and says nothing about the hooks. Unlike the other two it is **not** resolved against
+   * `armed` — see `state` for why that would be worse than the problem.
    */
   private verdictPath(udid: string): string {
     return `${this.verdictDir}/tapflow-nethook-${udid}.json`
   }
 
-  private readVerdict(udid: string): 'ok' | 'failed' | 'missing' {
+  private readVerdict(udid: string): 'ok' | 'failed' | 'missing' | 'unreadable' {
     const path = this.verdictPath(udid)
     if (!existsSync(path)) return 'missing'
     try {
       const raw = JSON.parse(readFileSync(path, 'utf8')) as { installed?: unknown }
-      return raw.installed === true ? 'ok' : 'failed'
+      if (raw.installed === true) return 'ok'
+      // **`failed` is the library's own signal and nothing else.** Testing for `!== true` swept up
+      // every shape that is not it — `{}`, `[]`, a bare number, a bare string — and answered
+      // "the library ran and proved its hooks did not take" about a file that shows no such thing.
+      // That is the same overclaim this branch was split out to remove, one case over.
+      return raw.installed === false ? 'failed' : 'unreadable'
     } catch {
-      // A half-written or malformed verdict is not evidence that the hooks took.
-      return 'failed'
+      // A file caught mid-write, or one whose shape says nothing — the library writes it
+      // non-atomically (#653), so a read can land inside the write. Says nothing about the hooks
+      // either way, which is the whole reason it is not `failed`.
+      return 'unreadable'
     }
   }
 }
