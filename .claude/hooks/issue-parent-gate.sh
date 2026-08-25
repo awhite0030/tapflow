@@ -13,53 +13,19 @@
 # A `Parent:` line is greppable, so the parent's checklist can be regenerated instead of maintained
 # by memory.
 #
-# Standalone issues are normal — a bug someone reports, a chore, an idea. They opt out by saying so,
-# which costs one line and makes the choice visible in the issue itself.
-#
-# Fail-open on a missing/unparseable payload, matching the other gates in this directory: this guards
-# a cooperative-but-forgetful agent, not an adversary, and failing closed would block every Bash call
-# in the session on a missing jq. A `--body-file` naming a file that does not exist is not that case
-# and is left blocked — `gh` would fail on it anyway, so the verdict costs nothing either way.
+# **This file is only the prefilter.** Deciding needs the command tokenized and the body parsed, and
+# the version that tried both in shell got three rules wrong at once — `gh issue new` walked through,
+# so did an environment assignment before `gh`, `-F "issue body.md"` read a file called `issue`, and
+# a `--title` could satisfy a rule about bodies. The decision is in `scripts/issue-parent-gate.mjs`,
+# where it is tested. Node is spawned only for a command that mentions both words, which is rare.
 
 input=$(cat)
-cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""') || exit 0
+cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
 
-# Command position only, the same rule pr-merge-guard.sh uses: a substring match would fire on this
-# repo's own docs, which discuss `gh issue create` by name.
-printf '%s' "$cmd" \
-  | tr '\n' ' ' \
-  | grep -qE '(^|[;&|]|\$\(|\bthen\b|\bdo\b)[[:space:]]*gh[[:space:]]+issue[[:space:]]+create' || exit 0
+case "$input" in
+  *gh*issue*) ;;
+  *) exit 0 ;;
+esac
+[ -f scripts/issue-parent-gate.mjs ] || exit 0
 
-# The body may not be in the command at all. `--body-file` is the form this repo teaches for PRs, and
-# reading the file is the difference between a gate and a false positive on the correct usage.
-body_file=$(printf '%s' "$cmd" | sed -nE "s/.*(--body-file|-F)[[:space:]]+['\"]?([^[:space:]'\"]+).*/\2/p" | head -1)
-haystack=$cmd
-if [ -n "$body_file" ] && [ "$body_file" != "-" ] && [ -r "$body_file" ]; then
-  haystack="$cmd
-$(cat "$body_file")"
-fi
-
-# Either a parent, or an explicit standalone marker. `Parent: #123` / `Parent: owner/repo#123`.
-if printf '%s' "$haystack" | grep -qE 'Parent:[[:space:]]*[A-Za-z0-9_.\/-]*#[0-9]+'; then exit 0; fi
-if printf '%s' "$haystack" | grep -qF '<!-- standalone:'; then exit 0; fi
-
-cat >&2 <<'MSG'
-Blocked: this issue names no parent.
-
-An issue split out of other work needs a line of its own in the body:
-
-    Parent: #607
-
-so the work it came from can enumerate what it still owes. Prose like "raised by the review of #647"
-does not count — nothing can build a checklist from it, which is how nine issues from one day of
-work on #607 became unreachable from #607.
-
-If it genuinely stands alone — a reported bug, a chore, a new idea — say so instead:
-
-    <!-- standalone: reported by a user, not split out of anything -->
-
-And before filing at all: a finding under ~10 lines that the lens you are already running can judge
-is fixed in that PR, not deferred. AGENTS.md > "An adjacent defect is fixed here unless it needs its
-own decision".
-MSG
-exit 2
+printf '%s' "$input" | node scripts/issue-parent-gate.mjs
