@@ -225,9 +225,14 @@ describe('SimulatorToolbar — network control', () => {
     // futile *while #618 leaves a transient failure indistinguishable from a permanent one*" — and
     // #618 split them. A device that was read and had not moved, and a Mac that is not set up for
     // this, are both states where clicking again does exactly nothing.
+    // And what replaces it is a marker in the **name**, not the colour. Leaving the plain actionable
+    // name there put the whole "this will not work" on a channel a screen-reader user does not have,
+    // with the description — which a verbosity setting can drop — as the only other one.
     for (const reason of ['filter-unavailable', 'not-armed', 'hooks-not-installed', 'enforcement-lost'] as const) {
       const { unmount } = toolbar(control({ position: 'online', steerable: false, reason }))
-      expect(networkButton()!.getAttribute('aria-label'), `reason ${reason}`).toBe('Take device offline')
+      const name = networkButton()!.getAttribute('aria-label')
+      expect(name, `reason ${reason} offered a retry`).not.toMatch(/^Retry:/)
+      expect(name, `reason ${reason} left the failure to the colour alone`).toBe('Take device offline — unavailable')
       unmount()
     }
   })
@@ -248,7 +253,7 @@ describe('SimulatorToolbar — network control', () => {
       ['state-unconfirmed', /try again/i],
       ['unsupported-device', /did not change when tapflow asked/i],
       ['filter-unavailable', /not set up .* network control guide/i],
-      ['enforcement-lost', /needs checking again/i],
+      ['enforcement-lost', /went back on the network on its own/i],
       ['hooks-not-installed', /cannot tell this app/i],
     ] as const
     const seen = new Set<string>()

@@ -148,7 +148,11 @@ function reasonCaveat(reason: NetworkUnavailableReason | undefined): string {
     case 'filter-unavailable':
       return ' This Mac is not set up to take devices off the network — see the network control guide.';
     case 'enforcement-lost':
-      return ' It went back on the network on its own, so anything checked while it was off needs checking again.';
+      // **Short, because the toast carries this one.** `onError` renders `role="alert"`, which
+      // interrupts the polite `role="status"` region beside it in the same commit — so saying the
+      // whole thing twice drops the position half for anyone who hears the alert first, and repeats
+      // the sentence for anyone who hears both.
+      return ' It went back on the network on its own.';
     case 'hooks-not-installed':
       return ' tapflow cannot tell this app it is off the network.';
     default:
@@ -182,7 +186,13 @@ function networkLook({ position, steerable, reason }: Pick<NetworkControl, 'posi
   // a position of `unknown` was tried and reverted: from `unknown` every click asks for offline
   // again, so a device taken offline could not be brought back through the UI. The pulse already
   // means "we are not sure yet" at `waiting`, and it leaves both the position and the colour alone.
-  const unsure = reason === 'state-unconfirmed' ? ' animate-pulse' : '';
+  //
+  // **Gated on `steerable` like the sentence below, and not on the reason alone.** This file takes the
+  // two as independent props and says so, and a pulse derived from `reason` by itself renders
+  // `{ steerable: true, reason: 'state-unconfirmed' }` as a permanently pulsing button whose status
+  // text says only "Device is on the network" — uncertainty in CSS and in no channel a screen reader
+  // can reach.
+  const unsure = !steerable && reason === 'state-unconfirmed' ? ' animate-pulse' : '';
   // Said after the position, never instead of it. A device tapflow cannot steer is still somewhere,
   // and an earlier draft that replaced the position with "could not be read" made the control a
   // one-way ratchet — from that rendering every click asked for offline again, so a device taken
@@ -266,9 +276,20 @@ function networkAction({ position, steerable, reason }: Pick<NetworkControl, 'po
   // transient failure, and there is no version on the wire to tell the two apart — so removing the
   // affordance reproduced exactly the #618 regression for anyone running a new relay against an agent
   // they installed earlier.
+  //
+  // **And what is left over needs a marker of its own.** Narrowing the prefix left four reasons with a
+  // plain actionable name on a button drawn in the failure colour: colour became the only channel that
+  // said it would not work, and colour is exactly the channel a screen-reader user does not have. The
+  // description says it, and the paragraph above is about why that channel cannot be relied on alone.
   const settled = position === 'online' || position === 'offline';
   const retryable = reason === 'state-unconfirmed' || reason === 'unsupported-device';
-  return steerable || !settled || !retryable ? action : `Retry: ${action.toLowerCase()}`;
+  //
+  // **`awaiting-app` is excluded from both**, and that is the same exception it has always had here.
+  // Traffic control works in that state — a device taken offline really does stop reaching the
+  // network — so neither "Retry" nor "unavailable" is true of it. What is missing is only that the app
+  // is told, which the sentence says.
+  if (steerable || !settled || reason === 'awaiting-app') return action;
+  return retryable ? `Retry: ${action.toLowerCase()}` : `${action} — unavailable`;
 }
 
 export function SimulatorToolbar({
