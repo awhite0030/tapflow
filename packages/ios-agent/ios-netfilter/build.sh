@@ -30,4 +30,20 @@ xcrun notarytool submit build/app.zip --keychain-profile "$PROFILE" --wait
 # of the notarized zip so the on-disk build tree stays as signed.
 rm -rf build/stapled && ditto -x -k build/app.zip build/stapled
 xcrun stapler staple "build/stapled/TapflowNetFilter.app"
-echo "done: build/stapled/TapflowNetFilter.app (notarized + stapled)"
+# Install it into the package and record it, in the same step that produced it.
+#
+# **The record and the artifact are written together on purpose.** `scripts/__tests__/` fails when the
+# extension's sources move without the app moving with them, and a record written by a separate,
+# remembered command would fail in a way correlated with the mistake it exists to catch: whoever
+# forgets the rebuild forgets the record, both stay consistent, and the guard passes.
+# `rm -rf` first: `ditto` **merges** into an existing destination and deletes nothing, so a rebuild
+# that drops a file leaves it behind inside a sealed bundle — a stray `.systemextension` after a
+# bundle-id change, an `embedded.provisionprofile` after the profile goes. `codesign --verify`
+# then fails on the user's Mac, and the freshness guard cannot see it: it hashes the merged tree
+# and records that, so the record is perfectly consistent with itself. Line 31 above already does
+# this for the same reason.
+rm -rf "../bin/TapflowNetFilter.app"
+ditto "build/stapled/TapflowNetFilter.app" "../bin/TapflowNetFilter.app"
+node ../../../scripts/record-netfilter-artifact.mjs
+
+echo "done: shipped in packages/ios-agent/bin/TapflowNetFilter.app (notarized + stapled + recorded)"

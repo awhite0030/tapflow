@@ -189,24 +189,20 @@ If the emulator is still slow when the Mac is unattended, check the following.
 
 ## iOS: the network extension is not installed {#network-not-set-up}
 
-Network control on an iOS simulator needs the tapflow network extension installed on the agent Mac.
+Network control on an iOS simulator needs the tapflow network extension installed on the agent Mac. **It comes with tapflow, so there is nothing to download.** One command installs the copy already in the package.
 
-**Install and approve the extension on the agent Mac.** Both steps need administrator rights.
+### 1. Install it
 
-::: warning Not distributed yet
-tapflow does not distribute this extension yet. For now it has to be built from the repository; `packages/ios-agent/ios-netfilter/README.md` covers how.
-:::
-
-### 1. Check whether it is installed
+On a Mac you are setting up for the first time, the iOS setup covers the extension too.
 
 ```sh
-systemextensionsctl list
+tapflow setup ios
 ```
 
-`dev.tapflow.netfilter.ext` showing as `[activated enabled]` means it is installed. If it is not listed, it needs installing.
+On a Mac that already ran setup, setup does not run again, so a machine configured before this feature existed needs its own command.
 
 ```sh
-/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --install
+tapflow migrate net-filter
 ```
 
 ### 2. Approve it
@@ -215,15 +211,25 @@ Requesting the install brings up a macOS approval prompt.
 
 Go to **System Settings → General → Login Items & Extensions → Network Extensions** and switch the tapflow entry on. (An administrator password is required.)
 
+Approval happens at the Mac. macOS offers no path a browser could click instead.
+
 ### 3. When a restart is needed
 
-Replacing an already-installed extension finishes only after the Mac restarts (exit code `5`). Until then the previous version keeps running.
+Replacing an already-installed extension finishes only after the Mac restarts. **Until then the previous version keeps running** — the file on disk is the new one while macOS is still running the old one, so the dashboard goes on saying the Mac is not set up.
 
-Removal works the same way: an extension switched off in System Settings stays `waiting to uninstall on reboot` until the Mac restarts. That is expected.
+### Checking what the Mac has
+
+```sh
+tapflow doctor ios
+```
+
+It reports three things separately: whether it is **installed**, whether it is **approved**, and whether the extension currently running is the **same version this tapflow carries**. The last one is separate because the first two can both be right while the control still does not work — a replacement waiting for a restart is exactly that.
+
+If it reports a version mismatch, what to do depends on which side is behind. If this tapflow carries the newer filter, `tapflow migrate net-filter` installs it. If the Mac runs the newer one, upgrade this checkout instead — migrate refuses that direction, because replacing a newer filter breaks the agent that depends on it. If it asks for a restart, restart the Mac.
 
 ### If it still does not work
 
-`--install` ends with a distinct code per kind of failure.
+Installing ends with a distinct code per kind of failure.
 
 | Code | Meaning |
 |---|---|
@@ -234,6 +240,8 @@ Removal works the same way: an extension switched off in System Settings stays `
 | 5 | The Mac has to restart for this to finish |
 | 6 | The system extension manager gave no answer within 45 seconds |
 | 7 | The running filter did not answer |
+
+What the extension can and cannot see is in [Network Control](/guide/network-control#what-you-are-trusting).
 
 ## iOS: a device that was offline came back on the network by itself {#network-stopped}
 

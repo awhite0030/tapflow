@@ -3,6 +3,16 @@ import { existsSync, readdirSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { isNewer, readNetFilterState } from './net-filter.js'
+
+/**
+ * How long any one probe may take before `doctor` treats it as unanswerable.
+ *
+ * Every call below is a read, wrapped in a `catch` that reports "cannot tell". Without a timeout a
+ * hung `simctl` or a wedged `adb` hangs the whole command instead — and the machines where one of
+ * these hangs are exactly the machines someone runs `doctor` on.
+ */
+const PROBE_TIMEOUT_MS = 10_000
 
 export interface DoctorCheck {
   label: string
@@ -35,6 +45,10 @@ function buildIosChecks(isMac: boolean): DoctorCheck[] {
     return [{ label: 'iOS', ok: false, warn: true, detail: 'iOS testing requires macOS.' }]
   }
   // Xcode.app이 없으면 xcodebuild/xcrun을 부르지 않는다 — 호출 시 macOS가 CLT 설치 팝업을 띄운다.
+  //
+  // **넷필터 체크는 이 조기 반환에도 붙는다.** 확장은 Xcode와 무관하게 설치·활성될 수 있고, 이 경로가
+  // 체크를 빠뜨리면 Xcode 없는 맥에서는 넷필터 상태를 물어볼 방법이 아예 없다. 설계 리뷰가 "체크
+  // 추가는 배열에 객체를 넣는 일"이라는 전제를 반환 경로가 셋이라는 사실로 반박했다.
   if (!existsSync('/Applications/Xcode.app')) {
     return [
       {
@@ -42,9 +56,93 @@ function buildIosChecks(isMac: boolean): DoctorCheck[] {
         ok: false,
         detail: 'Install Xcode from https://developer.apple.com/xcode/ or the Mac App Store. Or run: tapflow setup ios',
       },
+      ...buildNetFilterChecks(),
     ]
   }
-  return [checkXcode(), checkSimctl(), checkBootedSimulator()]
+  return [checkXcode(), checkSimctl(), checkBootedSimulator(), ...buildNetFilterChecks()]
+}
+
+/**
+ * The iOS network filter, in two checks — **is it working, and is it the one this tapflow expects**.
+ *
+ * Split because they fail for different reasons and have different remedies, and because the second
+ * one is the whole point: the version that matters is the one macOS has **activated**, not the app
+ * sitting in `/Applications`. On the ordinary upgrade path those two disagree — `--install` answers
+ * "needs a reboot" and leaves the new app on disk with the old provider still running — and a check
+ * that compared the files would report a healthy Mac while the dashboard says it is not set up.
+ *
+ * Everything here is `warn`, never `fail`. A session works without the filter; only iOS network
+ * control does not.
+ */
+function buildNetFilterChecks(): DoctorCheck[] {
+  const s = readNetFilterState()
+
+  if (s.shipped === null) {
+    return [{
+      label: 'Network filter',
+      ok: false,
+      warn: true,
+      detail: 'This tapflow install carries no usable filter app, so iOS network control cannot be set up. Reinstalling tapflow restores it.',
+    }]
+  }
+  if (s.installed === null) {
+    // **Activated but no app on disk is not "not installed".** macOS keeps running an extension whose
+    // container app has been deleted, so saying it is missing sends someone to reinstall — from an
+    // older checkout, that replaces a filter that is working.
+    if (s.activated !== null) {
+      return [{
+        label: 'Network filter',
+        ok: false,
+        warn: true,
+        detail: `Running ${s.activated}, but the app it came from is gone from /Applications. Reinstall it from the tapflow whose version matches, or restart the Mac to clear it.`,
+      }]
+    }
+    return [{
+      label: 'Network filter',
+      ok: false,
+      warn: true,
+      detail: 'Not installed. Run `tapflow setup ios` on a new machine, or `tapflow migrate net-filter` if tapflow was set up before this feature existed.',
+    }]
+  }
+  if (s.activated === null) {
+    return [{
+      label: 'Network filter',
+      ok: false,
+      warn: true,
+      detail: 'Installed but not approved yet. Open System Settings → General → Login Items & Extensions → Network Extensions and switch tapflow on.',
+    }]
+  }
+
+  const running: DoctorCheck = { label: 'Network filter', ok: true }
+  if (s.activated === s.shipped) {
+    return [running, { label: 'Network filter version', ok: true }]
+  }
+  // Running something, but not this. Three ways that happens and they want different sentences.
+  if (s.installed === s.shipped) {
+    return [running, {
+      label: 'Network filter version',
+      ok: false,
+      warn: true,
+      detail: `Waiting for a restart: ${s.shipped} is installed but the Mac is still running ${s.activated}. Restart the Mac to finish.`,
+    }]
+  }
+  // `isNewer`, not a second `Number() >` here: that one answered `false` for a version neither side
+  // could parse, while the installer's guard answers `true` and refuses. The two disagreeing sent the
+  // user to a `migrate net-filter` that would refuse the moment they ran it.
+  if (isNewer(s.activated, s.shipped)) {
+    return [running, {
+      label: 'Network filter version',
+      ok: false,
+      warn: true,
+      detail: `This Mac is set up for a newer tapflow — it runs ${s.activated} and this one carries ${s.shipped}. Upgrade this checkout rather than reinstalling the filter.`,
+    }]
+  }
+  return [running, {
+    label: 'Network filter version',
+    ok: false,
+    warn: true,
+    detail: `The Mac runs ${s.activated} and this tapflow carries ${s.shipped}. Run \`tapflow migrate net-filter\` to update it.`,
+  }]
 }
 
 // adb가 없어도 섹션을 숨기지 않고 진단을 노출한다(Android를 세팅하려는 사용자가 볼 수 있도록).
@@ -126,7 +224,7 @@ function checkAdbStatus(adb: AdbResolution | null): DoctorCheck {
 
 function checkXcode(): DoctorCheck {
   try {
-    const out = execSync('xcodebuild -version', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+    const out = execSync('xcodebuild -version', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: PROBE_TIMEOUT_MS })
     const version = out.split('\n')[0]?.replace('Xcode ', '') ?? ''
     return { label: `Xcode ${version}`, ok: true }
   } catch {
@@ -147,7 +245,7 @@ function checkXcode(): DoctorCheck {
 
 function checkSimctl(): DoctorCheck {
   try {
-    execSync('xcrun simctl list --json', { stdio: 'pipe' })
+    execSync('xcrun simctl list --json', { stdio: 'pipe', timeout: PROBE_TIMEOUT_MS })
     return { label: 'xcrun simctl', ok: true }
   } catch {
     return {
@@ -161,7 +259,7 @@ function checkSimctl(): DoctorCheck {
 // 부팅은 QA Session 접속 시 relay가 on-demand로 한다 — 미부팅은 정상, 디바이스 존재만 확인.
 function checkBootedSimulator(): DoctorCheck {
   try {
-    const raw = execSync('xcrun simctl list devices --json', { encoding: 'utf8', stdio: 'pipe' })
+    const raw = execSync('xcrun simctl list devices --json', { encoding: 'utf8', stdio: 'pipe', timeout: PROBE_TIMEOUT_MS })
     const data = JSON.parse(raw) as { devices: Record<string, Array<{ name: string; state: string; udid: string }>> }
     const allDevices = Object.values(data.devices).flat()
     if (allDevices.length === 0) {
@@ -213,7 +311,7 @@ export interface AdbResolution {
 
 export function resolveAdb(): AdbResolution | null {
   try {
-    const found = execSync('which adb', { encoding: 'utf8', stdio: 'pipe' }).trim()
+    const found = execSync('which adb', { encoding: 'utf8', stdio: 'pipe', timeout: PROBE_TIMEOUT_MS }).trim()
     if (found) return { path: found, inPath: true }
   } catch {
     // PATH에 없으면 표준 SDK 위치 탐색으로 진행
@@ -247,7 +345,7 @@ function checkAvdAvailable(): DoctorCheck {
     return { label: 'AVD', ok: false, detail: 'Android SDK/emulator not found. Run: tapflow setup android' }
   }
   try {
-    const out = spawnSync(emulator, ['-list-avds'], { encoding: 'utf8' }).stdout ?? ''
+    const out = spawnSync(emulator, ['-list-avds'], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS }).stdout ?? ''
     const avds = out.trim() ? out.trim().split('\n').map((l) => l.trim()).filter(Boolean) : []
     if (avds.length > 0) {
       return { label: `AVD available: ${avds[0]}`, ok: true }

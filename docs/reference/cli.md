@@ -37,8 +37,15 @@ tapflow doctor android
 Checks (a device/AVD only needs to *exist* — booting is on-demand via the relay):
 
 - **Common**: Node.js version
-- **iOS** (macOS only): Xcode, `xcrun simctl`, an available simulator
+- **iOS** (macOS only): Xcode, `xcrun simctl`, an available simulator, and the network filter
 - **Android**: Android SDK, adb, AVD
+
+The network filter is reported as two checks, because they fail for different reasons: whether it is
+**installed and approved**, and whether macOS is *running* the version of the extension this tapflow
+carries. The second is not implied by the first — replacing an extension only finishes when the Mac
+restarts, so the app on disk can be current while the old one is still doing the filtering. Both are
+warnings rather than failures: a session works without the filter, and only iOS network control does
+not. See [Network Control](/guide/network-control).
 
 Use `--json` for machine-readable output. Exits with code `1` if any check fails.
 
@@ -64,6 +71,11 @@ Runs in one pass, asking for consent before each install (interactive terminals 
 
 - **iOS**: opens the App Store for Xcode, accepts the license / runs first-launch (needs sudo), downloads a simulator runtime.
 - **Android**: installs a JDK, builds a self-contained SDK at `~/Library/Android/sdk` (command-line tools, platform-tools, emulator, system image — no Android Studio GUI), and creates a set of AVDs across form factors.
+
+On macOS, `setup ios` also installs the network filter that iOS network control needs — it asks
+first, like every other install here, and tells you when macOS is waiting for you to approve it in
+System Settings. If you decline, or the Mac was set up before the filter shipped,
+[`tapflow migrate net-filter`](#tapflow-migrate-net-filter) installs it on its own.
 
 setup only ensures a bootable device/AVD exists; the relay boots it on demand when a session opens. After it registers `ANDROID_HOME`/PATH, open a new terminal (or `exec $SHELL`) before running `tapflow doctor`.
 
@@ -327,3 +339,27 @@ What it does:
 - Adds `.tapflow/data/` and `.tapflow/artifacts/` to `.gitignore` so the moved secrets stay out of git.
 
 Existing installs keep working without running this — a pinned `local.dataDir` is honored, and a config-less default install keeps reading `.tapflow-data/`. If the two paths are on different filesystems, or both already exist, the command stops and prints the manual step instead of guessing.
+
+## `tapflow migrate net-filter`
+
+Install the iOS network filter on a Mac that was set up before tapflow shipped it. macOS only.
+
+```sh
+tapflow migrate net-filter
+```
+
+`tapflow setup ios` also installs the filter, but setup is the command you run to prepare a new
+machine. A Mac that is already configured has no reason to run it again, so the extension would
+arrive in `node_modules` and never reach the Mac. This is the command for that — and for a `setup`
+run where you declined the filter.
+
+It copies the signed extension that came with `@tapflowio/ios-agent` into `/Applications` and asks
+macOS to activate it. Approving it is a step you take at that Mac, in **System Settings → General →
+Login Items & Extensions → Network Extensions**; macOS offers no command-line equivalent, so the
+command tells you when it is waiting on you.
+
+It **refuses to replace a filter newer than the one it carries**. `/Applications` holds one copy for
+the whole Mac while each install judges it by its own dependencies, so an older checkout would
+otherwise downgrade the filter a newer agent depends on.
+
+Run `tapflow doctor ios` afterwards to confirm what the Mac ended up with.
