@@ -1,4 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process'
+import { installNetFilter } from './net-filter.js'
 import { existsSync, readFileSync, appendFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -142,7 +143,64 @@ export async function runSetupIos(): Promise<SetupStepResult[]> {
   results.push(await checkXcodeActivation(xcode.ok))
   results.push(await checkAndFixSimulator())
   results.push(await checkAndFixAudioPermission())
+  results.push(setUpNetFilter())
   return results
+}
+
+/**
+ * The iOS network filter — the one part of the offline toggle a user has to install on the Mac.
+ *
+ * **Shares its whole implementation with `tapflow migrate net-filter`.** The two exist for different
+ * people — this one for a first run, that one for an install that predates the feature — and a second
+ * copy of the install logic is how those two answers drift apart. Everything below is presentation.
+ *
+ * Approval and reboot land as **pending**, so setup ends with `SETUP INCOMPLETE` and names them. That
+ * is correct rather than unfortunate: until the extension is approved, iOS network control does not
+ * work. It is also rare — the host binary waits two minutes for the approval, so the common path here
+ * is a plain success.
+ */
+function setUpNetFilter(): SetupStepResult {
+  const outcome = installNetFilter()
+  switch (outcome.status) {
+    case 'installed':
+      return { label: 'Network filter', ok: true, state: 'created' }
+    case 'already-current':
+      return { label: 'Network filter', ok: true, state: 'found' }
+    case 'not-macos':
+      // Reachable: `tapflow setup ios` runs this runner whatever the host is.
+      return { label: 'Network filter', ok: true, warn: true, detail: 'macOS only — nothing to install here.' }
+    case 'no-artifact':
+      return {
+        label: 'Network filter',
+        ok: false,
+        warn: true,
+        detail: 'This tapflow install carries no filter app, so iOS network control cannot be set up. Reinstalling tapflow restores it.',
+      }
+    case 'refused-downgrade':
+      // Not a failure of this machine: it is set up for a newer tapflow than this one.
+      return {
+        label: 'Network filter',
+        ok: true,
+        warn: true,
+        detail: `Left alone — this Mac runs ${outcome.installed} and this tapflow carries ${outcome.shipped}. Upgrading this checkout is the fix; reinstalling the filter would break the newer one.`,
+      }
+    case 'needs-approval':
+      return {
+        label: 'Network filter',
+        ok: false,
+        warn: true,
+        detail: 'Installed, waiting for approval. Open System Settings → General → Login Items & Extensions → Network Extensions and switch tapflow on.',
+      }
+    case 'needs-reboot':
+      return {
+        label: 'Network filter',
+        ok: false,
+        warn: true,
+        detail: 'Installed. Restart the Mac to finish replacing the previous version — until then the old one keeps running.',
+      }
+    case 'failed':
+      return { label: 'Network filter', ok: false, detail: `Could not install it (exit ${outcome.code}): ${outcome.detail}` }
+  }
 }
 
 // iOS audio output (on by default) captures the simulator via a Core Audio process tap, which needs a
