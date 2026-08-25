@@ -1246,7 +1246,13 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
 
     // What the device says now. Only used when the **write** fails, where the device is unchanged
     // and this is still true — every other path reports what the wrapper observed after writing.
-    const before = await this.readNetworkState(serial)
+    //
+    // **The last confirmed value is the fallback, not `false`.** Two failures in a row — this read and
+    // then the write — used to answer `offline: false` for a device the agent had already confirmed
+    // offline, which draws an online control over a device whose app can reach nothing. The report
+    // path has always passed this; the two write paths did not, so the one moment a device is least
+    // readable was the one where the memory was dropped.
+    const before = await this.readNetworkState(serial, this.deviceStates.get(sessionId)?.lastNetworkOffline)
 
     let result: { confirmed: boolean; offline: boolean }
     try {
@@ -1301,9 +1307,17 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     const sessionId = this.deviceStates.keys().next().value
     const serial = sessionId ? this.serialFor(sessionId) : undefined
     if (!serial) throw new PlatformError('No booted device')
-    const before = await this.readNetworkState(serial)
+    // Same fallback as the WS path, for the reason recorded there.
+    const state = this.deviceStates.get(sessionId!)
+    const before = await this.readNetworkState(serial, state?.lastNetworkOffline)
     try {
-      return this.classifyWrite(await this.adb.setAirplaneMode(serial, offline), offline)
+      const result = await this.adb.setAirplaneMode(serial, offline)
+      // **And it remembers, which this path did not.** The WS path has always stored the confirmed
+      // value, so a caller that toggled through MCP and then lost the device read `false` from a
+      // memory nothing had written — the fallback above had nothing to fall back to. Only a confirmed
+      // result counts, for the reason the WS path gives: an unconfirmed one is already a guess.
+      if (state && result.confirmed) state.lastNetworkOffline = result.offline
+      return this.classifyWrite(result, offline)
     } catch {
       return { offline: before.offline, available: false, reason: 'state-unconfirmed' }
     }
@@ -1313,7 +1327,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     const sessionId = this.deviceStates.keys().next().value
     const serial = sessionId ? this.serialFor(sessionId) : undefined
     if (!serial) throw new PlatformError('No booted device')
-    return this.readNetworkState(serial)
+    return this.readNetworkState(serial, this.deviceStates.get(sessionId!)?.lastNetworkOffline)
   }
 
   private async handleDeviceShutdown(sessionId: string, avdId: string, requestId?: string): Promise<void> {

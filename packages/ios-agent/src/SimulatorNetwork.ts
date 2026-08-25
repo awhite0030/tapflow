@@ -476,6 +476,21 @@ export class SimulatorNetwork {
     this.liveness = undefined
   }
 
+  /**
+   * Undo `dispose`, because an agent that disconnected can connect again on the same instance.
+   *
+   * **A one-way disposed flag is a bug with the shape of the one it fixes**, and this codebase has
+   * already shipped it once: the provider's `Heartbeat.stopped` was set by a stop and cleared by
+   * nothing, so the first `stopFilter` in a process killed the state file for good while the filter
+   * went on filtering. Here it would be quieter and worse — `connect()` is public and reuses the
+   * network, so a reconnect after a disconnect would leave the watcher off, and the one report that
+   * tells a tester their check was invalidated would simply never come.
+   */
+  resume(): void {
+    this.disposed = false
+    this.updateLiveness()
+  }
+
   // ── liveness: enforcement that stops after the fact ────────────────────────
 
   /**

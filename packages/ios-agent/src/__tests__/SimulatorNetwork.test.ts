@@ -816,6 +816,21 @@ describe('SimulatorNetwork', () => {
       expect(net.state(UDID)).not.toMatchObject({ reason: 'enforcement-lost' })
     })
 
+    it('watches again after a disconnect and a reconnect', async () => {
+      // `dispose()` is called when the agent loses the relay, and `connect()` is public and reuses the
+      // same instance — so a one-way flag would leave the watcher off for the rest of the process and
+      // the one report that invalidates a finished check would never come. Asserted as a positive:
+      // without `resume` clearing the flag nothing fires and this times out.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      net.dispose()
+      net.resume()
+
+      staleState([UDID], -10)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+    })
+
     it('stops watching once nothing is offline', async () => {
       // The watcher is the first thing here that outlives a call, so it has to end on its own — and
       // a stale file after everything is back online is not an enforcement failure, it is a filter

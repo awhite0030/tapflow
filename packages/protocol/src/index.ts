@@ -643,7 +643,13 @@ export type NetworkUnavailableReason =
   /**
    * **iOS only.** This Mac cannot take a device offline: the host-side network filter is not
    * installed, not approved, or not enforcing. Nothing about the device is wrong, and no device is
-   * affected — the request was **refused**, so no layer was applied and `offline` is `false`.
+   * affected — the request was **refused**, so no layer was applied.
+   *
+   * **`offline` is still the device's real state, and it is not always `false`.** An earlier draft of
+   * this paragraph said it was, which would have been a promise the producer does not keep: not being
+   * able to *change* the rule is not the same as nothing enforcing it, so a device that was already
+   * offline is refused and stays offline. A consumer that drew `false` from this doc would render a
+   * device it cannot reach as online — the exact direction the whole member exists to prevent.
    *
    * Refusing is the point. Two of the three layers work without the filter and neither blocks
    * traffic: the app would be told it is offline while its requests keep succeeding, which is

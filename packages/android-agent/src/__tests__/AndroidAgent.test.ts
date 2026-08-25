@@ -805,6 +805,25 @@ describe('AndroidAgent', () => {
           .toEqual({ offline: true, available: false, reason: 'state-unconfirmed' })
       })
 
+      it('keeps a confirmed offline device offline when both the read and the write fail', async () => {
+        // **Two failures in a row, which is the one case that used to drop the memory.** The pre-write
+        // read falls back to what was last confirmed and the write then throws, so the answer is
+        // whatever the agent last knew — not `false`, which draws an online control over a device
+        // whose app can reach nothing and sends the next bug report to the app under test.
+        const a = withAirplane(false)
+        await session(a)
+        await booted()
+        expect(await agent.setNetworkOffline(true)).toEqual({ offline: true, available: true })
+
+        vi.mocked(a.airplaneMode).mockRejectedValue(new Error('device offline'))
+        vi.mocked(a.setAirplaneMode).mockRejectedValue(new Error('exit 255'))
+
+        expect(await agent.setNetworkOffline(false))
+          .toEqual({ offline: true, available: false, reason: 'state-unconfirmed' })
+        expect(await agent.networkState())
+          .toEqual({ offline: true, available: false, reason: 'state-unconfirmed' })
+      })
+
       it('reports a read it cannot make as unconfirmed', async () => {
         adb = mockAdb(true)
         vi.spyOn(adb, 'airplaneMode').mockRejectedValue(new Error('device offline'))

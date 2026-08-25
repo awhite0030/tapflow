@@ -282,6 +282,9 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
 
   async connect(relayUrl: string): Promise<void> {
     this._stopping = false
+    // Paired with the `dispose()` in `disconnect()`. This method is public and reuses the network, so
+    // without it a reconnect leaves the liveness watcher off for good — see `SimulatorNetwork.resume`.
+    this.network.resume()
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null }
     this.relayUrl = relayUrl
     const allDevices = await this.simctl.listDevices()
