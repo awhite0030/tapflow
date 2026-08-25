@@ -1252,7 +1252,12 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     // offline, which draws an online control over a device whose app can reach nothing. The report
     // path has always passed this; the two write paths did not, so the one moment a device is least
     // readable was the one where the memory was dropped.
-    const before = await this.readNetworkState(serial, this.deviceStates.get(sessionId)?.lastNetworkOffline)
+    const beforeState = this.deviceStates.get(sessionId)
+    const before = await this.readNetworkState(serial, beforeState?.lastNetworkOffline)
+    // A read that succeeded is an observation, and it was being thrown away. Someone flipping airplane
+    // mode in the emulator's own UI between the boot read and this toggle is seen here and nowhere
+    // else, so without this a later unreadable device falls back past it to the older value.
+    if (beforeState && before.available) beforeState.lastNetworkOffline = before.offline
 
     let result: { confirmed: boolean; offline: boolean }
     try {
@@ -1310,6 +1315,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     // Same fallback as the WS path, for the reason recorded there.
     const state = this.deviceStates.get(sessionId!)
     const before = await this.readNetworkState(serial, state?.lastNetworkOffline)
+    if (state && before.available) state.lastNetworkOffline = before.offline
     try {
       const result = await this.adb.setAirplaneMode(serial, offline)
       // **And it remembers, which this path did not.** The WS path has always stored the confirmed
@@ -1327,7 +1333,16 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     const sessionId = this.deviceStates.keys().next().value
     const serial = sessionId ? this.serialFor(sessionId) : undefined
     if (!serial) throw new PlatformError('No booted device')
-    return this.readNetworkState(serial, this.deviceStates.get(sessionId!)?.lastNetworkOffline)
+    const known = this.deviceStates.get(sessionId!)?.lastNetworkOffline
+    const state = await this.readNetworkState(serial, known)
+    // **`false` is not "unknown", it is "on the network".** A device nobody has ever observed, whose
+    // read has now failed, has no position to report — and answering `offline: false` there claims the
+    // one direction that hides the problem, which is what the WS report path stays silent about
+    // rather than say. A function has to answer, so it answers with the failure.
+    if (!state.available && known === undefined) {
+      throw new PlatformError('Cannot read the network state, and this device has never been observed')
+    }
+    return state
   }
 
   private async handleDeviceShutdown(sessionId: string, avdId: string, requestId?: string): Promise<void> {

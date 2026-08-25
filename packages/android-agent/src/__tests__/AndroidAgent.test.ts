@@ -680,6 +680,11 @@ describe('AndroidAgent', () => {
 
       set(true)
       await waitForType(browser, 'network:state')      // confirmed offline — this is what it knows
+      // The fake device follows its own write. `confirmed: true` *means* the read-back agreed, so a
+      // read that goes on answering `false` afterwards is a device that cannot exist — and the write
+      // path now remembers a successful pre-write read as well, which that contradiction would send
+      // backwards for a reason having nothing to do with what this test holds.
+      vi.mocked(adb.airplaneMode).mockResolvedValue(true)
 
       vi.mocked(adb.setAirplaneMode).mockResolvedValue({ confirmed: false, offline: false })
       set(false, 'rq-unconfirmed')
@@ -824,13 +829,31 @@ describe('AndroidAgent', () => {
           .toEqual({ offline: true, available: false, reason: 'state-unconfirmed' })
       })
 
-      it('reports a read it cannot make as unconfirmed', async () => {
+      it('refuses to answer for a device it has never observed and cannot read', async () => {
+        // **`false` is not "unknown", it is "on the network".** With nothing ever confirmed and the
+        // read failing, there is no position to report — and answering `offline: false` claims the one
+        // direction that hides the problem. The WS report path stays silent in this state; a function
+        // has to answer, so it answers with the failure.
         adb = mockAdb(true)
         vi.spyOn(adb, 'airplaneMode').mockRejectedValue(new Error('device offline'))
         await session(adb)
 
+        await expect(agent.networkState()).rejects.toThrow(/never been observed/)
+      })
+
+      it('still answers with the last confirmed value when a read fails', async () => {
+        // The other half, and the reason the throw above is narrow: once something *has* been
+        // confirmed, an unreadable device is still that value. Reporting it as online is what sends a
+        // tester to file against an app that cannot reach anything.
+        const a = withAirplane(false)
+        await session(a)
+        await booted()
+        await agent.setNetworkOffline(true)
+
+        vi.mocked(a.airplaneMode).mockRejectedValue(new Error('device offline'))
+
         expect(await agent.networkState())
-          .toEqual({ offline: false, available: false, reason: 'state-unconfirmed' })
+          .toEqual({ offline: true, available: false, reason: 'state-unconfirmed' })
       })
 
       it('answers a confirmed write as steerable', async () => {
