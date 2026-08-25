@@ -18,7 +18,8 @@
 #
 # Fail-open on a missing/unparseable payload, matching the other gates in this directory: this guards
 # a cooperative-but-forgetful agent, not an adversary, and failing closed would block every Bash call
-# in the session on a missing jq.
+# in the session on a missing jq. A `--body-file` naming a file that does not exist is not that case
+# and is left blocked — `gh` would fail on it anyway, so the verdict costs nothing either way.
 
 input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""') || exit 0
@@ -29,9 +30,18 @@ printf '%s' "$cmd" \
   | tr '\n' ' ' \
   | grep -qE '(^|[;&|]|\$\(|\bthen\b|\bdo\b)[[:space:]]*gh[[:space:]]+issue[[:space:]]+create' || exit 0
 
+# The body may not be in the command at all. `--body-file` is the form this repo teaches for PRs, and
+# reading the file is the difference between a gate and a false positive on the correct usage.
+body_file=$(printf '%s' "$cmd" | sed -nE "s/.*(--body-file|-F)[[:space:]]+['\"]?([^[:space:]'\"]+).*/\2/p" | head -1)
+haystack=$cmd
+if [ -n "$body_file" ] && [ "$body_file" != "-" ] && [ -r "$body_file" ]; then
+  haystack="$cmd
+$(cat "$body_file")"
+fi
+
 # Either a parent, or an explicit standalone marker. `Parent: #123` / `Parent: owner/repo#123`.
-if printf '%s' "$cmd" | grep -qE 'Parent:[[:space:]]*[A-Za-z0-9_.\/-]*#[0-9]+'; then exit 0; fi
-if printf '%s' "$cmd" | grep -qF '<!-- standalone:'; then exit 0; fi
+if printf '%s' "$haystack" | grep -qE 'Parent:[[:space:]]*[A-Za-z0-9_.\/-]*#[0-9]+'; then exit 0; fi
+if printf '%s' "$haystack" | grep -qF '<!-- standalone:'; then exit 0; fi
 
 cat >&2 <<'MSG'
 Blocked: this issue names no parent.
