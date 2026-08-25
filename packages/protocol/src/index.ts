@@ -623,10 +623,16 @@ export type NetworkUnavailableReason =
    */
   | 'unsupported-device'
   /**
-   * **Android only.** The adb round trip failed, so what the device is doing is not known: the write
-   * threw, or the read threw, or the answer did not parse. What it is *not* is a verdict about the
-   * device — the same failure is produced by a device mid-reboot, a dropped adb connection, and an
-   * image too old to have the command.
+   * **A read that could not be confirmed, so what the device is doing is not known.** On Android that
+   * is an adb round trip failing: the write threw, or the read threw, or the answer did not parse. On
+   * iOS it is the injected library's verdict file arriving in a shape that says nothing — caught
+   * mid-write, since the library writes it non-atomically, but equally a file that parses and carries
+   * no verdict. What it is *not* is a verdict about the device — the same shape is produced by a
+   * device mid-reboot, a dropped adb connection, an image too old to have the command, and a read
+   * that landed on a file with nothing in it to read.
+   *
+   * It said **Android only** while Android was the only producer. That was a note about who emits it,
+   * not about what it means, and iOS reaching the same state did not change the meaning.
    *
    * What a consumer must do differently: **keep the position it already had and let the tester
    * retry.** `offline` here is the freshest evidence there is rather than a fresh reading — the last

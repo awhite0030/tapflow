@@ -315,10 +315,76 @@ describe('SimulatorNetwork', () => {
     expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
   })
 
-  it('treats an unreadable verdict as a failure, never as an install', () => {
+  it('treats an unreadable verdict as unconfirmed, never as an install', () => {
+    // **The half that does not change: a truncated file is not evidence the hooks took.** Reading it
+    // as an install hands a healthy control to a device nobody can vouch for.
+    //
+    // What changed is which unavailable reason it is. `hooks-not-installed` means the library ran and
+    // *proved* its hooks did not take, which a truncated file shows nothing of — it is the library
+    // caught mid-write, which it does non-atomically (#653). `state-unconfirmed` says the read could
+    // not be confirmed and to look again, which is what actually resolves it.
     writeFileSync(verdictPath(UDID), '{ truncated')
     const net = make()
-    expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
+    expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'state-unconfirmed' })
+  })
+
+  it('says the same for an unreadable verdict on a device that is armed', async () => {
+    // **The case the reason was chosen for.** Resolving an unreadable verdict against `armed` puts it
+    // in `awaiting-app` almost every time — the library writes that file *because* an app is running,
+    // so `armed` is true — and `awaiting-app` is the one member the dashboard draws with a healthy
+    // control and "launch an app". The answer must not depend on `armed` at all.
+    const net = make()
+    await net.arm(UDID)
+    writeFileSync(verdictPath(UDID), '{ truncated')
+
+    expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'state-unconfirmed' })
+  })
+
+  it('reserves hooks-not-installed for the library actually saying so', () => {
+    // `installed !== true` swept up every shape that is not the library's own failure signal and
+    // answered "it ran and proved its hooks did not take" about files that show nothing — the same
+    // overclaim the branch above exists to remove, one case over.
+    for (const body of ['{}', '[]', '123', 'true', '"x"', 'null']) {
+      const net = make()
+      writeFileSync(verdictPath(UDID), body)
+      expect(net.state(UDID), `verdict body ${body}`)
+        .toEqual({ offline: false, available: false, reason: 'state-unconfirmed' })
+    }
+    const net = make()
+    writeFileSync(verdictPath(UDID), JSON.stringify({ installed: false }))
+    expect(net.state(UDID), 'the one shape that does say so')
+      .toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
+  })
+
+  it('swallows a status bar failure going offline, because layer 3 only reports', async () => {
+    // Unswallowed, one `status_bar` failure threw out of `setOffline` with layers 1 and 2 already
+    // applied: the device really was offline and the caller was told the request failed, which sends a
+    // tester to file against an app that was never online.
+    armed()
+    const net = make()
+    vi.mocked(simctl.setStatusBarOffline).mockRejectedValueOnce(new Error('device is gone'))
+
+    await expect(net.setOffline(UDID, true)).resolves.toEqual({ offline: true, available: true })
+    expect(existsSync(conditionPath(UDID)), 'the layer that does the work was rolled back').toBe(true)
+  })
+
+  it('swallows it on the way back too, and the next toggle writes the bar again', async () => {
+    // The mirror, and it fails the other way. Going offline the bar errs quietly — the device is
+    // offline and the bar has not caught up. Coming back, every layer is restored and the bar still
+    // shows no service on a device whose requests now succeed. Neither is worth failing the call for;
+    // what puts the second one right is the next successful toggle writing the bar again.
+    armed()
+    const net = make()
+    await net.setOffline(UDID, true)
+    expect(statusBar).toEqual([`${UDID}:true`])
+
+    vi.mocked(simctl.setStatusBarOffline).mockRejectedValueOnce(new Error('device is gone'))
+    await expect(net.setOffline(UDID, false)).resolves.toEqual({ offline: false, available: true })
+    expect(statusBar, 'the bar is stale here, and that is the accepted cost').toEqual([`${UDID}:true`])
+
+    await net.setOffline(UDID, true)
+    await net.setOffline(UDID, false)
+    expect(statusBar.at(-1), 'no later toggle caught the bar up').toBe(`${UDID}:false`)
   })
 
   it('still reports a device offline after it stops being steerable', async () => {
