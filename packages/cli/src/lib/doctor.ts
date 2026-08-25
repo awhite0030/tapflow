@@ -75,39 +75,6 @@ function buildIosChecks(isMac: boolean): DoctorCheck[] {
  * Everything here is `warn`, never `fail`. A session works without the filter; only iOS network
  * control does not.
  */
-/**
- * The other half of iOS network control, and until now nothing looked at it.
- *
- * The filter cuts the traffic; this library is what tells the app it is offline. Losing it produces
- * the worst-shaped failure in the feature — dyld ignores a `DYLD_INSERT_LIBRARIES` path that is not
- * there without a word, so the app runs unhooked, the agent never receives a verdict, and the control
- * says "restart the device" about a device that will say the same thing after restarting.
- *
- * A warning rather than a failure, matching the filter's checks: a session works without it and only
- * iOS network control does not.
- */
-function checkNetworkHook(): DoctorCheck {
-  const hook = shippedHookPath()
-  if (hook === null) {
-    return {
-      label: 'Network hook',
-      ok: false,
-      warn: true,
-      detail: 'Missing from this tapflow install. An app cannot be told it is offline without it, so iOS network control stays off. Reinstalling tapflow restores it.',
-    }
-  }
-  try {
-    accessSync(hook, constants.R_OK)
-  } catch {
-    return {
-      label: 'Network hook',
-      ok: false,
-      warn: true,
-      detail: `Found at ${hook} but cannot be read, so it cannot be injected. Reinstalling tapflow restores it.`,
-    }
-  }
-  return { label: 'Network hook', ok: true }
-}
 
 function buildNetFilterChecks(): DoctorCheck[] {
   const s = readNetFilterState()
@@ -178,6 +145,41 @@ function buildNetFilterChecks(): DoctorCheck[] {
     warn: true,
     detail: `The Mac runs ${s.activated} and this tapflow carries ${s.shipped}. Run \`tapflow migrate net-filter\` to update it.`,
   }]
+}
+
+/**
+ * The other half of iOS network control, and until now nothing looked at it.
+ *
+ * The filter cuts the traffic; this library is what tells the app it is offline. Losing it produces
+ * the worst-shaped failure in the feature — dyld ignores a `DYLD_INSERT_LIBRARIES` path that is not
+ * there without a word, so the app runs unhooked and the agent never receives a verdict. The control
+ * then asks the tester to launch an app through tapflow — which they have already done, and will go
+ * on being asked for as long as the session lasts.
+ *
+ * A warning rather than a failure, matching the filter's checks: a session works without it and only
+ * iOS network control does not.
+ */
+function checkNetworkHook(): DoctorCheck {
+  const hook = shippedHookPath()
+  if (hook === null) {
+    return {
+      label: 'Network hook',
+      ok: false,
+      warn: true,
+      detail: 'Missing from this tapflow install. An app cannot be told it is offline without it, so iOS network control stays off. Reinstalling tapflow restores it.',
+    }
+  }
+  try {
+    accessSync(hook, constants.R_OK)
+  } catch {
+    return {
+      label: 'Network hook',
+      ok: false,
+      warn: true,
+      detail: `Found at ${hook} but cannot be read, so it cannot be injected. Reinstalling tapflow restores it.`,
+    }
+  }
+  return { label: 'Network hook', ok: true }
 }
 
 // adb가 없어도 섹션을 숨기지 않고 진단을 노출한다(Android를 세팅하려는 사용자가 볼 수 있도록).

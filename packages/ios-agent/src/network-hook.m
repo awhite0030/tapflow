@@ -650,12 +650,27 @@ static BOOL tf_self_check(void) {
  *
  * The pid is in the temp name because two processes can be writing one udid's verdict — a relaunched
  * app races its own predecessor — and a shared temp path would put them back in each other's way.
+ *
+ * **Nothing collects a temp file left by a process that died between the `fopen` and the `rename`,**
+ * and that is a decision rather than an oversight. The reader opens the exact verdict path, so a
+ * stray `…json.<pid>.tmp` is inert; the simulator's `/tmp` is cleaned by macOS; and a collector here
+ * would have to guess which of them belongs to a process still running.
  */
 static void tf_write_verdict(BOOL ok) {
   char path[PATH_MAX];
   snprintf(path, sizeof(path), "/tmp/tapflow-nethook-%s.json", tf_udid());
   char tmp[PATH_MAX];
-  snprintf(tmp, sizeof(tmp), "%s.%d.tmp", path, getpid());
+  // **Checked, because truncation here reinstates the defect silently.** `tf_udid()` is an
+  // environment variable and unbounded by type; at a udid long enough to fill `path`, `snprintf`
+  // drops the `.<pid>.tmp` suffix entirely and `tmp` comes back equal to `path`. `fopen(tmp, "w")`
+  // is then the in-place truncation this function exists to remove, and the `rename` below succeeds
+  // as a no-op, so nothing anywhere reports it. Not reachable through CoreSimulator, whose udid is a
+  // 36-character UUID — which is why it would have gone unnoticed.
+  int n = snprintf(tmp, sizeof(tmp), "%s.%d.tmp", path, getpid());
+  if (n < 0 || n >= (int)sizeof(tmp)) {
+    os_log_error(tf_log(), "the verdict path is too long to write beside: %{public}s", path);
+    return;
+  }
 
   NSString *bundle = NSBundle.mainBundle.bundleIdentifier ?: @"";
   NSString *json = [NSString stringWithFormat:

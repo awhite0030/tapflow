@@ -3,25 +3,28 @@
 //
 //  1. **The source goes back to writing in place.** Caught by reading `tf_write_verdict`.
 //  2. **The source is right and the shipped binary is the old one.** `nethookArtifactFresh` is the
-//     general guard for that, and it is the one to read first. This check overlaps it and is kept
-//     for the case it cannot see: that guard trusts `nethook-shipped.json`, and the cheapest way
-//     past a red guard is to edit the record. Measured — with a stale binary and a record hand-
-//     written to match it, every assertion in `nethookArtifactFresh` passes and only this one fails.
-//     A record can be forged; an undefined symbol cannot.
+//     general guard for that and is the one to read first. This check overlaps it and is kept for
+//     the case it cannot see: that guard trusts `nethook-shipped.json`, and a record can be rewritten
+//     by anyone who runs the recorder. What the dylib imports cannot.
 //
-// **The binary check reads the linker's symbol table, not the author's text.** `_rename` is in the
-// dylib because the linker recorded an undefined symbol for it, which no comment, string literal or
-// renamed helper can produce. Searching the file's bytes rather than shelling out to `nm` is so the
-// check runs on the Linux CI that has no Mach-O tools: the undefined-symbol names live in the string
-// table as raw bytes either way. Measured on the two binaries this change sits between — the old one
-// contains `_rename` zero times, the rebuilt one twice.
+// **The binary check reads the undefined-symbol table, and the first draft did not.** It searched the
+// whole file for the bytes `_rename` and its header claimed that was structural. A reviewer disproved
+// it in one compile: a dylib with zero `rename` imports, a `const char *note = "atomic_rename"` and a
+// plain `fopen(path, "w")` — the very defect #653 removes — carries those bytes in `__cstring`, so the
+// search passed on a binary doing exactly the wrong thing. Measured on three binaries: the shipped one
+// imports `_rename`, `main`'s pre-#653 one does not, and the purpose-built fake has the bytes without
+// the import. Only the symbol table separates the second from the third.
 //
-// The source check is a spelling assertion and therefore a floor, not a fence
-// (contributing/test-and-guard-coverage.md §3). Its structural twin is the binary check: the two are
-// independent, and the mutation table below shows each failing without the other.
+// That was this file breaking the rule it cites. `contributing/test-and-guard-coverage.md` §1 says a
+// check must execute the lesson its own header cites, and §3 says a spelling assertion is a floor
+// rather than a fence — and the draft quoted §3 while being one.
+//
+// The source checks below are still spelling assertions and still floors. Their structural twin is
+// the symbol table, not their own wording.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { undefinedSymbols } from '../lib/macho.mjs'
 
 const ROOT = join(import.meta.dirname, '..', '..')
 const DYLIB = join(ROOT, 'packages', 'ios-agent', 'bin', 'libtapflow-nethook.dylib')
@@ -38,16 +41,22 @@ function writeVerdictBody() {
 }
 
 describe('the shipped dylib writes its verdict atomically', () => {
-  it('imports rename, so the binary in bin/ is one that was built from a source that renames', () => {
-    // Anti-vacuity floor from the measured size: a truncated or empty read would pass a bare
-    // `includes` check on nothing.
-    const bytes = readFileSync(DYLIB)
-    expect(bytes.length, 'the dylib is missing or truncated').toBeGreaterThan(50_000)
+  it('imports rename, as a symbol-table entry rather than bytes somewhere in the file', () => {
+    const imports = undefinedSymbols(readFileSync(DYLIB))
+    // Anti-vacuity floor from the measured count (92). A parser that silently returned nothing would
+    // make every assertion here pass while reading no symbols at all.
+    expect(imports.length, 'the symbol table came back empty — the parser, not the binary').toBeGreaterThan(50)
+    // `toContain` on an array is an exact entry, never a substring: a local helper named
+    // `tf_atomic_rename` has `_rename` inside it and imports nothing.
     expect(
-      bytes.includes('_rename'),
+      imports,
       'the committed dylib does not import rename — the source was changed without rebuilding it, '
         + 'or the write went back in place. Run packages/ios-agent/build-nethook.sh.',
-    ).toBe(true)
+    ).toContain('_rename')
+    // The other two the write path needs. Losing one means an error path was dropped, which is how a
+    // failed write gets renamed over a good file.
+    expect(imports).toContain('_unlink')
+    expect(imports).toContain('_fclose')
   })
 
   it('opens a temp path and reaches the target only through rename', () => {
@@ -67,5 +76,12 @@ describe('the shipped dylib writes its verdict atomically', () => {
     const unlinks = (body.match(/unlink\(/g) ?? []).length
     expect(renames).toBe(1)
     expect(unlinks, 'a write that fails after creating the temp file leaves it behind').toBe(2)
+  })
+
+  it('refuses a temp name that truncated onto the target', () => {
+    // `snprintf` truncates silently. At a udid long enough to fill `path`, the `.<pid>.tmp` suffix is
+    // cut away entirely, `tmp` equals `path`, and `fopen(tmp, "w")` is the in-place truncation this
+    // function exists to remove — with `rename` then succeeding as a no-op, so nothing reports.
+    expect(writeVerdictBody(), 'the snprintf into tmp is unchecked').toMatch(/n >= \(int\)sizeof\(tmp\)/)
   })
 })

@@ -362,6 +362,17 @@ describe('SimulatorNetwork', () => {
     expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
   })
 
+  it('says it on a device that really was armed, which is the case that happens', async () => {
+    // **The only shape the live path produces, and the two tests around it missed it.** `arm()` sets
+    // the environment without reading the path it sets, so a real session has `armed` true with no
+    // library on disk — and `if (!this.armed.has(udid) && !existsSync(this.dylib))` passes every
+    // other test here while sending that device back to `awaiting-app`.
+    const net = make()
+    await net.arm(UDID)
+    rmSync(hookPath(), { force: true })
+    expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
+  })
+
   it('does not answer for the library from an armed device or a written verdict', () => {
     // The two states that otherwise look healthiest are the ones this must still refuse: an armed
     // device whose app wrote `installed: true` is exactly what a stale verdict from before the file
@@ -701,6 +712,19 @@ describe('SimulatorNetwork', () => {
       // would add a second false state on top of the one being reported.
       expect(existsSync(conditionPath(UDID))).toBe(false)
       expect(statusBar.at(-1)).toBe(`${UDID}:false`)
+      expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'enforcement-lost' })
+    })
+
+    it('answers before the missing-library branch, which sits below it', async () => {
+      // Order, not merely presence. A Mac whose filter stopped enforcing invalidates work a tester
+      // has already signed off; "reinstall tapflow" does not say that, so the reason that does has
+      // to win — and moving the dylib check above this one leaves every other test green.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      staleState([UDID], -10)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+      rmSync(hookPath(), { force: true })
       expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'enforcement-lost' })
     })
 

@@ -51,11 +51,34 @@ const SOURCE_FILES = ['src/network-hook.m', 'src/inline-hook.c', 'src/inline-hoo
  */
 export function collectSources(repo) {
   const base = path.join(repo, AGENT_DIR)
-  return SOURCE_FILES.map((f) => {
+  const declared = SOURCE_FILES.map((f) => {
     const p = path.join(base, f)
     if (!fs.existsSync(p)) throw new Error(`nethook guard: declared source file is missing: ${AGENT_DIR}/${f}`)
     return p
   })
+
+  // **And the mirror of that rule: a file that exists but was never declared.**
+  //
+  // This list is fixed where the netfilter guard globs a directory, so the next local header pulled
+  // in by an `#import "..."` is compiled into the dylib while its changes move no hash at all — the
+  // guard would go on certifying a binary built from something it does not read. Measured: adding
+  // `src/tf-extra.h` and editing it left `computeRecord().sources` byte-identical.
+  //
+  // System headers are not this: `#import <...>` is the SDK's, and hashing it would report a change
+  // for every Xcode update and nothing else.
+  for (const file of declared) {
+    const dir = path.dirname(file)
+    for (const m of fs.readFileSync(file, 'utf8').matchAll(/^\s*#\s*(?:import|include)\s+"([^"]+)"/gm)) {
+      const target = path.resolve(dir, m[1])
+      if (!fs.existsSync(target)) continue
+      if (declared.includes(target)) continue
+      throw new Error(
+        `nethook guard: ${path.relative(base, file)} includes ${m[1]}, which is not in SOURCE_FILES.\n`
+        + '  It is compiled into the dylib, so its changes must move the source hash. Add it.',
+      )
+    }
+  }
+  return declared
 }
 
 /** One file, walked rather than read directly so an artifact that becomes a directory is not silently

@@ -50,7 +50,8 @@ not. See [Network Control](/guide/network-control).
 The network hook is the library tapflow injects to tell an app it is offline. It comes with tapflow,
 so a missing one means the install is damaged and reinstalling restores it. It is reported separately
 because its absence is otherwise silent: macOS ignores an injection path that does not exist without a
-word, so the app launches unhooked and all the screen says is to restart the device.
+word, so the app launches unhooked and the network control goes on asking you to launch an app through
+tapflow — while the app you launched is running in front of you.
 
 Use `--json` for machine-readable output. Exits with code `1` if any check fails.
 

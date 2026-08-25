@@ -422,9 +422,11 @@ export class SimulatorNetwork {
 
     // **Layer 2 cannot work at all if the library is not on disk**, and that is the quietest failure
     // in the feature: `DYLD_INSERT_LIBRARIES` naming a path that does not exist is ignored by dyld
-    // without a word, so the app launches unhooked, no verdict is ever written, and the branch below
-    // reports `not-armed` — "restart the device" — about a device that answers the same after every
-    // restart there is.
+    // without a word, so the app launches unhooked and no verdict is ever written. `arm()` records
+    // the device as armed whatever the file's state — it sets the environment and does not read the
+    // path it sets — so the branch below fell to `awaiting-app`: "launch an app through tapflow", to
+    // a tester who has already launched one, for the life of the session. (`not-armed` and its
+    // reboot only appear when this process restarted, since `armed` is its memory.)
     //
     // Read rather than remembered, unlike layer 1 above. Layer 1 is a question this synchronous
     // method cannot put to the provider; this one is a `stat`, and a `node_modules` emptied under a

@@ -1,5 +1,6 @@
 ---
 "@tapflowio/ios-agent": patch
+"@tapflowio/protocol": patch
 "tapflow": patch
 ---
 
@@ -11,4 +12,4 @@ The dylib is a committed prebuilt with no recorded build recipe, so `packages/io
 
 Two things that were invisible now report. `bin/libtapflow-nethook.dylib` is a committed prebuilt, and every test that exercised the network hook injected a *fake* path — so editing the source and shipping the previous binary was silent. It is now recorded against its sources like the network filter next door, with the difference stated in the guard: a failure here is the contributor's to fix, because no signing key is involved.
 
-And the library itself had no diagnosis at all. `DYLD_INSERT_LIBRARIES` naming a path that does not exist is ignored by dyld without a word, so a damaged install launched the app unhooked, wrote no verdict, and the control told the tester to restart the device — forever, about a device that would answer the same. `tapflow doctor ios` now reports the library, and the agent says `hooks-not-installed` instead of asking for a reboot that cannot help.
+And the library itself had no diagnosis at all. `DYLD_INSERT_LIBRARIES` naming a path that does not exist is ignored by dyld without a word, so a damaged install launched the app unhooked and wrote no verdict — leaving the control asking the tester to launch an app through tapflow, for the whole session, while the app they launched was running in front of them. `tapflow doctor ios` now reports the library, and the agent says so instead of asking for something already done.

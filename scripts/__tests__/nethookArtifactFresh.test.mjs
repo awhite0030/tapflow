@@ -46,6 +46,16 @@ describe('the shipped injected library matches what it was recorded against', ()
     ).toBe(readRecord(REPO).sources)
   })
 
+  it('checks the fields it records, so none of them is decoration', () => {
+    // A record carrying numbers nobody compares reads as more checked than it is, and a forged one is
+    // easier to make look right. The netfilter guard compares its `bundleVersion`; these were the two
+    // it has no counterpart for.
+    const now = computeRecord(REPO)
+    const recorded = readRecord(REPO)
+    expect(now.dylibBytes).toBe(recorded.dylibBytes)
+    expect(now.sourceFileCount).toBe(recorded.sourceFileCount)
+  })
+
   it('is the same dylib that was recorded', () => {
     // The half that makes the check work at all. Recording only the sources fails in a way correlated
     // with the mistake: whoever forgets to rebuild forgets to re-record, both values stay consistent,

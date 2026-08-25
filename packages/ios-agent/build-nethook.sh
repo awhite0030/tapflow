@@ -36,4 +36,4 @@ otool -l "$out" | grep -A3 LC_BUILD_VERSION | sed 's/^/  /'
 
 # Record in the same step that produced the binary. Separating them is how one of the two ends up
 # stale while the other looks right, which is the failure the guard exists for.
-node ../../scripts/record-nethook-artifact.mjs
+node ../../scripts/record-nethook-artifact.mjs --after-build

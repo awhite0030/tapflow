@@ -77,8 +77,8 @@ export function shippedAppPath(): string | null {
  * absent, stale or unapproved; this one only ever lives inside the package, so it is either there or
  * the install is damaged. What made it worth a check is the failure it produces when it is not:
  * `DYLD_INSERT_LIBRARIES` naming a path that does not exist is **ignored silently** by dyld, the app
- * launches with no hooks, no verdict is ever written, and the tester is told to restart the device —
- * forever, by a device whose restart cannot help.
+ * launches with no hooks, and no verdict is ever written — so the control asks the tester to launch
+ * an app through tapflow, forever, while the app they launched is running in front of them.
  */
 export function shippedHookPath(): string | null {
   return shippedArtifact('libtapflow-nethook.dylib')
