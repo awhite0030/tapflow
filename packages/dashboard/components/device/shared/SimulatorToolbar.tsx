@@ -6,6 +6,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { cn } from '@/lib/utils';
 import { useId } from 'react';
 import type { ReactNode } from 'react';
+import type { NetworkUnavailableReason } from '@tapflowio/protocol';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
 
 /**
@@ -51,18 +52,18 @@ export interface NetworkControl {
   /** Whether tapflow can still change it. Separate from where it is, because the protocol makes them
    *  separate — a device it can no longer steer still has a network state, and still shows it. */
   steerable: boolean;
-  /** The injection is in place and no app has run under it yet — `awaiting-app` on the wire.
+  /** Why it cannot be steered, straight off the wire. `undefined` whenever `steerable` is true.
    *
-   *  **Not a kind of `steerable: false`, even though it arrives inside one.** Traffic control works
-   *  in this state: a device taken offline here really does stop reaching the network. What does not
-   *  work is telling the app, and drawing that as a dead control said the opposite of what a click
-   *  would do. It is the state every iOS session is in until its app starts, so it is the first thing
-   *  a tester sees.
+   *  **This carried one boolean — `awaitingApp` — and the reason it did was about the wire, not about
+   *  this component.** Every Android read failure used to arrive as `unsupported-device`, so naming a
+   *  reason meant telling a tester "this will never work" about a rebooting device, and the one
+   *  member that conflated nothing was the only one worth reading. The set has been split (#618), so
+   *  each member now carries a remedy that differs, and a sentence per remedy is the whole point of a
+   *  closed set.
    *
-   *  **Required, not optional.** Its siblings are, and leaving this one out defaulted a consumer to
-   *  the failure rendering for the state every iOS session opens in — the one case where getting it
-   *  wrong is guaranteed rather than unlikely. Both call sites already passed it. */
-  awaitingApp: boolean;
+   *  A member this build has never heard of still has to render: agents update on their own schedule,
+   *  so the switch below carries a `default` rather than trusting the union. */
+  reason?: NetworkUnavailableReason;
   pending: boolean;
   onToggle: () => void;
 }
@@ -87,12 +88,17 @@ const MUTED = 'text-muted-foreground hover:text-muted-foreground';
 /**
  * A control tapflow cannot currently steer, pinned the same way.
  *
- * **It says the control is unusable now, not that the device is broken forever** — and the
- * distinction is forced rather than chosen. Every Android read failure arrives as
- * `unsupported-device` (#618), a rebooting device included, so the dashboard has no member of that
- * set it can safely translate into permanence. The hook declines to name a reason for the same
- * reason; this colour is the same restraint in a different medium, and the prose beside it says only
- * "tapflow can no longer change it".
+ * **It says the control is unusable now, and the sentence beside it says what to do.** The colour
+ * used to carry the whole claim and had to hedge: every Android read failure arrived as
+ * `unsupported-device` (#618), a rebooting device included, so there was no member the dashboard
+ * could translate into anything specific. The set has been split, so the *remedy* now lives in the
+ * reason — restart the device, launch an app, try again, go and ask whoever runs the Mac — and one
+ * colour serving all of them is a deliberate choice rather than the only honest option. It stays one
+ * colour because `networkLook` has two ternaries and a second failure colour would have to be
+ * invented for a distinction the sentence already makes.
+ *
+ * **Permanence is deliberately not what any of this encodes.** Only `filter-unavailable` is a state
+ * no click can leave, and that one is about the Mac rather than the device.
  *
  * It deliberately excludes `awaitingApp`, which resolves itself the moment an app starts: colouring
  * the ordinary opening seconds of every iOS session as an error is how a colour stops meaning
@@ -115,6 +121,48 @@ const MUTED = 'text-muted-foreground hover:text-muted-foreground';
 const FAILED = 'text-destructive hover:text-destructive';
 
 /**
+ * What the tester does next, one sentence per reason.
+ *
+ * **Every branch names an action they can take**, which is what the reason set exists for — a member
+ * per thing a consumer must do differently. Where there is nothing they can do, it says so plainly
+ * rather than implying a retry.
+ *
+ * `filter-unavailable` names the guide instead of linking to it. A link needs a surface, and the two
+ * this control has are a tooltip that never opens on touch and an `sr-only` string; putting an anchor
+ * in either is worse than a sentence that can be searched for. The destination exists —
+ * `docs/guide/network-control.md`, and the setup steps it points at.
+ */
+function reasonCaveat(reason: NetworkUnavailableReason | undefined): string {
+  switch (reason) {
+    case 'awaiting-app':
+      return ' Launch an app through tapflow so it is told too.';
+    case 'not-armed':
+      return ' Restart the device so tapflow can set it up.';
+    case 'state-unconfirmed':
+      return ' tapflow could not confirm the change — try again.';
+    case 'unsupported-device':
+      // Says what happened, not how long it lasts. The device answered and had not moved, and nothing
+      // measured says whether that is a policy that will not budge or a rule that had not landed yet —
+      // so this offers the retry and names the fallback instead of declaring the device incapable.
+      return ' The device did not change when tapflow asked — try again, or use another device.';
+    case 'filter-unavailable':
+      return ' This Mac is not set up to take devices off the network — see the network control guide.';
+    case 'enforcement-lost':
+      // **Short, because the toast carries this one.** `onError` renders `role="alert"`, which
+      // interrupts the polite `role="status"` region beside it in the same commit — so saying the
+      // whole thing twice drops the position half for anyone who hears the alert first, and repeats
+      // the sentence for anyone who hears both.
+      return ' It went back on the network on its own.';
+    case 'hooks-not-installed':
+      return ' tapflow cannot tell this app it is off the network.';
+    default:
+      // An agent newer than this build. Says the one thing that is true of every member without
+      // guessing which: it cannot be changed from here right now.
+      return ' tapflow cannot change it right now.';
+  }
+}
+
+/**
  * Four positions, and **none of them disables the button**.
  *
  * #447 settled that a control nothing acts on should be absent rather than disabled, because a
@@ -129,7 +177,22 @@ const FAILED = 'text-destructive hover:text-destructive';
  * each other because saying "could not read" about a device that is merely slow is a claim made
  * before anything was asked.
  */
-function networkLook({ position, steerable, awaitingApp }: Pick<NetworkControl, 'position' | 'steerable' | 'awaitingApp'>) {
+function networkLook({ position, steerable, reason }: Pick<NetworkControl, 'position' | 'steerable' | 'reason'>) {
+  // Derived rather than passed, so the colour rules below read exactly as they did when this was a
+  // prop. Nothing about which states are drawn as failures has changed here.
+  const awaitingApp = reason === 'awaiting-app';
+  // **Uncertainty is said with the pulse, not with the position.** `state-unconfirmed` means the
+  // round trip failed, so where the device is, is the last thing anyone confirmed. Rendering that as
+  // a position of `unknown` was tried and reverted: from `unknown` every click asks for offline
+  // again, so a device taken offline could not be brought back through the UI. The pulse already
+  // means "we are not sure yet" at `waiting`, and it leaves both the position and the colour alone.
+  //
+  // **Gated on `steerable` like the sentence below, and not on the reason alone.** This file takes the
+  // two as independent props and says so, and a pulse derived from `reason` by itself renders
+  // `{ steerable: true, reason: 'state-unconfirmed' }` as a permanently pulsing button whose status
+  // text says only "Device is on the network" — uncertainty in CSS and in no channel a screen reader
+  // can reach.
+  const unsure = !steerable && reason === 'state-unconfirmed' ? ' animate-pulse' : '';
   // Said after the position, never instead of it. A device tapflow cannot steer is still somewhere,
   // and an earlier draft that replaced the position with "could not be read" made the control a
   // one-way ratchet — from that rendering every click asked for offline again, so a device taken
@@ -137,9 +200,12 @@ function networkLook({ position, steerable, awaitingApp }: Pick<NetworkControl, 
   // Three sentences where there was one, because the remedies differ. "tapflow can no longer change
   // it" was said for all of them, and for the waiting-for-an-app state it was wrong twice over:
   // nothing had been armed, so there was no "no longer", and clicking does change the device.
-  const caveat = steerable ? ''
-    : awaitingApp ? ' Launch an app through tapflow so it is told too.'
-      : ' tapflow can no longer change it.';
+  //
+  // **A sentence per remedy, and no implementation words in any of them.** A tester reading these is
+  // not going to install a system extension or a hook; what they can do is launch an app, restart a
+  // device, try again, or go and ask whoever runs the Mac. Naming the machinery would describe our
+  // problem in place of their next step.
+  const caveat = steerable ? '' : reasonCaveat(reason);
   switch (position) {
     case 'offline':
       // The only position with colour. It is a state a tester deliberately put the device into and
@@ -149,13 +215,13 @@ function networkLook({ position, steerable, awaitingApp }: Pick<NetworkControl, 
         // Still amber while waiting for an app: the device really is offline, which is the thing this
         // colour is for. An unsteerable control overrides it, and `RadioOff` is then the only thing
         // left saying offline — see `FAILED`.
-        className: steerable || awaitingApp ? 'text-amber-500 hover:text-amber-500' : FAILED,
+        className: (steerable || awaitingApp ? 'text-amber-500 hover:text-amber-500' : FAILED) + unsure,
         status: `Device is offline.${caveat}`,
       };
     case 'online':
       return {
         Icon: Radio,
-        className: steerable || awaitingApp ? '' : FAILED,
+        className: (steerable || awaitingApp ? '' : FAILED) + unsure,
         status: `Device is on the network.${caveat}`,
       };
     case 'waiting':
@@ -179,26 +245,51 @@ function networkLook({ position, steerable, awaitingApp }: Pick<NetworkControl, 
  * this is what says it to everyone else, and unlike the description beside it a name cannot be
  * turned off by a verbosity setting.
  */
-function networkAction({ position, steerable, awaitingApp }: Pick<NetworkControl, 'position' | 'steerable' | 'awaitingApp'>) {
+function networkAction({ position, steerable, reason }: Pick<NetworkControl, 'position' | 'steerable' | 'reason'>) {
   const action = position === 'offline' ? 'Bring device online'
     : position === 'online' ? 'Take device offline'
       : 'Toggle device network';
   // **The caveat goes in the name, not only in the description.** A device tapflow has just said it
   // cannot steer still gets a name that promises the action, and the correction lived in the
   // `aria-describedby` sentence — the very channel the paragraph above calls unreliable, since a
-  // verbosity setting can drop it. "Retry" is honest in both directions: the last attempt did not
-  // land, and clicking will try again, which is not futile while #618 leaves a transient failure
-  // indistinguishable from a permanent one.
+  // verbosity setting can drop it. "Retry" is honest where it is offered: the last attempt did not
+  // land, and clicking will try again.
   // **Only where there is an attempt to retry.** `steerable` is about a report that came back, and a
   // position-less state has had none — so prefixing there would assert a failed attempt that no
   // channel explains, which is the claim-from-silence the rest of this file is built to avoid. The
   // combination is unreachable through `useNetworkControl`, where any report settles the position;
   // this component takes the two as independent props and has to be right on its own terms.
-  // `awaitingApp` keeps the plain name too. "Retry" claims a previous attempt that did not land, and
+  // `awaiting-app` keeps the plain name too. "Retry" claims a previous attempt that did not land, and
   // waiting for an app is not a failed attempt — it is a click that will work, on a device nobody has
   // opened an app on yet.
+  //
+  // **And the prefix is now scoped to the reasons a retry can land on.** Its justification said so
+  // explicitly — "not futile *while #618 leaves a transient failure indistinguishable from a
+  // permanent one*" — and #618 split enough of them to make the scoping possible. Offering "Retry" on
+  // a Mac that is not set up for this, on a device waiting for a reboot, or on hooks that proved they
+  // did not take, recommends a click that cannot work.
+  //
+  // **`unsupported-device` keeps it, and that is a correction.** Dropping it there assumed the new,
+  // narrow meaning — the device was read and had not moved — is permanent, and nothing measured says
+  // so: a policy restriction is permanent, a rule that had not propagated yet is not, and the signal
+  // cannot tell them apart. Worse, an agent older than this build still sends that literal for every
+  // transient failure, and there is no version on the wire to tell the two apart — so removing the
+  // affordance reproduced exactly the #618 regression for anyone running a new relay against an agent
+  // they installed earlier.
+  //
+  // **And what is left over needs a marker of its own.** Narrowing the prefix left four reasons with a
+  // plain actionable name on a button drawn in the failure colour: colour became the only channel that
+  // said it would not work, and colour is exactly the channel a screen-reader user does not have. The
+  // description says it, and the paragraph above is about why that channel cannot be relied on alone.
   const settled = position === 'online' || position === 'offline';
-  return steerable || awaitingApp || !settled ? action : `Retry: ${action.toLowerCase()}`;
+  const retryable = reason === 'state-unconfirmed' || reason === 'unsupported-device';
+  //
+  // **`awaiting-app` is excluded from both**, and that is the same exception it has always had here.
+  // Traffic control works in that state — a device taken offline really does stop reaching the
+  // network — so neither "Retry" nor "unavailable" is true of it. What is missing is only that the app
+  // is told, which the sentence says.
+  if (steerable || !settled || reason === 'awaiting-app') return action;
+  return retryable ? `Retry: ${action.toLowerCase()}` : `${action} — unavailable`;
 }
 
 export function SimulatorToolbar({

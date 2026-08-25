@@ -26,7 +26,9 @@ private let log = OSLog(subsystem: "dev.tapflow.netfilter", category: "filter")
 // It is read per flow rather than cached at startFilter, because whether a change reaches a RUNNING
 // provider is the open question this build measures: a toggle that only takes effect on restart is a
 // different feature from one that takes effect now.
-private func offlineUDIDs(_ config: NEFilterProviderConfiguration) -> Set<String> {
+/// Not `private`: `IPCListener` reads it to answer `ping`, and reading the configuration through the
+/// same function is what keeps the answer and the enforcement from drifting apart.
+func offlineUDIDs(_ config: NEFilterProviderConfiguration) -> Set<String> {
     guard let raw = config.vendorConfiguration?["offlineUDIDs"] as? [String] else { return [] }
     return Set(raw)
 }
@@ -88,13 +90,24 @@ private let ruleWatch = RuleWatch()
  * (#641), and how often attribution *failed* rather than finding a host process (#642).
  */
 private final class Heartbeat {
-    /// How often the file is refreshed with nothing happening.
+    /// How often the file is refreshed with nothing happening — **1s while a device is offline, 5s
+    /// otherwise.** The rate in force is written into the file, so a reader sizes its threshold from
+    /// what it reads rather than from a constant it has to keep in sync with this one.
     ///
-    /// **A reader should allow at least three of these before calling the provider gone**, and that
-    /// is a measurement rather than a margin picked for comfort. `SIGKILL` on the provider was timed:
-    /// the file freezes immediately, and launchd brings it back about **seven seconds** later. A
-    /// threshold under that would report a filter as absent every time the system restarts it.
-    static let pulseSeconds: TimeInterval = 5
+    /// **A reader should allow at least three of these before calling the provider gone**, which is
+    /// unchanged. What changed is that three of the old ones could not see the thing they were for.
+    /// `SIGKILL` on the provider was timed again: the file freezes immediately, launchd brings it
+    /// back in about **5.8 seconds** (4 of 5 runs; one took 21.3), and — measured at the same time —
+    /// **the kernel passes that simulator's traffic for the whole of it**, 23 to 27 requests per
+    /// occurrence. The NE framework waits out a 5.1s "filter extension exit timer" before the session
+    /// even leaves `Running`. At 5s pulses the threshold is 15s, so the commonest outage is
+    /// arithmetically invisible: the tester goes on looking at an offline control while their
+    /// requests succeed, which is the sign-off this whole feature exists to prevent.
+    ///
+    /// The fast rate is spent only where it buys something. An empty rule enforces nothing, so there
+    /// is nothing to lose track of, and a file write every second for the life of the Mac would buy
+    /// exactly that.
+    static func pulseSeconds(enforcing: Bool) -> TimeInterval { enforcing ? 1 : 5 }
 
     private let lock = NSLock()
     /// The disk write happens here, never on the flow's thread. `handleNewFlow` decides whether a
@@ -192,11 +205,18 @@ private final class Heartbeat {
         lock.unlock()
     }
 
-    /// The pulse, and the one-off writes around the provider's life.
-    func publishNow(rule: Set<String>) {
+    /// The pulse. **One timer serves both rates** — it ticks at the fast one and this decides whether
+    /// a write is due, so a rule change takes effect on the next tick with nothing to reschedule.
+    ///
+    /// The tolerance is the timer's leeway: without it a 1s tick against a 1s threshold misses by a
+    /// few milliseconds and writes every *other* tick, which would halve the rate this exists to set.
+    func pulse(rule: Set<String>) {
         lock.lock()
-        lastWrite = CFAbsoluteTimeGetCurrent()
-        publish(renderLocked(rule: rule))
+        let now = CFAbsoluteTimeGetCurrent()
+        if now - lastWrite >= Heartbeat.pulseSeconds(enforcing: !rule.isEmpty) - 0.25 {
+            lastWrite = now
+            publish(renderLocked(rule: rule))
+        }
         lock.unlock()
     }
 
@@ -236,7 +256,7 @@ private final class Heartbeat {
         let rules = (try? JSONSerialization.data(withJSONObject: rule.sorted()))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         var json = "{\"at\":\(Int(Date().timeIntervalSince1970))"
-        json += ",\"pulseSeconds\":\(Int(Heartbeat.pulseSeconds))"
+        json += ",\"pulseSeconds\":\(Int(Heartbeat.pulseSeconds(enforcing: !rule.isEmpty)))"
         json += ",\"rule\":\(rules)"
         json += ",\"flows\":{\"simulator\":\(flowsSimulator),\"host\":\(flowsHost)"
         json += ",\"unresolved\":\(flowsUnresolved),\"dropped\":\(flowsDropped)}"
@@ -305,6 +325,11 @@ class Provider: NEFilterDataProvider {
                 // `stopped` was cleared recreates the file for a filter that never started, which a
                 // reader takes as evidence of an active one.
                 heartbeat.resume()
+                // **After `apply`, for the same reason `resume()` is.** The box is what `ping`
+                // answers `enforcing` from, and filling it before the filter is running would tell a
+                // caller its rule is being enforced while the kernel is still passing that traffic —
+                // the confirmation saying yes about the one moment it exists to catch.
+                ProviderBox.shared.set(self)
                 os_log("startFilter applied OK", log: log, type: .default)
                 self?.startPulse()
             }
@@ -321,10 +346,13 @@ class Provider: NEFilterDataProvider {
      */
     private func startPulse() {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        timer.schedule(deadline: .now(), repeating: Heartbeat.pulseSeconds, leeway: .seconds(1))
+        // Ticks at the fast rate whatever the rule says; `pulse` drops the ticks that are not due.
+        // The leeway is what the tolerance in `pulse` is sized against — widen one and the other has
+        // to follow, or the slow rate quietly becomes the only rate.
+        timer.schedule(deadline: .now(), repeating: 1.0, leeway: .milliseconds(250))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            heartbeat.publishNow(rule: offlineUDIDs(self.filterConfiguration))
+            heartbeat.pulse(rule: offlineUDIDs(self.filterConfiguration))
         }
         timer.resume()
         pulse = timer
@@ -336,6 +364,10 @@ class Provider: NEFilterDataProvider {
         // it is still enforcing something.
         pulse?.cancel()
         pulse = nil
+        // Emptied here rather than left to the weak reference: the process outlives the filter, and a
+        // stopped provider that has not been deallocated yet would still answer `enforcing: true`.
+        // Measured on a `--off` provider: it stays alive and keeps answering XPC.
+        ProviderBox.shared.set(nil)
         heartbeat.remove()
         completionHandler()
     }

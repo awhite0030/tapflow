@@ -142,29 +142,49 @@ describe('useNetworkControl', () => {
     expect(view.result.current.position).toBe(first)
   })
 
-  it('tells the one reason it reads apart from the ones it does not', () => {
-    // The hook's only reason branch, and it had no test at all: replacing it with `false` — deleting
-    // the dashboard's half of `awaiting-app` outright — left the whole suite green, because the
-    // toolbar's tests inject the prop directly and never exercise the wire→prop step.
+  it('carries every reason through, not just the one it used to trust', () => {
+    // This used to assert the opposite — that `awaiting-app` was kept and the rest dropped — and the
+    // reason it did was about the wire: every Android read failure arrived as `unsupported-device`,
+    // so naming a reason meant telling a tester "this will never work" about a rebooting device. The
+    // set has been split (#618), so each member now carries a remedy that differs and dropping them
+    // throws away the difference.
     //
-    // Both directions matter. Widening the branch to "any reason but `unsupported-device`" is as
-    // wrong as removing it: the point is that this member is the only one an agent emits about a
-    // fact it knows.
+    // Still asserted member by member rather than in one pass: a hook that passed only the first
+    // reason it saw, or one that cached, reads the same on a single sample.
     const { view, report } = setup()
 
-    report({ offline: false, available: false, reason: 'awaiting-app' })
-    expect(view.result.current.awaitingApp).toBe(true)
-
-    for (const reason of ['not-armed', 'hooks-not-installed', 'unsupported-device'] as const) {
+    for (const reason of ['awaiting-app', 'not-armed', 'hooks-not-installed', 'unsupported-device',
+      'state-unconfirmed', 'filter-unavailable'] as const) {
       report({ offline: false, available: false, reason })
-      expect(view.result.current.awaitingApp, `reason ${reason}`).toBe(false)
+      expect(view.result.current.reason, `reason ${reason}`).toBe(reason)
     }
 
     // And a steerable report clears it, so a device that launches its app stops being drawn as
     // waiting for one.
-    report({ offline: false, available: false, reason: 'awaiting-app' })
     report(steerable(false))
-    expect(view.result.current.awaitingApp).toBe(false)
+    expect(view.result.current.reason).toBeUndefined()
+  })
+
+  it('announces enforcement that stopped, and announces it once', () => {
+    // **The one reason that interrupts rather than re-colours.** It says a device that was offline
+    // stopped being enforced, so requests the tester believed were blocked had been succeeding — a
+    // test already signed off, invalidated. Every other member changes what the control looks like.
+    //
+    // Once, though: a re-join asks for the state again and the answer still carries the reason, so an
+    // announcement per report would fire every time a viewer reconnects.
+    const { report, errors } = setup()
+
+    report({ offline: false, available: false, reason: 'enforcement-lost' })
+    report({ offline: false, available: false, reason: 'enforcement-lost' })
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatch(/needs checking again/)
+
+    // And it can be announced again once something else has been said in between — a second loss is
+    // a second invalidated test.
+    report(steerable(false))
+    report({ offline: false, available: false, reason: 'enforcement-lost' })
+    expect(errors).toHaveLength(2)
   })
 
   it('does not move the toggle when the click is sent', () => {

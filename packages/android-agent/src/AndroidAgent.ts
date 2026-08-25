@@ -1123,6 +1123,33 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
   }
 
   /**
+   * Turn a `setAirplaneMode` result into what the viewer is told.
+   *
+   * **Both unconfirmed shapes are `{ confirmed: false, offline: boolean }` and only the value tells
+   * them apart** — the discriminator that used to live nowhere (#618). `AdbWrapper` returns the
+   * value it *read* when the read-back succeeded, and the value that was *requested* when the
+   * read-back failed, so:
+   *
+   * - `offline !== requested` — the read-back succeeded and the device had not moved. The write was
+   *   accepted and did nothing: `unsupported-device`. **Not "an image that does not support this"** —
+   *   that image throws from the write and lands in the branch below, which `AdbWrapper` now records
+   *   at the return it describes. What reaches this branch is unmeasured, so the member names the
+   *   observation and a consumer keeps offering the retry.
+   * - `offline === requested` — nothing was observed. `state-unconfirmed`, which a retry may fix.
+   *
+   * Shared by the WS path and the capability path on purpose: they answer the same question, and the
+   * doc on `setNetworkOffline` records that they had already disagreed once.
+   */
+  private classifyWrite(result: { confirmed: boolean; offline: boolean }, requested: boolean): NetworkStatePayload {
+    if (result.confirmed) return { offline: result.offline, available: true }
+    return {
+      offline: result.offline,
+      available: false,
+      reason: result.offline === requested ? 'state-unconfirmed' : 'unsupported-device',
+    }
+  }
+
+  /**
    * Read the device's current network state.
    *
    * **Reads the device, never a flag this agent kept.** A remembered value cannot see a device left
@@ -1138,7 +1165,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
       return { offline: await this.adb.airplaneMode(serial), available: true }
     } catch (e) {
       logger.warn('airplane mode read failed:', (e as Error).message)
-      return { offline: lastKnownOffline, available: false, reason: 'unsupported-device' }
+      return { offline: lastKnownOffline, available: false, reason: 'state-unconfirmed' }
     }
   }
 
@@ -1219,30 +1246,47 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
 
     // What the device says now. Only used when the **write** fails, where the device is unchanged
     // and this is still true — every other path reports what the wrapper observed after writing.
-    const before = await this.readNetworkState(serial)
+    //
+    // **The last confirmed value is the fallback, not `false`.** Two failures in a row — this read and
+    // then the write — used to answer `offline: false` for a device the agent had already confirmed
+    // offline, which draws an online control over a device whose app can reach nothing. The report
+    // path has always passed this; the two write paths did not, so the one moment a device is least
+    // readable was the one where the memory was dropped.
+    const beforeState = this.deviceStates.get(sessionId)
+    const before = await this.readNetworkState(serial, beforeState?.lastNetworkOffline)
+    // A read that succeeded is an observation, and it was being thrown away. Someone flipping airplane
+    // mode in the emulator's own UI between the boot read and this toggle is seen here and nowhere
+    // else, so without this a later unreadable device falls back past it to the older value.
+    if (beforeState && before.available) beforeState.lastNetworkOffline = before.offline
 
     let result: { confirmed: boolean; offline: boolean }
     try {
       result = await this.adb.setAirplaneMode(serial, offline)
     } catch (e) {
       // The write itself failed: nothing reached the device. An image whose `cmd connectivity`
-      // predates the subcommand lands here.
+      // predates the subcommand lands here — **and so does a device mid-reboot and a dropped adb
+      // connection**, which is why this is `state-unconfirmed` rather than a verdict about the
+      // device. Nothing in the failure separates them, and calling it permanent tells a tester to
+      // give up on a device that is twenty seconds from working. `unsupported-device` is reserved for
+      // the one shape that does say so on its own — see `classifyWrite`.
       //
-      // **An answer, not a failure.** The viewer needs to say this device cannot do it and stay
-      // usable; `network:error` is for a request that could not be dispatched at all, which is the
-      // no-device case above and a different fix for the tester.
+      // **An answer, not a failure.** The viewer needs to say this and stay usable; `network:error`
+      // is for a request that could not be dispatched at all, which is the no-device case above and a
+      // different fix for the tester.
       logger.warn('airplane mode write failed:', (e as Error).message)
       this.sendMsg({
         type: 'network:state', sessionId, requestId,
-        payload: { offline: before.offline, available: false, reason: 'unsupported-device' },
+        payload: { offline: before.offline, available: false, reason: 'state-unconfirmed' },
       })
       return
     }
 
-    // `result.offline` is what the wrapper **observed**, never what was asked for — the write
-    // happens before the confirmation, so a state it could not confirm is still more likely to be
-    // the requested one than the old one. Reporting the old value here is how an offline device
-    // gets rendered as online, which is the failure this whole feature exists to avoid.
+    // `result.offline` is what the wrapper saw where it could see anything, and the requested value
+    // where the read-back failed — never the value this agent held before the write. The write
+    // happens before the confirmation, so a state it could not confirm is still more likely to be the
+    // requested one than the old one. Reporting the old value here is how an offline device gets
+    // rendered as online, which is the failure this whole feature exists to avoid. **Which of those
+    // two an unconfirmed result is, is the whole discriminator** — see `classifyWrite`.
     // Remember it for the same reason the boot path hands its read to the report: a later re-join
     // whose own read fails falls back to this, and the write path is the freshest truth there is.
     // Only a **confirmed** result counts — an unconfirmed one is already a guess, and standing one
@@ -1252,9 +1296,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
 
     this.sendMsg({
       type: 'network:state', sessionId, requestId,
-      payload: result.confirmed
-        ? { offline: result.offline, available: true }
-        : { offline: result.offline, available: false, reason: 'unsupported-device' },
+      payload: this.classifyWrite(result, offline),
     })
   }
 
@@ -1270,14 +1312,20 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     const sessionId = this.deviceStates.keys().next().value
     const serial = sessionId ? this.serialFor(sessionId) : undefined
     if (!serial) throw new PlatformError('No booted device')
-    const before = await this.readNetworkState(serial)
+    // Same fallback as the WS path, for the reason recorded there.
+    const state = this.deviceStates.get(sessionId!)
+    const before = await this.readNetworkState(serial, state?.lastNetworkOffline)
+    if (state && before.available) state.lastNetworkOffline = before.offline
     try {
-      const r = await this.adb.setAirplaneMode(serial, offline)
-      return r.confirmed
-        ? { offline: r.offline, available: true }
-        : { offline: r.offline, available: false, reason: 'unsupported-device' }
+      const result = await this.adb.setAirplaneMode(serial, offline)
+      // **And it remembers, which this path did not.** The WS path has always stored the confirmed
+      // value, so a caller that toggled through MCP and then lost the device read `false` from a
+      // memory nothing had written — the fallback above had nothing to fall back to. Only a confirmed
+      // result counts, for the reason the WS path gives: an unconfirmed one is already a guess.
+      if (state && result.confirmed) state.lastNetworkOffline = result.offline
+      return this.classifyWrite(result, offline)
     } catch {
-      return { offline: before.offline, available: false, reason: 'unsupported-device' }
+      return { offline: before.offline, available: false, reason: 'state-unconfirmed' }
     }
   }
 
@@ -1285,7 +1333,16 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     const sessionId = this.deviceStates.keys().next().value
     const serial = sessionId ? this.serialFor(sessionId) : undefined
     if (!serial) throw new PlatformError('No booted device')
-    return this.readNetworkState(serial)
+    const known = this.deviceStates.get(sessionId!)?.lastNetworkOffline
+    const state = await this.readNetworkState(serial, known)
+    // **`false` is not "unknown", it is "on the network".** A device nobody has ever observed, whose
+    // read has now failed, has no position to report — and answering `offline: false` there claims the
+    // one direction that hides the problem, which is what the WS report path stays silent about
+    // rather than say. A function has to answer, so it answers with the failure.
+    if (!state.available && known === undefined) {
+      throw new PlatformError('Cannot read the network state, and this device has never been observed')
+    }
+    return state
   }
 
   private async handleDeviceShutdown(sessionId: string, avdId: string, requestId?: string): Promise<void> {
