@@ -8,7 +8,7 @@ vi.mock('@clack/prompts', () => ({ confirm: vi.fn(), text: vi.fn(), isCancel: vi
 vi.mock('@tapflowio/ios-agent', () => ({ isAudioSupported: vi.fn(() => false), requestAudioPermission: vi.fn() }))
 
 import { execFileSync, execSync, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { accessSync, chmodSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { confirm } from '@clack/prompts'
 import { join } from 'node:path'
@@ -22,6 +22,7 @@ const mockExistsSync = vi.mocked(existsSync)
 const mockChmodSync = vi.mocked(chmodSync)
 const mockReaddirSync = vi.mocked(readdirSync)
 const mockStatSync = vi.mocked(statSync)
+const mockAccessSync = vi.mocked(accessSync)
 const mockConfirm = vi.mocked(confirm)
 
 /** `setup` gates every install on an interactive terminal; under vitest `isTTY` is neither. */
@@ -354,6 +355,59 @@ describe('net filter — a version nobody can read', () => {
     const [, version] = await netFilterChecks()
     expect(version?.detail).toMatch(/Upgrade this checkout/)
     expect(version?.detail, 'it recommended the command that refuses').not.toMatch(/migrate net-filter/)
+  })
+})
+
+describe('doctor — the injected library', () => {
+  onMac()
+  beforeEach(() => { vi.resetAllMocks() })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  const hookCheck = async () => {
+    portIsFree()
+    const r = await runDoctorChecks('ios')
+    return (r.ios ?? []).find((c) => c.label === 'Network hook')
+  }
+
+  it('reports it, which nothing did before — the other half of the same feature had five checks', async () => {
+    machine({})
+    mockExistsSync.mockImplementation((p) => {
+      const s = String(p)
+      if (s.endsWith('libtapflow-nethook.dylib')) return true
+      if (s === '/Applications/Xcode.app') return true
+      return s.includes('TapflowNetFilter.app')
+    })
+    mockAccessSync.mockReturnValue(undefined as never)
+    expect(await hookCheck()).toMatchObject({ label: 'Network hook', ok: true })
+  })
+
+  it('warns rather than fails when it is gone, and says what restores it', async () => {
+    machine({})
+    mockExistsSync.mockImplementation((p) => {
+      const s = String(p)
+      if (s.endsWith('libtapflow-nethook.dylib')) return false
+      if (s === '/Applications/Xcode.app') return true
+      return s.includes('TapflowNetFilter.app')
+    })
+    const check = await hookCheck()
+    // Warn, not fail: a session works without it and only iOS network control does not — the same
+    // grading the filter's own checks carry.
+    expect(check).toMatchObject({ ok: false, warn: true })
+    expect(check?.detail).toMatch(/Reinstalling tapflow/)
+  })
+
+  it('separates present-but-unreadable from absent, because they are different repairs', async () => {
+    machine({})
+    mockExistsSync.mockImplementation((p) => {
+      const s = String(p)
+      if (s.endsWith('libtapflow-nethook.dylib')) return true
+      if (s === '/Applications/Xcode.app') return true
+      return s.includes('TapflowNetFilter.app')
+    })
+    mockAccessSync.mockImplementation(() => { throw new Error('EACCES') })
+    const check = await hookCheck()
+    expect(check).toMatchObject({ ok: false, warn: true })
+    expect(check?.detail, 'an unreadable file reported as a missing one').toMatch(/cannot be read/)
   })
 })
 

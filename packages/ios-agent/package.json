@@ -57,7 +57,8 @@
     "build": "tsc -b",
     "typecheck": "tsc -b && tsc -p src/__tests__/tsconfig.json",
     "test": "vitest run",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "build:nethook": "./build-nethook.sh"
   },
   "dependencies": {
     "@tapflowio/agent-core": "workspace:*",

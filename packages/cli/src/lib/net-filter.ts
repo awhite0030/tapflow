@@ -67,11 +67,29 @@ export function bundleVersion(appPath: string): string | null {
  * today and encode where the entry happens to sit.
  */
 export function shippedAppPath(): string | null {
+  return shippedArtifact('TapflowNetFilter.app')
+}
+
+/**
+ * The injected library — the offline toggle's **second** layer, and the one nothing reported on.
+ *
+ * It is not a second copy of the filter's problem. The filter is installed onto the Mac and can be
+ * absent, stale or unapproved; this one only ever lives inside the package, so it is either there or
+ * the install is damaged. What made it worth a check is the failure it produces when it is not:
+ * `DYLD_INSERT_LIBRARIES` naming a path that does not exist is **ignored silently** by dyld, the app
+ * launches with no hooks, no verdict is ever written, and the tester is told to restart the device —
+ * forever, by a device whose restart cannot help.
+ */
+export function shippedHookPath(): string | null {
+  return shippedArtifact('libtapflow-nethook.dylib')
+}
+
+function shippedArtifact(name: string): string | null {
   try {
     const require = createRequire(import.meta.url)
     const pkg = require.resolve('@tapflowio/ios-agent/package.json')
-    const app = join(dirname(pkg), 'bin', 'TapflowNetFilter.app')
-    return existsSync(app) ? app : null
+    const p = join(dirname(pkg), 'bin', name)
+    return existsSync(p) ? p : null
   } catch {
     return null
   }

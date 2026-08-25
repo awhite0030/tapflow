@@ -37,7 +37,7 @@ tapflow doctor android
 Checks (a device/AVD only needs to *exist* — booting is on-demand via the relay):
 
 - **Common**: Node.js version
-- **iOS** (macOS only): Xcode, `xcrun simctl`, an available simulator, and the network filter
+- **iOS** (macOS only): Xcode, `xcrun simctl`, an available simulator, the network filter, and the network hook
 - **Android**: Android SDK, adb, AVD
 
 The network filter is reported as two checks, because they fail for different reasons: whether it is
@@ -46,6 +46,11 @@ carries. The second is not implied by the first — replacing an extension only 
 restarts, so the app on disk can be current while the old one is still doing the filtering. Both are
 warnings rather than failures: a session works without the filter, and only iOS network control does
 not. See [Network Control](/guide/network-control).
+
+The network hook is the library tapflow injects to tell an app it is offline. It comes with tapflow,
+so a missing one means the install is damaged and reinstalling restores it. It is reported separately
+because its absence is otherwise silent: macOS ignores an injection path that does not exist without a
+word, so the app launches unhooked and all the screen says is to restart the device.
 
 Use `--json` for machine-readable output. Exits with code `1` if any check fails.
 

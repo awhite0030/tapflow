@@ -420,6 +420,17 @@ export class SimulatorNetwork {
     if (filter === 'lost') return { offline, available: false, reason: 'enforcement-lost' }
     if (filter === 'unavailable') return { offline, available: false, reason: 'filter-unavailable' }
 
+    // **Layer 2 cannot work at all if the library is not on disk**, and that is the quietest failure
+    // in the feature: `DYLD_INSERT_LIBRARIES` naming a path that does not exist is ignored by dyld
+    // without a word, so the app launches unhooked, no verdict is ever written, and the branch below
+    // reports `not-armed` — "restart the device" — about a device that answers the same after every
+    // restart there is.
+    //
+    // Read rather than remembered, unlike layer 1 above. Layer 1 is a question this synchronous
+    // method cannot put to the provider; this one is a `stat`, and a `node_modules` emptied under a
+    // running agent is an ordinary thing to happen.
+    if (!existsSync(this.dylib)) return { offline, available: false, reason: 'hooks-not-installed' }
+
     const verdict = this.readVerdict(udid)
 
     // The three answers differ by what the tester has to do, which is what the reason set is for.
@@ -439,10 +450,10 @@ export class SimulatorNetwork {
     // land there almost every time — the library writes the file *because* an app is running, so
     // `armed` is true — and `awaiting-app` is the one member drawn with a healthy control and "launch
     // an app", which hands a normal-looking toggle to a device nobody can vouch for. And not
-    // `not-armed`, which the plan chose and a review overturned: its sentence is "restart the device",
-    // and the dominant cause here is a read landing inside a write that has already finished by the
-    // time the sentence renders. Rebooting a simulator mid-session destroys the app state under test,
-    // to fix nothing. `state-unconfirmed` says "could not confirm — try again", and looking again is
+    // `not-armed`, whose sentence is "restart the device". Rebooting a simulator mid-session destroys
+    // the app state under test, and none of the causes left here is fixed by it — a verdict from an
+    // older dylib is replaced by the app's next launch, and a shape this reader cannot parse is not a
+    // property of the boot. `state-unconfirmed` says "could not confirm — try again", and looking again is
     // exactly the remedy.
     if (verdict === 'unreadable') return { offline, available: false, reason: 'state-unconfirmed' }
     return { offline, available: true }
@@ -725,8 +736,11 @@ export class SimulatorNetwork {
    * its hooks did not take, which no amount of relaunching will change.
    *
    * Unreadable is neither, and folding it into `failed` was this reader claiming evidence it does not
-   * have: the library writes this file non-atomically (#653), so a truncated one is a read that landed
-   * mid-write and says nothing about the hooks. Unlike the other two it is **not** resolved against
+   * have: a file this reader cannot parse says nothing about whether the hooks took. **The library
+   * now writes it with `rename` and no longer produces torn ones (#653)**, which removes the cause
+   * that was reachable on a healthy session — not the member. A simulator still running an app that
+   * was launched by an older dylib writes the old way, and a file whose shape this reader does not
+   * recognise is unreadable however it got there. Unlike the other two it is **not** resolved against
    * `armed` — see `state` for why that would be worse than the problem.
    */
   private verdictPath(udid: string): string {
@@ -745,9 +759,9 @@ export class SimulatorNetwork {
       // That is the same overclaim this branch was split out to remove, one case over.
       return raw.installed === false ? 'failed' : 'unreadable'
     } catch {
-      // A file caught mid-write, or one whose shape says nothing — the library writes it
-      // non-atomically (#653), so a read can land inside the write. Says nothing about the hooks
-      // either way, which is the whole reason it is not `failed`.
+      // A file whose shape says nothing, or one written by a dylib from before the write became
+      // atomic (#653). Says nothing about the hooks either way, which is the whole reason it is not
+      // `failed`.
       return 'unreadable'
     }
   }

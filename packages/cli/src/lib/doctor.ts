@@ -1,9 +1,9 @@
 import { execSync, spawnSync } from 'node:child_process'
-import { existsSync, readdirSync } from 'node:fs'
+import { accessSync, constants, existsSync, readdirSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { isNewer, readNetFilterState } from './net-filter.js'
+import { isNewer, readNetFilterState, shippedHookPath } from './net-filter.js'
 
 /**
  * How long any one probe may take before `doctor` treats it as unanswerable.
@@ -57,9 +57,10 @@ function buildIosChecks(isMac: boolean): DoctorCheck[] {
         detail: 'Install Xcode from https://developer.apple.com/xcode/ or the Mac App Store. Or run: tapflow setup ios',
       },
       ...buildNetFilterChecks(),
+      checkNetworkHook(),
     ]
   }
-  return [checkXcode(), checkSimctl(), checkBootedSimulator(), ...buildNetFilterChecks()]
+  return [checkXcode(), checkSimctl(), checkBootedSimulator(), ...buildNetFilterChecks(), checkNetworkHook()]
 }
 
 /**
@@ -74,6 +75,40 @@ function buildIosChecks(isMac: boolean): DoctorCheck[] {
  * Everything here is `warn`, never `fail`. A session works without the filter; only iOS network
  * control does not.
  */
+/**
+ * The other half of iOS network control, and until now nothing looked at it.
+ *
+ * The filter cuts the traffic; this library is what tells the app it is offline. Losing it produces
+ * the worst-shaped failure in the feature — dyld ignores a `DYLD_INSERT_LIBRARIES` path that is not
+ * there without a word, so the app runs unhooked, the agent never receives a verdict, and the control
+ * says "restart the device" about a device that will say the same thing after restarting.
+ *
+ * A warning rather than a failure, matching the filter's checks: a session works without it and only
+ * iOS network control does not.
+ */
+function checkNetworkHook(): DoctorCheck {
+  const hook = shippedHookPath()
+  if (hook === null) {
+    return {
+      label: 'Network hook',
+      ok: false,
+      warn: true,
+      detail: 'Missing from this tapflow install. An app cannot be told it is offline without it, so iOS network control stays off. Reinstalling tapflow restores it.',
+    }
+  }
+  try {
+    accessSync(hook, constants.R_OK)
+  } catch {
+    return {
+      label: 'Network hook',
+      ok: false,
+      warn: true,
+      detail: `Found at ${hook} but cannot be read, so it cannot be injected. Reinstalling tapflow restores it.`,
+    }
+  }
+  return { label: 'Network hook', ok: true }
+}
+
 function buildNetFilterChecks(): DoctorCheck[] {
   const s = readNetFilterState()
 
