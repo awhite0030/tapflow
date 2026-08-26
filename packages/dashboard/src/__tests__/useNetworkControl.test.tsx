@@ -413,7 +413,10 @@ describe('useNetworkControl', () => {
 
     view.rerender({ sessionId: 's1', deviceReady: false })
     expect(errors, 'the abandoned request ended silently').toHaveLength(1)
-    expect(errors[0]).toMatch(/restarted before it answered/i)
+    expect(errors[0]).toMatch(/became unavailable before it answered/i)
+    // No cause: `deviceReady` drops on a boot, on the agent going away and on a rebind, and only the
+    // first is a restart. Naming one would be wrong two times out of three.
+    expect(errors[0], 'it named a cause it cannot know').not.toMatch(/restart/i)
   })
 
   it('says nothing when there was no request to abandon', () => {

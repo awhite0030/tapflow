@@ -139,13 +139,21 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
     // An in-flight request cannot be answered by a device that is rebooting, and leaving `pending`
     // set would disable the control for as long as the boot takes.
     //
-    // **And it is said out loud, because this is the one ending that was silent.** Every other
-    // terminal path for a click announces itself — a dispatch failure through `network:error`, an
-    // unanswered request through the deadline below — while this one cleared the wait and, once the
-    // late answer started being dropped, took away even the repositioning that used to stand in for
-    // an outcome. A screen-reader user heard the busy state and then nothing at all.
+    // **And it is said out loud, because this ending happens *to* the tester.** A dispatch failure
+    // announces itself through `network:error` and an unanswered request through the deadline below;
+    // this one cleared the wait in silence, and once the late answer started being dropped it took
+    // away even the repositioning that used to stand in for an outcome. The busy state stopped and a
+    // screen-reader user heard nothing about the change they asked for.
+    //
+    // The `sessionId` reset above stays silent on purpose, and is the one other path that does: that
+    // is the tester navigating away themselves, to a screen where the device this concerns is no
+    // longer shown. A toast about it would have to name a device they have left.
+    //
+    // **No cause is named**, because three different things drop readiness — `device:booting`,
+    // `session:agent-away` and `session:rebound` — and only the first is a restart. Saying so would
+    // put a wrong reason in front of the tester two times out of three.
     if (requestId.current) {
-      onErrorRef.current?.('The device restarted before it answered. Its network state is unchanged as far as tapflow can tell.')
+      onErrorRef.current?.('The device became unavailable before it answered. Its network state is unchanged as far as tapflow can tell.')
     }
     setPending(false)
     requestId.current = null
