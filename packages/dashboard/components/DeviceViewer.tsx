@@ -611,7 +611,14 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     // in unmounts the moment the chrome arrives, so focus would fall to `document.body` at the end of
     // the boot instead of the start of it — the same defect, one step further along.
     if (regainedViewer && parkedFocus.current) {
+      // Cleared whether or not the focus moves: the parking is spent either way, and leaving it set
+      // would let a later, unrelated boot cycle claim focus on the strength of this restart.
       parkedFocus.current = false;
+      // **The body check belongs on this side too**, which the comment above once claimed and the
+      // code did not do. A tester can Tab out of the booting region while the device comes back —
+      // to the status card, the header, anywhere — and pulling focus off what they chose is the
+      // defect this whole effect exists to avoid, aimed the other way.
+      if (document.activeElement !== document.body) return;
       viewerRootRef.current?.focus();
     }
   }, [iosChrome, androidChrome]);
@@ -645,7 +652,10 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
         tabIndex={-1}
         role="region"
         aria-label="Device"
-        aria-busy={!deviceReady}
+        // **Not `!deviceReady` alone.** That flag never comes back after `device:boot-error`, so a
+        // failed boot went on claiming to be in progress for the rest of the session — and a busy
+        // ancestor can hold back the status sentence below, which is the one thing saying it failed.
+        aria-busy={!deviceReady && !bootError}
         className="flex items-start justify-center gap-16"
       >
         {/* toolbar placeholder */}

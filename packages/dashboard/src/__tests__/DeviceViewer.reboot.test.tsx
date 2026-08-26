@@ -173,6 +173,46 @@ describe('DeviceViewer — reboot wiring', () => {
     expect(document.activeElement, 'the first boot pulled focus into the viewer').toBe(document.body)
   })
 
+  it('leaves focus where the tester put it while the device came back', async () => {
+    // **The guard a comment claimed before the code did it.** A restart takes 30-60s and a tester can
+    // Tab out of the booting region in that time — to the header, to anything this harness does not
+    // render, which is why the stand-in is appended here. Pulling focus off what they chose is the
+    // same defect this effect exists to avoid, aimed the other way.
+    const elsewhere = document.createElement('button')
+    document.body.appendChild(elsewhere)
+    try {
+      live()
+      await confirmRestart()
+      const id = shutdowns()[0].requestId
+      act(() => { deliver!({ type: 'device:shutdown-done', sessionId: 'mine', requestId: id, payload: { deviceId: 'dev-1' } }) })
+      act(() => { deliver!({ type: 'device:booting', sessionId: 'mine' }) })
+      act(() => { elsewhere.focus() })
+
+      act(() => { deliver!({ type: 'device:ready', sessionId: 'mine', payload: { deviceId: 'dev-1' } }) })
+      act(() => { deliver!({ type: 'session:chrome', sessionId: 'mine', payload: CHROME }) })
+      expect(document.activeElement, 'the returning device took focus off what the tester chose').toBe(elsewhere)
+    } finally {
+      elsewhere.remove()
+    }
+  })
+
+  it('stops calling a failed boot busy', async () => {
+    // `deviceReady` never comes back after `device:boot-error`, so `aria-busy` derived from it alone
+    // claimed a boot in progress for the rest of the session — over a device that had given up, and
+    // above the live region carrying the sentence that says so.
+    live()
+    await confirmRestart()
+    const id = shutdowns()[0].requestId
+    act(() => { deliver!({ type: 'device:shutdown-done', sessionId: 'mine', requestId: id, payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:booting', sessionId: 'mine' }) })
+    const region = () => screen.getByRole('region', { name: 'Device' })
+    expect(region().getAttribute('aria-busy'), 'a boot in flight did not read as busy').toBe('true')
+
+    const bootId = boots().at(-1)!.requestId
+    act(() => { deliver!({ type: 'device:boot-error', sessionId: 'mine', requestId: bootId, message: 'no such device' }) })
+    expect(region().getAttribute('aria-busy'), 'a boot that failed still claimed to be running').toBe('false')
+  })
+
   it('leaves the join and the rebind booting the way they did', () => {
     // The reboot made `sendBoot` the single place a boot is sent, and the join is one of the two
     // callers it replaced. Its reset is the one thing the callers disagree on and the disagreement is
