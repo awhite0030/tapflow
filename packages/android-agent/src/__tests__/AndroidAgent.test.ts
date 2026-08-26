@@ -771,7 +771,8 @@ describe('AndroidAgent', () => {
 
     // ── the capability path answers the same question, so it must give the same answer ────────
     //
-    // `setNetworkOffline` and `networkState` are what `mcp-server` and `flow-runner` call. They had
+    // `setNetworkOffline` and `networkState` are the in-process capability, not what `mcp-server`
+    // or `flow-runner` call — those address a session over the wire (#617). They had
     // **no test at all**, which is how the doc on `setNetworkOffline` came to record that the two
     // paths "must not disagree… and this one drifted first". A narrowed `unsupported-device` makes a
     // repeat worse than the drift it describes: a caller reading it as permanent would be told a

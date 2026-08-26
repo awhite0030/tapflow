@@ -2470,7 +2470,7 @@ describe('IOSAgent', () => {
     })
 
     it('resolves the capability entry points against simctl when the cache says nothing is up', async () => {
-      // `setNetworkOffline`/`networkState` are the MCP path — no session id, so they have to *find*
+      // `setNetworkOffline`/`networkState` are the in-process path — no session id, so they *find*
       // the device. They read `booted`, which `initDeviceStates` clears on every reconnect, so after
       // a relay restart they refused a simulator that was still running. The wire path is rescued by
       // `deviceFor`; these two have no equivalent and stayed broken until something else happened to

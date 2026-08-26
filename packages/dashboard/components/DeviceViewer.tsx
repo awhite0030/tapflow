@@ -107,7 +107,12 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const appInstallIdsRef = useRef<Set<string>>(new Set());
   const appLaunchIdsRef = useRef<Set<string>>(new Set());
   const [swKeyboardVisible, setSwKeyboardVisible] = useState(false);
+  /** The same length `useNetworkControl` gives its own request, and for the same reason: an
+   *  uncorrelated request whose only answer may never come. */
+  const KEYBOARD_REQUEST_DEADLINE_MS = 8_000;
   const [swKeyboardPending, setSwKeyboardPending] = useState(false);
+  const kbdDeadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (kbdDeadlineRef.current) clearTimeout(kbdDeadlineRef.current); }, []);
 
   // Active viewer registers its binary frame decoder here.
   // SimulatorViewer routes incoming binary frames to whichever viewer is mounted.
@@ -223,6 +228,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       setBootError(null);
       setLaunching(false);
       setSwKeyboardPending(false);
+      if (kbdDeadlineRef.current) clearTimeout(kbdDeadlineRef.current);
       setSwKeyboardVisible(false);
       envelopeQueueRef.current = [];
       setAgentCapabilities(msg.capabilities);
@@ -403,6 +409,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       const { visible } = msg.payload;
       setSwKeyboardVisible(visible);
       setSwKeyboardPending(false);
+      if (kbdDeadlineRef.current) clearTimeout(kbdDeadlineRef.current);
     }
     if (msg.type === 'network:state' || msg.type === 'network:error') {
       networkHandlerRef.current?.(msg);
@@ -481,8 +488,28 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const iosChrome = chrome !== null && 'framePng' in chrome ? chrome as ChromeData : null;
   const androidChrome = chrome !== null && !('framePng' in chrome) ? chrome as AndroidChrome : null;
 
+  /**
+   * **The toggle gets a budget, because two agent paths answer nothing at all.**
+   *
+   * `input:keyboard:toggle` is uncorrelated and `keyboard:toggled` is the only thing that clears the
+   * wait — but `IOSAgent` drops the message when it holds no state for the session, and its
+   * `simctl` call's `.catch` logs and returns. Neither needs the agent to die, so the rebind recovery
+   * does not cover them, and the wait then lasts for the life of the mount.
+   *
+   * That was survivable while the button only greyed itself out: it made no claim. It now says
+   * "changing it" in its name, in a live region and with a spinner, so an unanswered toggle states
+   * something false to a screen-reader user indefinitely. `useNetworkControl` reached the same shape
+   * first and this is its deadline, at the same length.
+   */
   const onKbdToggle = () => {
     setSwKeyboardPending(true);
+    if (kbdDeadlineRef.current) clearTimeout(kbdDeadlineRef.current);
+    kbdDeadlineRef.current = setTimeout(() => {
+      // Only the wait is cleared. Where the keyboard actually is, is unknown — and `swKeyboardVisible`
+      // already holds the last value the device confirmed, which is the honest answer.
+      setSwKeyboardPending(false);
+      toast.error('The device did not answer. The software keyboard is where it was, as far as tapflow can tell.');
+    }, KEYBOARD_REQUEST_DEADLINE_MS);
     send({ type: 'input:keyboard:toggle', sessionId });
   };
 
