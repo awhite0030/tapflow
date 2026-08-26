@@ -125,7 +125,18 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
     lastReason.current = undefined
     setPending(false)
     requestId.current = null
-    everReady.current = false
+    // **The initial value, which is `deviceReady` — not `false`.** This effect exists to put the hook
+    // back where it starts for a new session, and where it starts is the ref's own initialiser.
+    //
+    // Hardcoding `false` was wrong for the one switch that does not pass through an unready device:
+    // session A ready → session B ready leaves `deviceReady` true throughout, so the readiness effect
+    // below — keyed on `deviceReady` — never runs and never raises the flag again. B then loses its
+    // device and gets `waiting`, whose deadline is gated on readiness and so does not arm: "Checking
+    // the network state." with nothing checking and nothing to end it.
+    //
+    // Read through `readyRef` so this stays keyed on `sessionId` alone. Its own effect is declared
+    // above and runs first in the same flush, so it already holds this render's value.
+    everReady.current = readyRef.current
     // A new session cannot receive the previous one's answers, so the set does not carry over. It
     // grows by at most one per readiness drop that catches a request in flight; this bounds it.
     abandoned.current.clear()
@@ -160,6 +171,15 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
     // `unknown` renders as "No network state has been reported", which is true and promises no
     // ending. Only for a device that has been here: before the first one, `waiting` is still right.
     setPosition(everReady.current ? 'unknown' : 'waiting')
+    // **`steerable` is a claim about the device as much as the position is**, and it was the one this
+    // reset kept. A last report of `available: false` left the control disabled with `reason` cleared
+    // out from under it — the reason exists to explain that disabling, so what remained was a dead
+    // button with nothing to say. And `session:rebound` can put a different device on the other side
+    // of this, which the retained answer would be describing.
+    //
+    // Back to `true`, matching the `sessionId` reset and the initial state: `waiting` with the control
+    // live is where every session already begins, before any device has reported.
+    setSteerable(true)
     setReason(undefined)
     lastReason.current = undefined
     // An in-flight request cannot be answered by a device that is rebooting, and leaving `pending`

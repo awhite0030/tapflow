@@ -446,6 +446,37 @@ describe('useNetworkControl', () => {
     expect(view.result.current.position, 'the previous session\'s device leaked into this one').toBe('waiting')
   })
 
+  it('remembers a device across a switch between two sessions that both have one', () => {
+    // **The one switch that never passes through an unready device.** The test above changes the id
+    // and the readiness together, which is what a switch usually looks like; this is the switch where
+    // `deviceReady` stays `true` the whole way, so the readiness effect never reruns and the session
+    // reset is the only thing that touches the memory.
+    //
+    // Getting it wrong here is not a cosmetic difference. `waiting` draws "Checking the network
+    // state." and its deadline is gated on readiness, so with the device gone nothing arms and
+    // nothing ends the claim — the exact forever-pulse this hook was changed to remove.
+    const { view } = setup()
+    view.rerender({ sessionId: 's2', deviceReady: true })
+    view.rerender({ sessionId: 's2', deviceReady: false })
+    expect(view.result.current.position, 'a device that had been here read as one that never was')
+      .toBe('unknown')
+  })
+
+  it('stops claiming the device cannot be steered once it is gone', () => {
+    // `steerable` is a claim about the device, like the position, and the readiness reset dropped
+    // every other one. Left behind it disabled the control while `reason` — the thing that explains
+    // the disabling — was cleared in the same breath, so what stayed on screen was a dead button with
+    // nothing to say. A `session:rebound` can also put a different device on the far side of this.
+    const { view, report } = setup()
+    report(unsteerable(false))
+    expect(view.result.current.steerable).toBe(false)
+
+    view.rerender({ sessionId: 's1', deviceReady: false })
+    expect(view.result.current.steerable, 'the departed device still said it could not be steered')
+      .toBe(true)
+    expect(view.result.current.reason).toBeUndefined()
+  })
+
   it('still waits, rather than reporting unknown, before the session has ever had a device', () => {
     // The other half of the same distinction. A session with no device yet has nothing to report and
     // nobody has asked, so calling that silence unreadable is a verdict on a question nobody put.
