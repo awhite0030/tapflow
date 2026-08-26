@@ -484,7 +484,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
           return;
       }
     }
-  }, [sessionId, deviceId, buildId, onSessionEnded, resetMode, installed, agentAway, sendBoot]);
+  }, [sessionId, buildId, onSessionEnded, resetMode, installed, agentAway, sendBoot]);
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {
     const envelope = parseEnvelopeHeader(data);
@@ -571,6 +571,34 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     onError: useCallback((message: string) => { toast.error(message); }, []),
   });
 
+  /**
+   * **Where focus goes when the toolbar unmounts itself.**
+   *
+   * The restart is the only control here that destroys the thing it was pressed from: its boot sends
+   * `device:booting`, which sets `chrome` to null, which unmounts the viewer and the toolbar inside
+   * it. Focus then falls to `document.body` and a keyboard user is dropped out of the interface they
+   * just acted from — with nothing named to tell them the device is coming back.
+   *
+   * **Only when a viewer was there and is now gone.** This branch also renders on the very first
+   * boot, where nobody has focused anything and taking focus would be the opposite defect: a page
+   * that grabs the caret on load. `document.activeElement === document.body` does not separate the
+   * two on its own — it is true on a fresh render as well — which is what the transition ref is for.
+   * Measured: with the body test alone, the first-boot case took focus.
+   */
+  const bootingRegionRef = useRef<HTMLDivElement | null>(null);
+  const hadViewer = useRef(false);
+  useEffect(() => {
+    const hasViewer = Boolean(iosChrome ?? androidChrome);
+    const lostViewer = hadViewer.current && !hasViewer;
+    hadViewer.current = hasViewer;
+    if (!lostViewer) return;
+    const node = bootingRegionRef.current;
+    // Still the body check as well: the tester may have clicked somewhere outside the viewer while
+    // it was going down, and moving focus off what they chose is its own way of losing their place.
+    if (!node || document.activeElement !== document.body) return;
+    node.focus();
+  }, [iosChrome, androidChrome]);
+
   const commonProps = {
     sessionId, buildId, send, openUrl, launchApp, connected, joined,
     deviceReady, installing, installed, installError, bootError,
@@ -588,7 +616,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // Before chrome arrives, show a phone skeleton + status card so the layout isn't empty
   if (!iosChrome && !androidChrome) {
     return (
-      <div className="flex items-start justify-center gap-16">
+      <div ref={bootingRegionRef} tabIndex={-1} aria-label="The device is starting up" className="flex items-start justify-center gap-16 outline-none">
         {/* toolbar placeholder */}
         <div className="flex flex-col items-center gap-0.5 rounded-2xl border bg-background/90 px-1.5 py-2.5 shrink-0 mt-3 opacity-40">
           {Array.from({ length: 5 }).map((_, i) => (

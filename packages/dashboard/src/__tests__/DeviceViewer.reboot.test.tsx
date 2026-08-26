@@ -120,6 +120,32 @@ describe('DeviceViewer — reboot wiring', () => {
     expect(toast.error.mock.calls[0][0]).toContain('agent offline')
   })
 
+  it('catches focus when the restart unmounts the toolbar it was pressed from', async () => {
+    // **The restart is the only control that destroys its own toolbar.** Its boot sends
+    // `device:booting`, that clears the chrome, and the viewer holding the button goes with it — so a
+    // keyboard user is left on `document.body` with nothing named saying the device is coming back.
+    live()
+    await confirmRestart()
+    const id = shutdowns()[0].requestId
+    act(() => { deliver!({ type: 'device:shutdown-done', sessionId: 'mine', requestId: id, payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:booting', sessionId: 'mine' }) })
+
+    expect(screen.queryByRole('button', { name: 'Restart the device' }), 'the toolbar survived the reboot')
+      .toBeNull()
+    expect(document.activeElement, 'focus was dropped on the body')
+      .toBe(screen.getByLabelText('The device is starting up'))
+  })
+
+  it('does not take focus on a first boot nobody asked for', async () => {
+    // **The control for the test above**, and the opposite defect: this branch also renders before the
+    // first device arrives, where taking focus is a page grabbing the caret on load. Without it, the
+    // assertion above passes on a viewer that focuses this region unconditionally.
+    render(<DeviceViewer sessionId="fresh" deviceId="dev-1" />)
+    act(() => { deliver!({ type: 'session:joined', sessionId: 'fresh', capabilities: [] }) })
+    expect(screen.getByLabelText('The device is starting up'), 'the booting region is not rendered').toBeTruthy()
+    expect(document.activeElement, 'the first boot stole focus').toBe(document.body)
+  })
+
   it('leaves the join and the rebind booting the way they did', () => {
     // The reboot made `sendBoot` the single place a boot is sent, and the join is one of the two
     // callers it replaced. Its reset is the one thing the callers disagree on and the disagreement is
