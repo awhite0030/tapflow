@@ -149,21 +149,22 @@ describe('cmdAgentStart', () => {
     expect(exitSpy).toHaveBeenCalledWith(1)
   })
 
-  // 싱글턴 배선 자체는 mock 뒤에 있어서 커버리지가 0이었다 — claim 루프를 통째로 지워도 스위트가
-  // 전부 초록이었다. 아래 셋이 거절 분기·종료 코드·이미 잡은 claim의 해제를 각각 고정한다.
-  it('이미 도는 에이전트가 있으면 거절하고 exit(1)', async () => {
+  // The singleton wiring sat behind a mock and had no coverage at all: deleting the whole claim loop
+  // left the suite green. These pin the refusal, its exit code, and the two ways a claim has to go
+  // back — a later platform refusing, and a platform that claimed and then failed to connect.
+  it('refuses and exits when an agent for that platform is already running', async () => {
     AgentRegistry.register('ios', DummyAgent as never, { canRun: () => true, connect: iosConnectSpy })
     vi.mocked(claimAgentSlot).mockResolvedValueOnce({ held: false, reason: 'in-use' })
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
 
     await expect(cmdAgentStart({ platform: 'ios' })).rejects.toThrow('process.exit')
     expect(exitSpy).toHaveBeenCalledWith(1)
-    // 거절이면 연결은 시도하지 않는다 — 두 번째 에이전트가 릴레이에 등록해 첫 번째의 소켓을
-    // evict하는 것이 애초에 막으려는 일이다.
-    expect(iosConnectSpy, '거절해놓고 연결했다').not.toHaveBeenCalled()
+    // A refusal must not connect: a second agent registering is what evicts the first one's socket
+    // at the relay, which is the thing being prevented.
+    expect(iosConnectSpy, 'it refused and connected anyway').not.toHaveBeenCalled()
   })
 
-  it('뒤쪽 플랫폼이 거절되면 앞에서 잡은 claim을 놓는다', async () => {
+  it('gives back an earlier claim when a later platform is refused', async () => {
     AgentRegistry.register('ios', DummyAgent as never, { canRun: () => true, connect: iosConnectSpy })
     AgentRegistry.register('android', DummyAgent as never, { canRun: () => true, connect: androidConnectSpy })
     const release = vi.fn()
@@ -173,7 +174,25 @@ describe('cmdAgentStart', () => {
     vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
 
     await expect(cmdAgentStart({})).rejects.toThrow('process.exit')
-    expect(release, '먼저 잡은 슬롯을 쥔 채 종료했다').toHaveBeenCalledTimes(1)
+    expect(release, 'it exited still holding the slot it took first').toHaveBeenCalledTimes(1)
+  })
+
+  it('gives the claim back when the platform it was taken for fails to connect', async () => {
+    // With another platform already connected the failure is a warning and this process runs on — so
+    // a claim held for an agent that does not exist would refuse the next `agent start` for it.
+    AgentRegistry.register('ios', DummyAgent as never, { canRun: () => true, connect: iosConnectSpy })
+    AgentRegistry.register('android', DummyAgent as never, { canRun: () => true, connect: androidConnectSpy })
+    androidConnectSpy.mockRejectedValue(new Error('adb went away'))
+    const iosRelease = vi.fn()
+    const androidRelease = vi.fn()
+    vi.mocked(claimAgentSlot)
+      .mockResolvedValueOnce({ held: true, release: iosRelease })
+      .mockResolvedValueOnce({ held: true, release: androidRelease })
+
+    await cmdAgentStart({})
+
+    expect(androidRelease, 'the failed platform kept its slot').toHaveBeenCalledTimes(1)
+    expect(iosRelease, 'the connected platform lost its slot').not.toHaveBeenCalled()
   })
 
   it('connect 실패 → exit(1)', async () => {

@@ -311,9 +311,26 @@ private enum ArgError: Error { case missingValue(String), unknown(String) }
 /// Every flag this build accepts. Anything else is `badArguments`.
 private let knownFlags: Set<String> = ["--install", "--confirm", "--off", "--add", "--remove"]
 
-private func rejectUnknownFlags() throws {
-    for arg in CommandLine.arguments.dropFirst() where arg.hasPrefix("--") {
-        if !knownFlags.contains(arg) { throw ArgError.unknown(arg) }
+/**
+ * Every argument has to be one this build consumes — **including the ones that are not flags.**
+ *
+ * Checking only `--`-prefixed words left the same hole one door over: `TapflowNetFilter typo` matched
+ * no flag, so `clearAll` came out true and the run wiped the rule. A word this binary does not
+ * understand must never be the reason a rule is emptied.
+ */
+private func rejectUnknownArguments() throws {
+    var i = 1
+    let args = CommandLine.arguments
+    while i < args.count {
+        let arg = args[i]
+        if arg.hasPrefix("--") {
+            if !knownFlags.contains(arg) { throw ArgError.unknown(arg) }
+            // `--add` and `--remove` take a value; the mode flags do not.
+            if arg == "--add" || arg == "--remove" { i += 1 }
+        } else {
+            throw ArgError.unknown(arg)
+        }
+        i += 1
     }
 }
 
@@ -447,7 +464,7 @@ let add: [String]
 let remove: [String]
 let clearAll: Bool
 do {
-    try rejectUnknownFlags()
+    try rejectUnknownArguments()
     add = try parseUDIDs("--add")
     remove = try parseUDIDs("--remove")
     clearAll = !CommandLine.arguments.contains("--add") && !CommandLine.arguments.contains("--remove")

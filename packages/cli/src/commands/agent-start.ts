@@ -65,7 +65,7 @@ export async function cmdAgentStart(opts: AgentStartOptions): Promise<void> {
   }
 
   const agents: Array<{ disconnect(): void }> = []
-  const claims: Array<() => void> = []
+  const claims = new Map<string, () => void>()
 
   // **One agent per Mac, per platform, and the refusal is the feature.**
   //
@@ -83,10 +83,17 @@ export async function cmdAgentStart(opts: AgentStartOptions): Promise<void> {
         'the network filter and the device list. Stop the other one, or use the session it already',
         'serves.',
       ])
-      for (const release of claims) release()
+      for (const release of claims.values()) release()
+      if (claim.reason === 'stale-claim') {
+        banner('error', 'CLAIM LEFT BY ANOTHER ACCOUNT', [
+          `A tapflow ${platform} claim on this Mac was left by a different macOS account and`,
+          'cannot be cleared from here. Remove /tmp/tapflow-agent-' + platform + '.sock as that',
+          'user, or from an account that can.',
+        ])
+      }
       process.exit(1)
     }
-    claims.push(claim.release)
+    claims.set(platform, claim.release)
   }
 
   // ── Connect each registered platform ────────────────────────────────────
@@ -109,6 +116,11 @@ export async function cmdAgentStart(opts: AgentStartOptions): Promise<void> {
           ]
         : []
       if (agents.length > 0) {
+        // **The claim goes back when the platform it was taken for did not start.** Holding it while
+        // this process runs on for another platform makes the next `agent start --platform <this>`
+        // refuse for an agent that does not exist.
+        claims.get(platform)?.()
+        claims.delete(platform)
         console.log(`  ⚠  ${platform}: ${message}`)
       } else {
         banner('error', `${platform.toUpperCase()} CONNECTION FAILED`, [message, ...authHint])

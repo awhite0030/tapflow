@@ -1,7 +1,9 @@
 import net from 'node:net'
 import { unlinkSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+/** Machine-wide on purpose — see `claimPath`. */
+const MACHINE_DIR = '/tmp'
 
 /**
  * One agent per Mac, per platform — claimed at startup and refused rather than fought over.
@@ -26,23 +28,27 @@ import { join } from 'node:path'
  * Kept short on purpose: `sun_path` is **104 bytes** on Darwin and a longer path fails `EINVAL` at
  * `listen`, which was measured the first time this was tried from a nested temp directory.
  *
- * **`tmpdir()` is per user account on macOS, so this claim is too** — a second macOS account, or a
- * `sudo` run whose `env_reset` drops `TMPDIR`, resolves a different path and both would take the
- * slot. The resource being protected is machine-wide, so that is a gap and not a design.
+ * **`/tmp` rather than `tmpdir()`, because the resource is machine-wide and `tmpdir()` is not.**
+ * `os.tmpdir()` answers a uid-scoped directory on macOS and honours `TMPDIR`, so a second account —
+ * or a `sudo` run, whose `env_reset` drops `TMPDIR` — resolved a different path and both took the
+ * slot. That is a false *allow* over a host-wide filter, which is the direction that costs something.
  *
- * What it degrades to is today's behaviour rather than something new: the relay identifies agents by
- * `IOPlatformUUID` + platform, so a second one still collapses into the first there — noisily, at
- * registration, instead of quietly at the filter. Fixing it properly needs a machine-wide directory,
- * and the candidates each carry their own permission model (`/var/run` needs root; a world-writable
- * `/tmp` has a sticky bit that stops one account clearing another's corpse). Not decided here.
+ * `/tmp` is world-writable with the sticky bit, which trades that for a false *refuse*: one account
+ * cannot unlink another's leftover socket, so a stale claim from a different user is reported as one
+ * rather than taken over. That is rare, it is the safe direction, and it gets its own sentence
+ * instead of being reported as "already running".
  */
-export function claimPath(platform: string, dir = tmpdir()): string {
+export function claimPath(platform: string, dir = MACHINE_DIR): string {
   return join(dir, `tapflow-agent-${platform}.sock`)
 }
 
 export type ClaimResult =
   | { held: true; release: () => void }
+  /** Something is listening: an agent for this platform is running. */
   | { held: false; reason: 'in-use' }
+  /** A socket file is there, nothing answers, and this user may not remove it — another account's
+   *  leftover. Refusing is right; saying "already running" would not be. */
+  | { held: false; reason: 'stale-claim' }
 
 /**
  * Take the claim, or report that a live agent already holds it.
@@ -55,7 +61,7 @@ export type ClaimResult =
  * `ENOENT` and `ECONNREFUSED` both mean "nobody is home"; they differ only in whether a corpse was
  * left behind, and the corpse is unlinked before taking over.
  */
-export async function claimAgentSlot(platform: string, dir = tmpdir()): Promise<ClaimResult> {
+export async function claimAgentSlot(platform: string, dir = MACHINE_DIR): Promise<ClaimResult> {
   const path = claimPath(platform, dir)
   // **Bind first, and let the kernel be the one that decides.**
   //
@@ -74,7 +80,13 @@ export async function claimAgentSlot(platform: string, dir = tmpdir()): Promise<
   // A corpse: the file outlived the process that bound it. Clearing it is safe *because* nothing
   // answered, and the retry is single because a second `EADDRINUSE` means somebody won the race in
   // between — which is the correct answer, not something to keep trying past.
-  try { unlinkSync(path) } catch { /* another starter got there first */ }
+  try {
+    unlinkSync(path)
+  } catch (e) {
+    // ENOENT means another starter cleared it first, and the retry below settles who wins. EPERM is
+    // the sticky-bit case: the corpse belongs to another account and stays.
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return { held: false, reason: 'stale-claim' }
+  }
   return (await listenOn(path)) ?? { held: false, reason: 'in-use' }
 }
 
