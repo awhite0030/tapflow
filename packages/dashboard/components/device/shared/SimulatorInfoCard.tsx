@@ -127,7 +127,12 @@ export function SimulatorInfoCard(props: SimulatorInfoCardProps) {
       )}
 
       {statusText && (
-        <p className="text-[12px] text-muted-foreground leading-relaxed break-all">{statusText}</p>
+        // `role="status"`: this sentence is the only thing that says what a boot is doing, and after
+        // #628 a keyboard user is parked beside it for the whole restart. Left on the conditional
+        // wrapper rather than mounted empty — an always-present `<p>` adds a line's height to every
+        // card, and the states worth hearing (`Boot failed`, `Install failed`, the agent going away)
+        // all arrive by this element appearing.
+        <p role="status" className="text-[12px] text-muted-foreground leading-relaxed break-all">{statusText}</p>
       )}
 
       <PerformanceModeNotice open={noticeOpen} onOpenChange={handleNoticeOpenChange} />

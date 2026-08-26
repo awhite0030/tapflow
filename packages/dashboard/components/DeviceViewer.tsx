@@ -586,17 +586,34 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
    * Measured: with the body test alone, the first-boot case took focus.
    */
   const bootingRegionRef = useRef<HTMLDivElement | null>(null);
+  /** The mounted viewer's own root, so focus can be handed back when the device returns. */
+  const viewerRootRef = useRef<HTMLDivElement | null>(null);
   const hadViewer = useRef(false);
+  /** Whether *this* component moved focus, which is the only case it may move it back. */
+  const parkedFocus = useRef(false);
   useEffect(() => {
     const hasViewer = Boolean(iosChrome ?? androidChrome);
     const lostViewer = hadViewer.current && !hasViewer;
+    const regainedViewer = !hadViewer.current && hasViewer;
     hadViewer.current = hasViewer;
-    if (!lostViewer) return;
-    const node = bootingRegionRef.current;
-    // Still the body check as well: the tester may have clicked somewhere outside the viewer while
-    // it was going down, and moving focus off what they chose is its own way of losing their place.
-    if (!node || document.activeElement !== document.body) return;
-    node.focus();
+
+    // Still the body check as well, on both transitions: the tester may have clicked somewhere
+    // outside the viewer while it was going down, and moving focus off what they chose is its own
+    // way of losing their place.
+    if (lostViewer) {
+      const node = bootingRegionRef.current;
+      if (!node || document.activeElement !== document.body) return;
+      node.focus();
+      parkedFocus.current = true;
+      return;
+    }
+    // **The other half, and without it this only moves the drop later.** The region focus was parked
+    // in unmounts the moment the chrome arrives, so focus would fall to `document.body` at the end of
+    // the boot instead of the start of it — the same defect, one step further along.
+    if (regainedViewer && parkedFocus.current) {
+      parkedFocus.current = false;
+      viewerRootRef.current?.focus();
+    }
   }, [iosChrome, androidChrome]);
 
   const commonProps = {
@@ -611,12 +628,26 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     onRecordingUploaded,
     swKeyboardVisible, swKeyboardPending, onKbdToggle,
     rebootPending, onReboot: reboot,
+    viewerRootRef,
   };
 
   // Before chrome arrives, show a phone skeleton + status card so the layout isn't empty
   if (!iosChrome && !androidChrome) {
+    // **`role="region"`, because a bare `div` is `generic` and ARIA prohibits naming that role** — the
+    // name focus is meant to announce would not be exposed. The name says what this *is* rather than
+    // what is happening: a fixed "starting up" keeps asserting a recovery after a boot that failed,
+    // while the card below carries the outcome. And no `outline-none`: this is `tabIndex={-1}`, so a
+    // ring can only appear when something focused it deliberately, which is exactly the moment a
+    // sighted keyboard user needs to see where the caret went.
     return (
-      <div ref={bootingRegionRef} tabIndex={-1} aria-label="The device is starting up" className="flex items-start justify-center gap-16 outline-none">
+      <div
+        ref={bootingRegionRef}
+        tabIndex={-1}
+        role="region"
+        aria-label="Device"
+        aria-busy={!deviceReady}
+        className="flex items-start justify-center gap-16"
+      >
         {/* toolbar placeholder */}
         <div className="flex flex-col items-center gap-0.5 rounded-2xl border bg-background/90 px-1.5 py-2.5 shrink-0 mt-3 opacity-40">
           {Array.from({ length: 5 }).map((_, i) => (

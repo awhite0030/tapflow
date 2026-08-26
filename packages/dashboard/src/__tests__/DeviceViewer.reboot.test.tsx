@@ -133,7 +133,7 @@ describe('DeviceViewer — reboot wiring', () => {
     expect(screen.queryByRole('button', { name: 'Restart the device' }), 'the toolbar survived the reboot')
       .toBeNull()
     expect(document.activeElement, 'focus was dropped on the body')
-      .toBe(screen.getByLabelText('The device is starting up'))
+      .toBe(screen.getByRole('region', { name: 'Device' }))
   })
 
   it('does not take focus on a first boot nobody asked for', async () => {
@@ -142,8 +142,35 @@ describe('DeviceViewer — reboot wiring', () => {
     // assertion above passes on a viewer that focuses this region unconditionally.
     render(<DeviceViewer sessionId="fresh" deviceId="dev-1" />)
     act(() => { deliver!({ type: 'session:joined', sessionId: 'fresh', capabilities: [] }) })
-    expect(screen.getByLabelText('The device is starting up'), 'the booting region is not rendered').toBeTruthy()
+    expect(screen.getByRole('region', { name: 'Device' }), 'the booting region is not rendered').toBeTruthy()
     expect(document.activeElement, 'the first boot stole focus').toBe(document.body)
+  })
+
+  it('hands focus back to the viewer when the device returns', async () => {
+    // **Without this the fix above only moves the drop later**: the region focus was parked in
+    // unmounts when the chrome arrives, so focus would fall to `document.body` at the *end* of the
+    // boot instead of the start of it.
+    live()
+    await confirmRestart()
+    const id = shutdowns()[0].requestId
+    act(() => { deliver!({ type: 'device:shutdown-done', sessionId: 'mine', requestId: id, payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'device:booting', sessionId: 'mine' }) })
+    act(() => { deliver!({ type: 'device:ready', sessionId: 'mine', payload: { deviceId: 'dev-1' } }) })
+    act(() => { deliver!({ type: 'session:chrome', sessionId: 'mine', payload: CHROME }) })
+
+    const restart = screen.getByRole('button', { name: 'Restart the device' })
+    expect(document.activeElement, 'focus was left on the body once the device came back')
+      .not.toBe(document.body)
+    expect(document.activeElement?.contains(restart), 'focus came back outside the viewer').toBe(true)
+  })
+
+  it('does not take focus when a first boot finishes', () => {
+    // **The control for the hand-back**, and the same defect in the other direction as the first-boot
+    // test above: a viewer arriving is not on its own a reason to move the caret, only a viewer
+    // arriving *back* is. Measured — dropping the `parkedFocus` check left every other test green.
+    live()
+    expect(screen.getByRole('button', { name: 'Restart the device' }), 'the viewer never arrived').toBeTruthy()
+    expect(document.activeElement, 'the first boot pulled focus into the viewer').toBe(document.body)
   })
 
   it('leaves the join and the rebind booting the way they did', () => {

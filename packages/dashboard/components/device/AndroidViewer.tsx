@@ -55,6 +55,8 @@ interface AndroidViewerProps {
   /** Restart control (#628). Owned by `DeviceViewer`, which sequences the shutdown and the boot. */
   rebootPending: boolean;
   onReboot: () => void;
+  /** Focused when the device comes back, so a restart does not end with focus on `document.body`. */
+  viewerRootRef: MutableRefObject<HTMLDivElement | null>;
   screenWidth?: number;
   screenHeight?: number;
   /** Rounded-corner radius as a fraction of width — the emulator bakes the device's corners into
@@ -68,7 +70,7 @@ export function AndroidViewer({
   deviceReady, installing, installed, installError, bootError,
   launching, androidButtons,
   binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, networkHandlerRef, networkSupported, onRecordingUploaded,
-  rebootPending, onReboot,
+  rebootPending, onReboot, viewerRootRef,
   screenWidth, screenHeight, cornerRadius,
   perfHookRef,
 }: AndroidViewerProps) {
@@ -542,7 +544,9 @@ export function AndroidViewer({
   ) : null;
 
   return (
-    <div className="flex items-start justify-center gap-16">
+    // `tabIndex={-1}` and no outline suppression: focus only lands here when `DeviceViewer` hands
+    // it back after a restart, and that is the one moment the ring is worth seeing.
+    <div ref={viewerRootRef} tabIndex={-1} className="flex items-start justify-center gap-16">
       <canvas ref={recordCanvasRef} style={{ display: 'none' }} />
       <DeepLinkDialog open={deepLinkOpen} onOpenChange={setDeepLinkOpen} openUrl={openUrl} />
 
