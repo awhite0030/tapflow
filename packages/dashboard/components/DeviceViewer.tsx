@@ -647,16 +647,19 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     // very different scopes, and `getByLabelText('Device')` matching both. The name says what this
     // *is* rather than
     // what is happening: a fixed "starting up" keeps asserting a recovery after a boot that failed,
-    // while the card below carries the outcome. And no `outline-none`: this is `tabIndex={-1}`, so a
-    // ring can only appear when something focused it deliberately, which is exactly the moment a
-    // sighted keyboard user needs to see where the caret went.
+    // while the card below carries the outcome.
+    //
+    // The ring is `focus-visible` rather than plain focus. "No suppression, because `tabIndex={-1}`
+    // means only a deliberate focus can reach it" was the earlier reasoning and it is **false**: such
+    // an element is out of the tab order but still takes focus from a mouse, and a click on anything
+    // unfocusable inside it lands here — so every tap drew a ring around the whole thing.
     return (
       <div
         ref={bootingRegionRef}
         tabIndex={-1}
         role="region"
         aria-label="Device screen"
-        className="flex items-start justify-center gap-16"
+        className="flex items-start justify-center gap-16 outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-md"
       >
         {/* **No `aria-busy` anywhere, and the two shapes below are hidden.** Three attempts put it in
             three places and each was wrong in the same way. On this container it sat above

@@ -634,9 +634,18 @@ export function IOSViewer({
   ) : null;
 
   return (
-    // `tabIndex={-1}` and no outline suppression: focus only lands here when `DeviceViewer` hands
-    // it back after a restart, and that is the one moment the ring is worth seeing.
-    <div ref={viewerRootRef} tabIndex={-1} role="region" aria-label="Device screen" className="flex items-start justify-center gap-16">
+    // **`focus-visible`, not `focus`** — a `tabIndex={-1}` element is out of the tab order but still
+    // takes focus from a *mouse*, and a click on anything unfocusable inside it lands here. So every
+    // tap on the simulator drew a ring around the whole viewer. `focus-visible` is the browser's own
+    // answer to that: it fires for keyboard and for a programmatic focus that follows one, which is
+    // exactly the restart hand-back this element exists for, and not for a pointer.
+    <div
+      ref={viewerRootRef}
+      tabIndex={-1}
+      role="region"
+      aria-label="Device screen"
+      className="flex items-start justify-center gap-16 outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-md"
+    >
       <canvas ref={recordCanvasRef} style={{ display: 'none' }} />
 
       <DeepLinkDialog open={deepLinkOpen} onOpenChange={setDeepLinkOpen} openUrl={openUrl} />

@@ -181,6 +181,18 @@ describe('DeviceViewer — reboot wiring', () => {
     }
   })
 
+  it('rings only for a deliberate focus, not for every tap on the device', () => {
+    // **A floor, and jsdom is why**: it evaluates no CSS, so nothing here can watch a ring appear.
+    // What it can hold is that the ring is scoped to `focus-visible`. A `tabIndex={-1}` element is out
+    // of the tab order and still takes focus from a *mouse* — a click on anything unfocusable inside
+    // it lands here — so a plain `:focus` ring drew itself around the whole viewer on every tap. That
+    // shipped, and it was the user who saw it, not the suite.
+    live()
+    const region = screen.getByRole('region', { name: 'Device screen' })
+    expect(region.className, 'the ring is not scoped to focus-visible').toContain('focus-visible:ring-2')
+    expect(region.className, 'a pointer focus can still draw an outline').toContain('outline-none')
+  })
+
   it('does not take focus when a first boot finishes', () => {
     // **The control for the hand-back**, and the same defect in the other direction as the first-boot
     // test above: a viewer arriving is not on its own a reason to move the caret, only a viewer
