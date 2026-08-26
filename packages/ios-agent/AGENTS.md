@@ -584,7 +584,7 @@ other process writing it would answer for an app that never ran (since #635 no o
 activates at all: the library is delivered simulator-wide, but the gate admits one bundle id).
 
 What layer 1 is doing cannot be read there at all, and `state()` is synchronous — every re-join,
-every `device:ready`, MCP's `networkState()` — so it **remembers** the last judgment instead. Without
+every `device:ready`, every capability `networkState()` — so it **remembers** the last judgment instead. Without
 that memory one re-join repaints a Mac that cannot take devices offline as a healthy one, and the
 tester's toast is the only trace left that anything went wrong.
 

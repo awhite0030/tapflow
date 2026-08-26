@@ -375,6 +375,32 @@ describe('useNetworkControl', () => {
     expect(view.result.current.position).toBe('unknown')
   })
 
+  it('forgets the position when the device stops being ready', () => {
+    // A reboot keeps the session id, so the reset below never fired for it. The agent's boot path
+    // clears airplane mode and reports online — so an amber "offline" sat over a device being reset
+    // to the opposite, for the 30–60s the boot takes.
+    const { view, report } = setup()
+    report(steerable(true))
+    expect(view.result.current.position).toBe('offline')
+
+    view.rerender({ sessionId: 's1', deviceReady: false })
+    expect(view.result.current.position, 'the pre-reboot position survived the reboot').toBe('waiting')
+  })
+
+  it('arms the deadline again after a reboot, so a silent boot is not left saying nothing', () => {
+    // The deadline is gated on `position === 'waiting'`. Without the reset above it never re-armed
+    // after the first report, so the stale answer had nothing to replace it — permanently, unlike the
+    // silence before the first boot which at least resolves to `unknown`.
+    vi.useFakeTimers()
+    const { view, report } = setup()
+    report(steerable(true))
+    view.rerender({ sessionId: 's1', deviceReady: false })
+    view.rerender({ sessionId: 's1', deviceReady: true })
+
+    act(() => { vi.advanceTimersByTime(NETWORK_REPORT_DEADLINE_MS + 1) })
+    expect(view.result.current.position, 'the deadline did not re-arm').toBe('unknown')
+  })
+
   it('forgets the previous device when the session changes', () => {
     // `DeviceViewer` stays mounted across a session switch and drops frames addressed elsewhere, so
     // nothing would replace this — the last device's position would sit on screen describing another.

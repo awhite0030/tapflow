@@ -121,7 +121,7 @@ interface FilterStateFile {
  * What layer 1 was last found to be doing for a device, when it was not simply working.
  *
  * Absent is the healthy case. The two members exist because `state()` is synchronous — every
- * re-join, every `device:ready`, every MCP `networkState()` goes through it, and none of them can
+ * re-join, every `device:ready`, every capability `networkState()` goes through it, and none can
  * make an XPC call. Without remembering, one re-join would repaint a device that cannot be steered
  * as a healthy one, and the toast a tester was shown would be the only trace left of it.
  */
@@ -429,7 +429,7 @@ export class SimulatorNetwork {
     const offline = this.offline.has(udid)
 
     // **Layer 1 is answered first, and from memory.** This method is synchronous — `device:ready`, a
-    // viewer's re-join and MCP's `networkState()` all arrive here — so it cannot ask the provider
+    // viewer's re-join and the capability's `networkState()` all arrive here — so it cannot ask
     // anything. Deriving layer 1's health from the dylib's verdict instead would repaint a Mac that
     // cannot take devices offline as a healthy one on the next re-join, and the tester's toast would
     // be the only evidence it ever said otherwise.

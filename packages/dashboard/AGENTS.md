@@ -153,6 +153,54 @@ A persistent indicator needs a protocol-level input-health signal, or acks that 
 and arrive in order. Two tests guard the decision (`DeviceViewer.inputError.test.tsx`): `input:done`
 must do nothing, and a success between two failures must change nothing.
 
+## Where a new device button goes
+
+The device toolbar has four groups, and they are ordered by **what the tester is doing to the
+device**, not by how the feature is built:
+
+> **Navigation → Device → Capture → Environment**, and inside each group the ones reached for most
+> come first.
+
+| Group | What belongs in it | Today |
+|---|---|---|
+| **Navigation** | Move around the app or the OS. Press it and it is over. | launch, home, back, recent apps, deeplink |
+| **Device** | Leave the device in a condition that stays until somebody changes it back. | software keyboard, volume, sleep, rotate |
+| **Capture** | Take the current state out of the session. | screenshot, recording |
+| **Environment** | Change what the device is sitting in. | network on/off |
+
+**This exists so that "where does this go?" has an answer before anyone argues.** GPS mock →
+Environment. Shake → Device. Log download → Capture. A deeplink is Navigation and not a tool,
+because from the tester's side it is "go to this screen" rather than "type a URL".
+
+Sticky beats momentary when a button could be read either way — the keyboard is Device, not
+Navigation, because a keyboard left up stays up. That is the same reasoning `networkLook` in
+`SimulatorToolbar.tsx` gives for the network control having the toolbar's only colour: *a state a
+tester deliberately put the device into and will forget about, and forgetting is what makes the next
+hour of testing confusing.*
+
+### The order is the same on both platforms, on purpose
+
+A tester moving between iOS and Android should find rotate at the end of Device and the network
+control alone in Environment on both. That is why the toolbar takes `navigationSlot` and `deviceSlot`
+rather than one `platformSlot`: the viewers hand it buttons already sorted into groups, so the
+symmetry is structural instead of a coincidence that the next button breaks.
+
+**The dashboard owns the order; the agent owns what exists.** Android's buttons arrive from the
+agent's `ANDROID_BUTTONS`, which is a *capability* list — the key codes are why it lives there.
+Rendering it in array order used to leak that list's ordering out as a layout decision, so Android's
+toolbar was ordered by the agent while iOS's was ordered here. `AndroidViewer` now names its own
+order and looks each button up; a name the agent reports that no group claims does not render, which
+is deliberate — a new key code appears once somebody has decided where it belongs, rather than
+turning up wherever the array happened to put it.
+
+### When a group gets too long
+
+Nothing is collapsed today: iOS shows eight buttons and Android eleven, which a vertical toolbar
+carries. The point to reconsider is when a single group needs more than about four — that is when
+the low-frequency members of it should move behind a popover and the frequent ones stay on the
+surface, rather than the toolbar growing until it runs off the screen. Environment is the group
+most likely to reach it first (location, battery, appearance, locale, time zone, permissions).
+
 ## HOW NOT
 
 - Do not reintroduce the `next` package.

@@ -543,7 +543,10 @@ export function IOSViewer({
   const screenPctH = (chrome.screenRect.height / chrome.compositeHeight) * 100;
   const cssCornerRadius = Math.round((chrome.screenCornerRadius / 2) * displayScale);
 
-  const platformSlot = (
+  // Home moves around the OS; the software keyboard leaves the device in a condition that stays up
+  // until somebody puts it away. Two groups, per `packages/dashboard/AGENTS.md` → "Where a new device
+  // button goes".
+  const navigationSlot = (
     <>
       <Tooltip>
         <TooltipTrigger asChild>
@@ -556,6 +559,11 @@ export function IOSViewer({
         </TooltipTrigger>
         <TooltipContent side="left"><span className="flex items-center gap-3">Home <KbdGroup><Kbd>⌘</Kbd><Kbd>⇧</Kbd><Kbd>U</Kbd></KbdGroup></span></TooltipContent>
       </Tooltip>
+    </>
+  );
+
+  const deviceSlot = (
+    <>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon" className="h-8 w-8"
@@ -605,7 +613,8 @@ export function IOSViewer({
         onRecordToggle={handleRecordToggle}
         recordState={recordState}
         onRotate={handleRotate}
-        platformSlot={platformSlot}
+        navigationSlot={navigationSlot}
+        deviceSlot={deviceSlot}
         launchSlot={launchSlot}
         network={networkSupported ? { position: network.position, steerable: network.steerable, reason: network.reason, pending: network.pending, onToggle: network.toggle } : undefined}
       />

@@ -18,7 +18,7 @@ import { Kbd, KbdGroup } from '@/components/ui/kbd';
  * cannot explain itself, and until the network control needed a name to be found by, none of these
  * buttons had one: a screen reader read the whole toolbar as four unlabelled buttons.
  *
- * `platformSlot` and `launchSlot` arrive as `ReactNode` from the viewers, so their buttons are
+ * `navigationSlot`, `deviceSlot` and `launchSlot` arrive as `ReactNode` from the viewers, so their buttons are
  * labelled where they are built rather than here.
  */
 function ShortcutTooltip({ label, keys }: { label: string; keys: string[] }) {
@@ -39,9 +39,17 @@ interface SimulatorToolbarProps {
   recordState: 'idle' | 'recording' | 'uploading' | 'done';
   onRotate: () => void;
   onDeepLink: () => void;
-  /** Platform-specific buttons rendered at the top (e.g. nav buttons, home, keyboard) */
-  platformSlot?: ReactNode;
-  /** Optional launch button rendered before platform buttons */
+  /**
+   * Platform buttons that move around the app or the OS — home, back, recent apps. Rendered in the
+   * **Navigation** group. See `packages/dashboard/AGENTS.md` → "Where a new device button goes".
+   */
+  navigationSlot?: ReactNode;
+  /**
+   * Platform buttons that leave the device in a condition — the software keyboard, volume, sleep.
+   * Rendered in the **Device** group, before rotate.
+   */
+  deviceSlot?: ReactNode;
+  /** Optional launch button, first in the Navigation group. */
   launchSlot?: ReactNode;
   /** Network control (#607). Absent when the agent does not advertise `network-control`. */
   network?: NetworkControl;
@@ -299,7 +307,8 @@ export function SimulatorToolbar({
   recordState,
   onRotate,
   onDeepLink,
-  platformSlot,
+  navigationSlot,
+  deviceSlot,
   launchSlot,
   network,
 }: SimulatorToolbarProps) {
@@ -312,12 +321,30 @@ export function SimulatorToolbar({
 
   return (
     <TooltipProvider delayDuration={400}>
+      {/*
+        * **Four groups, by what the tester is doing to the device (#634).**
+        *
+        *   Navigation → Device → Capture → Environment
+        *
+        * and inside each, the ones reached for most come first. The rule and its worked examples live
+        * in `packages/dashboard/AGENTS.md` → "Where a new device button goes"; it is written down
+        * there rather than here because the question it answers — *where does this new button go* —
+        * gets asked by someone who has not opened this file yet.
+        *
+        * The order is the same on both platforms, which is the point: a tester moving between iOS and
+        * Android finds rotate at the end of Device and the network control alone in Environment on
+        * both. That used to be a coincidence — Android's buttons were rendered in whatever order the
+        * agent's capability list happened to be in.
+        *
+        */}
       <div className="flex flex-col items-center gap-0.5 rounded-2xl border bg-background/90 backdrop-blur-sm px-1.5 py-2.5 shrink-0 mt-3">
+        {/* ── Navigation: move around the app or the OS ─────────────────────────── */}
         {launchSlot}
-        {platformSlot}
+        {navigationSlot}
 
         <Tooltip>
           <TooltipTrigger asChild>
+            {/* A deeplink is "go to this screen", which is why it is here and not with the tools. */}
             <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Open a deeplink" onClick={onDeepLink}>
               <Link2 className="h-4 w-4" />
             </Button>
@@ -325,6 +352,21 @@ export function SimulatorToolbar({
           <TooltipContent side="left"><ShortcutTooltip label="Deeplink" keys={['⌘', 'K']} /></TooltipContent>
         </Tooltip>
 
+        {/* ── Device: leave the device in a condition ────────────────────────────── */}
+        <div className="w-4 h-px bg-border my-1" />
+
+        {deviceSlot}
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Rotate the device" onClick={onRotate}>
+              <RotateCw className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="left"><ShortcutTooltip label="Rotate" keys={['⌘', '⇧', 'O']} /></TooltipContent>
+        </Tooltip>
+
+        {/* ── Capture: take the current state out of the session ───────────────── */}
         <div className="w-4 h-px bg-border my-1" />
 
         <Tooltip>
@@ -378,16 +420,8 @@ export function SimulatorToolbar({
           </TooltipContent>
         </Tooltip>
 
+        {/* ── Environment: change what the device is sitting in ─────────────────── */}
         <div className="w-4 h-px bg-border my-1" />
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Rotate the device" onClick={onRotate}>
-              <RotateCw className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="left"><ShortcutTooltip label="Rotate" keys={['⌘', '⇧', 'O']} /></TooltipContent>
-        </Tooltip>
 
         {network && (() => {
           const { Icon, className, status } = networkLook(network);

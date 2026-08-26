@@ -16,6 +16,24 @@ import type { DeviceAgent } from './DeviceAgent.js'
 // agent imports in the same file.
 export type { NetworkStatePayload, NetworkUnavailableReason }
 
+/**
+ * **In-process only, and that is the whole scope (#617, #620).**
+ *
+ * Nothing outside an agent's own process holds a `DeviceAgent`. `mcp-server` and `flow-runner` each
+ * hold a WebSocket client to the relay and address a device by session id over the wire —
+ * `client.<verb>(sessionId, …)` — so the network tool they would expose goes through `network:set`,
+ * which already names its session and already answers with a correlated `network:state`.
+ *
+ * That is why these two take no session id and send nothing on the wire. It was read the other way
+ * for a while: two issues were filed asking for a session parameter and a wire report, on the premise
+ * that MCP calls these. It does not, and a second session-addressed API that no out-of-process caller
+ * can reach would have closed the issues without preventing anything.
+ *
+ * **What an embedded caller owes instead.** These resolve the device themselves, and the two agents
+ * do it differently — iOS refuses when several are live, Android takes the first it registered. An
+ * in-process caller holding more than one session should use the wire path, or the agent's own
+ * session-addressed handlers, rather than these.
+ */
 export interface NetworkControlCapability {
   /** Take the device off the network, or put it back. Returns the state that resulted, which may
    *  report `available: false` — asking for something the device cannot do is an answer, not an

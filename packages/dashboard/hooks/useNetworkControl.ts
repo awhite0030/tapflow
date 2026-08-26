@@ -109,6 +109,35 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
     requestId.current = null
   }, [sessionId])
 
+  /**
+   * **A device that is not ready knows nothing about its own network, so neither does this.**
+   *
+   * The reset above keys on `sessionId`, which does not change across a reboot — but `deviceReady`
+   * does: `DeviceViewer` drops it on `device:booting` and on agent-away, and raises it again on
+   * `device:ready`. The position used to survive all of that, and the report deadline never re-armed
+   * because it is gated on `position === 'waiting'`.
+   *
+   * So an Android emulator restarting showed the position from before it for the 30–60s the boot
+   * takes — and worse than merely stale, because the agent's boot path clears airplane mode and
+   * reports online. An amber "offline" sat over a device being reset to the opposite, and nothing
+   * ever corrected it: the same silence that yields `unknown` before the first boot left the stale
+   * answer in place after the second, permanently.
+   *
+   * Clearing on the way *down* rather than on the way up: the moment the device stops being ready is
+   * the moment this stops knowing, and waiting until it returns would leave the false answer on
+   * screen for the whole boot.
+   */
+  useEffect(() => {
+    if (deviceReady) return
+    setPosition('waiting')
+    setReason(undefined)
+    lastReason.current = undefined
+    // An in-flight request cannot be answered by a device that is rebooting, and leaving `pending`
+    // set would disable the control for as long as the boot takes.
+    setPending(false)
+    requestId.current = null
+  }, [deviceReady])
+
   useEffect(() => {
     if (!supported) return
     handlerRef.current = (msg) => {
