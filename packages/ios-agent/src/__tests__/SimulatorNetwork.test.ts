@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -74,6 +74,17 @@ describe('SimulatorNetwork', () => {
     setSimulatorEnv: (udid: string, name: string, value: string) => Promise<void>
   }
 
+  /**
+   * A real file, because `state()` now refuses to vouch for layer 2 when the library is not on disk.
+   *
+   * These fixtures pointed at `/fake/libtapflow-nethook.dylib` — a path that has never existed — and
+   * every assertion below passed, which is precisely the gap the check closes: nothing in this suite
+   * had an opinion about whether the thing being injected was there. It is not the real dylib and
+   * does not need to be; what is under test is the agent's reasoning, and `existsSync` is the whole
+   * question it asks.
+   */
+  const hookPath = () => join(dir, 'libtapflow-nethook.dylib')
+
   const verdictPath = (udid: string) => join(dir, `tapflow-nethook-${udid}.json`)
   const conditionPath = (udid: string) => join(dir, `tapflow-offline-${udid}`)
 
@@ -85,7 +96,7 @@ describe('SimulatorNetwork', () => {
       filterHostBinary: hostBinary ?? fakeHostBinary(dir, log),
       conditionDir: dir,
       verdictDir: dir,
-      nethookDylib: '/fake/libtapflow-nethook.dylib',
+      nethookDylib: hookPath(),
       // **Pointed at this test's own directory, and that is not only hygiene.** The default is the
       // path the real provider writes on this Mac, so a suite left on the default would read whatever
       // the developer's own filter happens to be enforcing — green or red depending on the machine.
@@ -104,6 +115,7 @@ describe('SimulatorNetwork', () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'tapflow-net-'))
+    writeFileSync(join(dir, 'libtapflow-nethook.dylib'), '')
     log = join(dir, 'calls.log')
     statusBar = []
     env = []
@@ -340,6 +352,49 @@ describe('SimulatorNetwork', () => {
     expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'state-unconfirmed' })
   })
 
+  it('says hooks-not-installed when the library it would inject is not on disk', () => {
+    // **The failure nothing reported.** dyld ignores a `DYLD_INSERT_LIBRARIES` path that does not
+    // exist without a word, so the app launches unhooked and no verdict is ever written. Read from
+    // the verdict alone that is `missing`, which resolves against `armed` to "restart the device" —
+    // a remedy that cannot work, offered forever.
+    const net = make()
+    rmSync(hookPath(), { force: true })
+    expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
+  })
+
+  it('does not accept a directory standing where the library should be', async () => {
+    // `existsSync` answers true for one, and dyld cannot inject a directory — so the check would have
+    // passed and let the verdict decide, reporting `awaiting-app` about an install that can never
+    // work. The shape a half-finished copy leaves behind.
+    const net = make()
+    await net.arm(UDID)
+    rmSync(hookPath(), { force: true })
+    mkdirSync(hookPath(), { recursive: true })
+    expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
+  })
+
+  it('says it on a device that really was armed, which is the case that happens', async () => {
+    // **The only shape the live path produces, and the two tests around it missed it.** `arm()` sets
+    // the environment without reading the path it sets, so a real session has `armed` true with no
+    // library on disk — and `if (!this.armed.has(udid) && !existsSync(this.dylib))` passes every
+    // other test here while sending that device back to `awaiting-app`.
+    const net = make()
+    await net.arm(UDID)
+    rmSync(hookPath(), { force: true })
+    expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
+  })
+
+  it('does not answer for the library from an armed device or a written verdict', () => {
+    // The two states that otherwise look healthiest are the ones this must still refuse: an armed
+    // device whose app wrote `installed: true` is exactly what a stale verdict from before the file
+    // went missing produces.
+    const net = make()
+    writeFileSync(verdictPath(UDID), JSON.stringify({ installed: true }))
+    expect(net.state(UDID), 'a real dylib and a good verdict').toEqual({ offline: false, available: true })
+    rmSync(hookPath(), { force: true })
+    expect(net.state(UDID), 'same verdict, no library').toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
+  })
+
   it('reserves hooks-not-installed for the library actually saying so', () => {
     // `installed !== true` swept up every shape that is not the library's own failure signal and
     // answered "it ran and proved its hooks did not take" about files that show nothing — the same
@@ -415,7 +470,7 @@ describe('SimulatorNetwork', () => {
 
       expect(existsSync(conditionPath(UDID))).toBe(false)
       expect(existsSync(verdictPath(UDID))).toBe(false)
-      expect(env).toEqual([`${UDID}:DYLD_INSERT_LIBRARIES=/fake/libtapflow-nethook.dylib`])
+      expect(env).toEqual([`${UDID}:DYLD_INSERT_LIBRARIES=${hookPath()}`])
     })
 
     it('does not name a target app, because none is known yet at boot', async () => {
@@ -671,6 +726,19 @@ describe('SimulatorNetwork', () => {
       expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'enforcement-lost' })
     })
 
+    it('answers before the missing-library branch, which sits below it', async () => {
+      // Order, not merely presence. A Mac whose filter stopped enforcing invalidates work a tester
+      // has already signed off; "reinstall tapflow" does not say that, so the reason that does has
+      // to win — and moving the dylib check above this one leaves every other test green.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      staleState([UDID], -10)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+      rmSync(hookPath(), { force: true })
+      expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'enforcement-lost' })
+    })
+
     it('still says so on a re-join', async () => {
       armed()
       const net = make()
@@ -739,7 +807,7 @@ describe('SimulatorNetwork', () => {
         filterHostBinary: fakeHostBinary(dir, log),
         conditionDir: dir,
         verdictDir: dir,
-        nethookDylib: '/fake/libtapflow-nethook.dylib',
+        nethookDylib: hookPath(),
         filterStateFiles: [join(dir, 'nowhere.json'), join(dir, 'state.json')],
         onEnforcementLost: (udid) => { lost.push(udid) },
         livenessIntervalMs: 20,

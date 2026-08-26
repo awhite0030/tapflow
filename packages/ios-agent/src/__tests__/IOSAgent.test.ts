@@ -2327,13 +2327,17 @@ describe('IOSAgent', () => {
         + `printf '{"at":%s,"pulseSeconds":1,"rule":["%s"]}\\n' "$(date +%s)" "\${2-}" > "${dir}/state.json"\n`,
         { mode: 0o755 },
       )
+      // A real path: `state()` reports `hooks-not-installed` when the library is not on disk, and
+      // this fixture used to name one that never existed.
+      const hookDylib = path.join(dir, 'libtapflow-nethook.dylib')
+      fs.writeFileSync(hookDylib, '')
       return new SimulatorNetwork(
         { setStatusBarOffline: async () => {}, setSimulatorEnv: async () => {} },
         {
           filterHostBinary: host,
           conditionDir: dir,
           verdictDir: dir,
-          nethookDylib: '/fake/libtapflow-nethook.dylib',
+          nethookDylib: hookDylib,
           filterStateFiles: [path.join(dir, 'state.json')],
           livenessIntervalMs: 20,
         },

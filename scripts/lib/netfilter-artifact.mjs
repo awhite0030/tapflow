@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { hashFiles, walk } from './artifact-hash.mjs'
 
 /**
  * What ties the committed network-filter `.app` to the sources it was built from.
@@ -42,29 +42,6 @@ const SOURCE_GLOBS = [
   ['Extension'], ['Host'], ['Shared'],
 ]
 const SOURCE_FILES = ['project.yml', 'build.sh']
-
-function walk(dir, out = []) {
-  if (!fs.existsSync(dir)) return out
-
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-    const p = path.join(dir, entry.name)
-    if (entry.isDirectory()) walk(p, out)
-    else if (entry.isFile()) out.push(p)
-  }
-  return out
-}
-
-/** Path + bytes, in a stable order. Path is hashed too: moving a file changes the build. */
-function hashFiles(root, files) {
-  const h = createHash('sha256')
-  for (const f of files) {
-    h.update(path.relative(root, f).split(path.sep).join('/'))
-    h.update('\0')
-    h.update(fs.readFileSync(f))
-    h.update('\0')
-  }
-  return h.digest('hex')
-}
 
 /**
  * **A declared input that is not there is an error, not an empty set.**

@@ -574,7 +574,11 @@ Four rules there are load-bearing, and each is a hole something already fell int
 
 #### What the agent trusts, and what it must not
 
-`state()` decides `available` from **two things, and layer 1 is asked first**. The dylib's verdict
+`state()` decides `available` from **three things, in order, and layer 1 is asked first**. Between
+layer 1 and the verdict sits the plainest question of the three: **is the library on disk at all.**
+It is `stat`ed rather than remembered, because `DYLD_INSERT_LIBRARIES` naming a path that does not
+exist is ignored by dyld without a word — so a damaged install arms cleanly, launches the app
+unhooked, and leaves `state()` asking for an app that is already running. The dylib's verdict
 file answers for layer 2 — only the target app writes it, and the file is keyed by udid alone, so any
 other process writing it would answer for an app that never ran (since #635 no other process
 activates at all: the library is delivered simulator-wide, but the gate admits one bundle id).

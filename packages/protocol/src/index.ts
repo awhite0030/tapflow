@@ -582,7 +582,18 @@ export interface ClipboardError extends SessionScoped {
  * machine field nobody branches on is the shape this package forbids by name (#492).
  */
 export type NetworkUnavailableReason =
-  /** The hooks were delivered but did not take. The agent proved this by trying, not by assuming. */
+  /**
+   * The agent cannot reach inside this app, and knows it rather than suspecting it.
+   *
+   * Two observables, and they are different enough to name: the hooks were delivered and **proved by
+   * trying** that they did not take, or the library that would be injected is **not on the machine
+   * at all** — a damaged install, whose remedy is to reinstall rather than to retry. Both are
+   * settled facts, which is what separates this member from `state-unconfirmed`.
+   *
+   * It was written for the first alone, and the second arrived with #653. The distinction that
+   * matters to a consumer is unchanged — the control is dead and no button helps — so they stay one
+   * member; but "the agent proved this by trying" was the whole doc, and it is false of the second.
+   */
   | 'hooks-not-installed'
   /** Nothing was delivered for this boot — a re-arm that did not happen, or a device booted outside
    *  tapflow. Distinct from the above because the answer is to reboot the device, not to give up. */
@@ -594,7 +605,8 @@ export type NetworkUnavailableReason =
    * iOS the injection is put in place when the device boots but can only name its target when an app
    * is launched, so between those two moments nothing has been proved either way — and both of the
    * reasons above would say something false about it. `not-armed` prescribes a reboot, which fixes
-   * nothing here; `hooks-not-installed` claims a failure that was never attempted.
+   * nothing here; `hooks-not-installed` says the agent cannot reach inside the app, which nothing has
+   * established while the launch is still in flight.
    *
    * What a consumer must do differently: **say what is missing, and do not draw the control as
    * dead.** Traffic-level control does work in this state — a device taken offline here really does
