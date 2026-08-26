@@ -135,6 +135,34 @@ Splitting is still right when it is right — `#508`'s relay type drift genuinel
 The rule is that it must be a decision with a reason, and the reason may not be "it was in a
 different file".
 
+#### A reviewer's `later` is an input, not a verdict — and deferring has a budget
+
+The rule above was written for a session choosing its own deferrals. Once the findings arrive from
+review channels, the choosing is quietly delegated: a reviewer writes `later`, and it becomes an
+issue because that is what the column said.
+
+**Measured on one day of work on #607: nine issues, from three PRs.** That is not bad luck, it is
+arithmetic — two or three channels per PR, a cap of four or five findings each, and a `later` rate of
+about a third. Two of the nine were closed within the hour as things that should never have been
+filed, and one of them (`#673`, a missing `timeout`) was a few lines in a file the running lens was
+already reading, which the section above says is fixed in place.
+
+Three things keep it honest, and none of them is remembering harder:
+
+- **Re-grade every `later` yourself.** Severity was already being re-graded; disposition was not.
+  Hold each one against the same two questions: under ~10 lines, and judgable by the lens already
+  running? Then it is fixed here, whatever the column says.
+- **Give the reviewer a `later` budget** — at most two per channel, each justified against that rule.
+  A cap on findings with no cap on deferrals makes deferring free, and free is what it was.
+- **Every split-out issue names its parent**, on a line of its own: `Parent: #607`. Prose like "raised
+  by the review of #647" is not it — nothing can build a checklist from a mention, which is how the
+  nine above became unreachable from the issue they all came from. `.claude/hooks/issue-parent-gate.sh`
+  blocks an issue that carries neither a `Parent:` line nor an explicit
+  `<!-- standalone: reason -->`.
+
+And the parent keeps a checklist. Asked whether #607 was finished, nobody could answer — the feature's
+remaining surface existed only as unlinked rows in a tracker sorted by date.
+
 ### Design Principles (SOLID — priority subset)
 
 - **OCP**: New platforms and features are added without modifying existing code — platforms register via `AgentRegistry.register()` only; relay and dashboard code stay unchanged.

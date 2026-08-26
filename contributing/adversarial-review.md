@@ -179,8 +179,17 @@ What made the 4m30s pair cheap was structural, not stylistic. Each prompt carrie
 4. **The commands not to run**, by name.
 5. **A findings cap and a time budget.**
 6. **A required "checked and cleared" list**, so coverage is visible when nothing is found.
-7. **A now/later column on every finding — and for every `later`, the reason plus a one-line issue
-   title and body.** Without the column the split falls to whoever holds the diff, who is the person
+7. **A now/later column on every finding, a `later` budget of two per channel — and for every
+   `later`, the reason plus a one-line issue title and body.**
+
+   The budget is the part that was missing, and its absence is measured: capping findings while
+   leaving deferrals free produced nine issues from three PRs in a day. Ask the reviewer to justify
+   each `later` against the ten-line rule, and **re-grade every one of them yourself** — the column is
+   the reviewer's opinion about work it is not doing.
+
+   Every issue that does get filed names its parent on a line of its own (`Parent: #607`), which is
+   what lets the work it came from enumerate what it still owes.
+ Without the column the split falls to whoever holds the diff, who is the person
    least able to see what deferring costs, and the answer defaults to "later" because that is what
    keeps the diff small. Without the issue text, "later" costs a sentence while filing costs a task,
    and the cheaper one wins — which is how six deferrals came to live in a single conversation. The
