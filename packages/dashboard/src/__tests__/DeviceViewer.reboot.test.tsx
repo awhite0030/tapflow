@@ -196,21 +196,22 @@ describe('DeviceViewer — reboot wiring', () => {
     }
   })
 
-  it('stops calling a failed boot busy', async () => {
-    // `deviceReady` never comes back after `device:boot-error`, so `aria-busy` derived from it alone
-    // claimed a boot in progress for the rest of the session — over a device that had given up, and
-    // above the live region carrying the sentence that says so.
+  it('keeps the status sentence out of any busy subtree', async () => {
+    // **`aria-busy` above a live region can hold back what it is trying to say.** It began on the
+    // container, which is an ancestor of `SimulatorInfoCard`'s `role="status"` — so every sentence
+    // this branch renders was suppressible, including the one reporting the boot that failed.
     live()
     await confirmRestart()
     const id = shutdowns()[0].requestId
     act(() => { deliver!({ type: 'device:shutdown-done', sessionId: 'mine', requestId: id, payload: { deviceId: 'dev-1' } }) })
     act(() => { deliver!({ type: 'device:booting', sessionId: 'mine' }) })
-    const region = () => screen.getByRole('region', { name: 'Device' })
-    expect(region().getAttribute('aria-busy'), 'a boot in flight did not read as busy').toBe('true')
 
-    const bootId = boots().at(-1)!.requestId
-    act(() => { deliver!({ type: 'device:boot-error', sessionId: 'mine', requestId: bootId, message: 'no such device' }) })
-    expect(region().getAttribute('aria-busy'), 'a boot that failed still claimed to be running').toBe('false')
+    const status = screen.getByRole('status')
+    expect(status.closest('[aria-busy="true"]'), 'the status sentence sits inside a busy subtree').toBeNull()
+    // And the placeholders still say they are standing in for something, which is the claim that is
+    // actually true of them.
+    expect(document.querySelectorAll('[aria-busy="true"]').length, 'nothing is marked busy at all')
+      .toBeGreaterThan(0)
   })
 
   it('leaves the join and the rebind booting the way they did', () => {
