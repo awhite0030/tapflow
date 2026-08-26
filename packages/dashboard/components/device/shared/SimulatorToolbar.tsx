@@ -1,6 +1,6 @@
 'use client';
 
-import { Camera, Link2, Loader2, Power, Radio, RadioOff, RotateCw, Square, Video } from 'lucide-react';
+import { Camera, Link2, Loader2, Radio, RadioOff, RefreshCw, RotateCw, Square, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -418,7 +418,15 @@ export function SimulatorToolbar({
                   aria-describedby={rebootStatusId}
                   onClick={() => { if (!reboot.pending) setConfirmingReboot(true); }}
                 >
-                  {reboot.pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Power className="h-4 w-4" />}
+                  {/* **Not `Power`, which Android's own power key already uses.** They sit two apart in
+                      this same group and the glyph was byte-identical — one blanks the screen, the
+                      other throws away everything on the device.
+                      `RefreshCw` is next to `RotateCw` and that is accepted rather than missed: the
+                      silhouettes differ where it counts, a closed loop with two heads against an open
+                      arc with one, and it is the glyph people already read as "start this again".
+                      `RotateCcwSquare` was tried first and is worse — it *depicts* a rotation, so next
+                      to the rotate button it moves the confusion instead of ending it. */}
+                  {reboot.pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="left">Restart device</TooltipContent>
