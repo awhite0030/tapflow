@@ -97,6 +97,10 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
   const onErrorRef = useRef(onError)
   useEffect(() => { onErrorRef.current = onError }, [onError])
 
+  /** Read by the handler, which is registered once — the flag itself would be captured stale. */
+  const readyRef = useRef(deviceReady)
+  useEffect(() => { readyRef.current = deviceReady }, [deviceReady])
+
   // A new session knows nothing about its device, and the previous session's answer is about somebody
   // else's. `DeviceViewer` drops frames addressed elsewhere, but it stays mounted across the switch,
   // so without this the old position would sit on screen until a new report replaced it.
@@ -158,6 +162,17 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
       // control, and `scripts/__tests__/inboundDisposition.test.mjs` will not accept a file that claims
       // to handle a message without comparing against it.
       if (msg.type !== 'network:state') return
+      // **A device that is not ready has nothing true to say about its network, including in an
+      // answer that was already on its way.**
+      //
+      // The reset above clears the position and the in-flight request when readiness drops, but the
+      // answer to that request can still arrive — and a `network:state` was applied whatever it was
+      // correlated to. It would put the pre-reboot position back, and because the report deadline is
+      // gated on `position === 'waiting'` it would also stop the wait from ever resolving to
+      // `unknown`: exactly the stale answer this hook was changed to end, restored by the change
+      // itself. The relay's own `network:request-state` on `session:joined` reaches here the same way,
+      // racing the boot it arrives with.
+      if (!readyRef.current) return
       // **The position comes from `offline` whatever `available` says.** A device tapflow can no
       // longer steer still has a network state, and the protocol carries the field on both members
       // for exactly that. What `available` changes is what the button can promise, not where it points.

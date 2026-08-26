@@ -387,6 +387,37 @@ describe('useNetworkControl', () => {
     expect(view.result.current.position, 'the pre-reboot position survived the reboot').toBe('waiting')
   })
 
+  it('drops a report that was already on its way when the device stopped being ready', () => {
+    // The reset clears the position and the in-flight request, but the answer to that request can
+    // still land. Applying it puts the pre-reboot position back — and because the deadline is gated
+    // on `position === 'waiting'`, the wait then never resolves to `unknown` either. The stale answer
+    // this hook was changed to end, restored by the change itself.
+    const { view, report } = setup()
+    report(steerable(true))
+    expect(view.result.current.position).toBe('offline')
+
+    view.rerender({ sessionId: 's1', deviceReady: false })
+    expect(view.result.current.position).toBe('waiting')
+    report(steerable(true))
+    expect(view.result.current.position, 'a late report repositioned an unready device').toBe('waiting')
+  })
+
+  it('takes reports again once the device is ready, and still times out if none comes', () => {
+    // The half that would pass if the guard simply dropped everything: after the boot the control has
+    // to listen again, and the deadline has to still be armed underneath it.
+    vi.useFakeTimers()
+    const { view, report } = setup()
+    view.rerender({ sessionId: 's1', deviceReady: false })
+    view.rerender({ sessionId: 's1', deviceReady: true })
+    report(steerable(true))
+    expect(view.result.current.position, 'the guard outlived the boot').toBe('offline')
+
+    view.rerender({ sessionId: 's1', deviceReady: false })
+    view.rerender({ sessionId: 's1', deviceReady: true })
+    act(() => { vi.advanceTimersByTime(NETWORK_REPORT_DEADLINE_MS + 1) })
+    expect(view.result.current.position).toBe('unknown')
+  })
+
   it('arms the deadline again after a reboot, so a silent boot is not left saying nothing', () => {
     // The deadline is gated on `position === 'waiting'`. Without the reset above it never re-armed
     // after the first report, so the stale answer had nothing to replace it — permanently, unlike the
