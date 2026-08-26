@@ -67,12 +67,29 @@ function fakeHostBinary(dir: string, log: string, sleepMs = 0, failNth = 0): str
     + `  *) shift ;;\n`
     + `esac; done\n`
     + (sleepMs > 0 ? `printf 'enter:%s\\n' "$ADD" >> "${log}"\nsleep ${sleepMs / 1000}\n` : '')
+    // **Publishes both files the way the real ones are published, and the scratch is per run.**
+    //
+    // The provider writes its state file with `options: .atomic` (`Extension/Provider.swift`), so a
+    // reader never sees half of one — but `printf > file` truncates and then writes, and a reader
+    // catching that window gets a parse failure. `readFilterState` cannot tell that from *no file*,
+    // and no file means every offline device has lost its enforcement: the watcher then rewrites the
+    // rule without them.
+    //
+    // That is not hypothetical. `test (22)` on #682 failed with the rule empty where one entry was
+    // expected, because one instance's liveness tick read `state.json` while another instance's run
+    // was rewriting it. Node 24 passed, and the two commits before it passed — the window is small,
+    // which is what made it a flake rather than a failure.
+    //
+    // `.rem` and `.all` get the pid for the same reason: `dir` is shared by every instance a test
+    // makes, so two overlapping runs were reading each other's half-written scratch.
+    + `S="${dir}/.scratch.$$"\n`
     + `CUR=$(cat "${dir}/rule" 2>/dev/null || echo "")\n`
-    + `printf '%s' "$REM" | tr ',' '\\n' | grep -v '^$' > "${dir}/.rem"\n`
-    + `printf '%s,%s' "$CUR" "$ADD" | tr ',' '\\n' | grep -v '^$' | sort -u > "${dir}/.all"\n`
-    + `if [ -s "${dir}/.rem" ]; then OUT=$(grep -vxF -f "${dir}/.rem" "${dir}/.all" | paste -sd, -); else OUT=$(paste -sd, - < "${dir}/.all"); fi\n`
-    + `printf '%s' "$OUT" > "${dir}/rule"\n`
-    + `printf '{"at":%s,"pulseSeconds":1,"rule":%s}\\n' "$(date +%s)" "$(printf '%s' "$OUT" | ${ruleToJson})" > "${dir}/state.json"\n`
+    + `printf '%s' "$REM" | tr ',' '\\n' | grep -v '^$' > "$S.rem"\n`
+    + `printf '%s,%s' "$CUR" "$ADD" | tr ',' '\\n' | grep -v '^$' | sort -u > "$S.all"\n`
+    + `if [ -s "$S.rem" ]; then OUT=$(grep -vxF -f "$S.rem" "$S.all" | paste -sd, -); else OUT=$(paste -sd, - < "$S.all"); fi\n`
+    + `printf '%s' "$OUT" > "$S.rule" && mv "$S.rule" "${dir}/rule"\n`
+    + `printf '{"at":%s,"pulseSeconds":1,"rule":%s}\\n' "$(date +%s)" "$(printf '%s' "$OUT" | ${ruleToJson})" > "$S.state" && mv "$S.state" "${dir}/state.json"\n`
+    + `rm -f "$S.rem" "$S.all"\n`
     // argv goes to its own file: the log line still carries the **resulting rule**, which is what the
     // assertions below are about, and argv is available separately for the tests that are about what
     // this run named rather than what it produced.
