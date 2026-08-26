@@ -636,7 +636,7 @@ export function IOSViewer({
   return (
     // `tabIndex={-1}` and no outline suppression: focus only lands here when `DeviceViewer` hands
     // it back after a restart, and that is the one moment the ring is worth seeing.
-    <div ref={viewerRootRef} tabIndex={-1} role="region" aria-label="Device" className="flex items-start justify-center gap-16">
+    <div ref={viewerRootRef} tabIndex={-1} role="region" aria-label="Device screen" className="flex items-start justify-center gap-16">
       <canvas ref={recordCanvasRef} style={{ display: 'none' }} />
 
       <DeepLinkDialog open={deepLinkOpen} onOpenChange={setDeepLinkOpen} openUrl={openUrl} />

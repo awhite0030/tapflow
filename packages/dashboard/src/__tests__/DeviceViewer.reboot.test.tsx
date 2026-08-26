@@ -133,7 +133,7 @@ describe('DeviceViewer — reboot wiring', () => {
     expect(screen.queryByRole('button', { name: 'Restart the device' }), 'the toolbar survived the reboot')
       .toBeNull()
     expect(document.activeElement, 'focus was dropped on the body')
-      .toBe(screen.getByRole('region', { name: 'Device' }))
+      .toBe(screen.getByRole('region', { name: 'Device screen' }))
   })
 
   it('does not take focus on a first boot nobody asked for', async () => {
@@ -142,7 +142,7 @@ describe('DeviceViewer — reboot wiring', () => {
     // assertion above passes on a viewer that focuses this region unconditionally.
     render(<DeviceViewer sessionId="fresh" deviceId="dev-1" />)
     act(() => { deliver!({ type: 'session:joined', sessionId: 'fresh', capabilities: [] }) })
-    expect(screen.getByRole('region', { name: 'Device' }), 'the booting region is not rendered').toBeTruthy()
+    expect(screen.getByRole('region', { name: 'Device screen' }), 'the booting region is not rendered').toBeTruthy()
     expect(document.activeElement, 'the first boot stole focus').toBe(document.body)
   })
 
@@ -162,6 +162,23 @@ describe('DeviceViewer — reboot wiring', () => {
     expect(document.activeElement, 'focus was left on the body once the device came back')
       .not.toBe(document.body)
     expect(document.activeElement?.contains(restart), 'focus came back outside the viewer').toBe(true)
+  })
+
+  it('keeps the empty status region out of the card\'s layout', () => {
+    // **A floor, not a fence, and jsdom is the reason.** It evaluates no CSS, so nothing here can
+    // observe that `sr-only` is `position: absolute` and therefore not a flex item. What it can hold
+    // is that the class is on the node while the node is empty — which is what stops a permanently
+    // mounted 0-height child from eating one of the card's `gap-3` on every screen with nothing to
+    // say, which is the normal one: connected, joined, ready, installed.
+    live()
+    // Stated over every empty one rather than one looked up by hand: the toolbar has a status region
+    // too, and the invariant is the same for both — a live region with nothing to say must not take
+    // up a row. Both are mounted early on purpose, which is what makes the invariant worth having.
+    const empty = screen.getAllByRole('status').filter((n) => n.textContent === '')
+    expect(empty.length, 'no live region was silent, so this asserts nothing').toBeGreaterThan(0)
+    for (const n of empty) {
+      expect(n.className, 'an empty live region was left in the flow').toContain('sr-only')
+    }
   })
 
   it('does not take focus when a first boot finishes', () => {
@@ -215,11 +232,14 @@ describe('DeviceViewer — reboot wiring', () => {
       'a decorative skeleton is still in the accessibility tree',
     ).toBe(0)
 
-    // And nothing claims to be busy after the boot gives up — the state every `aria-busy` attempt
-    // here reproduced, in a different place each time.
+    // **And the failure reaches the sentence**, asserted as presence rather than as the absence of a
+    // busy flag. Nothing in this branch emits `aria-busy` at all — the three that exist are inside the
+    // viewer, which is unmounted here — so counting zero of them was true whatever the code did, and
+    // the `device:boot-error` above it did nothing. That is the shape `test-and-guard-coverage.md` §2
+    // names: an absence that no mutation can create.
     const bootId = boots().at(-1)!.requestId
     act(() => { deliver!({ type: 'device:boot-error', sessionId: 'mine', requestId: bootId, message: 'no such device' }) })
-    expect(document.querySelectorAll('[aria-busy="true"]').length, 'a boot that failed still reads as running').toBe(0)
+    expect(status.textContent, 'the failed boot never reached the status sentence').toContain('Boot failed')
   })
 
   it('leaves the join and the rebind booting the way they did', () => {
@@ -229,5 +249,14 @@ describe('DeviceViewer — reboot wiring', () => {
     live()
     expect(boots()).toHaveLength(1)
     expect(boots()[0].requestId, 'the join stopped correlating its boot').toBeTruthy()
+    // **And the rest of the payload, which nothing asserted anywhere in the repo.** `resetMode` was
+    // the field this change added and it got a test; `acceptH264` and `secureContext` are the fields
+    // it *moved*, and deleting either from the helper left all 471 tests green. The first drops every
+    // session to JPEG; the second sends full resolution at a WASM decoder over LAN-HTTP. This is
+    // `contributing/test-and-guard-coverage.md` §4 — aim the mutation at the path that already
+    // worked. `canDecodeH264` is mocked false in this harness, so the value is fixed.
+    expect(boots()[0]).toMatchObject({
+      payload: { acceptH264: false, secureContext: window.isSecureContext },
+    })
   })
 })

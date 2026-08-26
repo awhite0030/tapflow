@@ -11,6 +11,19 @@ export type RebootMessageHandler = (msg: RebootMessage) => void
 interface Options {
   sessionId: string
   deviceId: string
+  /**
+   * True while a device is on screen.
+   *
+   * **The one input that stands in for three lifecycle signals**, which is why the hook takes it
+   * rather than each of them: `session:agent-away` removes the agent that would answer, a socket
+   * reconnect re-joins and boots through `session:joined`, and `session:rebound` boots the device
+   * itself — and `DeviceViewer` drops readiness on all three. `useNetworkControl` takes it for the
+   * same reason.
+   *
+   * Losing it after the shutdown has been answered costs nothing: this hook is already done by then,
+   * because `device:booting` cannot arrive until the boot it sent does.
+   */
+  deviceReady: boolean
   send: (msg: BrowserToRelay) => void
   /** `DeviceViewer` routes the two shutdown replies here; the hook registers itself on mount. */
   handlerRef: MutableRefObject<RebootMessageHandler | undefined>
@@ -27,18 +40,22 @@ interface Options {
 }
 
 /**
- * How long to wait for the shutdown to be answered before giving up on it.
+ * How long to wait before the control stops blocking on the shutdown.
+ *
+ * **It releases the control; it does not abandon the sequence.** An answer that arrives after it still
+ * boots the device — see the timer body for why that distinction is the difference between a slow
+ * restart and a device left powered off with nothing in the app that will bring it back.
  *
  * **Silence is a reachable answer here, not a hang to be defended against.** Both agents open
  * `handleDeviceShutdown` with `if (!state) return` — no `device:shutdown-done`, no error, nothing —
  * and `IOSAgent`'s own catch logs a failed `simctl shutdown` and sends nothing either. That is
  * deliberate on the protocol's side: `DeviceShutdownError` is declared `RelayToBrowser`, and its doc
  * says both agents "ack a shutdown they cannot perform by simply not sending `device:shutdown-done`".
- * So this deadline is the *only* thing between a failed shutdown and a control that spins forever.
+ * So without this the control spins for the rest of the session on a shutdown nobody will answer.
  *
  * 20s because the agent awaits the real shutdown before answering — `simctl shutdown` on a busy Mac,
- * or `adb emu kill` on an emulator mid-write. Generous on purpose: the cost of being early is telling
- * a tester their reboot failed while it is working, and then booting a device that is on its way down.
+ * or `adb emu kill` on an emulator mid-write. Generous on purpose: being early means saying something
+ * to a tester whose restart is merely slow, and what it says has to stay true of that case.
  */
 export const REBOOT_SHUTDOWN_DEADLINE_MS = 20_000
 
@@ -55,7 +72,7 @@ export const REBOOT_SHUTDOWN_DEADLINE_MS = 20_000
  * nothing new — `device:booting` unmounts the viewer and `device:ready` brings it back, which is the
  * same thing a first boot does and is why a reboot needs no progress display of its own.
  */
-export function useDeviceReboot({ sessionId, deviceId, send, handlerRef, onShutdownComplete, onError }: Options) {
+export function useDeviceReboot({ sessionId, deviceId, deviceReady, send, handlerRef, onShutdownComplete, onError }: Options) {
   const [pending, setPending] = useState(false)
   const requestId = useRef<string | null>(null)
 
@@ -71,6 +88,23 @@ export function useDeviceReboot({ sessionId, deviceId, send, handlerRef, onShutd
     setPending(false)
     requestId.current = null
   }, [sessionId])
+
+  /**
+   * **Something else took the device, so this sequence is over whatever it was waiting for.**
+   *
+   * Distinct from the deadline above, which keeps its correlator on purpose: a deadline means the
+   * answer is merely late, and a late answer should still finish the restart. This means the device
+   * has been claimed by a boot this hook did not send — a rebind, a reconnect, an agent that went
+   * away — so the answer, if it ever comes, would boot a device somebody else is already booting.
+   *
+   * Without it the control came back from a *successful* rebind still spinning, announcing "Restarting
+   * the device." over a device that had finished, and then toasted a failure at the deadline.
+   */
+  useEffect(() => {
+    if (deviceReady) return
+    setPending(false)
+    requestId.current = null
+  }, [deviceReady])
 
   useEffect(() => {
     handlerRef.current = (msg) => {
@@ -106,9 +140,17 @@ export function useDeviceReboot({ sessionId, deviceId, send, handlerRef, onShutd
     if (waitingOn === null) return
     const timer = setTimeout(() => {
       if (requestId.current !== waitingOn) return
-      requestId.current = null
+      // **The id is deliberately kept.** Clearing it here dropped the answer when it did arrive late,
+      // and a dropped answer is not a stalled restart — it is a device left powered off with nothing
+      // in the app that will boot it again. `IOSAgent.handleDeviceShutdown` tears the streamer down
+      // before it awaits `simctl shutdown`, and the relay tells the browser nothing when that socket
+      // closes, so `deviceReady` stays true and the canvas holds its last frame: a device that reads
+      // as running, under a message saying it probably is.
+      //
+      // Keeping it is safe because a second press mints a fresh one, so this correlator can never
+      // answer a request the tester has replaced.
       setPending(false)
-      onErrorRef.current('The device did not answer the restart. It may still be running — check it before trying again.')
+      onErrorRef.current('The device has not answered the restart yet. If its answer arrives tapflow will finish restarting it; if nothing changes, press Restart again.')
     }, REBOOT_SHUTDOWN_DEADLINE_MS)
     return () => clearTimeout(timer)
   }, [waitingOn])

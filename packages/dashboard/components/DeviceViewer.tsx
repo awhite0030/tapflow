@@ -565,7 +565,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // reply recognisable as this mount's. `app-only` is not a choice here: a reboot is not a request to
   // erase (#439), and wiping stays on the selector screen where a session is being created.
   const { pending: rebootPending, reboot } = useDeviceReboot({
-    sessionId, deviceId, send,
+    sessionId, deviceId, deviceReady, send,
     handlerRef: rebootHandlerRef,
     onShutdownComplete: useCallback(() => { sendBoot('app-only'); }, [sendBoot]),
     onError: useCallback((message: string) => { toast.error(message); }, []),
@@ -641,7 +641,11 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // Before chrome arrives, show a phone skeleton + status card so the layout isn't empty
   if (!iosChrome && !androidChrome) {
     // **`role="region"`, because a bare `div` is `generic` and ARIA prohibits naming that role** — the
-    // name focus is meant to announce would not be exposed. The name says what this *is* rather than
+    // name focus is meant to announce would not be exposed. **"Device screen", not "Device"** — the
+    // toolbar's four group names (Navigation / Device / Capture / Environment) are a vocabulary the
+    // placement rule treats as a contract, and this region *contains* that group: one name over two
+    // very different scopes, and `getByLabelText('Device')` matching both. The name says what this
+    // *is* rather than
     // what is happening: a fixed "starting up" keeps asserting a recovery after a boot that failed,
     // while the card below carries the outcome. And no `outline-none`: this is `tabIndex={-1}`, so a
     // ring can only appear when something focused it deliberately, which is exactly the moment a
@@ -651,7 +655,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
         ref={bootingRegionRef}
         tabIndex={-1}
         role="region"
-        aria-label="Device"
+        aria-label="Device screen"
         className="flex items-start justify-center gap-16"
       >
         {/* **No `aria-busy` anywhere, and the two shapes below are hidden.** Three attempts put it in

@@ -135,7 +135,12 @@ export function SimulatorInfoCard(props: SimulatorInfoCardProps) {
           unconditionally instead adds a line's height to every card with nothing to say, and a second
           sr-only copy of the text puts the same sentence in the tree twice. An empty wrapper costs
           neither. */}
-      <div role="status">
+      {/* `sr-only` while empty, which is `position: absolute` — so it stops being a flex item and stops
+          consuming one of the parent's `gap-3`. The normal state of this card is *no* sentence at all
+          (connected, joined, ready, installed), and that is where a permanently mounted 0-height child
+          would still have added 12px. The node is the same one either way, which is the whole point of
+          mounting it early. */}
+      <div role="status" className={statusText ? undefined : 'sr-only'}>
       {statusText && (
         <p className="text-[12px] text-muted-foreground leading-relaxed break-all">{statusText}</p>
       )}

@@ -23,15 +23,16 @@ function setup(opts: { sessionId?: string } = {}) {
   const handlerRef = { current: undefined as RebootMessageHandler | undefined }
 
   const view = renderHook(
-    (props: { sessionId: string }) => useDeviceReboot({
+    (props: { sessionId: string; deviceReady: boolean }) => useDeviceReboot({
       sessionId: props.sessionId,
       deviceId: 'DEVICE-1',
+      deviceReady: props.deviceReady,
       send: (m) => { if (m.type === 'device:shutdown') sent.push(m as Sent) },
       handlerRef,
       onShutdownComplete: () => { booted.push(1) },
       onError: (m) => errors.push(m),
     }),
-    { initialProps: { sessionId: opts.sessionId ?? 's1' } },
+    { initialProps: { sessionId: opts.sessionId ?? 's1', deviceReady: true } },
   )
 
   /** The id of the shutdown this hook most recently sent. */
@@ -121,6 +122,39 @@ describe('useDeviceReboot', () => {
     expect(errors, 'a completed reboot was reported as unanswered').toHaveLength(0)
   })
 
+  it('still restarts when the answer arrives after the deadline', () => {
+    // **A late answer is not a stalled restart — it is a device left off.** The agent tears its
+    // streamer down before it awaits the shutdown, and the relay says nothing when that socket
+    // closes, so `deviceReady` stays true and the canvas keeps its last frame: nothing in the app
+    // would boot the device again, and the toast said it was probably still running.
+    vi.useFakeTimers()
+    const { view, booted, lastId, done } = setup()
+    act(() => { view.result.current.reboot() })
+    const id = lastId()
+    act(() => { vi.advanceTimersByTime(REBOOT_SHUTDOWN_DEADLINE_MS + 1) })
+    expect(view.result.current.pending, 'the control stayed locked past the deadline').toBe(false)
+
+    done(id)
+    expect(booted, 'the late answer was dropped and the device left off').toHaveLength(1)
+  })
+
+  it('gives up the sequence when something else takes the device', () => {
+    // Readiness drops on all three signals that invalidate a shutdown — agent-away, a reconnect's
+    // re-join, and a rebind, which boots the device itself. Without this the control came back from a
+    // *successful* rebind still spinning, and then reported a failure for a restart that had worked.
+    vi.useFakeTimers()
+    const { view, booted, errors, lastId, done } = setup()
+    act(() => { view.result.current.reboot() })
+    const id = lastId()
+    act(() => { view.rerender({ sessionId: 's1', deviceReady: false }) })
+    expect(view.result.current.pending, 'the control stayed busy after the device went away').toBe(false)
+
+    done(id)
+    expect(booted, 'a device somebody else was already booting got booted again').toHaveLength(0)
+    act(() => { vi.advanceTimersByTime(REBOOT_SHUTDOWN_DEADLINE_MS + 1) })
+    expect(errors, 'a restart that was superseded was reported as failed').toHaveLength(0)
+  })
+
   it('ignores a second press while the first is still running', () => {
     const { view, sent } = setup()
     act(() => { view.result.current.reboot() })
@@ -134,7 +168,7 @@ describe('useDeviceReboot', () => {
     const { view, booted, lastId, done } = setup()
     act(() => { view.result.current.reboot() })
     const stale = lastId()
-    act(() => { view.rerender({ sessionId: 's2' }) })
+    act(() => { view.rerender({ sessionId: 's2', deviceReady: true }) })
     expect(view.result.current.pending, 'the new session inherited a wait').toBe(false)
     done(stale)
     expect(booted, 'the previous session\'s shutdown booted this session\'s device').toHaveLength(0)
