@@ -101,6 +101,18 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
   const readyRef = useRef(deviceReady)
   useEffect(() => { readyRef.current = deviceReady }, [deviceReady])
 
+  /**
+   * Has this session ever had a device on screen? **Two situations were one `waiting` and they are
+   * not the same claim.**
+   *
+   * Before the first device there is nothing to report and nobody has asked — calling that silence
+   * unreadable would be a verdict on a question nobody put, which is why the deadline does not arm
+   * there. After a device has been and gone, `waiting` draws a pulse and says "Checking the network
+   * state." while nothing is checking and nothing will end the claim: the deadline is gated on
+   * readiness, so a boot says it for 30–60s and an agent that never comes back says it forever.
+   */
+  const everReady = useRef(deviceReady)
+
   // A new session knows nothing about its device, and the previous session's answer is about somebody
   // else's. `DeviceViewer` drops frames addressed elsewhere, but it stays mounted across the switch,
   // so without this the old position would sit on screen until a new report replaced it.
@@ -111,6 +123,7 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
     lastReason.current = undefined
     setPending(false)
     requestId.current = null
+    everReady.current = false
   }, [sessionId])
 
   /**
@@ -132,8 +145,16 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
    * screen for the whole boot.
    */
   useEffect(() => {
-    if (deviceReady) return
-    setPosition('waiting')
+    if (deviceReady) {
+      everReady.current = true
+      // Readiness returning is what makes a read genuinely expected — the relay asks on join and the
+      // agent reports on ready — so this is where `waiting` belongs, and where the deadline arms.
+      setPosition('waiting')
+      return
+    }
+    // `unknown` renders as "No network state has been reported", which is true and promises no
+    // ending. Only for a device that has been here: before the first one, `waiting` is still right.
+    setPosition(everReady.current ? 'unknown' : 'waiting')
     setReason(undefined)
     lastReason.current = undefined
     // An in-flight request cannot be answered by a device that is rebooting, and leaving `pending`

@@ -384,7 +384,32 @@ describe('useNetworkControl', () => {
     expect(view.result.current.position).toBe('offline')
 
     view.rerender({ sessionId: 's1', deviceReady: false })
-    expect(view.result.current.position, 'the pre-reboot position survived the reboot').toBe('waiting')
+    // `unknown`, not `waiting`: this device has been here, so "no state has been reported" is the true
+    // and terminal thing to say. `waiting` would draw a pulse and claim a read is under way while the
+    // deadline that ends that claim is gated on readiness — nothing checking, and nothing to stop it.
+    expect(view.result.current.position, 'the pre-reboot position survived the reboot').toBe('unknown')
+  })
+
+  it('does not carry "this one has been here" into the next session', () => {
+    // The memory is per session: switching to a session whose device has not arrived yet must read as
+    // waiting, not as a device that came and went. Otherwise the first thing a tester sees on a new
+    // session is a verdict about a device they have not been shown.
+    // Both change together, which is what a session switch looks like: the new session has no device
+    // on screen yet. Changing only the id leaves the readiness effect unrun, so it would not have
+    // exercised the memory at all — the first version of this test did exactly that and passed with
+    // the reset deleted.
+    const { view } = setup()
+    expect(view.result.current.position).toBe('waiting')
+
+    view.rerender({ sessionId: 's2', deviceReady: false })
+    expect(view.result.current.position, 'the previous session\'s device leaked into this one').toBe('waiting')
+  })
+
+  it('still waits, rather than reporting unknown, before the session has ever had a device', () => {
+    // The other half of the same distinction. A session with no device yet has nothing to report and
+    // nobody has asked, so calling that silence unreadable is a verdict on a question nobody put.
+    const { view } = setup({ deviceReady: false })
+    expect(view.result.current.position).toBe('waiting')
   })
 
   it('drops a report that was already on its way when the device stopped being ready', () => {
@@ -397,9 +422,9 @@ describe('useNetworkControl', () => {
     expect(view.result.current.position).toBe('offline')
 
     view.rerender({ sessionId: 's1', deviceReady: false })
-    expect(view.result.current.position).toBe('waiting')
+    expect(view.result.current.position).toBe('unknown')
     report(steerable(true))
-    expect(view.result.current.position, 'a late report repositioned an unready device').toBe('waiting')
+    expect(view.result.current.position, 'a late report repositioned an unready device').toBe('unknown')
   })
 
   it('says the request was abandoned, rather than ending it in silence', async () => {
