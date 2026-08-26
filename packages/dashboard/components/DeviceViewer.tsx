@@ -13,6 +13,7 @@ import { parseEnvelopeHeader, HEADER_SIZE, CODEC_H264, CODEC_AUDIO, type BinaryF
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
 import type { ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
 import type { NetworkMessageHandler } from '@/hooks/useNetworkControl';
+import { useDeviceReboot, type RebootMessageHandler } from '@/hooks/useDeviceReboot';
 import { canDecodeH264 } from '@/lib/decoders/pickDecoder';
 import { resolveInputError } from '@/lib/inputErrorNotice';
 import { newRequestId } from '@/lib/requestId';
@@ -124,6 +125,34 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // Same shape, one message family over: the network control registers here and the routing below
   // hands it `network:state` and `network:error` (#607).
   const networkHandlerRef = useRef<NetworkMessageHandler | undefined>(undefined);
+  // And one over again: the reboot control registers here and the routing below hands it the two
+  // shutdown replies (#628). Kept apart from the network one because they answer different requests —
+  // routing both families through a single handler is what `inboundDisposition`'s check exists to stop.
+  const rebootHandlerRef = useRef<RebootMessageHandler | undefined>(undefined);
+
+  /**
+   * **The only place a `device:boot` is sent, and that is the point rather than tidying.**
+   *
+   * Three things have to happen together for a boot to be answerable: the id goes in `bootIdsRef` so
+   * its reply is recognised as this mount's, it goes in `latestBootIdRef` so a superseded boot's
+   * failure can be told from the current one's, and it goes on the wire. Two copies of that already
+   * existed — the join and the agent-restart rebind — and #628 would have made a third. Half-copying
+   * it fails quietly in the direction that looks healthy: `device:ready` still clears the spinner
+   * while the app is never installed, which is the failure the `device:booting` branch is annotated
+   * with at length.
+   *
+   * `resetMode` stays a parameter because it is the one thing the callers genuinely disagree on, and
+   * the disagreement is load-bearing: only the first boot of a mount may carry a reset (#439).
+   */
+  const sendBoot = useCallback((reset: 'app-only' | 'full-erase' | undefined) => {
+    const bootId = newRequestId();
+    bootIdsRef.current.add(bootId);
+    latestBootIdRef.current = bootId;
+    sendRef.current({
+      type: 'device:boot', sessionId, requestId: bootId,
+      payload: { deviceId, resetMode: reset, acceptH264: canDecodeH264(), secureContext: window.isSecureContext },
+    });
+  }, [sessionId, deviceId]);
 
   // Opt-in audio output (Android emulator first). Audio frames are codec-tagged and routed
   // straight to Web Audio — they never enter the video FIFO/decoder path. Always-on playback;
@@ -193,10 +222,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // Cleared with `rebindRef` just above and for the same reason: an earlier cycle's boot will
       // never be answered now, and keeping its id would let a straggler release this cycle's rebind.
       bootIdsRef.current.clear();
-      const bootId = newRequestId();
-      bootIdsRef.current.add(bootId);
-      latestBootIdRef.current = bootId;
-      sendRef.current({ type: 'device:boot', sessionId, requestId: bootId, payload: { deviceId, resetMode: reset, acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
+      sendBoot(reset);
     }
     if (msg.type === 'session:agent-away') {
       // Everything on screen describes an agent that is no longer there. Drop the frame so the
@@ -244,10 +270,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // only because a rebind cannot precede a join on the same mount — and would silently become
       // a wipe the day that stops holding.
       resetSentRef.current = true;
-      const rebootId = newRequestId();
-      bootIdsRef.current.add(rebootId);
-      latestBootIdRef.current = rebootId;
-      sendRef.current({ type: 'device:boot', sessionId, requestId: rebootId, payload: { deviceId, resetMode: 'app-only', acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
+      sendBoot('app-only');
       // Only when the status card has not been saying it already — otherwise the toast lands at the
       // exact moment that message is replaced by the reconnect, saying the same thing twice.
       if (!wasAnnounced) toast.info('The agent restarted — reconnecting to the device.');
@@ -415,6 +438,14 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       networkHandlerRef.current?.(msg);
       return;
     }
+    // **Handed over without comparing anything here**, unlike every other correlated pair in this
+    // handler. `useAgentSession` sends three uncorrelated `device:shutdown`s on the way out of a
+    // view and `SessionList` answers those, so the id comparison is what separates this viewer's
+    // reboot from somebody else's teardown — and it belongs beside the id, which lives in the hook.
+    if (msg.type === 'device:shutdown-done' || msg.type === 'device:shutdown-error') {
+      rebootHandlerRef.current?.(msg);
+      return;
+    }
 
     if (msg.type === 'clipboard:data' || msg.type === 'clipboard:write-done' || msg.type === 'clipboard:error') {
       clipboardHandlerRef.current?.(msg);
@@ -453,7 +484,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
           return;
       }
     }
-  }, [sessionId, deviceId, buildId, onSessionEnded, resetMode, installed, agentAway]);
+  }, [sessionId, deviceId, buildId, onSessionEnded, resetMode, installed, agentAway, sendBoot]);
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {
     const envelope = parseEnvelopeHeader(data);
@@ -530,6 +561,16 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     sendRef.current({ type: 'app:launch', sessionId, requestId, buildId });
   }, [sessionId, buildId]);
 
+  // **Boots through the same helper the join and the rebind use**, which is what keeps a reboot's
+  // reply recognisable as this mount's. `app-only` is not a choice here: a reboot is not a request to
+  // erase (#439), and wiping stays on the selector screen where a session is being created.
+  const { pending: rebootPending, reboot } = useDeviceReboot({
+    sessionId, deviceId, send,
+    handlerRef: rebootHandlerRef,
+    onShutdownComplete: useCallback(() => { sendBoot('app-only'); }, [sendBoot]),
+    onError: useCallback((message: string) => { toast.error(message); }, []),
+  });
+
   const commonProps = {
     sessionId, buildId, send, openUrl, launchApp, connected, joined,
     deviceReady, installing, installed, installError, bootError,
@@ -541,6 +582,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     networkSupported: agentCapabilities.includes('network-control'),
     onRecordingUploaded,
     swKeyboardVisible, swKeyboardPending, onKbdToggle,
+    rebootPending, onReboot: reboot,
   };
 
   // Before chrome arrives, show a phone skeleton + status card so the layout isn't empty

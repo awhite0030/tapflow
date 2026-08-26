@@ -52,6 +52,9 @@ interface AndroidViewerProps {
   networkHandlerRef: MutableRefObject<NetworkMessageHandler | undefined>;
   networkSupported: boolean;
   onRecordingUploaded?: () => void;
+  /** Restart control (#628). Owned by `DeviceViewer`, which sequences the shutdown and the boot. */
+  rebootPending: boolean;
+  onReboot: () => void;
   screenWidth?: number;
   screenHeight?: number;
   /** Rounded-corner radius as a fraction of width — the emulator bakes the device's corners into
@@ -65,6 +68,7 @@ export function AndroidViewer({
   deviceReady, installing, installed, installError, bootError,
   launching, androidButtons,
   binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, networkHandlerRef, networkSupported, onRecordingUploaded,
+  rebootPending, onReboot,
   screenWidth, screenHeight, cornerRadius,
   perfHookRef,
 }: AndroidViewerProps) {
@@ -553,6 +557,7 @@ export function AndroidViewer({
         deviceSlot={deviceSlot}
         launchSlot={launchSlot}
         network={networkSupported ? { position: network.position, steerable: network.steerable, reason: network.reason, pending: network.pending, onToggle: network.toggle } : undefined}
+        reboot={{ pending: rebootPending, onReboot }}
       />
 
       <div className="flex items-start gap-8">

@@ -55,6 +55,9 @@ interface IOSViewerProps {
   swKeyboardVisible: boolean;
   swKeyboardPending: boolean;
   onKbdToggle: () => void;
+  /** Restart control (#628). Owned by `DeviceViewer`, which sequences the shutdown and the boot. */
+  rebootPending: boolean;
+  onReboot: () => void;
   perfHookRef?: MutableRefObject<PerfHook>;
 }
 
@@ -64,6 +67,7 @@ export function IOSViewer({
   launching, chrome,
   binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, networkHandlerRef, networkSupported, onRecordingUploaded,
   swKeyboardVisible, swKeyboardPending, onKbdToggle,
+  rebootPending, onReboot,
   perfHookRef,
 }: IOSViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -644,6 +648,7 @@ export function IOSViewer({
         deviceSlot={deviceSlot}
         launchSlot={launchSlot}
         network={networkSupported ? { position: network.position, steerable: network.steerable, reason: network.reason, pending: network.pending, onToggle: network.toggle } : undefined}
+        reboot={{ pending: rebootPending, onReboot }}
       />
 
       <div className="flex items-start gap-8">

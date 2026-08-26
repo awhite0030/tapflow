@@ -164,13 +164,20 @@ device**, not by how the feature is built:
 | Group | What belongs in it | Today |
 |---|---|---|
 | **Navigation** | Move around the app or the OS. Press it and it is over. | launch, home, back, recent apps, deeplink |
-| **Device** | Leave the device in a condition that stays until somebody changes it back. | software keyboard, volume, sleep, rotate |
+| **Device** | Leave the device in a condition that stays until somebody changes it back. | software keyboard, volume, sleep, rotate, restart |
 | **Capture** | Take the current state out of the session. | screenshot, recording |
 | **Environment** | Change what the device is sitting in. | network on/off |
 
 **This exists so that "where does this go?" has an answer before anyone argues.** GPS mock →
 Environment. Shake → Device. Log download → Capture. A deeplink is Navigation and not a tool,
 because from the tester's side it is "go to this screen" rather than "type a URL".
+
+**A restart is Device rather than a group of its own**, and it closes that group: it acts on the
+device the way the power button does, and inside a group the order runs frequent → rare. It is also
+the only control here a tester cannot undo, which is why it is the only one behind a confirmation —
+the placement rule decides *where*, and destructiveness decides *what it takes to fire it*. Wiping
+stays on the selector screen; two irreversible buttons side by side is how #439's accidental erase
+happened.
 
 Sticky beats momentary when a button could be read either way — the keyboard is Device, not
 Navigation, because a keyboard left up stays up. That is the same reasoning `networkLook` in
@@ -213,6 +220,10 @@ surface, rather than the toolbar growing until it runs off the screen.
 back, recent apps, deeplink. So the threshold is crossed rather than approaching, and it was
 Navigation that crossed it — not Environment, which is the group whose *future* members (location,
 battery, appearance, locale, time zone, permissions) make it the one to watch next.
+
+**And Device followed it**: the restart (#628) takes Android's Device group to four and iOS's to
+three. Both are at the threshold rather than over it, so nothing moves yet — but the next button
+either platform adds to Device is the one that should arrive with a popover rather than a slot.
 
 ## HOW NOT
 

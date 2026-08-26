@@ -1,10 +1,14 @@
 'use client';
 
-import { Camera, Link2, Loader2, Radio, RadioOff, RotateCw, Square, Video } from 'lucide-react';
+import { Camera, Link2, Loader2, Power, Radio, RadioOff, RotateCw, Square, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { useId } from 'react';
+import { useId, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { NetworkUnavailableReason } from '@tapflowio/protocol';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
@@ -53,6 +57,14 @@ interface SimulatorToolbarProps {
   launchSlot?: ReactNode;
   /** Network control (#607). Absent when the agent does not advertise `network-control`. */
   network?: NetworkControl;
+  /**
+   * Restart the device (#628). Rendered **last in the Device group** — it acts on the device like the
+   * power button, and a group runs frequent → rare.
+   *
+   * `onReboot` is called only after the tester confirms; the dialog is here rather than at the caller
+   * so every platform gets the same wording for the same irreversible thing.
+   */
+  reboot?: { pending: boolean; onReboot: () => void };
 }
 
 export interface NetworkControl {
@@ -311,12 +323,18 @@ export function SimulatorToolbar({
   deviceSlot,
   launchSlot,
   network,
+  reboot,
 }: SimulatorToolbarProps) {
   // Per instance, not a literal: this component takes all its state through props and is rendered per
   // device viewer, so two toolbars on screen would point both buttons' `aria-describedby` at the first
   // span — one device's control described by another device's network state. The unit tests render one
   // toolbar at a time and cannot see that.
   const descId = useId();
+  const rebootStatusId = useId();
+  // Controlled rather than an `AlertDialogTrigger`, because the button it would wrap is already
+  // wrapped by a `TooltipTrigger asChild` — two libraries cloning the same child and both wanting to
+  // own its ref and its handlers. `BuildRow` drives its dialog the same way.
+  const [confirmingReboot, setConfirmingReboot] = useState(false);
   if (!joined) return null;
 
   return (
@@ -382,6 +400,34 @@ export function SimulatorToolbar({
           </TooltipTrigger>
           <TooltipContent side="left"><ShortcutTooltip label="Rotate" keys={['⌘', '⇧', 'O']} /></TooltipContent>
         </Tooltip>
+
+        {reboot && (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  aria-label={reboot.pending ? 'Restarting the device' : 'Restart the device'}
+                  aria-busy={reboot.pending}
+                  // `aria-disabled`, not `disabled`: a disabled button is removed from the tab order and
+                  // stops being describable, so the one moment it has something to say is the moment it
+                  // cannot say it. #447 is where that was measured; the click guard is below.
+                  aria-disabled={reboot.pending}
+                  aria-describedby={rebootStatusId}
+                  onClick={() => { if (!reboot.pending) setConfirmingReboot(true); }}
+                >
+                  {reboot.pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Power className="h-4 w-4" />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="left">Restart device</TooltipContent>
+            </Tooltip>
+            <span id={rebootStatusId} role="status" className="sr-only">
+              {reboot.pending ? 'Restarting the device.' : ''}
+            </span>
+          </>
+        )}
 
         </div>
 
@@ -521,6 +567,38 @@ export function SimulatorToolbar({
         </>
         )}
       </div>
+
+      {/* **Outside the toolbar's column**: Radix portals the open dialog, and an `AlertDialog` that
+          is closed renders nothing — but leaving the element inside a `role="group"` would still put
+          it in that group's accessibility subtree while it is open. */}
+      {reboot && (
+        <AlertDialog open={confirmingReboot} onOpenChange={setConfirmingReboot}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Restart this device?</AlertDialogTitle>
+              {/* Says what is lost rather than that something is. A tester who has spent ten minutes
+                  reaching a screen is deciding whether to spend them again, and "this cannot be
+                  undone" does not tell them that. Apps and their data survive — this is a restart,
+                  not the wipe the selector screen offers. */}
+              <AlertDialogDescription>
+                Anything open on the device closes, and whatever you had set up on screen is gone.
+                Installed apps and their data stay. The device takes a moment to come back.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  setConfirmingReboot(false);
+                  reboot.onReboot();
+                }}
+              >
+                Restart
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </TooltipProvider>
   );
 }
