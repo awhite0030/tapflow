@@ -572,8 +572,14 @@ export function IOSViewer({
             // toggles carry their state in `aria-pressed`; this was the one left outside ARIA.
             aria-pressed={swKeyboardVisible}
             aria-busy={swKeyboardPending}
-            disabled={swKeyboardPending}
-            onClick={onKbdToggle}
+            // **`aria-disabled`, not `disabled`, and the sibling controls already know why.** A
+            // `disabled` button leaves the focus order and stops receiving pointer events, so it
+            // announces "unavailable" with no reason *and* its tooltip — the only thing that could
+            // give one — can never open. The record button branches its name for this (#447, #624)
+            // and the network control below chooses `aria-disabled` for it. This one was the last
+            // holdout; moving it into the Device group is what made that visible.
+            aria-disabled={swKeyboardPending}
+            onClick={() => { if (!swKeyboardPending) onKbdToggle() }}
             data-active={swKeyboardVisible}
           >
             {swKeyboardPending

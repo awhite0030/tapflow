@@ -338,9 +338,17 @@ export function SimulatorToolbar({
         *
         */}
       <div className="flex flex-col items-center gap-0.5 rounded-2xl border bg-background/90 backdrop-blur-sm px-1.5 py-2.5 shrink-0 mt-3">
-        {/* ── Navigation: move around the app or the OS ─────────────────────────── */}
-        {launchSlot}
-        {navigationSlot}
+        {/*
+          * **`role="group"` and not only a line, because the grouping is the feature.**
+          *
+          * The dividers are `<div>`s with a background colour: to a screen reader or voice control
+          * they are nothing, so without these the four groups this change exists to create are one
+          * flat run of icon buttons. Not `role="toolbar"` on the container — that promises the APG
+          * roving-tabindex arrow-key model, which is not implemented here.
+          */}
+        <div role="group" aria-label="Navigation" className="contents">
+          {launchSlot}
+          {navigationSlot}
 
         <Tooltip>
           <TooltipTrigger asChild>
@@ -352,10 +360,13 @@ export function SimulatorToolbar({
           <TooltipContent side="left"><ShortcutTooltip label="Deeplink" keys={['⌘', 'K']} /></TooltipContent>
         </Tooltip>
 
-        {/* ── Device: leave the device in a condition ────────────────────────────── */}
-        <div className="w-4 h-px bg-border my-1" />
+        </div>
 
-        {deviceSlot}
+        {/* ── Device: leave the device in a condition ────────────────────────────── */}
+        <div role="separator" aria-orientation="horizontal" className="w-4 h-px bg-border my-1" />
+
+        <div role="group" aria-label="Device" className="contents">
+          {deviceSlot}
 
         <Tooltip>
           <TooltipTrigger asChild>
@@ -366,8 +377,12 @@ export function SimulatorToolbar({
           <TooltipContent side="left"><ShortcutTooltip label="Rotate" keys={['⌘', '⇧', 'O']} /></TooltipContent>
         </Tooltip>
 
+        </div>
+
         {/* ── Capture: take the current state out of the session ───────────────── */}
-        <div className="w-4 h-px bg-border my-1" />
+        <div role="separator" aria-orientation="horizontal" className="w-4 h-px bg-border my-1" />
+
+        <div role="group" aria-label="Capture" className="contents">
 
         <Tooltip>
           <TooltipTrigger asChild>
@@ -420,8 +435,12 @@ export function SimulatorToolbar({
           </TooltipContent>
         </Tooltip>
 
+        </div>
+
         {/* ── Environment: change what the device is sitting in ─────────────────── */}
-        <div className="w-4 h-px bg-border my-1" />
+        <div role="separator" aria-orientation="horizontal" className="w-4 h-px bg-border my-1" />
+
+        <div role="group" aria-label="Environment" className="contents">
 
         {network && (() => {
           const { Icon, className, status } = networkLook(network);
@@ -487,6 +506,7 @@ export function SimulatorToolbar({
             </Tooltip>
           );
         })()}
+        </div>
       </div>
     </TooltipProvider>
   );

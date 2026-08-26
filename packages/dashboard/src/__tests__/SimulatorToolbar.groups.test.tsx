@@ -9,7 +9,7 @@
 // passes on buttons in the wrong groups, and a snapshot fails on every unrelated style change and
 // gets updated without being read.
 import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { SimulatorToolbar } from '@/components/device/shared/SimulatorToolbar'
 
 /** Stand-ins for what the viewers pass, labelled so the assertions read as the rule does. */
@@ -56,6 +56,28 @@ describe('the device toolbar groups by what the tester is doing to the device', 
     expect(rotate, 'rotate leaves the device in a condition, so it closes the Device group')
       .toBeLessThan(capture)
     expect(capture).toBeLessThan(environment)
+  })
+
+  it('exists in the accessibility tree, not only as a line on screen', () => {
+    // **The dividers are `<div>`s with a background colour.** Without a role and a name the four
+    // groups this whole change is about are, to a screen reader or voice control, one flat run of
+    // icon buttons — and the order assertion above would pass over exactly that.
+    toolbar()
+    const groups = screen.getAllByRole('group').map((g) => g.getAttribute('aria-label'))
+    expect(groups).toEqual(['Navigation', 'Device', 'Capture', 'Environment'])
+  })
+
+  it('puts each button in the group the rule assigns it to', () => {
+    // Order alone does not say which side of a boundary a button is on. This is what fails when a
+    // button drifts one group over — which is the change the rule exists to make a decision.
+    toolbar()
+    const group = (name: string) => within(screen.getByRole('group', { name }))
+    expect(group('Navigation').getByRole('button', { name: /^Home$/ })).toBeTruthy()
+    expect(group('Navigation').getByRole('button', { name: /deeplink/i })).toBeTruthy()
+    expect(group('Device').getByRole('button', { name: /Software keyboard/ })).toBeTruthy()
+    expect(group('Device').getByRole('button', { name: /Rotate/ })).toBeTruthy()
+    expect(group('Capture').getByRole('button', { name: /screenshot/i })).toBeTruthy()
+    expect(group('Environment').getByRole('button', { name: /device (offline|online|network)/i })).toBeTruthy()
   })
 
   it('keeps the deeplink in Navigation rather than with the tools', () => {
