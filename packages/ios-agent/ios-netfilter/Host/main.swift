@@ -38,6 +38,14 @@ private enum ExitCode: Int32 {
     /// the caller's remedy is the same whether the filter was never installed, is disabled, or died a
     /// second ago, and the states are not distinguishable from here anyway.
     case notConfirmed = 7
+    /// An argument this build does not understand.
+    ///
+    /// **It exits rather than proceeding, and that is the whole point.** Every unrecognised flag used
+    /// to fall through to `.configure`, where `parseOfflineUDIDs` found nothing and the run wrote an
+    /// *empty* rule. So a caller asking a question this binary could not answer — `--confirm` against
+    /// a build predating it — did not get a refusal, it silently **erased the rule**. Measured on this
+    /// Mac while a newer agent talked to an older installed app.
+    case badArguments = 8
 }
 
 private func die(_ code: ExitCode, _ why: String) -> Never {
@@ -116,15 +124,17 @@ private func hlog(_ s: String) {
 }
 
 final class Host: NSObject, OSSystemExtensionRequestDelegate {
-    private let offline: [String]
+    private let add: [String]
+    private let remove: [String]
     /// The approval deadline, held only so both terminal callbacks can cancel it.
     private var approvalTimeout: DispatchWorkItem?
     /// The overall activation deadline. Cancelled by every delegate callback, including the one that
     /// only reports approval is needed — from there the longer, human-scale deadline takes over.
     private var activationTimeout: DispatchWorkItem?
 
-    init(offline: [String]) {
-        self.offline = offline
+    init(add: [String], remove: [String]) {
+        self.add = add
+        self.remove = remove
         super.init()
     }
 
@@ -197,8 +207,8 @@ final class Host: NSObject, OSSystemExtensionRequestDelegate {
         // Exit once the rule is written. The provider keeps running and the configuration persists, so
         // a resident container app would buy nothing — and leaving one behind is what made `open` a
         // silent no-op on the next invocation (it activates a running app instead of re-running main).
-        cleanupOldProxy { [offline] in
-            configureFilter(offline: offline, exitCode: pendingReboot ? .completesAfterReboot : .ok)
+        cleanupOldProxy { [add, remove] in
+            configureFilter(add: add, remove: remove, exitCode: pendingReboot ? .completesAfterReboot : .ok)
         }
     }
 
@@ -230,7 +240,8 @@ private func cleanupOldProxy(_ done: @escaping () -> Void) {
     }
 }
 
-// The offline set arrives on the command line: `TapflowNetFilter [--offline <udid>[,<udid>…]]`.
+// The rule change arrives on the command line as a **delta**:
+// `TapflowNetFilter [--add <udid>[,<udid>…]] [--remove <udid>[,<udid>…]]`.
 // No argument means an EMPTY set, not "leave what is there" — this binary is how the rule is changed,
 // so a plain launch must clear a stale rule rather than preserve one nobody asked for.
 /**
@@ -282,10 +293,43 @@ private func disableFilter() {
     }
 }
 
-private func parseOfflineUDIDs() -> [String] {
+/// A comma-separated udid list behind `flag`. Absent is `[]`; **present with no value is an error**,
+/// because `--add` followed by another flag used to consume that flag as a udid.
+private func parseUDIDs(_ flag: String) throws -> [String] {
     let args = CommandLine.arguments
-    guard let flag = args.firstIndex(of: "--offline"), flag + 1 < args.count else { return [] }
-    return args[flag + 1].split(separator: ",").map(String.init).filter { !$0.isEmpty }
+    guard let i = args.firstIndex(of: flag) else { return [] }
+    guard i + 1 < args.count, !args[i + 1].hasPrefix("--") else { throw ArgError.missingValue(flag) }
+    return args[i + 1].split(separator: ",").map(String.init).filter { !$0.isEmpty }
+}
+
+private enum ArgError: Error { case missingValue(String), unknown(String) }
+
+/// Every flag this build accepts. Anything else is `badArguments`.
+private let knownFlags: Set<String> = ["--install", "--confirm", "--off", "--add", "--remove"]
+
+private func rejectUnknownFlags() throws {
+    for arg in CommandLine.arguments.dropFirst() where arg.hasPrefix("--") {
+        if !knownFlags.contains(arg) { throw ArgError.unknown(arg) }
+    }
+}
+
+/**
+ * **The rule is a delta the caller names, not a set it replaces.**
+ *
+ * Replacing was the defect. The agent wrote its *whole* offline set on every run, and `arm()` runs on
+ * every device boot knowing nothing — so a second agent starting put every device the first had taken
+ * offline back online, silently, while its tester watched an offline control over working traffic.
+ *
+ * A delta cannot do that: an agent names only the devices it is handling, so it removes nothing it
+ * does not know about. The cleanup the unconditional write used to provide survives in a more precise
+ * form — `arm(udid)` names that udid in `--remove`, and arm runs whenever a device boots, so a rule
+ * left by a dead process is cleared the next time that device comes up rather than by wiping the host.
+ */
+private func mergeRule(existing: [String], add: [String], remove: [String]) -> [String] {
+    var out = Set(existing)
+    out.formUnion(add)
+    out.subtract(remove)
+    return out.sorted()
 }
 
 // Rule injection goes through NEFilterProviderConfiguration.vendorConfiguration — the channel the
@@ -299,7 +343,7 @@ private func parseOfflineUDIDs() -> [String] {
 // decision. What the old sentence did was stop anyone trying. What is true is that `saveToPreferences`
 // returning means only that the save was accepted: the framework hands the configuration on
 // afterwards with nothing coming back, so exit 0 here is not evidence the provider has the rule.
-private func configureFilter(offline: [String], exitCode: ExitCode) {
+private func configureFilter(add: [String], remove: [String], exitCode: ExitCode) {
     let manager = NEFilterManager.shared()
     manager.loadFromPreferences { error in
         if let error {
@@ -310,6 +354,18 @@ private func configureFilter(offline: [String], exitCode: ExitCode) {
         let config = manager.providerConfiguration ?? NEFilterProviderConfiguration()
         config.filterSockets = true
         config.filterPackets = false
+        // **Read-modify-write, and the read is the point.** The rule this run publishes is whatever
+        // was already there plus what this caller named — so a caller that names nothing removes
+        // nothing, which is what makes a second agent harmless to the first.
+        //
+        // Not serialised against another Host doing the same thing: `saveToPreferences` was measured
+        // to accept a save made against a stale load, 4/4, silently. Two Hosts interleaving can still
+        // lose one delta. That is a smaller window than the whole-set replacement it replaces — the
+        // agent's own `serialize()` orders its runs, so it takes two *agents* toggling inside the same
+        // few milliseconds — and closing it needs an interlock whose read-your-writes behaviour is
+        // unmeasured. Stated rather than implied.
+        let existing = (config.vendorConfiguration?["offlineUDIDs"] as? [String]) ?? []
+        let offline = mergeRule(existing: existing, add: add, remove: remove)
         config.vendorConfiguration = ["offlineUDIDs": offline]
         manager.providerConfiguration = config
         manager.localizedDescription = "tapflow network filter"
@@ -320,7 +376,7 @@ private func configureFilter(offline: [String], exitCode: ExitCode) {
             if let error {
                 die(.savePreferencesFailed, error.localizedDescription)
             }
-            hlog("filter enabled, offline=\(offline)")
+            hlog("filter enabled, offline=\(offline) (add=\(add) remove=\(remove))")
             // Not always `.ok`: the rule is written on the reboot path too, and the code is what says
             // which provider will be enforcing it.
             if exitCode == .ok { exit(ExitCode.ok.rawValue) }
@@ -332,7 +388,7 @@ private func configureFilter(offline: [String], exitCode: ExitCode) {
 /**
  * `--confirm` — ask the running provider what it is enforcing, and print the answer.
  *
- * **This is the only thing that can answer "did the rule land".** `--offline` exits when the *save*
+ * **This is the only thing that can answer "did the rule land".** A rule write exits when the *save*
  * was accepted; the framework hands `vendorConfiguration` to the running provider afterwards with
  * nothing coming back, so the exit code of a configure run is "nothing refused" and no more.
  *
@@ -380,6 +436,23 @@ private func confirmEnforcement() {
 private var installHost: Host?
 
 hlog("host launched at \(Bundle.main.bundlePath) args=\(CommandLine.arguments.dropFirst())")
+// **Parsed before anything is dispatched, so an argument this build does not understand refuses
+// instead of being ignored.** The old `parseMode` fell through to `.configure` for every unknown
+// flag, and `.configure` with nothing to add or remove used to mean "replace the rule with nothing".
+let add: [String]
+let remove: [String]
+do {
+    try rejectUnknownFlags()
+    add = try parseUDIDs("--add")
+    remove = try parseUDIDs("--remove")
+} catch ArgError.unknown(let flag) {
+    die(.badArguments, "unknown argument \(flag) — this build does not understand it")
+} catch ArgError.missingValue(let flag) {
+    die(.badArguments, "\(flag) needs a comma-separated udid list")
+} catch {
+    die(.badArguments, "\(error)")
+}
+
 switch parseMode() {
 case .confirm:
     // Reads only. It must not configure anything on the way — a confirmation that writes is not one.
@@ -403,11 +476,11 @@ case .install:
     // recorded three times as "cause unknown; the deadline exists because the failure is silent".
     //
     // It only ever bit a *replace* because a first install has no existing entry to ask about.
-    installHost = Host(offline: parseOfflineUDIDs())
+    installHost = Host(add: add, remove: remove)
     installHost?.activate()
 case .configure:
     // The agent's path. The extension is already installed by the time anyone is toggling a
     // simulator's network, so this writes the rule and leaves the extension alone.
-    configureFilter(offline: parseOfflineUDIDs(), exitCode: .ok)
+    configureFilter(add: add, remove: remove, exitCode: .ok)
 }
 RunLoop.main.run()

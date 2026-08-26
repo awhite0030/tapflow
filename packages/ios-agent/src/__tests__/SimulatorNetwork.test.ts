@@ -6,6 +6,7 @@ import { SimulatorNetwork } from '../SimulatorNetwork.js'
 
 const UDID = 'AAAAAAAA-1111-2222-3333-444444444444'
 const OTHER = 'BBBBBBBB-5555-6666-7777-888888888888'
+const THIRD = 'CCCCCCCC-9999-AAAA-BBBB-CCCCCCCCCCCC'
 
 /**
  * A stand-in for the container app.
@@ -16,7 +17,7 @@ const OTHER = 'BBBBBBBB-5555-6666-7777-888888888888'
  */
 function fakeHostBinary(dir: string, log: string, sleepMs = 0, failNth = 0): string {
   const path = join(dir, `fake-filter-host${sleepMs}-${failNth}`)
-  // `--offline` may be empty, which is how the rule is cleared; `${2-}` keeps that from failing.
+  // The rule arrives as a delta (`--add` / `--remove`); this script applies it to a rule it keeps.
   // Exits non-zero while a sentinel file exists, so a test can take the container app away between
   // one toggle and the next — which is the only way to reach the failure path from a device that is
   // already offline, and that starting state is where the bug was.
@@ -55,10 +56,28 @@ function fakeHostBinary(dir: string, log: string, sleepMs = 0, failNth = 0): str
       ? `N=$(cat "${dir}/runs" 2>/dev/null || echo 0); N=$((N+1)); echo $N > "${dir}/runs"\n`
         + `[ "$N" = "${failNth}" ] && exit 1\n`
       : '')
-    + (sleepMs > 0 ? `printf 'enter:%s\\n' "\${2-}" >> "${log}"\nsleep ${sleepMs / 1000}\n` : '')
-    + `printf '%s' "\${2-}" > "${dir}/rule"\n`
-    + `printf '{"at":%s,"pulseSeconds":1,"rule":%s}\\n' "$(date +%s)" "$(printf '%s' "\${2-}" | ${ruleToJson})" > "${dir}/state.json"\n`
-    + `printf 'rule:%s cond:%s\\n' "\${2-}" "$(ls "${dir}" | grep -c '^tapflow-offline-')" >> "${log}"\n`,
+    // **Applies the delta to a rule it keeps, rather than recording what it was told.** The host
+    // merges now, so a fake that only echoed its arguments would let a test assert the right argv
+    // over a rule that never changed — and the whole defect being fixed is about what the rule ends
+    // up holding for devices this caller never named.
+    + `ADD=""; REM=""; ARGV="$*"\n`
+    + `while [ $# -gt 0 ]; do case "$1" in\n`
+    + `  --add) ADD="\${2-}"; shift 2 ;;\n`
+    + `  --remove) REM="\${2-}"; shift 2 ;;\n`
+    + `  *) shift ;;\n`
+    + `esac; done\n`
+    + (sleepMs > 0 ? `printf 'enter:%s\\n' "$ADD" >> "${log}"\nsleep ${sleepMs / 1000}\n` : '')
+    + `CUR=$(cat "${dir}/rule" 2>/dev/null || echo "")\n`
+    + `printf '%s' "$REM" | tr ',' '\\n' | grep -v '^$' > "${dir}/.rem"\n`
+    + `printf '%s,%s' "$CUR" "$ADD" | tr ',' '\\n' | grep -v '^$' | sort -u > "${dir}/.all"\n`
+    + `if [ -s "${dir}/.rem" ]; then OUT=$(grep -vxF -f "${dir}/.rem" "${dir}/.all" | paste -sd, -); else OUT=$(paste -sd, - < "${dir}/.all"); fi\n`
+    + `printf '%s' "$OUT" > "${dir}/rule"\n`
+    + `printf '{"at":%s,"pulseSeconds":1,"rule":%s}\\n' "$(date +%s)" "$(printf '%s' "$OUT" | ${ruleToJson})" > "${dir}/state.json"\n`
+    // argv goes to its own file: the log line still carries the **resulting rule**, which is what the
+    // assertions below are about, and argv is available separately for the tests that are about what
+    // this run named rather than what it produced.
+    + `printf '%s\\n' "$ARGV" >> "${dir}/argv.log"\n`
+    + `printf 'rule:%s cond:%s\\n' "$OUT" "$(ls "${dir}" | grep -c '^tapflow-offline-')" >> "${log}"\n`,
     { mode: 0o755 },
   )
   return path
@@ -146,6 +165,12 @@ describe('SimulatorNetwork', () => {
   /** Just the rule lines, in the order the container app was invoked. */
   function rules(): string[] {
     return readAll().split('\n').filter(l => l.startsWith('rule:'))
+  }
+
+  /** What each host run was asked to change, as opposed to what the rule became. */
+  function argv(): string[] {
+    if (!existsSync(join(dir, 'argv.log'))) return []
+    return readFileSync(join(dir, 'argv.log'), 'utf8').trim().split('\n').filter(Boolean)
   }
 
   it('reports the device offline and steerable once every layer is applied', async () => {
@@ -496,12 +521,48 @@ describe('SimulatorNetwork', () => {
 
     it('clears a rule left behind by a previous process', async () => {
       // An agent that crashed while a device was offline leaves the rule on the host and takes its
-      // memory with it. The replacement knows of no offline device, and writing what it knows is
-      // what recovers the simulator — so the rule is rewritten unconditionally, not only when this
-      // instance happens to remember putting the device in it.
+      // memory with it. The replacement knows of no offline device, and recovering the simulator is
+      // what arming it does — now by naming that udid rather than by rewriting the whole rule, which
+      // is the same recovery for the device being armed and none of the damage to the others.
       const net = make()
       await net.arm(UDID)
       expect(rules()).toEqual(['rule: cond:0'])
+      expect(argv()).toEqual([`--remove ${UDID}`])
+    })
+
+    it('does not erase a device it was not asked about', async () => {
+      // **The defect this whole change exists for.** The rule is the host's; a second agent starting
+      // knows of no offline device, and `arm` runs on every device boot. Writing its own set — empty —
+      // put every device the first agent had taken offline back online, silently, while that tester
+      // watched an offline control over working traffic.
+      const first = make()
+      await first.setOffline(UDID, true)
+      await first.setOffline(OTHER, true)
+      expect(readFileSync(join(dir, 'rule'), 'utf8')).toBe([OTHER, UDID].sort().join(','))
+
+      // A different agent, sharing this Mac's rule, arming a third device it has just booted.
+      const second = make()
+      await second.arm(THIRD)
+      expect(
+        readFileSync(join(dir, 'rule'), 'utf8'),
+        'the second agent erased devices it had never heard of',
+      ).toBe([OTHER, UDID].sort().join(','))
+      // And the first agent still reports them offline, because they still are.
+      expect(first.state(UDID)).toMatchObject({ offline: true })
+      expect(first.state(OTHER)).toMatchObject({ offline: true })
+    })
+
+    it('still recovers a leftover when the device that owns it comes back', async () => {
+      // The cleanup the whole-set write used to provide, in its precise form: the leftover goes when
+      // that device is armed, which happens on its next boot. Asserted as the rule losing exactly one
+      // entry — a test that only checked the rule was non-empty would pass on a write that did
+      // nothing.
+      const first = make()
+      await first.setOffline(UDID, true)
+      await first.setOffline(OTHER, true)
+      const second = make()
+      await second.arm(UDID)
+      expect(readFileSync(join(dir, 'rule'), 'utf8')).toBe(OTHER)
     })
 
     it('takes the status bar down when a device is retired', async () => {

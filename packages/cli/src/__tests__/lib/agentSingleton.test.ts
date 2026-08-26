@@ -1,0 +1,98 @@
+// One agent per Mac per platform, and the claim is a real socket rather than a pid file.
+//
+// **Every assertion here is against the real kernel behaviour, not a double.** The whole reason this
+// is a socket is that the kernel releases the listener when the process dies — including a `kill -9`,
+// where no cleanup code runs — and a double would simply agree with whatever this file believed.
+import { describe, it, expect, afterEach } from 'vitest'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { claimAgentSlot, claimPath } from '../../lib/agent-singleton.js'
+
+/** Short on purpose: `sun_path` is 104 bytes on Darwin, and vitest's own temp paths are long. */
+const dir = mkdtempSync(join(tmpdir(), 'tf-'))
+const kids: ChildProcess[] = []
+const released: Array<() => void> = []
+
+afterEach(() => {
+  for (const k of kids.splice(0)) k.kill('SIGKILL')
+  for (const r of released.splice(0)) r()
+})
+
+/** A separate process that takes the claim and then does nothing, like a running agent. */
+function owner(platform: string): Promise<ChildProcess> {
+  const src = `
+    const net = require('node:net')
+    const s = net.createServer(c => c.destroy())
+    s.listen(${JSON.stringify(claimPath(platform, dir))}, () => process.stdout.write('up\\n'))
+    setInterval(() => {}, 1000)
+  `
+  const child = spawn(process.execPath, ['-e', src], { stdio: ['ignore', 'pipe', 'ignore'] })
+  kids.push(child)
+  return new Promise((resolve) => { child.stdout!.once('data', () => resolve(child)) })
+}
+
+describe('the agent slot', () => {
+  it('is taken when nobody holds it', async () => {
+    const claim = await claimAgentSlot('ios', dir)
+    expect(claim.held).toBe(true)
+    if (claim.held) released.push(claim.release)
+    expect(existsSync(claimPath('ios', dir))).toBe(true)
+  })
+
+  it('is refused while another process holds it', async () => {
+    await owner('android')
+    const claim = await claimAgentSlot('android', dir)
+    expect(claim).toEqual({ held: false, reason: 'in-use' })
+  })
+
+  it('is free again after the holder is killed without cleaning up', async () => {
+    // `SIGKILL`, because that is the case a pid file, a lock file or a timestamp cannot cover: no
+    // handler runs, the socket file stays on disk, and only the kernel's release of the listener
+    // distinguishes a dead owner from a live one.
+    const child = await owner('probe')
+    expect((await claimAgentSlot('probe', dir)).held, 'refused while alive').toBe(false)
+    child.kill('SIGKILL')
+    await new Promise((r) => child.once('exit', r))
+    expect(existsSync(claimPath('probe', dir)), 'the corpse is still on disk').toBe(true)
+    const claim = await claimAgentSlot('probe', dir)
+    expect(claim.held, 'a dead owner still held the slot').toBe(true)
+    if (claim.held) released.push(claim.release)
+  })
+
+  it('takes over a path left by something that is not a socket at all', async () => {
+    // A plain file at the path answers `connect` with an error the same way a corpse does. Treating
+    // that as "held" would wedge the platform until someone found the file.
+    writeFileSync(claimPath('junk', dir), 'not a socket')
+    const claim = await claimAgentSlot('junk', dir)
+    expect(claim.held).toBe(true)
+    if (claim.held) released.push(claim.release)
+  })
+
+  it('releases on request, so a second claim in the same process succeeds', async () => {
+    const first = await claimAgentSlot('cycle', dir)
+    expect(first.held).toBe(true)
+    if (first.held) first.release()
+    const second = await claimAgentSlot('cycle', dir)
+    expect(second.held, 'release did not free the path').toBe(true)
+    if (second.held) released.push(second.release)
+  })
+
+  it('keeps platforms apart', async () => {
+    await owner('ios2')
+    const other = await claimAgentSlot('android2', dir)
+    expect(other.held, 'an iOS agent blocked an Android one').toBe(true)
+    if (other.held) released.push(other.release)
+  })
+
+  it('answers a probe even while the owner is busy', async () => {
+    // The backlog is the kernel's, and the listener destroys what it accepts, so a probe cannot be
+    // refused for being queued behind other probes — which would read as "the owner is dead".
+    await owner('busy')
+    const results = await Promise.all([
+      claimAgentSlot('busy', dir), claimAgentSlot('busy', dir), claimAgentSlot('busy', dir),
+    ])
+    expect(results.map((r) => r.held)).toEqual([false, false, false])
+  })
+})

@@ -71,7 +71,9 @@ ios-netfilter/
 B=/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter
 
 $B --install                    # 확장 활성화 + 설정. 릴리스당 한 번, 사람이 한다
-$B --offline <udid>[,<udid>…]   # 룰만 쓴다. 에이전트가 토글마다 부르는 경로
+$B --add <udid>[,…] [--remove <udid>[,…]]   # 룰을 델타로 고친다. 에이전트가 토글마다 부르는 경로
+                                            # 지명하지 않은 기기는 건드리지 않는다 — 그래서 두 번째
+                                            # 에이전트가 첫 번째의 기기를 지우지 못한다
 $B                              # 인자 없음 = 빈 집합 = 전부 온라인
 $B --off                        # 필터 비활성화 (확장은 그대로 둔다)
 $B --confirm                    # 실행 중인 provider가 뭘 집행 중인지 묻는다 (읽기 전용)

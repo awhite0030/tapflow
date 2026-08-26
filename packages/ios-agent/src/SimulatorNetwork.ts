@@ -224,10 +224,11 @@ export class SimulatorNetwork {
     // traffic dead while this class reported it online and steerable, and nothing recovered it short
     // of toggling twice.
     //
-    // Unconditional rather than only when this device was in the set, because the set is this
-    // process's memory and the rule is the host's. An agent that restarted knows of no offline
-    // device, and writing what it knows is what clears a rule left behind by the process before it.
-    await this.runFilterHost()
+    // **Names this udid and only this udid.** The rule is the host's and the set is this process's
+    // memory, so a rule left behind by the process before it still has to be cleared — but clearing
+    // it by writing this agent's whole set is what erased every other agent's devices. Naming the one
+    // that just booted does the same job for the device that is actually being armed.
+    await this.runFilterHost({ remove: [udid] })
     // Arm can empty the offline set, and the watcher has to stop with it or tick forever on nothing.
     this.updateLiveness()
 
@@ -319,7 +320,7 @@ export class SimulatorNetwork {
       // Best-effort by definition — the write that just failed may fail again — and that is still
       // strictly better than not trying, because the alternative is a divergence nothing revisits
       // until the device is rebooted.
-      await this.runFilterHost()
+      await this.runFilterHost(was ? { add: [udid] } : { remove: [udid] })
       this.filterVerdict.set(udid, 'unavailable')
       this.updateLiveness()
       return { offline: was, available: false, reason: 'filter-unavailable' }
@@ -375,7 +376,7 @@ export class SimulatorNetwork {
    * consistent and one of them is stale.
    */
   private async applyAndConfirm(udid: string, wanted: boolean): Promise<boolean> {
-    if (!await this.runFilterHost()) return false
+    if (!await this.runFilterHost(wanted ? { add: [udid] } : { remove: [udid] })) return false
     const seen = await this.confirmEnforcement()
     if (!seen) return false
     if (!seen.enforcing) return false
@@ -494,7 +495,7 @@ export class SimulatorNetwork {
     // false and the write was skipped — leaving the udid named in the rule for the rest of the Mac's
     // uptime, which is the exact outcome this method's doc block says it exists to prevent.
     this.offline.delete(udid)
-    await this.runFilterHost()
+    await this.runFilterHost({ remove: [udid] })
     this.setCondition(udid, false)
     // **The status bar is part of what has to come back.** It was set by `setOffline` and had no
     // other caller, so a device retired while offline kept showing no service for as long as it
@@ -639,7 +640,7 @@ export class SimulatorNetwork {
     }
     // Best-effort, and the same reason `setOffline` rewrites after a failure: leaving this agent's
     // idea of the rule and the host's apart is a divergence nothing revisits.
-    await this.runFilterHost()
+    await this.runFilterHost({ add: [...this.offline] })
     for (const udid of lost) {
       // **Telling the tester is the remedy; taking the layers down is the tidying up.** The device is
       // already reachable — that is what was detected — so leaving the app believing otherwise would
@@ -717,12 +718,30 @@ export class SimulatorNetwork {
    * refused"; whether the device is actually offline is answered by `state()`, from evidence the
    * dylib wrote inside the simulator.
    */
-  private async runFilterHost(): Promise<boolean> {
+  /**
+   * **Names the devices it is changing, and nothing else.**
+   *
+   * This used to write `[...this.offline]` — the whole set — and the host replaced the rule with it.
+   * The rule is host-wide, so that made every run an assertion about devices this agent had never
+   * heard of: a second agent starting knows of no offline device, and `arm()` runs on every device
+   * boot, so **starting one put every device the other had taken offline back online**, silently,
+   * while its tester watched an offline control over working traffic.
+   *
+   * A delta cannot say anything about a device it does not name. The cleanup the whole-set write used
+   * to provide is not lost, only made precise: `armLocked` names the udid that just booted in
+   * `remove`, and a rule left behind by a dead process is cleared the next time that device comes up
+   * rather than by wiping the host's.
+   */
+  private async runFilterHost(delta: { add?: string[]; remove?: string[] }): Promise<boolean> {
     if (!existsSync(this.hostBinary)) return false
+    const args: string[] = []
+    if (delta.add?.length) args.push('--add', delta.add.join(','))
+    if (delta.remove?.length) args.push('--remove', delta.remove.join(','))
+    // Nothing to say is not a reason to run: the host would load and re-save an unchanged rule, and
+    // every run is a chance to lose a concurrent one.
+    if (args.length === 0) return true
     try {
-      await execFileAsync(this.hostBinary, ['--offline', [...this.offline].join(',')], {
-        timeout: FILTER_HOST_TIMEOUT_MS,
-      })
+      await execFileAsync(this.hostBinary, args, { timeout: FILTER_HOST_TIMEOUT_MS })
       return true
     } catch {
       return false

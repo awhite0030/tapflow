@@ -2,6 +2,18 @@
 
 ## Agent connection issues
 
+### It says an agent is already running {#agent-already-running}
+
+`tapflow agent start` stopping with **AGENT ALREADY RUNNING** means a tapflow agent for that platform
+is already running on this Mac.
+
+One agent manages **every** simulator on its machine. Running several simulators and having several
+people each test on their own, at the same time, is what one agent does — and it still is. Starting a
+second agent is a different thing: it would compete with the first for the same device list and the
+same network filter, and the relay treats the two as one agent anyway.
+
+Stop the one that is running, or use the session it already serves.
+
 ### Agent cannot connect to the relay
 
 1. Verify the relay is running.
