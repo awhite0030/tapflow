@@ -1,11 +1,27 @@
 import { execFile } from 'child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { promisify } from 'util'
 import type { NetworkStatePayload } from '@tapflowio/agent-core'
 
 const execFileAsync = promisify(execFile)
 const NETHOOK_DYLIB = join(import.meta.dirname, '..', 'bin', 'libtapflow-nethook.dylib')
+
+/**
+ * A regular file, not merely a path that resolves.
+ *
+ * `existsSync` answers true for a directory, and dyld cannot inject one — so the check that exists to
+ * say "the library is not here" would have passed and let `state()` fall through to the verdict,
+ * reporting `awaiting-app` about an install that can never work. `statSync` follows symlinks, which is
+ * right: a link to a real dylib is one.
+ */
+function isFile(p: string): boolean {
+  try {
+    return statSync(p).isFile()
+  } catch {
+    return false
+  }
+}
 
 /**
  * Take one simulator off the network, or put it back (#607).
@@ -431,7 +447,7 @@ export class SimulatorNetwork {
     // Read rather than remembered, unlike layer 1 above. Layer 1 is a question this synchronous
     // method cannot put to the provider; this one is a `stat`, and a `node_modules` emptied under a
     // running agent is an ordinary thing to happen.
-    if (!existsSync(this.dylib)) return { offline, available: false, reason: 'hooks-not-installed' }
+    if (!isFile(this.dylib)) return { offline, available: false, reason: 'hooks-not-installed' }
 
     const verdict = this.readVerdict(udid)
 

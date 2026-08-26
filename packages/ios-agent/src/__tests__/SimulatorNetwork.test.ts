@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -359,6 +359,17 @@ describe('SimulatorNetwork', () => {
     // a remedy that cannot work, offered forever.
     const net = make()
     rmSync(hookPath(), { force: true })
+    expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
+  })
+
+  it('does not accept a directory standing where the library should be', async () => {
+    // `existsSync` answers true for one, and dyld cannot inject a directory — so the check would have
+    // passed and let the verdict decide, reporting `awaiting-app` about an install that can never
+    // work. The shape a half-finished copy leaves behind.
+    const net = make()
+    await net.arm(UDID)
+    rmSync(hookPath(), { force: true })
+    mkdirSync(hookPath(), { recursive: true })
     expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
   })
 
