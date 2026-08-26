@@ -654,24 +654,29 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
         aria-label="Device"
         className="flex items-start justify-center gap-16"
       >
-        {/* **`aria-busy` goes on the placeholders and not on this container**, which was where it
-            started and was wrong twice over. `!deviceReady` alone never comes back after
-            `device:boot-error`, so a failed boot announced itself as running for the rest of the
-            session — and on the container it sat *above* `SimulatorInfoCard`'s live region, where a
-            busy subtree can hold back the very sentence that says what happened. Every status this
-            branch shows went with it, not only the failures: `Connecting…`, `Joining session…` and
-            the agent going away all leave `bootError` null.
+        {/* **No `aria-busy` anywhere, and the two shapes below are hidden.** Three attempts put it in
+            three places and each was wrong in the same way. On this container it sat above
+            `SimulatorInfoCard`'s live region, where a busy subtree can hold back the sentence that
+            says what happened. Derived from `!deviceReady` it never cleared, because that flag does
+            not come back after `device:boot-error` — a failed boot announcing itself as running for
+            the rest of the session. Moved onto the placeholders it became a constant, which is the
+            same defect one element over.
 
-            Here it says what it means — these two shapes are standing in for something that has not
-            arrived — and the sentence describing it is outside them. */}
-        <div aria-busy className="flex flex-col items-center gap-0.5 rounded-2xl border bg-background/90 px-1.5 py-2.5 shrink-0 mt-3 opacity-40">
+            The shapes are decorative: no text, no name, nothing for a screen reader to attach "busy"
+            to. So they are `aria-hidden` and the progress is said once, in the one place that has
+            words for it — and that sentence is the thing to keep out of any hidden or busy subtree.
+
+            What this does *not* fix is that the region carrying it is remounted by the transition, so
+            a restart is still not announced end to end. That is #683: it needs the render restructured
+            rather than another attribute. */}
+        <div aria-hidden="true" className="flex flex-col items-center gap-0.5 rounded-2xl border bg-background/90 px-1.5 py-2.5 shrink-0 mt-3 opacity-40">
           {Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="h-8 w-8 rounded-md bg-muted animate-pulse" />
           ))}
         </div>
         <div className="flex items-start gap-8">
           {/* phone body skeleton */}
-          <div aria-busy style={{ background: '#1c1c1e', borderRadius: '34px', padding: '12px', flexShrink: 0 }}>
+          <div aria-hidden="true" style={{ background: '#1c1c1e', borderRadius: '34px', padding: '12px', flexShrink: 0 }}>
             <div className="animate-pulse bg-zinc-700" style={{ width: 324, height: 720, borderRadius: '22px' }} />
           </div>
           <SimulatorInfoCard

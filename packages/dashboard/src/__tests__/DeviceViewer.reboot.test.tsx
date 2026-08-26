@@ -196,10 +196,11 @@ describe('DeviceViewer — reboot wiring', () => {
     }
   })
 
-  it('keeps the status sentence out of any busy subtree', async () => {
-    // **`aria-busy` above a live region can hold back what it is trying to say.** It began on the
-    // container, which is an ancestor of `SimulatorInfoCard`'s `role="status"` — so every sentence
-    // this branch renders was suppressible, including the one reporting the boot that failed.
+  it('leaves the status sentence sayable, and hides the shapes that have no words', async () => {
+    // **Both halves, because either alone passes on the wrong thing.** A skeleton left in the
+    // accessibility tree is a run of unnamed boxes between the tester and the sentence; a `busy` or
+    // `hidden` ancestor over that sentence takes away the one channel this branch has. Three
+    // attempts at `aria-busy` were each wrong in the same way — see the comment beside the shapes.
     live()
     await confirmRestart()
     const id = shutdowns()[0].requestId
@@ -207,11 +208,18 @@ describe('DeviceViewer — reboot wiring', () => {
     act(() => { deliver!({ type: 'device:booting', sessionId: 'mine' }) })
 
     const status = screen.getByRole('status')
-    expect(status.closest('[aria-busy="true"]'), 'the status sentence sits inside a busy subtree').toBeNull()
-    // And the placeholders still say they are standing in for something, which is the claim that is
-    // actually true of them.
-    expect(document.querySelectorAll('[aria-busy="true"]').length, 'nothing is marked busy at all')
-      .toBeGreaterThan(0)
+    expect(status.closest('[aria-busy="true"]'), 'the sentence sits inside a busy subtree').toBeNull()
+    expect(status.closest('[aria-hidden="true"]'), 'the sentence is hidden from the tree').toBeNull()
+    expect(
+      document.querySelectorAll('.animate-pulse:not([aria-hidden="true"] *):not([aria-hidden="true"])').length,
+      'a decorative skeleton is still in the accessibility tree',
+    ).toBe(0)
+
+    // And nothing claims to be busy after the boot gives up — the state every `aria-busy` attempt
+    // here reproduced, in a different place each time.
+    const bootId = boots().at(-1)!.requestId
+    act(() => { deliver!({ type: 'device:boot-error', sessionId: 'mine', requestId: bootId, message: 'no such device' }) })
+    expect(document.querySelectorAll('[aria-busy="true"]').length, 'a boot that failed still reads as running').toBe(0)
   })
 
   it('leaves the join and the rebind booting the way they did', () => {
