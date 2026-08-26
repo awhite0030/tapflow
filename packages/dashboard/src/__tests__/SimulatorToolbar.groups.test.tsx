@@ -1,9 +1,11 @@
 // The toolbar's four groups, in the order a tester works through them (#634).
 //
-// **This exists because the grouping had no enforcement and no record.** Reordering every Android
-// button into one group left the whole dashboard suite green — the buttons were arranged by a
-// criterion nobody had written down, so nothing could notice it changing. The rule now lives in
-// `packages/dashboard/AGENTS.md` → "Where a new device button goes", and this is what holds it.
+// **This holds the toolbar's own order, and not the viewers' — which is worth knowing before trusting
+// it.** The slots below are stand-in buttons, so what fails here is the toolbar putting its groups in
+// the wrong sequence or losing a boundary. Whether `AndroidViewer` and `IOSViewer` hand it the right
+// buttons is a different fact, pinned in `scripts/__tests__/androidButtonsClassified.test.mjs`; an
+// earlier version of this comment claimed this file caught that too, and a reviewer showed it does
+// not — moving every Android button into one group leaves this green.
 //
 // Asserted as **relative order in the accessibility tree**, not as a count or a snapshot: a count
 // passes on buttons in the wrong groups, and a snapshot fails on every unrelated style change and
@@ -15,6 +17,9 @@ import { SimulatorToolbar } from '@/components/device/shared/SimulatorToolbar'
 /** Stand-ins for what the viewers pass, labelled so the assertions read as the rule does. */
 const navButtons = <button aria-label="Home" />
 const deviceButtons = <button aria-label="Software keyboard" />
+/** Passed on purpose: it is conditional in the real viewers, so a fixture without it lets the launch
+ *  button drift outside every group unnoticed — which is the one flat-run state this all exists to end. */
+const launch = <button aria-label="Launch app" />
 
 function toolbar({ network = true }: { network?: boolean } = {}) {
   return render(
@@ -25,6 +30,7 @@ function toolbar({ network = true }: { network?: boolean } = {}) {
       recordState="idle"
       onRotate={() => {}}
       onDeepLink={() => {}}
+      launchSlot={launch}
       navigationSlot={navButtons}
       deviceSlot={deviceButtons}
       network={network ? { position: 'online', steerable: true, pending: false, onToggle: () => {} } : undefined}
@@ -72,6 +78,7 @@ describe('the device toolbar groups by what the tester is doing to the device', 
     // button drifts one group over — which is the change the rule exists to make a decision.
     toolbar()
     const group = (name: string) => within(screen.getByRole('group', { name }))
+    expect(group('Navigation').getByRole('button', { name: /Launch app/ })).toBeTruthy()
     expect(group('Navigation').getByRole('button', { name: /^Home$/ })).toBeTruthy()
     expect(group('Navigation').getByRole('button', { name: /deeplink/i })).toBeTruthy()
     expect(group('Device').getByRole('button', { name: /Software keyboard/ })).toBeTruthy()
@@ -93,7 +100,11 @@ describe('the device toolbar groups by what the tester is doing to the device', 
     // Three groups' worth of boundary. Without a role these are `<div>`s with a background colour and
     // the structure exists only for people who can see it.
     toolbar()
-    expect(screen.getAllByRole('separator')).toHaveLength(3)
+    const separators = screen.getAllByRole('separator')
+    expect(separators).toHaveLength(3)
+    // Orientation too: `getAllByRole('separator')` matches on the role alone, so one claiming to be
+    // vertical inside a column toolbar was green.
+    for (const s of separators) expect(s.getAttribute('aria-orientation')).toBe('horizontal')
   })
 
   it('keeps the deeplink in Navigation rather than with the tools', () => {

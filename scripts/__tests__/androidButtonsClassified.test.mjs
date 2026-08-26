@@ -61,6 +61,22 @@ describe('the Android toolbar places every button the agent offers', () => {
     ).toEqual([])
   })
 
+  it('hands each list to the slot it is named for', () => {
+    // **The seam the two guards left open.** This file checks the lists and
+    // `SimulatorToolbar.groups.test.tsx` checks the toolbar with stand-in buttons — and nothing
+    // between them checks that the lists reach the slots. Measured: swapping the two arguments, or
+    // dropping `deviceSlot={deviceSlot}`, left the whole dashboard suite and this one green while
+    // half the Android toolbar vanished or landed in the wrong group.
+    //
+    // A spelling assertion, and a floor rather than a fence — but not self-referential: it pins the
+    // wiring, which is a different fact from the lists it pins elsewhere.
+    const src = readFileSync(VIEWER, 'utf8')
+    expect(src).toContain('const navigationSlot = buttonsIn(NAVIGATION_BUTTONS)')
+    expect(src).toContain('const deviceSlot = buttonsIn(DEVICE_BUTTONS)')
+    expect(src, 'a slot is built and never passed').toContain('navigationSlot={navigationSlot}')
+    expect(src).toContain('deviceSlot={deviceSlot}')
+  })
+
   it('places each button once', () => {
     // A name in both groups would render twice, in two places, which is worse than not rendering.
     const seen = classifiedButtons()

@@ -182,24 +182,37 @@ hour of testing confusing.*
 
 A tester moving between iOS and Android should find rotate at the end of Device and the network
 control alone in Environment on both. That is why the toolbar takes `navigationSlot` and `deviceSlot`
-rather than one `platformSlot`: the viewers hand it buttons already sorted into groups, so the
-symmetry is structural instead of a coincidence that the next button breaks.
+rather than one `platformSlot`: the viewers hand it buttons already sorted into groups, so where a
+button belongs is decided in one place instead of two.
+
+**How far that is enforced, exactly.** `SimulatorToolbar.groups.test.tsx` holds the toolbar's own
+group order with stand-in buttons, and `scripts/__tests__/androidButtonsClassified.test.mjs` holds
+that every agent button is classified and that each list reaches the slot it is named for. The last
+of those is a source-text check — a floor, not a fence. **Nothing renders `AndroidViewer` or
+`IOSViewer`**, so a viewer that builds its slots some other way would pass; that is the gap to close
+if this ever drifts.
 
 **The dashboard owns the order; the agent owns what exists.** Android's buttons arrive from the
 agent's `ANDROID_BUTTONS`, which is a *capability* list — the key codes are why it lives there.
-Rendering it in array order used to leak that list's ordering out as a layout decision, so Android's
-toolbar was ordered by the agent while iOS's was ordered here. `AndroidViewer` now names its own
+Rendering it in array order leaked that list's ordering out as a layout decision: **a reorder in
+`android-agent` moved buttons in the browser**, with nothing on either side to notice. The two
+platforms did not actually diverge — the shared buttons sat in the same relative places all along —
+so this closes a way for them to, rather than repairing a way they had. `AndroidViewer` names its own
 order and looks each button up; a name the agent reports that no group claims does not render, which
 is deliberate — a new key code appears once somebody has decided where it belongs, rather than
 turning up wherever the array happened to put it.
 
 ### When a group gets too long
 
-Nothing is collapsed today: iOS shows eight buttons and Android eleven, which a vertical toolbar
-carries. The point to reconsider is when a single group needs more than about four — that is when
-the low-frequency members of it should move behind a popover and the frequent ones stay on the
-surface, rather than the toolbar growing until it runs off the screen. Environment is the group
-most likely to reach it first (location, battery, appearance, locale, time zone, permissions).
+Nothing is collapsed today: iOS shows eight buttons and Android twelve, which a vertical toolbar
+still carries. The point to reconsider is when a single group needs more than about four — that is
+when its low-frequency members should move behind a popover and the frequent ones stay on the
+surface, rather than the toolbar growing until it runs off the screen.
+
+**Android's Navigation group is already there**, at five whenever a build is loaded: launch, home,
+back, recent apps, deeplink. So the threshold is crossed rather than approaching, and it was
+Navigation that crossed it — not Environment, which is the group whose *future* members (location,
+battery, appearance, locale, time zone, permissions) make it the one to watch next.
 
 ## HOW NOT
 

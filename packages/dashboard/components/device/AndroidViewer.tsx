@@ -478,9 +478,9 @@ export function AndroidViewer({
    *
    * `androidButtons` arrives from the agent's `ANDROID_BUTTONS`, and it is a *capability* list — the
    * key codes are the reason it lives there. Rendering it in array order let that list's ordering
-   * leak out as a layout decision, which is why Android's toolbar was ordered by the agent while
-   * iOS's was ordered here. A tester moving between the two found the same button in different
-   * places for no reason anybody had chosen.
+   * leak out as a layout decision: reordering it in `android-agent` moved buttons in the browser,
+   * and nothing on either side would have said so. The two platforms had not actually drifted — the
+   * buttons they share sat in the same relative places — so this closes the way they could.
    *
    * So membership still comes from the agent, and the order below is this file's. Anything the agent
    * reports that is not named here simply does not render, which is the safe direction: a new key
