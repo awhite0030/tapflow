@@ -14,6 +14,7 @@ vi.mock('../../lib/agent-singleton.js', () => ({
 import { execSync } from 'node:child_process'
 import { AgentRegistry } from '@tapflowio/agent-core'
 import { cmdAgentStart } from '../../commands/agent-start.js'
+import { claimAgentSlot } from '../../lib/agent-singleton.js'
 
 const mockExecSync = vi.mocked(execSync)
 
@@ -146,6 +147,33 @@ describe('cmdAgentStart', () => {
 
     await expect(cmdAgentStart({})).rejects.toThrow('process.exit')
     expect(exitSpy).toHaveBeenCalledWith(1)
+  })
+
+  // 싱글턴 배선 자체는 mock 뒤에 있어서 커버리지가 0이었다 — claim 루프를 통째로 지워도 스위트가
+  // 전부 초록이었다. 아래 셋이 거절 분기·종료 코드·이미 잡은 claim의 해제를 각각 고정한다.
+  it('이미 도는 에이전트가 있으면 거절하고 exit(1)', async () => {
+    AgentRegistry.register('ios', DummyAgent as never, { canRun: () => true, connect: iosConnectSpy })
+    vi.mocked(claimAgentSlot).mockResolvedValueOnce({ held: false, reason: 'in-use' })
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
+
+    await expect(cmdAgentStart({ platform: 'ios' })).rejects.toThrow('process.exit')
+    expect(exitSpy).toHaveBeenCalledWith(1)
+    // 거절이면 연결은 시도하지 않는다 — 두 번째 에이전트가 릴레이에 등록해 첫 번째의 소켓을
+    // evict하는 것이 애초에 막으려는 일이다.
+    expect(iosConnectSpy, '거절해놓고 연결했다').not.toHaveBeenCalled()
+  })
+
+  it('뒤쪽 플랫폼이 거절되면 앞에서 잡은 claim을 놓는다', async () => {
+    AgentRegistry.register('ios', DummyAgent as never, { canRun: () => true, connect: iosConnectSpy })
+    AgentRegistry.register('android', DummyAgent as never, { canRun: () => true, connect: androidConnectSpy })
+    const release = vi.fn()
+    vi.mocked(claimAgentSlot)
+      .mockResolvedValueOnce({ held: true, release })
+      .mockResolvedValueOnce({ held: false, reason: 'in-use' })
+    vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
+
+    await expect(cmdAgentStart({})).rejects.toThrow('process.exit')
+    expect(release, '먼저 잡은 슬롯을 쥔 채 종료했다').toHaveBeenCalledTimes(1)
   })
 
   it('connect 실패 → exit(1)', async () => {

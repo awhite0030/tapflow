@@ -126,15 +126,17 @@ private func hlog(_ s: String) {
 final class Host: NSObject, OSSystemExtensionRequestDelegate {
     private let add: [String]
     private let remove: [String]
+    private let clearAll: Bool
     /// The approval deadline, held only so both terminal callbacks can cancel it.
     private var approvalTimeout: DispatchWorkItem?
     /// The overall activation deadline. Cancelled by every delegate callback, including the one that
     /// only reports approval is needed — from there the longer, human-scale deadline takes over.
     private var activationTimeout: DispatchWorkItem?
 
-    init(add: [String], remove: [String]) {
+    init(add: [String], remove: [String], clearAll: Bool) {
         self.add = add
         self.remove = remove
+        self.clearAll = clearAll
         super.init()
     }
 
@@ -207,8 +209,8 @@ final class Host: NSObject, OSSystemExtensionRequestDelegate {
         // Exit once the rule is written. The provider keeps running and the configuration persists, so
         // a resident container app would buy nothing — and leaving one behind is what made `open` a
         // silent no-op on the next invocation (it activates a running app instead of re-running main).
-        cleanupOldProxy { [add, remove] in
-            configureFilter(add: add, remove: remove, exitCode: pendingReboot ? .completesAfterReboot : .ok)
+        cleanupOldProxy { [add, remove, clearAll] in
+            configureFilter(add: add, remove: remove, clearAll: clearAll, exitCode: pendingReboot ? .completesAfterReboot : .ok)
         }
     }
 
@@ -242,8 +244,10 @@ private func cleanupOldProxy(_ done: @escaping () -> Void) {
 
 // The rule change arrives on the command line as a **delta**:
 // `TapflowNetFilter [--add <udid>[,<udid>…]] [--remove <udid>[,<udid>…]]`.
-// No argument means an EMPTY set, not "leave what is there" — this binary is how the rule is changed,
-// so a plain launch must clear a stale rule rather than preserve one nobody asked for.
+// **Neither flag means clear the rule**, not "leave what is there". A delta with nothing in it would
+// be a no-op, and that would leave no way at all to empty a rule whose udids nobody remembers — which
+// is the only recovery a person has when an agent died holding one. So the delta flags are how the
+// rule is *changed*, and their absence is how it is *reset*.
 /**
  * **Activation is a setup step, not something every rule write should do.**
  *
@@ -343,7 +347,7 @@ private func mergeRule(existing: [String], add: [String], remove: [String]) -> [
 // decision. What the old sentence did was stop anyone trying. What is true is that `saveToPreferences`
 // returning means only that the save was accepted: the framework hands the configuration on
 // afterwards with nothing coming back, so exit 0 here is not evidence the provider has the rule.
-private func configureFilter(add: [String], remove: [String], exitCode: ExitCode) {
+private func configureFilter(add: [String], remove: [String], clearAll: Bool, exitCode: ExitCode) {
     let manager = NEFilterManager.shared()
     manager.loadFromPreferences { error in
         if let error {
@@ -365,7 +369,7 @@ private func configureFilter(add: [String], remove: [String], exitCode: ExitCode
         // few milliseconds — and closing it needs an interlock whose read-your-writes behaviour is
         // unmeasured. Stated rather than implied.
         let existing = (config.vendorConfiguration?["offlineUDIDs"] as? [String]) ?? []
-        let offline = mergeRule(existing: existing, add: add, remove: remove)
+        let offline = clearAll ? [] : mergeRule(existing: existing, add: add, remove: remove)
         config.vendorConfiguration = ["offlineUDIDs": offline]
         manager.providerConfiguration = config
         manager.localizedDescription = "tapflow network filter"
@@ -441,10 +445,12 @@ hlog("host launched at \(Bundle.main.bundlePath) args=\(CommandLine.arguments.dr
 // flag, and `.configure` with nothing to add or remove used to mean "replace the rule with nothing".
 let add: [String]
 let remove: [String]
+let clearAll: Bool
 do {
     try rejectUnknownFlags()
     add = try parseUDIDs("--add")
     remove = try parseUDIDs("--remove")
+    clearAll = !CommandLine.arguments.contains("--add") && !CommandLine.arguments.contains("--remove")
 } catch ArgError.unknown(let flag) {
     die(.badArguments, "unknown argument \(flag) — this build does not understand it")
 } catch ArgError.missingValue(let flag) {
@@ -476,11 +482,11 @@ case .install:
     // recorded three times as "cause unknown; the deadline exists because the failure is silent".
     //
     // It only ever bit a *replace* because a first install has no existing entry to ask about.
-    installHost = Host(add: add, remove: remove)
+    installHost = Host(add: add, remove: remove, clearAll: clearAll)
     installHost?.activate()
 case .configure:
     // The agent's path. The extension is already installed by the time anyone is toggling a
     // simulator's network, so this writes the rule and leaves the extension alone.
-    configureFilter(add: add, remove: remove, exitCode: .ok)
+    configureFilter(add: add, remove: remove, clearAll: clearAll, exitCode: .ok)
 }
 RunLoop.main.run()

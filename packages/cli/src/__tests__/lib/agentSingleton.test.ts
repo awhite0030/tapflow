@@ -86,6 +86,19 @@ describe('the agent slot', () => {
     if (other.held) released.push(other.release)
   })
 
+  it('gives the slot to exactly one of two callers arriving together', async () => {
+    // **The case the first three mutations all missed.** They changed what was on the path — a file,
+    // a live owner, a shared name — and none of them changed how many callers arrive at once, which
+    // is the only thing the ordering of probe, unlink and bind is about. Probing first and unlinking
+    // before binding let the second caller delete the socket the first had just bound: measured
+    // `[true, true]`.
+    const results = await Promise.all([
+      claimAgentSlot('race', dir), claimAgentSlot('race', dir), claimAgentSlot('race', dir),
+    ])
+    for (const r of results) if (r.held) released.push(r.release)
+    expect(results.filter((r) => r.held).length, 'more than one caller won the slot').toBe(1)
+  })
+
   it('answers a probe even while the owner is busy', async () => {
     // The backlog is the kernel's, and the listener destroys what it accepts, so a probe cannot be
     // refused for being queued behind other probes — which would read as "the owner is dead".

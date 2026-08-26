@@ -277,7 +277,14 @@ describe('SimulatorNetwork', () => {
     // class says UDID is offline: traffic alive, drawn as offline, which is the direction `setOffline`
     // calls filing bugs against an app that was never offline.
     //
-    // Mutation: removing the `applyFilterRule()` from the restore branch fails here.
+    // **What this still verifies, and what it stopped verifying.** The memory assertion below is
+    // live: delete the `if (was)` restore and the device comes back as online while the rule and the
+    // condition file say otherwise. The rule assertion is not — a reviewer measured that removing the
+    // restore branch's *write* leaves this green. Since the host merges deltas, run 2's own write
+    // already carries UDID, so run 3's failed removal never took it out and there is nothing left for
+    // the restore write to repair in this scenario. Reaching that write needs a run that removes
+    // before the failure, which this burst does not produce. Said rather than left as a claim that
+    // reads as enforced.
     armed()
     armed(OTHER)
     const net = make(fakeHostBinary(dir, log, 0, 3))
@@ -798,6 +805,32 @@ describe('SimulatorNetwork', () => {
       await vi.waitFor(() => expect(lost).toEqual([UDID]))
       rmSync(hookPath(), { force: true })
       expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'enforcement-lost' })
+    })
+
+    it('takes the lost device out of the host rule, not only out of its own memory', async () => {
+      // **The rule is the host's and it outlives this process.** Reporting the loss and leaving the
+      // udid named there means launchd's restarted provider re-reads it and drops that simulator's
+      // traffic again — with layers 2 and 3 already down, `state()` saying `offline: false`, and the
+      // watcher stopped because the set is empty. Nothing looks at it again.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      expect(readFileSync(join(dir, 'rule'), 'utf8')).toBe(UDID)
+      staleState([UDID], -10)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+      await vi.waitFor(() => expect(readFileSync(join(dir, 'rule'), 'utf8')).toBe(''))
+    })
+
+    it('leaves another device in the rule while removing the lost one', async () => {
+      // The delta must name the loss, not replace the rule — the correction that reintroduces the
+      // defect this whole change is about would pass a test that only checked the lost one is gone.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      writeFileSync(join(dir, 'rule'), `${UDID},${OTHER}`)
+      staleState([UDID], -10)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+      await vi.waitFor(() => expect(readFileSync(join(dir, 'rule'), 'utf8')).toBe(OTHER))
     })
 
     it('still says so on a re-join', async () => {

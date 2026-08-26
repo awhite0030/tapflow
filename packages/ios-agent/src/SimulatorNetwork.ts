@@ -638,9 +638,19 @@ export class SimulatorNetwork {
       this.offlineSince.delete(udid)
       this.filterVerdict.set(udid, 'lost')
     }
-    // Best-effort, and the same reason `setOffline` rewrites after a failure: leaving this agent's
-    // idea of the rule and the host's apart is a divergence nothing revisits.
-    await this.runFilterHost({ add: [...this.offline] })
+    // **`remove: lost` is the whole point of this write, and naming only `add` was a regression.**
+    //
+    // The divergence being repaired is caused by the devices just deleted from `this.offline`. The
+    // whole-set write this replaced removed them by writing a set they were no longer in; a delta has
+    // to say so. Without it they stay in the host's rule, launchd brings the provider back in about
+    // six seconds, it re-reads the persisted configuration, and the kernel drops that simulator's
+    // traffic again — while layers 2 and 3 are down, `state()` answers `offline: false`, and the
+    // watcher has stopped because the set is empty. Traffic dead and reported online, which is the
+    // one direction this class exists to prevent.
+    //
+    // `add` stays, and not as symmetry: a device can be in this set with the rule not naming it, when
+    // `setOffline`'s failure path restored it in memory and its best-effort rewrite failed too.
+    await this.runFilterHost({ add: [...this.offline], remove: lost })
     for (const udid of lost) {
       // **Telling the tester is the remedy; taking the layers down is the tidying up.** The device is
       // already reachable — that is what was detected — so leaving the app believing otherwise would
@@ -737,8 +747,10 @@ export class SimulatorNetwork {
     const args: string[] = []
     if (delta.add?.length) args.push('--add', delta.add.join(','))
     if (delta.remove?.length) args.push('--remove', delta.remove.join(','))
-    // Nothing to say is not a reason to run: the host would load and re-save an unchanged rule, and
-    // every run is a chance to lose a concurrent one.
+    // **Nothing to say means do not run it, and that is load-bearing rather than an optimisation.**
+    // The host reads the absence of both flags as "clear the rule" — deliberately, because a person
+    // whose agent died holding a rule has no other way to empty it. So an agent that ran it with an
+    // empty delta would wipe the host's rule while believing it had done nothing.
     if (args.length === 0) return true
     try {
       await execFileAsync(this.hostBinary, args, { timeout: FILTER_HOST_TIMEOUT_MS })
