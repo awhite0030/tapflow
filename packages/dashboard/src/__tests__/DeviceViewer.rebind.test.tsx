@@ -131,6 +131,9 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     const kbd = () => document.querySelector('button[data-active]') as HTMLButtonElement
     fireEvent.click(kbd())
     expect(kbd().getAttribute('aria-disabled')).toBe('true')
+    // Unavailable *and* why. `aria-disabled` with an unchanged name announces a control nobody can
+    // use and gives no reason for it, which is the half the first version of this missed.
+    expect(kbd().getAttribute('aria-label')).toMatch(/changing it/i)
     // Still clickable in the DOM, so the guard is the only thing stopping a second request — and the
     // request is what has to be counted. `data-active` does not move until the agent answers, so
     // reading it would have passed with the guard deleted.
@@ -143,6 +146,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     act(() => { deliver!({ type: 'session:chrome', sessionId: 's1', payload: CHROME }) })
 
     expect(kbd().getAttribute('aria-disabled')).toBe('false')
+    expect(kbd().getAttribute('aria-label'), 'the pending name stuck around').toBe('Software keyboard')
   })
 
   it('keeps the installed app, and keeps the control that launches it', async () => {

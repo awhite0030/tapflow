@@ -16,7 +16,7 @@ import { SimulatorToolbar } from '@/components/device/shared/SimulatorToolbar'
 const navButtons = <button aria-label="Home" />
 const deviceButtons = <button aria-label="Software keyboard" />
 
-function toolbar() {
+function toolbar({ network = true }: { network?: boolean } = {}) {
   return render(
     <SimulatorToolbar
       joined
@@ -27,7 +27,7 @@ function toolbar() {
       onDeepLink={() => {}}
       navigationSlot={navButtons}
       deviceSlot={deviceButtons}
-      network={{ position: 'online', steerable: true, pending: false, onToggle: () => {} }}
+      network={network ? { position: 'online', steerable: true, pending: false, onToggle: () => {} } : undefined}
     />,
   )
 }
@@ -78,6 +78,22 @@ describe('the device toolbar groups by what the tester is doing to the device', 
     expect(group('Device').getByRole('button', { name: /Rotate/ })).toBeTruthy()
     expect(group('Capture').getByRole('button', { name: /screenshot/i })).toBeTruthy()
     expect(group('Environment').getByRole('button', { name: /device (offline|online|network)/i })).toBeTruthy()
+  })
+
+  it('draws no Environment boundary when the agent cannot control the network', () => {
+    // A named group with nothing in it announces a section that holds nothing, and the separator
+    // announces a boundary to it. Both go with the control.
+    toolbar({ network: false })
+    const groups = screen.getAllByRole('group').map((g) => g.getAttribute('aria-label'))
+    expect(groups, 'an empty Environment group was announced').toEqual(['Navigation', 'Device', 'Capture'])
+    expect(screen.queryAllByRole('separator'), 'a separator was left pointing at nothing').toHaveLength(2)
+  })
+
+  it('separates the groups with separators, not with bare lines', () => {
+    // Three groups' worth of boundary. Without a role these are `<div>`s with a background colour and
+    // the structure exists only for people who can see it.
+    toolbar()
+    expect(screen.getAllByRole('separator')).toHaveLength(3)
   })
 
   it('keeps the deeplink in Navigation rather than with the tools', () => {

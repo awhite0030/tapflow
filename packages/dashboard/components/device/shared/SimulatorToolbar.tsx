@@ -345,8 +345,14 @@ export function SimulatorToolbar({
           * they are nothing, so without these the four groups this change exists to create are one
           * flat run of icon buttons. Not `role="toolbar"` on the container — that promises the APG
           * roving-tabindex arrow-key model, which is not implemented here.
+          *
+          * **A real box, not `display: contents`.** An element that generates no box has been dropped
+          * from the accessibility tree along with its role and name — still reproducible in
+          * WebKit/VoiceOver for explicitly-roled generics — so `contents` would have left the grouping
+          * exactly as absent as the bare dividers it replaces. The test below cannot catch that:
+          * jsdom evaluates no CSS, so `getAllByRole('group')` passes either way.
           */}
-        <div role="group" aria-label="Navigation" className="contents">
+        <div role="group" aria-label="Navigation" className="flex flex-col items-center gap-0.5">
           {launchSlot}
           {navigationSlot}
 
@@ -365,7 +371,7 @@ export function SimulatorToolbar({
         {/* ── Device: leave the device in a condition ────────────────────────────── */}
         <div role="separator" aria-orientation="horizontal" className="w-4 h-px bg-border my-1" />
 
-        <div role="group" aria-label="Device" className="contents">
+        <div role="group" aria-label="Device" className="flex flex-col items-center gap-0.5">
           {deviceSlot}
 
         <Tooltip>
@@ -382,7 +388,7 @@ export function SimulatorToolbar({
         {/* ── Capture: take the current state out of the session ───────────────── */}
         <div role="separator" aria-orientation="horizontal" className="w-4 h-px bg-border my-1" />
 
-        <div role="group" aria-label="Capture" className="contents">
+        <div role="group" aria-label="Capture" className="flex flex-col items-center gap-0.5">
 
         <Tooltip>
           <TooltipTrigger asChild>
@@ -438,9 +444,14 @@ export function SimulatorToolbar({
         </div>
 
         {/* ── Environment: change what the device is sitting in ─────────────────── */}
+        {/* Rendered with its contents or not at all: an agent that does not advertise
+            `network-control` would otherwise leave a named, empty group behind a separator, so AT
+            announces a boundary and a section that holds nothing. */}
+        {network && (
+        <>
         <div role="separator" aria-orientation="horizontal" className="w-4 h-px bg-border my-1" />
 
-        <div role="group" aria-label="Environment" className="contents">
+        <div role="group" aria-label="Environment" className="flex flex-col items-center gap-0.5">
 
         {network && (() => {
           const { Icon, className, status } = networkLook(network);
@@ -507,6 +518,8 @@ export function SimulatorToolbar({
           );
         })()}
         </div>
+        </>
+        )}
       </div>
     </TooltipProvider>
   );

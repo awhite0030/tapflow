@@ -567,17 +567,18 @@ export function IOSViewer({
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon" className="h-8 w-8"
-            aria-label="Software keyboard"
+            aria-label={swKeyboardPending ? 'Software keyboard — changing it' : 'Software keyboard'}
             // `data-active` below is a CSS hook and nothing reads it out. The toolbar's other two
             // toggles carry their state in `aria-pressed`; this was the one left outside ARIA.
             aria-pressed={swKeyboardVisible}
             aria-busy={swKeyboardPending}
-            // **`aria-disabled`, not `disabled`, and the sibling controls already know why.** A
-            // `disabled` button leaves the focus order and stops receiving pointer events, so it
-            // announces "unavailable" with no reason *and* its tooltip — the only thing that could
-            // give one — can never open. The record button branches its name for this (#447, #624)
-            // and the network control below chooses `aria-disabled` for it. This one was the last
-            // holdout; moving it into the Device group is what made that visible.
+            // **`aria-disabled`, not `disabled`, and the name says why.** A `disabled` button leaves
+            // the focus order and stops receiving pointer events, so it announces "unavailable" with
+            // no reason *and* its tooltip — the only thing that could give one — can never open. The
+            // record button branches its name for this (#447, #624) and the network control chooses
+            // `aria-disabled` for it. Keeping the button reachable is only half of it: the first
+            // version of this kept an unconditional name and tooltip, so a screen-reader user heard
+            // an unavailable control and still no reason. Both branch now.
             aria-disabled={swKeyboardPending}
             onClick={() => { if (!swKeyboardPending) onKbdToggle() }}
             data-active={swKeyboardVisible}
@@ -587,7 +588,11 @@ export function IOSViewer({
               : <Keyboard className="h-4 w-4" />}
           </Button>
         </TooltipTrigger>
-        <TooltipContent side="left"><span className="flex items-center gap-3">Software keyboard <KbdGroup><Kbd>⌘</Kbd><Kbd>⇧</Kbd><Kbd>K</Kbd></KbdGroup></span></TooltipContent>
+        <TooltipContent side="left">
+          {swKeyboardPending
+            ? <span>Software keyboard — changing it</span>
+            : <span className="flex items-center gap-3">Software keyboard <KbdGroup><Kbd>⌘</Kbd><Kbd>⇧</Kbd><Kbd>K</Kbd></KbdGroup></span>}
+        </TooltipContent>
       </Tooltip>
     </>
   );
