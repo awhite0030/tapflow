@@ -339,6 +339,47 @@ describe('useNetworkControl', () => {
     expect(view.result.current.pending).toBe(true)
   })
 
+  it('rejects the answer to a request the device disappeared during, once it is back', () => {
+    // **The window the readiness guard does not cover.** It drops what arrives *while* the device is
+    // away; this is the reply that arrives after it returns, produced before the reboot and
+    // correlated to a request this hook already told the tester it had given up on.
+    //
+    // Applying it would be the defect this whole hook was changed to end, one transition later: the
+    // pre-reboot position back on screen, and the report deadline frozen with it, because that
+    // deadline only runs while `position === 'waiting'`.
+    const { view, handlerRef, sent } = setup()
+    act(() => { view.result.current.toggle() })
+    const req = sent.find((m) => m.type === 'network:set')?.requestId
+
+    act(() => { view.rerender({ sessionId: 's1', deviceReady: false }) })
+    act(() => { view.rerender({ sessionId: 's1', deviceReady: true }) })
+    expect(view.result.current.position, 'the reboot left it waiting for a fresh report').toBe('waiting')
+
+    act(() => {
+      handlerRef.current?.({
+        type: 'network:state', sessionId: 's1', requestId: req, payload: steerable(true),
+      } as NetworkMessage)
+    })
+    expect(view.result.current.position, 'a pre-reboot answer was applied after the reboot').toBe('waiting')
+  })
+
+  it('starts rejecting nothing in a new session', () => {
+    // The abandoned set is per session. Left uncleared it only ever grows, and an id reused across
+    // sessions — which nothing forbids — would be refused for a request that was never dropped.
+    const { view, handlerRef, sent } = setup()
+    act(() => { view.result.current.toggle() })
+    const req = sent.find((m) => m.type === 'network:set')?.requestId
+    act(() => { view.rerender({ sessionId: 's1', deviceReady: false }) })
+    act(() => { view.rerender({ sessionId: 's2', deviceReady: true }) })
+
+    act(() => {
+      handlerRef.current?.({
+        type: 'network:state', sessionId: 's2', requestId: req, payload: steerable(true),
+      } as NetworkMessage)
+    })
+    expect(view.result.current.position, 'the new session inherited a refusal').toBe('offline')
+  })
+
   it('settles on unknown when no report arrives before the deadline', () => {
     vi.useFakeTimers()
     const { view } = setup()

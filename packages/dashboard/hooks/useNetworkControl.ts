@@ -92,6 +92,8 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
   const lastReason = useRef<NetworkUnavailableReason | undefined>(undefined)
   const [pending, setPending] = useState(false)
   const requestId = useRef<string | null>(null)
+  /** Ids of requests dropped by a readiness loss, whose answers must stay rejected once it returns. */
+  const abandoned = useRef<Set<string>>(new Set())
   // Read through a ref so a caller passing an inline closure does not re-register the handler on
   // every render — the same shape `useClipboardBridge` uses for its own `onError`.
   const onErrorRef = useRef(onError)
@@ -124,6 +126,9 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
     setPending(false)
     requestId.current = null
     everReady.current = false
+    // A new session cannot receive the previous one's answers, so the set does not carry over. It
+    // grows by at most one per readiness drop that catches a request in flight; this bounds it.
+    abandoned.current.clear()
   }, [sessionId])
 
   /**
@@ -175,6 +180,9 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
     // put a wrong reason in front of the tester two times out of three.
     if (requestId.current) {
       onErrorRef.current?.('The device became unavailable before it answered. Its network state is unchanged as far as tapflow can tell.')
+      // Remembered, not merely dropped: the reply can still arrive, and by then readiness may have
+      // returned and the handler be listening again. See the abandoned-id guard in `handle`.
+      abandoned.current.add(requestId.current)
     }
     setPending(false)
     requestId.current = null
@@ -211,6 +219,20 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
       // itself. The relay's own `network:request-state` on `session:joined` reaches here the same way,
       // racing the boot it arrives with.
       if (!readyRef.current) return
+      // **A request this hook gave up on stays given up on, after readiness returns.**
+      //
+      // The guard above only holds while the device is away. A reply to a request abandoned by that
+      // drop can land *after* `device:ready` — the socket delivers in order, but the answer was
+      // produced before the reboot and the handler is listening again by the time it arrives. It
+      // would put the pre-reboot position back, and because the report deadline is gated on
+      // `position === 'waiting'` it would also stop the wait resolving to `unknown`: the stale
+      // answer this hook exists to end, arriving one transition later.
+      //
+      // **Only ids this hook abandoned**, not every id that is not the outstanding one. A session is
+      // shared, and an answer correlated to *another viewer's* request is still a true statement
+      // about the device — the branch below applies it and leaves `pending` alone, which is a
+      // decision with its own test. Rejecting on `!== requestId.current` would take that out.
+      if (msg.requestId !== undefined && abandoned.current.has(msg.requestId)) return
       // **The position comes from `offline` whatever `available` says.** A device tapflow can no
       // longer steer still has a network state, and the protocol carries the field on both members
       // for exactly that. What `available` changes is what the button can promise, not where it points.
