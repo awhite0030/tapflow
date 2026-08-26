@@ -138,6 +138,15 @@ export function useNetworkControl({ sessionId, send, supported, deviceReady, han
     lastReason.current = undefined
     // An in-flight request cannot be answered by a device that is rebooting, and leaving `pending`
     // set would disable the control for as long as the boot takes.
+    //
+    // **And it is said out loud, because this is the one ending that was silent.** Every other
+    // terminal path for a click announces itself — a dispatch failure through `network:error`, an
+    // unanswered request through the deadline below — while this one cleared the wait and, once the
+    // late answer started being dropped, took away even the repositioning that used to stand in for
+    // an outcome. A screen-reader user heard the busy state and then nothing at all.
+    if (requestId.current) {
+      onErrorRef.current?.('The device restarted before it answered. Its network state is unchanged as far as tapflow can tell.')
+    }
     setPending(false)
     requestId.current = null
   }, [deviceReady])

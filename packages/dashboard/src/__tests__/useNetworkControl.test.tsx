@@ -402,6 +402,28 @@ describe('useNetworkControl', () => {
     expect(view.result.current.position, 'a late report repositioned an unready device').toBe('waiting')
   })
 
+  it('says the request was abandoned, rather than ending it in silence', async () => {
+    // The only terminal path that announced nothing. A click puts the control in a busy state that a
+    // screen reader reads out; ending that state without a word leaves the tester with no statement
+    // about the change they asked for — and dropping the late answer took away even the
+    // repositioning that used to stand in for one.
+    const { view, errors } = setup()
+    await act(async () => { view.result.current.toggle() })
+    expect(view.result.current.pending).toBe(true)
+
+    view.rerender({ sessionId: 's1', deviceReady: false })
+    expect(errors, 'the abandoned request ended silently').toHaveLength(1)
+    expect(errors[0]).toMatch(/restarted before it answered/i)
+  })
+
+  it('says nothing when there was no request to abandon', () => {
+    // Readiness drops for reasons that have nothing to do with a click — a boot, an agent going away
+    // — and announcing an abandoned request that nobody made is its own false statement.
+    const { view, errors } = setup()
+    view.rerender({ sessionId: 's1', deviceReady: false })
+    expect(errors, 'it announced a request nobody made').toHaveLength(0)
+  })
+
   it('takes reports again once the device is ready, and still times out if none comes', () => {
     // The half that would pass if the guard simply dropped everything: after the boot the control has
     // to listen again, and the deadline has to still be armed underneath it.
