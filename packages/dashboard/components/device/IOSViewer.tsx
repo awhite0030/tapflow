@@ -2,7 +2,7 @@
 
 import type { BrowserToRelay } from '@tapflowio/protocol'
 import { newRequestId } from '@/lib/requestId';
-import { useCallback, useEffect, useRef, useState, Fragment } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, Fragment } from 'react';
 import { useClientRecording } from '@/hooks/useClientRecording';
 import { Home, Keyboard, Loader2, Play } from 'lucide-react';
 import { useFps } from '@/hooks/useFps';
@@ -562,8 +562,23 @@ export function IOSViewer({
     </>
   );
 
+  const kbdStatusId = useId();
+
   const deviceSlot = (
     <>
+      {/* **A live region, because a name change on a focused button is not re-announced.** Clicking
+          this leaves focus on it, and NVDA, JAWS and VoiceOver do not reliably re-read the accessible
+          name of the element already focused — so the branched name below tells a screen-reader user
+          nothing at the moment it changes, and nothing again when it finishes. The network control in
+          this same toolbar carries its state exactly this way and records the same reason.
+          **Mounted unconditionally with only the text toggled**: a live region inserted in the same
+          commit as its first sentence is routinely dropped, which would silence the one transition it
+          exists for. */}
+      <span id={kbdStatusId} role="status" className="sr-only">
+        {swKeyboardPending
+          ? 'Changing the software keyboard.'
+          : swKeyboardVisible ? 'The software keyboard is up.' : 'The software keyboard is down.'}
+      </span>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon" className="h-8 w-8"
@@ -580,6 +595,7 @@ export function IOSViewer({
             // version of this kept an unconditional name and tooltip, so a screen-reader user heard
             // an unavailable control and still no reason. Both branch now.
             aria-disabled={swKeyboardPending}
+            aria-describedby={kbdStatusId}
             onClick={() => { if (!swKeyboardPending) onKbdToggle() }}
             data-active={swKeyboardVisible}
           >

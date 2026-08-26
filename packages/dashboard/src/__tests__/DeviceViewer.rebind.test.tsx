@@ -134,6 +134,12 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // Unavailable *and* why. `aria-disabled` with an unchanged name announces a control nobody can
     // use and gives no reason for it, which is the half the first version of this missed.
     expect(kbd().getAttribute('aria-label')).toMatch(/changing it/i)
+    // And a live region, because renaming the button under the focus that just clicked it is not
+    // re-announced by NVDA, JAWS or VoiceOver. Mounted before the change, so the region is not
+    // inserted in the same commit as its first sentence.
+    const status = () => document.getElementById(kbd().getAttribute('aria-describedby')!)
+    expect(status()?.getAttribute('role'), 'the toggle has no live region').toBe('status')
+    expect(status()?.textContent).toMatch(/changing the software keyboard/i)
     // Still clickable in the DOM, so the guard is the only thing stopping a second request — and the
     // request is what has to be counted. `data-active` does not move until the agent answers, so
     // reading it would have passed with the guard deleted.
@@ -147,6 +153,10 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
 
     expect(kbd().getAttribute('aria-disabled')).toBe('false')
     expect(kbd().getAttribute('aria-label'), 'the pending name stuck around').toBe('Software keyboard')
+    // Finishing is announced too. Clearing the sentence on success would mean the failure path was
+    // announced and the success was the silent one.
+    expect(status()?.textContent, 'the region went quiet instead of saying it finished')
+      .toMatch(/software keyboard is (up|down)/i)
   })
 
   it('keeps the installed app, and keeps the control that launches it', async () => {
