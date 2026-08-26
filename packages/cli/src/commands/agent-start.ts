@@ -4,7 +4,7 @@ import { config } from '@tapflowio/relay'
 import { requestAudioPermission, isAudioSupported } from '@tapflowio/ios-agent'
 import '@tapflowio/android-agent'
 import { banner, createSpinner } from '../lib/print.js'
-import { claimAgentSlot } from '../lib/agent-singleton.js'
+import { claimAgentSlot, claimPath } from '../lib/agent-singleton.js'
 
 export interface AgentStartOptions {
   device?: string
@@ -77,20 +77,25 @@ export async function cmdAgentStart(opts: AgentStartOptions): Promise<void> {
   for (const platform of platformsToRun) {
     const claim = await claimAgentSlot(platform)
     if (!claim.held) {
-      banner('error', 'AGENT ALREADY RUNNING', [
-        `A tapflow ${platform} agent is already running on this Mac.`,
-        'One agent per platform manages every simulator here, so a second one would fight it for',
-        'the network filter and the device list. Stop the other one, or use the session it already',
-        'serves.',
-      ])
-      for (const release of claims.values()) release()
+      // **One banner, chosen by the reason.** Printing the running-agent one first and then adding
+      // the stale case after it said something false in the case that is hardest to diagnose: the
+      // probe found no listener, so no agent is running, and being told one is sends the reader
+      // hunting for a process that does not exist.
       if (claim.reason === 'stale-claim') {
         banner('error', 'CLAIM LEFT BY ANOTHER ACCOUNT', [
-          `A tapflow ${platform} claim on this Mac was left by a different macOS account and`,
-          'cannot be cleared from here. Remove /tmp/tapflow-agent-' + platform + '.sock as that',
+          `No tapflow ${platform} agent is running, but a claim on this Mac was left by a different`,
+          `macOS account and cannot be cleared from here. Remove ${claimPath(platform)} as that`,
           'user, or from an account that can.',
         ])
+      } else {
+        banner('error', 'AGENT ALREADY RUNNING', [
+          `A tapflow ${platform} agent is already running on this Mac.`,
+          'One agent per platform manages every simulator here, so a second one would fight it for',
+          'the network filter and the device list. Stop the other one, or use the session it already',
+          'serves.',
+        ])
       }
+      for (const release of claims.values()) release()
       process.exit(1)
     }
     claims.set(platform, claim.release)
