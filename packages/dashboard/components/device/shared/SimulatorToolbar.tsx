@@ -401,7 +401,16 @@ export function SimulatorToolbar({
           <TooltipContent side="left"><ShortcutTooltip label="Rotate" keys={['⌘', '⇧', 'O']} /></TooltipContent>
         </Tooltip>
 
-        {reboot && (
+        {reboot && (() => {
+          // **One string, two channels, so they cannot drift apart.** The tooltip is the visible
+          // label and the `aria-label` is the accessible name, and WCAG 2.5.3 wants the first
+          // contained in the second — "Restart device" against "Restart the device" is not, so
+          // voice control saying the visible words could miss the button. Written as two literals
+          // they had already disagreed outright while pending: the name changed and the tooltip did
+          // not. The other controls in this file hold the same rule by branching both together;
+          // this one holds it by having nothing to branch.
+          const rebootLabel = reboot.pending ? 'Restarting the device' : 'Restart the device';
+          return (
           <>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -409,7 +418,7 @@ export function SimulatorToolbar({
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8"
-                  aria-label={reboot.pending ? 'Restarting the device' : 'Restart the device'}
+                  aria-label={rebootLabel}
                   aria-busy={reboot.pending}
                   // `aria-disabled`, not `disabled`: a disabled button is removed from the tab order and
                   // stops being describable, so the one moment it has something to say is the moment it
@@ -429,13 +438,14 @@ export function SimulatorToolbar({
                   {reboot.pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="left">Restart device</TooltipContent>
+              <TooltipContent side="left">{rebootLabel}</TooltipContent>
             </Tooltip>
             <span id={rebootStatusId} role="status" className="sr-only">
               {reboot.pending ? 'Restarting the device.' : ''}
             </span>
           </>
-        )}
+          );
+        })()}
 
         </div>
 

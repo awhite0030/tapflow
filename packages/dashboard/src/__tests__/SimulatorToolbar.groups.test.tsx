@@ -166,6 +166,19 @@ describe('restarting the device asks first', () => {
     expect(onReboot).toHaveBeenCalledTimes(1)
   })
 
+  it('shows the same words it answers to', async () => {
+    // WCAG 2.5.3: the visible label has to be contained in the accessible name, or voice control
+    // saying what is on screen misses the button. These were two literals — "Restart device" against
+    // "Restart the device" — and they disagreed outright while pending, when the name changed and the
+    // tooltip did not.
+    toolbar()
+    const button = screen.getByRole('button', { name: 'Restart the device' })
+    await userEvent.hover(button)
+    const tip = await screen.findByRole('tooltip')
+    expect(button.getAttribute('aria-label'), 'the visible label is not part of the name')
+      .toContain(tip.textContent)
+  })
+
   it('cannot be pressed again while a restart is running', async () => {
     // `aria-disabled` rather than `disabled`, so the control keeps its place in the tab order and
     // stays describable — which means the guard has to be in the handler, and this is what holds it.
