@@ -14,7 +14,7 @@ function withoutComments(text) {
 }
 
 function stringLiterals(text) {
-  return [...text.matchAll(/'([^']+)'/g)].map((match) => match[1])
+  return [...text.matchAll(/(['"])([^\r\n]*?)\1/g)].map((match) => match[2])
 }
 
 function agentCapabilities(text) {
@@ -23,14 +23,18 @@ function agentCapabilities(text) {
   return new Set(stringLiterals(match[1]))
 }
 
+const capabilityCheck = /\b(?:agentCapabilities|(?:\w+\??\.)?capabilities)\??\.includes\(\s*(['"])([^\r\n]*?)\1\s*\)/g
+
+function capabilityChecks(text) {
+  return [...withoutComments(text).matchAll(capabilityCheck)].map((match) => match[2])
+}
+
 function dashboardCapabilityConsumers() {
   const consumers = []
-  const capabilityCheck = /\b(?:agentCapabilities|(?:\w+\??\.)?capabilities)\??\.includes\(\s*'([^']+)'\s*\)/g
 
   for (const file of sources('packages/dashboard')) {
-    const source = withoutComments(readFileSync(join(root, file), 'utf8'))
-    for (const match of source.matchAll(capabilityCheck)) {
-      consumers.push({ file, capability: match[1] })
+    for (const capability of capabilityChecks(readFileSync(join(root, file), 'utf8'))) {
+      consumers.push({ file, capability })
     }
   }
 
@@ -38,6 +42,14 @@ function dashboardCapabilityConsumers() {
 }
 
 describe('dashboard capability consumers', () => {
+  it('reports undeclared double-quoted capability checks', () => {
+    const declared = agentCapabilities(agentCore)
+    const consumers = capabilityChecks('agentCapabilities.includes("full-erase")')
+
+    expect(consumers).toEqual(['full-erase'])
+    expect(consumers.filter((capability) => !declared.has(capability))).toEqual(['full-erase'])
+  })
+
   it('only checks capabilities AgentCapability declares', () => {
     const declared = agentCapabilities(agentCore)
     const consumers = dashboardCapabilityConsumers()
