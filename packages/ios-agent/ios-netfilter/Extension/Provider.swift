@@ -1,0 +1,539 @@
+import NetworkExtension
+import Darwin
+import os.log
+
+// Layer 1: content filter (NEFilterDataProvider). Measured to capture simulator app flows where the
+// transparent proxy (app-proxy flow layer) could not. See .work/2026-08-22-ios-transparent-proxy-plan.md.
+//
+// per-UDID: a flow carries a bundle id, never which simulator it belongs to. Every process inside a booted
+// simulator is a child of that simulator's `launchd_sim`, and the UDID appears in exactly ONE observable
+// place — launchd_sim's arguments:
+//
+//   launchd_sim /Users/<u>/Library/Developer/CoreSimulator/Devices/<UDID>/data/var/run/launchd_bootstrap.plist
+//
+// It is NOT in the executable path (simulator binaries, launchd_sim included, live in the shared
+// simruntime) and NOT in the working directory (measured: "/"). So a flow is attributed by walking its
+// process up to the ancestor whose parent is the host launchd, confirming that ancestor is launchd_sim,
+// and reading the UDID out of its arguments. Host-Mac flows stop at their own top-level process, whose
+// path is not launchd_sim, and resolve to nil.
+private let log = OSLog(subsystem: "dev.tapflow.netfilter", category: "filter")
+
+// The offline set arrives through NEFilterProviderConfiguration.vendorConfiguration, written by the
+// container app (Open Q#3). Loopback needs no exception: measured, a content filter never sees loopback
+// flows at all — a simulator in the offline set still reaches the host's 127.0.0.1 (which is where Metro
+// runs) while every external flow of the same simulator is dropped.
+//
+// It is read per flow rather than cached at startFilter, because whether a change reaches a RUNNING
+// provider is the open question this build measures: a toggle that only takes effect on restart is a
+// different feature from one that takes effect now.
+private func offlineUDIDs(_ config: NEFilterProviderConfiguration) -> Set<String> {
+    guard let raw = config.vendorConfiguration?["offlineUDIDs"] as? [String] else { return [] }
+    return Set(raw)
+}
+
+// Logs the offline set the moment it changes, so the measurement can tell a live update from a restart
+// (a restart shows up as a new provider pid plus a startFilter line).
+private final class RuleWatch {
+    private var last: Set<String>?
+    private let lock = NSLock()
+
+    /// Returns whether the rule moved, which is the one edge worth writing the heartbeat on
+    /// immediately rather than at the next tick.
+    @discardableResult
+    func noteIfChanged(_ current: Set<String>) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard last != current else { return false }
+        os_log("offline set now %{public}@ (was %{public}@)", log: log, type: .default,
+               current.sorted().joined(separator: ","), last?.sorted().joined(separator: ",") ?? "<unset>")
+        last = current
+        return true
+    }
+}
+
+private let ruleWatch = RuleWatch()
+
+// MARK: - what the agent can see
+
+/**
+ * **The provider's only way to tell the agent anything** (#639).
+ *
+ * The agent runs on the host as the user and decides whether the network control is usable. Until
+ * this file it decided entirely from the *dylib's* verdict, which is evidence about layer 2 — so a
+ * filter that was killed, never approved, or running an older bundle left the control saying
+ * "steerable" over a kernel dropping nothing.
+ *
+ * **This file is not the only channel there could be, and the note that used to say so was wrong.**
+ * It read "the XPC mach service never registered", which was measured false: a build that starts a
+ * listener on `NEMachServiceName` answers a call from the container app in **0.26–0.74 ms**. The same
+ * probe measured `vendorConfiguration` reaching a running provider in **under 55 ms**, so "the
+ * container app exits before the provider has been handed the rule" was wrong too. What is slow is
+ * the pulse below — ours, not the framework's.
+ *
+ * **This build starts no listener**, and adopting that channel is a separate decision. Recorded here
+ * because the old sentence was the reason nobody looked. If it is adopted, the two are not
+ * alternatives and this file still has a job: a reply would say *the rule arrived*, while only this
+ * says *the filter is running* — `stopFilter` removes it, and the probe measured a stopped provider
+ * still answering XPC.
+ *
+ * **It pulses, and that is what makes absence mean something.** A first draft wrote only from
+ * `handleNewFlow`, which is a heartbeat with no heart: a provider that died left its last file on
+ * disk saying it was enforcing a rule, forever — the exact lie #639 exists to catch, written down.
+ * Staleness could not rescue it either, because a quiet Mac and a dead provider look identical when
+ * the only writer is traffic. So the timer below writes on its own, `startFilter` writes once, and
+ * `stopFilter` removes the file. A reader can then treat *missing or older than a few pulses* as
+ * "not enforcing" and be right about both cases.
+ *
+ * It carries three things, because three issues wanted them and one file is cheaper than three
+ * mechanisms: the rule this provider is actually holding (#639), what the per-flow attribution costs
+ * (#641), and how often attribution *failed* rather than finding a host process (#642).
+ */
+private final class Heartbeat {
+    /// How often the file is refreshed with nothing happening.
+    ///
+    /// **A reader should allow at least three of these before calling the provider gone**, and that
+    /// is a measurement rather than a margin picked for comfort. `SIGKILL` on the provider was timed:
+    /// the file freezes immediately, and launchd brings it back about **seven seconds** later. A
+    /// threshold under that would report a filter as absent every time the system restarts it.
+    static let pulseSeconds: TimeInterval = 5
+
+    private let lock = NSLock()
+    /// The disk write happens here, never on the flow's thread. `handleNewFlow` decides whether a
+    /// connection is allowed; a file system round trip has no business in that path, and the lock
+    /// this used to hold across `Data.write` serialised every concurrent flow behind it.
+    private let io = DispatchQueue(label: "dev.tapflow.netfilter.heartbeat", qos: .utility)
+
+    private var path: String?
+    private var warned = false
+    /// Set once the filter has stopped. **Checked on the `io` queue, not at the call site**, because
+    /// the call site is not where the ordering problem is: `pulse?.cancel()` does not stop a handler
+    /// already running, and `handleNewFlow` can be mid-flight on another thread. Either could enqueue
+    /// a write *after* `remove()` and recreate the file — leaving a fresh-looking state that claims
+    /// the provider is enforcing a rule, which is the one thing this file must never say.
+    private var stopped = false
+    private var lastWrite: CFAbsoluteTime = 0
+
+    private var flowsSimulator = 0
+    private var flowsHost = 0
+    private var flowsUnresolved = 0
+    private var flowsDropped = 0
+    private var walks = 0
+    private var walkNanos: UInt64 = 0
+
+    enum Outcome { case simulator(dropped: Bool), host, unresolved }
+
+    /**
+     * Candidates, in order — **and every one of them has to be readable by the agent**, which runs
+     * as the user while this runs as root.
+     *
+     * That rules out the obvious-looking ones. `NSHomeDirectory()` for root is `/var/root`, which is
+     * `drwxr-x---`, and root's `NSTemporaryDirectory()` is a `drwx------` folder under
+     * `/var/folders`. A file written there succeeds, logs a cheerful path, and is invisible to the
+     * only reader — worse than failing, because the loud "no writable path" line never fires.
+     *
+     * Measured: the first candidate works. `/tmp` has **not** been exercised — an earlier version of
+     * this comment claimed the old "root cannot write /tmp" note was false, which the evidence did
+     * not support, because the loop returns on the first success and never reached it.
+     *
+     * **Only success is remembered.** A `probed` flag used to be set before either candidate was
+     * tried, so one transient refusal — a full disk, a permission that had not settled yet — silenced
+     * the file for the rest of the provider's life, and the agent read that permanent silence as "not
+     * enforcing" while the filter went on dropping traffic. Re-probing costs four syscalls on the
+     * `io` queue at most once a pulse, and only while there is no path; the logs are what needed the
+     * guard, not the work.
+     */
+    private static let candidates = [
+        "/Library/Application Support/tapflow",
+        "/tmp",
+    ]
+
+    private func resolvePath() -> String? {
+        if let path { return path }
+        for dir in Heartbeat.candidates {
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true,
+                                                     attributes: [.posixPermissions: 0o755])
+            let candidate = (dir as NSString).appendingPathComponent("tapflow-netfilter-state.json")
+            if FileManager.default.createFile(atPath: candidate, contents: Data("{}\n".utf8),
+                                              attributes: [.posixPermissions: 0o644]) {
+                os_log("heartbeat path: %{public}@", log: log, type: .default, candidate)
+                path = candidate
+                warned = false
+                return path
+            }
+            if !warned {
+                os_log("heartbeat path refused: %{public}@", log: log, type: .default, candidate)
+            }
+        }
+        if !warned {
+            warned = true
+            os_log("no writable heartbeat path — the agent cannot see this provider", log: log, type: .error)
+        }
+        return nil
+    }
+
+    /// Count one flow and refresh the file if it is due. One lock acquisition for both, so the
+    /// counters cannot be read half-updated and the rule cannot be published out of order.
+    func note(_ outcome: Outcome, walkNanos: UInt64?, rule: Set<String>, ruleChanged: Bool) {
+        lock.lock()
+        switch outcome {
+        case .simulator(let dropped):
+            flowsSimulator += 1
+            if dropped { flowsDropped += 1 }
+        case .host: flowsHost += 1
+        case .unresolved: flowsUnresolved += 1
+        }
+        // Only a walk that ran is a walk. Counting the `pid <= 0` short circuit diluted the average
+        // with samples that measured nothing.
+        if let nanos = walkNanos {
+            walks += 1
+            self.walkNanos += nanos
+        }
+        // Enqueued while the lock is still held. See `publish`.
+        if dueLocked(force: ruleChanged) { publish(renderLocked(rule: rule)) }
+        lock.unlock()
+    }
+
+    /// The pulse, and the one-off writes around the provider's life.
+    func publishNow(rule: Set<String>) {
+        lock.lock()
+        lastWrite = CFAbsoluteTimeGetCurrent()
+        publish(renderLocked(rule: rule))
+        lock.unlock()
+    }
+
+    /// Undo `remove()`, because a provider that is stopped can be started again in the same process.
+    ///
+    /// **`stopped` is process-wide and was one-way, which was a bug with the shape of the one it
+    /// fixed.** `remove()` sets it so nothing can recreate the file after a stop; nothing cleared it,
+    /// so the first `stopFilter` in a process killed the state file for good — and `startFilter` runs
+    /// again on the same process when the filter is re-enabled. Measured: the provider went on
+    /// answering `handleNewFlow` with no state file on disk, which is exactly the "enforcing while the
+    /// agent reads absence" that this file exists to make impossible.
+    func resume() {
+        lock.lock(); stopped = false; lock.unlock()
+    }
+
+    /// Absence is the signal a stopped filter should leave behind.
+    func remove() {
+        lock.lock(); stopped = true; let p = resolvePath(); lock.unlock()
+        guard let p else { return }
+        // Last on the queue, so anything already enqueued runs first and is then undone by this.
+        io.async { try? FileManager.default.removeItem(atPath: p) }
+    }
+
+    private func dueLocked(force: Bool) -> Bool {
+        let now = CFAbsoluteTimeGetCurrent()
+        if !force && now - lastWrite < 1.0 { return false }
+        lastWrite = now
+        return true
+    }
+
+    private func renderLocked(rule: Set<String>) -> String {
+        let avg = walks > 0 ? Double(walkNanos) / Double(walks) / 1000.0 : 0
+        // The rule arrives through `vendorConfiguration`, which this provider does not write and
+        // cannot constrain. Hand-quoting it made the whole file invalid JSON for any value carrying a
+        // quote or a backslash, and an unparseable file reads as "not enforcing" — the wrong answer,
+        // stated confidently, with nothing in the log to say why.
+        let rules = (try? JSONSerialization.data(withJSONObject: rule.sorted()))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        var json = "{\"at\":\(Int(Date().timeIntervalSince1970))"
+        json += ",\"pulseSeconds\":\(Int(Heartbeat.pulseSeconds))"
+        json += ",\"rule\":\(rules)"
+        json += ",\"flows\":{\"simulator\":\(flowsSimulator),\"host\":\(flowsHost)"
+        json += ",\"unresolved\":\(flowsUnresolved),\"dropped\":\(flowsDropped)}"
+        json += ",\"attribution\":{\"walks\":\(walks),\"avgMicros\":\(String(format: "%.1f", avg))}}\n"
+        return json
+    }
+
+    /// **Called with `lock` held**, on purpose: rendering under the lock and enqueuing outside it let
+    /// two threads render A then B and enqueue B then A, so the file could move backwards — an older
+    /// `rule` landing last is a reader told the wrong thing about what is being enforced. `io.async`
+    /// only copies a block, and nothing here ever waits on `io`, so holding the lock across it cannot
+    /// deadlock.
+    private func publish(_ json: String) {
+        io.async { [self] in
+            lock.lock(); let done = stopped; let p = resolvePath(); lock.unlock()
+            // Re-checked here rather than before enqueuing: the stop can land while this is queued.
+            guard !done, let p else { return }
+            try? Data(json.utf8).write(to: URL(fileURLWithPath: p), options: .atomic)
+        }
+    }
+}
+
+private let heartbeat = Heartbeat()
+
+
+// **An established connection cannot be cut, and this is where that was settled.**
+//
+// `.drop()` in `handleNewFlow` only ever reaches a NEW flow. A connection the app already holds — and
+// `URLSession` holds one for a whole session — carries every later request without ever asking again,
+// so a tester who goes offline mid-session leaves the app still talking. Apple is explicit that the
+// decision is one-way: "Once you've allowed a connection to proceed, there's no way to go back on
+// that decision. That's true for both content filter and transparent proxy."
+// (https://developer.apple.com/forums/thread/710166)
+//
+// The one escape the framework offers is to never allow it: keep returning a data verdict so the flow
+// stays under the filter. That was built and measured, and `peekBytes` — "the number of bytes after
+// the end of the bytes passed that the filter wants to see in the next call" — makes it unusable:
+//
+//   peek 8192  →      0 data callbacks. An HTTP request is a few hundred bytes and never reaches the
+//                     threshold, so the toggle never gets a chance to touch the flow.
+//   peek 1     →  815,869 data callbacks in one 40-second run, one byte each. The drop does land, and
+//                     it takes every simulator's throughput with it — the *control* simulator, which
+//                     no rule named, timed out on every request.
+//
+// So the flow verdict is final here on purpose. What an app in a session sees is: new connections
+// fail, and the connection it is holding keeps working until it is replaced. Closing that gap needs a
+// mechanism inside the app process, not on the host — see the plan.
+
+class Provider: NEFilterDataProvider {
+    /// Holds the state-file pulse. See `startPulse`.
+    private var pulse: DispatchSourceTimer?
+
+    override func startFilter(completionHandler: @escaping (Error?) -> Void) {
+        os_log("startFilter entered, offline=%{public}@", log: log, type: .default,
+               offlineUDIDs(filterConfiguration).sorted().joined(separator: ","))
+        let settings = NEFilterSettings(rules: [], defaultAction: .filterData)
+        apply(settings) { [weak self] error in
+            if let error {
+                os_log("startFilter failed: %{public}@", log: log, type: .error, error.localizedDescription)
+            } else {
+                // **After `apply` succeeds, not before it.** The filter can be stopped and started
+                // again inside one process, so a stop's `remove()` has to be undone somewhere — but
+                // undoing it before the filter is actually running opens a window for a writer left
+                // over from the *previous* session: `pulse?.cancel()` does not stop a handler already
+                // executing, and `handleNewFlow` can be mid-flight. Either reaching `publish` after
+                // `stopped` was cleared recreates the file for a filter that never started, which a
+                // reader takes as evidence of an active one.
+                heartbeat.resume()
+                os_log("startFilter applied OK", log: log, type: .default)
+                self?.startPulse()
+            }
+            completionHandler(error)
+        }
+    }
+
+    /**
+     * Refresh the state file on a timer, not only when traffic arrives.
+     *
+     * This is what lets a reader treat a missing or old file as "not enforcing". Driven by flows
+     * alone, a provider that died left its last rule on disk indefinitely and a quiet Mac was
+     * indistinguishable from a dead one.
+     */
+    private func startPulse() {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now(), repeating: Heartbeat.pulseSeconds, leeway: .seconds(1))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            heartbeat.publishNow(rule: offlineUDIDs(self.filterConfiguration))
+        }
+        timer.resume()
+        pulse = timer
+    }
+
+    override func stopFilter(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        os_log("stopFilter reason=%{public}d", log: log, type: .default, reason.rawValue)
+        // Absence is the signal. A stopped filter that left its last rule behind would tell the agent
+        // it is still enforcing something.
+        pulse?.cancel()
+        pulse = nil
+        heartbeat.remove()
+        completionHandler()
+    }
+
+    override func handleNewFlow(_ flow: NEFilterFlow) -> NEFilterNewFlowVerdict {
+        let token = flow.sourceAppAuditToken
+        let pid = token.flatMap(pidFromAuditToken) ?? -1
+        let asid = token.map(asidFromToken) ?? 0
+        let rule = offlineUDIDs(filterConfiguration)
+        let ruleChanged = ruleWatch.noteIfChanged(rule)
+
+        // **How long the attribution actually takes** (#641). The walk was suspected of being an
+        // unaffordable per-flow cost and nobody had measured it, so it is counted here rather than
+        // argued about — and only when it runs, so the average is not diluted by flows that skipped
+        // it. A cache added on a hunch is one more thing to keep correct across pid reuse.
+        var walkNanos: UInt64?
+        let attribution: Attribution
+        if pid > 0 {
+            let began = DispatchTime.now().uptimeNanoseconds
+            attribution = attribute(pid)
+            walkNanos = DispatchTime.now().uptimeNanoseconds - began
+        } else {
+            attribution = .unresolved("no audit token")
+        }
+
+        switch attribution {
+        // A flow this Mac owns — the user's browser, mail, everything else. Allowed outright, which
+        // also ENDS filtering for it, so nothing downstream is paid for by host traffic.
+        case .host:
+            os_log("handleNewFlow pid=%{public}d udid=- asid=%{public}u verdict=allow(host)",
+                   log: log, type: .default, pid, asid)
+            heartbeat.note(.host, walkNanos: walkNanos, rule: rule, ruleChanged: ruleChanged)
+            return .allow()
+
+        // **Not the same thing as a host flow, and it used to be logged as one** (#642). The walk
+        // failed — no audit token, an unreadable `KERN_PROCARGS2`, a process that exited underneath
+        // it — so this flow *might* belong to a simulator that is supposed to be offline.
+        //
+        // It is still allowed, and that is a decision rather than an oversight. Failing closed on a
+        // failed `sysctl` would cut the user's own browser on a transient error, which is worse than
+        // the hole: this filter is host-wide, and the whole promise of the feature is that only the
+        // simulator you toggled is affected. What was actually wrong was that the hole was invisible
+        // — indistinguishable in the log from an ordinary host flow, and absent from any counter.
+        case .unresolved(let why):
+            os_log("handleNewFlow pid=%{public}d udid=? asid=%{public}u verdict=allow(UNRESOLVED: %{public}@)",
+                   log: log, type: .error, pid, asid, why)
+            heartbeat.note(.unresolved, walkNanos: walkNanos, rule: rule, ruleChanged: ruleChanged)
+            return .allow()
+
+        case .simulator(let udid):
+            let drop = rule.contains(udid)
+            os_log("handleNewFlow pid=%{public}d udid=%{public}@ asid=%{public}u verdict=%{public}@",
+                   log: log, type: .default, pid, udid, asid, drop ? "DROP" : "allow")
+            heartbeat.note(.simulator(dropped: drop), walkNanos: walkNanos, rule: rule, ruleChanged: ruleChanged)
+            return drop ? .drop() : .allow()
+        }
+    }
+}
+
+// MARK: - pid → UDID
+
+// audit_token_t is 8 x uint32 (auid, euid, egid, ruid, rgid, pid, asid, pidversion).
+private func pidFromAuditToken(_ data: Data) -> pid_t? {
+    guard data.count == MemoryLayout<audit_token_t>.size else { return nil }
+    return data.withUnsafeBytes { pid_t(bitPattern: $0.bindMemory(to: UInt32.self)[5]) }
+}
+
+private func asidFromToken(_ data: Data) -> UInt32 {
+    guard data.count == MemoryLayout<audit_token_t>.size else { return 0 }
+    return data.withUnsafeBytes { $0.bindMemory(to: UInt32.self)[6] }
+}
+
+// Parent lookup goes through sysctl(KERN_PROC), which the sysext sandbox permits — measured against both
+// a host process (a Chrome helper resolved to the Chrome browser process) and simulator flows (all 231
+// resolved to launchd_sim).
+/**
+ * A process's parent and its **start time**, read together from one `sysctl`.
+ *
+ * The start time is what makes a pid an identity. macOS reuses pids, and `launchd_sim`'s is reused
+ * readily — every simulator boot starts one, and a Mac that has booted a few dozen wraps the range.
+ * A cache keyed on the number alone therefore answers for a simulator that no longer exists, and the
+ * consequence is not a stale label: it is `handleNewFlow` cutting a device nobody asked to cut, with
+ * every log line agreeing that the udid was right. `(pid, start)` is unique for the life of the Mac.
+ *
+ * Not `pidversion` from the audit token, which is there at word 7 and would be the obvious source:
+ * it identifies the *flow's* process, and what has to be identified is its `launchd_sim` ancestor,
+ * which has no token here.
+ */
+private struct ProcIdentity: Hashable {
+    let pid: pid_t
+    let startSec: Int64
+    let startUsec: Int32
+}
+
+private func procSysctl(_ pid: pid_t) -> (ppid: pid_t, identity: ProcIdentity)? {
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+    var kp = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.stride
+    guard sysctl(&mib, u_int(mib.count), &kp, &size, nil, 0) == 0, size > 0 else { return nil }
+    let start = kp.kp_proc.p_un.__p_starttime
+    return (kp.kp_eproc.e_ppid,
+            ProcIdentity(pid: pid, startSec: Int64(start.tv_sec), startUsec: start.tv_usec))
+}
+
+private func pidPath(_ pid: pid_t) -> String? {
+    var buf = [CChar](repeating: 0, count: 4096) // PROC_PIDPATHINFO_MAXSIZE, not exported to Swift
+    return proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 ? String(cString: buf) : nil
+}
+
+// The argument vector via sysctl(KERN_PROCARGS2). The buffer is a packed run of NUL-separated strings
+// (argc, exec path, argv, envp); we only search it for a substring, so NULs become spaces instead of
+// parsing that layout. KERN_ARGMAX sizes the buffer — a NULL-oldp size probe is not reliable here.
+private func procArgs(_ pid: pid_t) -> String? {
+    var argmaxMib: [Int32] = [CTL_KERN, KERN_ARGMAX]
+    var argmax: Int32 = 0
+    var argmaxLen = MemoryLayout<Int32>.size
+    guard sysctl(&argmaxMib, 2, &argmax, &argmaxLen, nil, 0) == 0, argmax > 0 else { return nil }
+
+    var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+    var buf = [UInt8](repeating: 0, count: Int(argmax))
+    var len = Int(argmax)
+    guard sysctl(&mib, u_int(mib.count), &buf, &len, nil, 0) == 0, len > 0 else { return nil }
+
+    let text = buf.prefix(len).map { $0 == 0 ? UInt8(0x20) : $0 }
+    return String(decoding: text, as: UTF8.self)
+}
+
+// .../Devices/<UDID>/... — a UDID is a 36-character uppercase UUID.
+private func extractUDID(from text: String) -> String? {
+    guard let marker = text.range(of: "/Devices/") else { return nil }
+    let udid = text[marker.upperBound...].prefix { $0 != "/" }
+    return udid.count == 36 ? String(udid) : nil
+}
+
+// launchd_sim outlives every flow of the simulator it hosts, so caching by its identity holds for the
+// whole boot and the per-flow cost stays at the parent walk. Only positive results are cached: a host
+// flow is rejected by the launchd_sim path check before any argument read, so it never pays for the
+// miss.
+//
+// **Keyed on the identity and not the pid**, for the reason on `ProcIdentity`. Entries are never
+// evicted, which is affordable because the key is a boot rather than a process — one per simulator
+// started while the provider has been running — and because it is *wrong* to evict on the same signal
+// that inserts: a pid whose entry is dropped is looked up again and re-cached from `KERN_PROCARGS2`,
+// which reads the CURRENT process's arguments. The stale answer would simply be re-derived. Keying it
+// away is the only fix that does not depend on noticing the exit.
+private final class UDIDCache {
+    private var byRoot: [ProcIdentity: String] = [:]
+    private let lock = NSLock()
+
+    func lookup(_ root: ProcIdentity) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return byRoot[root]
+    }
+
+    func store(_ root: ProcIdentity, _ udid: String) {
+        lock.lock(); defer { lock.unlock() }
+        byRoot[root] = udid
+    }
+}
+
+private let udidCache = UDIDCache()
+
+/**
+ * What a flow's process turned out to be — **three outcomes, where the code used to have two**.
+ *
+ * `udidForPID` returned `String?`, and `nil` meant both "this is the Mac's own traffic" and "the
+ * walk failed". They were logged identically and counted not at all, so a simulator that should have
+ * been offline could reach the network because a `sysctl` returned an error, with the log calling it
+ * a host flow (#642).
+ */
+private enum Attribution {
+    case simulator(String)
+    case host
+    case unresolved(String)
+}
+
+/// The parent walk, with its failures kept apart from its negative answer.
+private func attribute(_ pid: pid_t) -> Attribution {
+    var current = pid
+    for _ in 0..<32 {
+        guard let info = procSysctl(current) else {
+            // The process is gone, or the kernel refused. Either way we do not know.
+            return .unresolved("sysctl failed at pid \(current)")
+        }
+        if info.ppid <= 1 {
+            if let path = pidPath(current), !path.hasSuffix("/launchd_sim") {
+                return .host   // a known top-level process that is not a simulator's launchd
+            }
+            // An unreadable path falls through on purpose: the UDID pattern in the arguments is the
+            // stronger check, and losing a flow to a path read would be the wrong trade.
+            if let cached = udidCache.lookup(info.identity) { return .simulator(cached) }
+            guard let udid = procArgs(current).flatMap(extractUDID) else {
+                return .unresolved("no UDID in the arguments of pid \(current)")
+            }
+            udidCache.store(info.identity, udid)
+            return .simulator(udid)
+        }
+        current = info.ppid
+    }
+    return .unresolved("parent chain did not terminate")
+}

@@ -10,7 +10,8 @@
   },
   "scripts": {
     "build": "pnpm --filter @tapflowio/protocol build && pnpm --filter @tapflowio/agent-core build && pnpm --filter @tapflowio/dashboard build && pnpm --filter @tapflowio/flow-runner build && pnpm --filter @tapflowio/relay build && pnpm --filter @tapflowio/ios-agent build && pnpm --filter @tapflowio/android-agent build && pnpm --filter tapflow build && pnpm --filter @tapflowio/mcp-server build",
-    "test": "vitest run --config scripts/vitest.config.mjs && pnpm -r test --if-present",
+    "test": "pnpm test:scripts && pnpm -r test --if-present",
+    "test:scripts": "vitest run --config scripts/vitest.config.mjs",
     "lint": "eslint scripts && pnpm -r --if-present lint",
     "typecheck": "tsc -b && pnpm -r --if-present typecheck",
     "prepare": "lefthook install || true",

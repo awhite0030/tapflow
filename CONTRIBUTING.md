@@ -136,6 +136,12 @@ All packages:
 pnpm test
 ```
 
+Repository scripts suite (cross-package static checks):
+
+```sh
+pnpm test:scripts
+```
+
 A specific package:
 
 ```sh
