@@ -67,6 +67,39 @@ Measured against a killed emulator: the gRPC RPC rejects in **4ms** with `14 UNA
 - `ANDROID_HOME` or `ADB_PATH` environment variable is required. Missing → clear error and immediate exit.
 - Apple Silicon Mac: `system-images;android-34;google_apis;arm64-v8a` image required.
 
+### An entry point with no session refuses rather than choosing
+
+The members that take no session id — `screenshot`, `installApp`, `launchApp`, `queryUITree`,
+`stream`, the three touch methods, `openUrl`, and `NetworkControlCapability`'s two — go through
+`soleLiveOrNone()`. It **throws when more than one device is live**, naming the count.
+
+`IOSAgent.soleOf` has done this since #607 and its comment carries the reason: *"Refusing beats
+guessing: this interface has no way to say which device is meant, and picking one silently is the whole
+defect being fixed here."* This class did not, and eleven members each took
+`deviceStates.values().next().value` — the entry the relay happened to register first — because each was
+written from the one above it. For a read that answers about a device nobody asked about; for
+`setNetworkOffline` it takes a device off the network while somebody else is testing on it (#617).
+
+**Liveness is having a serial**, and iOS specified that for this class too: `soleDeviceState`'s comment
+calls it "the liveness check `AndroidAgent` gets for free from `getSerial` (its serial map is only
+populated on launch)". `deviceStates` holds one entry per *registered* AVD and a Mac reports every AVD
+it has, so counting registration as liveness would make every entry point refuse on an ordinary machine.
+
+Two things stay as they were, deliberately:
+
+- **`sessionId`** still takes the first entry. A read's worst case is naming the wrong device, and it
+  answers *before* a device is chosen — refusing would make "which session am I on" an error on a
+  healthy two-emulator Mac. `IOSAgent.sessionId` is identical.
+- **Absence stays a no-op for the touch methods.** They have always been silent without a device, and
+  `touchStart` returns `void` so a throw is the only signal it could give. `soleLive()` is the variant
+  that demands a device; `soleLiveOrNone()` is the one they use.
+
+**None of this touches the wire path.** Anything carrying a session resolves through
+`serialFor(sessionId)` and always has — the browser names its session on every message.
+
+`scripts/__tests__/agentEntryPointsRefuse.test.mjs` holds it for the twelfth member, and names the one
+exemption rather than pattern-matching it, so the next exemption has to be a decision.
+
 ### A screenshot reply names what was produced, never what was asked for
 
 `screencap -p` produces PNG and takes no format argument, so `screenshot:done` answers `format: 'png'`
