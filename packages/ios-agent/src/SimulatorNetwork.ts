@@ -111,10 +111,38 @@ const ENFORCING_PULSE_SECONDS = 1
 /** What the provider's state file says. `pulseSeconds` is read rather than assumed: the provider
  *  changes its own rate (1s while enforcing, 5s idle) and publishes the one in force, so a threshold
  *  derived from this stays right when that changes. */
+/** The non-negative integers in an untrusted object, entry by entry. Anything else is dropped rather
+ *  than failing the whole read — see `droppedByDevice`. */
+function numbersIn(raw: unknown): Record<string, number> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}
+  const out: Record<string, number> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) out[k] = v
+  }
+  return out
+}
+
 interface FilterStateFile {
   at: number
   pulseSeconds: number
   rule: string[]
+  /**
+   * Flows the provider dropped, per device (#654) — **evidence, and only in one direction.**
+   *
+   * The rest of this file proves the provider *received* the rule. That is not the same as the
+   * device's traffic having stopped: `handleNewFlow` allows a flow it could not attribute, on
+   * purpose, so a simulator whose flows consistently fail attribution keeps talking while the file
+   * stays fresh and its rule stays correct. A drop is the one observation that closes that gap,
+   * because a dropped flow was attributed by construction.
+   *
+   * **A zero, or an absent entry, proves nothing.** An offline device that opens no connections drops
+   * nothing, which is the ordinary state of a simulator sitting on a screen. Nothing here may be read
+   * as failure — see `state()` and `checkLivenessLocked`, neither of which does.
+   *
+   * Absent entirely on a provider older than this change, which is the normal state while a Mac has
+   * not reinstalled the extension yet.
+   */
+  droppedByDevice: Record<string, number>
 }
 
 /**
@@ -631,6 +659,21 @@ export class SimulatorNetwork {
       // not in what it said.
       return true
     })
+    // **Q1, resolved: the evidence goes in the log and not on the wire.** Adding a drop count to
+    // `NetworkStatePayload` would be a protocol change for a number a tester cannot act on, and the
+    // one-directional reading below is not something a control can render honestly — "0 drops" looks
+    // like a failure and is not. A person diagnosing reads this line; nothing else changes.
+    //
+    // Deliberately outside the `lost` branch: it is worth saying that a device is *proven* enforcing,
+    // not only that one stopped being.
+    if (file) {
+      for (const udid of this.offline) {
+        const drops = file.droppedByDevice[udid]
+        if (drops !== undefined && drops > 0) {
+          console.log(`[network] filter has dropped ${drops} flow(s) for ${udid} — enforcement observed, not just delivered`)
+        }
+      }
+    }
     if (lost.length === 0) return
 
     for (const udid of lost) {
@@ -673,6 +716,12 @@ export class SimulatorNetwork {
           at: raw.at,
           pulseSeconds: typeof raw.pulseSeconds === 'number' ? raw.pulseSeconds : 5,
           rule: raw.rule.filter((r): r is string => typeof r === 'string'),
+          // **Its absence is not a parse failure**, and that is the load-bearing part. The provider is
+          // installed by hand and replaced only on reboot, so a Mac running a provider older than
+          // #654 is the ordinary case during rollout — treating a missing field as a bad file would
+          // report "not enforcing" for a filter doing its job, which is the exact failure the rest of
+          // this file exists to prevent. A malformed one is discarded the same way, entry by entry.
+          droppedByDevice: numbersIn(raw.droppedByDevice),
         }
       } catch {
         continue

@@ -129,10 +129,34 @@ private final class Heartbeat {
     private var flowsHost = 0
     private var flowsUnresolved = 0
     private var flowsDropped = 0
+    private var flowsIdle = 0
+    /**
+     * Drops, per device (#654).
+     *
+     * **The file used to prove rule *delivery* and was read as enforcement.** A fresh file naming a
+     * device says the provider received the rule; it does not say the device's traffic stopped. The
+     * gap is deliberate — `handleNewFlow`'s `.unresolved` branch allows on purpose, because failing
+     * closed on a transient `sysctl` failure would cut the user's own browser — so a simulator whose
+     * flows consistently fail attribution keeps talking while the file stays fresh and correct.
+     *
+     * A drop is the one thing that can close it, because a dropped flow was attributed by
+     * construction and therefore has a udid.
+     *
+     * **`unresolved` is not here and never can be.** Unresolved *means* the walk could not name an
+     * owner; bucketing it per device would invent the attribution whose absence defines it. It stays
+     * a host-wide total, and anyone reaching for a per-device version should read this instead.
+     */
+    private var droppedByUDID: [String: Int] = [:]
     private var walks = 0
     private var walkNanos: UInt64 = 0
 
-    enum Outcome { case simulator(dropped: Bool), host, unresolved }
+    /// **`idle` is its own member and does not fold into `host`.**
+    ///
+    /// Those flows were never attributed — the walk was skipped because the rule was empty. Counting
+    /// them as host flows would put a number in the file meaning "we decided this belonged to the
+    /// Mac", when nothing decided anything. The file is read to diagnose, and a diagnosis built on an
+    /// invented decision is worse than a missing one.
+    enum Outcome { case simulator(dropped: Bool, udid: String), host, unresolved, idle }
 
     /**
      * Candidates, in order — **and every one of them has to be readable by the agent**, which runs
@@ -188,11 +212,15 @@ private final class Heartbeat {
     func note(_ outcome: Outcome, walkNanos: UInt64?, rule: Set<String>, ruleChanged: Bool) {
         lock.lock()
         switch outcome {
-        case .simulator(let dropped):
+        case .simulator(let dropped, let udid):
             flowsSimulator += 1
-            if dropped { flowsDropped += 1 }
+            if dropped {
+                flowsDropped += 1
+                droppedByUDID[udid, default: 0] += 1
+            }
         case .host: flowsHost += 1
         case .unresolved: flowsUnresolved += 1
+        case .idle: flowsIdle += 1
         }
         // Only a walk that ran is a walk. Counting the `pid <= 0` short circuit diluted the average
         // with samples that measured nothing.
@@ -259,7 +287,16 @@ private final class Heartbeat {
         json += ",\"pulseSeconds\":\(Int(Heartbeat.pulseSeconds(enforcing: !rule.isEmpty)))"
         json += ",\"rule\":\(rules)"
         json += ",\"flows\":{\"simulator\":\(flowsSimulator),\"host\":\(flowsHost)"
-        json += ",\"unresolved\":\(flowsUnresolved),\"dropped\":\(flowsDropped)}"
+        json += ",\"unresolved\":\(flowsUnresolved),\"dropped\":\(flowsDropped)"
+        json += ",\"idle\":\(flowsIdle)}"
+        // **Pruned to the current rule rather than to what arrived.** A Mac cycles through simulators
+        // and every udid that ever had a flow dropped would otherwise stay in the file for the life of
+        // the provider, growing it without bound and describing devices nobody is looking at. What a
+        // reader wants is evidence about what is being enforced *now*.
+        let perDevice = droppedByUDID.filter { rule.contains($0.key) }
+        let dropped = (try? JSONSerialization.data(withJSONObject: perDevice))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        json += ",\"droppedByDevice\":\(dropped)"
         json += ",\"attribution\":{\"walks\":\(walks),\"avgMicros\":\(String(format: "%.1f", avg))}}\n"
         return json
     }
@@ -379,6 +416,26 @@ class Provider: NEFilterDataProvider {
         let rule = offlineUDIDs(filterConfiguration)
         let ruleChanged = ruleWatch.noteIfChanged(rule)
 
+        // **Nothing to enforce, so nothing to attribute** (#685).
+        //
+        // Every branch below returns `.allow()` when the rule is empty — `.host` and `.unresolved`
+        // unconditionally, and `.simulator` because `rule.contains(udid)` is false. So the walk cannot
+        // change this verdict, and it is not a cost paid for a benefit; it is a cost paid for nothing.
+        //
+        // That is most of the life of an installed filter. Measured on a Mac with no device offline:
+        // 125,989 walks at an average of 425.9µs, `dropped` 0, and 96% of the flows belonging to the
+        // Mac's own browser and mail. A user who took a device offline once, months ago, was paying
+        // this on every connection since.
+        //
+        // **The heartbeat is not affected**, which is the thing to check before believing this is
+        // free. The file is written by the `DispatchSourceTimer` in `startFilter`, once a second;
+        // `note` only refreshes it opportunistically when one is due. A provider seeing no flows at
+        // all has always published, so one that stops counting them still does.
+        if rule.isEmpty {
+            heartbeat.note(.idle, walkNanos: nil, rule: rule, ruleChanged: ruleChanged)
+            return .allow()
+        }
+
         // **How long the attribution actually takes** (#641). The walk was suspected of being an
         // unaffordable per-flow cost and nobody had measured it, so it is counted here rather than
         // argued about — and only when it runs, so the average is not diluted by flows that skipped
@@ -421,7 +478,7 @@ class Provider: NEFilterDataProvider {
             let drop = rule.contains(udid)
             os_log("handleNewFlow pid=%{public}d udid=%{public}@ asid=%{public}u verdict=%{public}@",
                    log: log, type: .default, pid, udid, asid, drop ? "DROP" : "allow")
-            heartbeat.note(.simulator(dropped: drop), walkNanos: walkNanos, rule: rule, ruleChanged: ruleChanged)
+            heartbeat.note(.simulator(dropped: drop, udid: udid), walkNanos: walkNanos, rule: rule, ruleChanged: ruleChanged)
             return drop ? .drop() : .allow()
         }
     }
