@@ -13,6 +13,9 @@ or launched into.
 
 After a launch: a library that is present and armed but never loaded by dyld writes no verdict, and
 that was reported as `awaiting-app` — "launch an app through tapflow", to someone who had, for the life
-of the session. It is now reported as what it is once a launch has had time to produce a verdict. The
-window is derived from the library rather than picked: its verdict is written from a constructor, but
-that constructor waits up to three seconds inside its own self-check first.
+of the session. Once a launch has had time to report and none has arrived, it now says the injection
+could not be confirmed rather than asking again for something already done.
+
+**Which is an observation, not a proof.** Nothing was seen, and that is why the answer changed: the
+alternative was to keep asserting the one thing known to be false. It is a deadline, and the reason set
+says so where a consumer reads it.

@@ -94,9 +94,14 @@ and waiting out sleeps.
   `git reflog` — and finished by reading blobs with `git show <sha>:<path>`, so both reports were
   sound and their findings verified against the real files afterwards. That is the behaviour to ask
   for rather than to be lucky about: give the reviewer the full HEAD hash you want reviewed, and say
-  that if `git rev-parse HEAD` no longer matches it, it should read blobs at that hash instead of the
-  working tree and say so in its report. A reviewer that silently trusts the tree reports on a change
-  that is not there.
+  that if the tree no longer holds it, it should read blobs at that hash instead and say so in its
+  report. A reviewer that silently trusts the tree reports on a change that is not there.
+
+  **"No longer holds it" is two questions, not one.** `git rev-parse HEAD` catches a branch that
+  moved; it says nothing about an uncommitted edit, which leaves the hash matching while the files
+  differ — and that is the case the paragraph above this one is about. So the reviewer checks
+  `git status --porcelain` as well, and treats either signal as reason to read blobs. Asking only for
+  the hash is a check that reads as covering both and covers one.
 
 ## The cleared list ages with the diff
 
