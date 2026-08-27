@@ -88,7 +88,13 @@ function fakeHostBinary(dir: string, log: string, sleepMs = 0, failNth = 0): str
     + `printf '%s,%s' "$CUR" "$ADD" | tr ',' '\\n' | grep -v '^$' | sort -u > "$S.all"\n`
     + `if [ -s "$S.rem" ]; then OUT=$(grep -vxF -f "$S.rem" "$S.all" | paste -sd, -); else OUT=$(paste -sd, - < "$S.all"); fi\n`
     + `printf '%s' "$OUT" > "$S.rule" && mv "$S.rule" "${dir}/rule"\n`
-    + `printf '{"at":%s,"pulseSeconds":1,"rule":%s}\\n' "$(date +%s)" "$(printf '%s' "$OUT" | ${ruleToJson})" > "$S.state" && mv "$S.state" "${dir}/state.json"\n`
+    // **The counts are carried across a rewrite, because the provider carries them.** Its render
+    // serialises a store that survives; it does not start each file from nothing. A double that
+    // dropped `droppedByDevice` on every host run made the stale-count case unreachable — the very
+    // case #654's episode boundary exists for — and a test written against it passed on a device that
+    // had no drops at all.
+    + `DROPS=$(cat "${dir}/drops.json" 2>/dev/null || echo '{}')\n`
+    + `printf '{"at":%s,"pulseSeconds":1,"rule":%s,"droppedByDevice":%s}\\n' "$(date +%s)" "$(printf '%s' "$OUT" | ${ruleToJson})" "$DROPS" > "$S.state" && mv "$S.state" "${dir}/state.json"\n`
     + `rm -f "$S.rem" "$S.all"\n`
     // argv goes to its own file: the log line still carries the **resulting rule**, which is what the
     // assertions below are about, and argv is available separately for the tests that are about what
@@ -786,10 +792,249 @@ describe('SimulatorNetwork', () => {
 
   // ── enforcement that stops after the fact (#639) ────────────────────────────────────────────
   describe('liveness', () => {
+    /** The drop evidence goes to the log and nowhere else (#654, Q1), so the log is what observes it. */
+    let spy: ReturnType<typeof vi.spyOn>
+    beforeEach(() => { spy = vi.spyOn(console, 'log').mockImplementation(() => {}) })
+    afterEach(() => { spy.mockRestore() })
+
     const staleState = (rule: string[], atOffsetSeconds: number, pulseSeconds = 1) =>
       writeFileSync(join(dir, 'state.json'), JSON.stringify({
         at: Math.floor(Date.now() / 1000) + atOffsetSeconds, pulseSeconds, rule,
       }))
+
+    /**
+     * The state file a provider older than #654 writes: no `droppedByDevice` at all.
+     *
+     * **This is the ordinary case, not an edge one.** The extension is installed by hand and a
+     * replacement only finishes on reboot, so a Mac runs the previous provider for as long as its
+     * owner has not restarted. A missing field read as a bad file would report "not enforcing" for a
+     * filter that is working — the exact failure the rest of this class exists to prevent.
+     */
+    const stateWithout = (rule: string[]) =>
+      writeFileSync(join(dir, 'state.json'), JSON.stringify({
+        at: Math.floor(Date.now() / 1000), pulseSeconds: 1, rule,
+      }))
+
+    /** Writes the file *and* the sidecar the fake host reads, so a host run carries the counts on. */
+    const stateWith = (rule: string[], droppedByDevice: unknown) => {
+      writeFileSync(join(dir, 'drops.json'), JSON.stringify(droppedByDevice))
+      writeFileSync(join(dir, 'state.json'), JSON.stringify({
+        at: Math.floor(Date.now() / 1000), pulseSeconds: 1, rule, droppedByDevice,
+      }))
+    }
+
+    it('keeps a device offline when the provider is too old to report drops', async () => {
+      // **`state()` is synchronous, so waiting on it proves nothing about the liveness loop** — it is
+      // already true the moment the device goes offline, and the wait returns before a single 20ms
+      // tick has read the file. The same vacuity was found twice on this branch; this is the third
+      // instance, and it is closed the same way: a positive from the seam under test.
+      //
+      // Here that positive comes last. The file is deliberately one an older provider wrote, so it
+      // produces nothing to wait for — but making the device stale at the end and watching `lost`
+      // arrive proves the loop was reading this file all along.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      stateWithout([UDID])
+      await new Promise((r) => setTimeout(r, 120))
+      expect(net.state(UDID)).toMatchObject({ offline: true })
+      expect(lost, 'an older provider was read as one that stopped enforcing').toEqual([])
+
+      staleState([UDID], -60)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+    })
+
+    /**
+     * The drop count's only consumer is the log line, so that is where it can be observed.
+     *
+     * Asserting "the device is still offline" instead passes whatever the value is — the state does
+     * not depend on it, deliberately (R7) — which is a test that agrees with any implementation.
+     */
+    const dropLines = (): string[] => spy.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .filter((l: string) => l.includes('has dropped'))
+
+    /**
+     * Two devices offline, one of them with real drops — **so a tick provably ran** before anything is
+     * asserted about the other.
+     *
+     * The first attempt at these waited on `state(UDID)` being offline, which is already true when the
+     * device is put offline: `vi.waitFor` returned before the 20ms liveness interval had fired once,
+     * and the "no line was printed" assertions passed because nothing had happened yet. Measured —
+     * both survived a mutation that printed a line for every device. A negative about a periodic job
+     * needs a positive from the same job to stand on.
+     */
+    const tickedWith = async (dropped: Record<string, unknown>) => {
+      armed(UDID); armed(OTHER)
+      const net = make()
+      await net.setOffline(UDID, true)
+      await net.setOffline(OTHER, true)
+      stateWith([UDID, OTHER], { [OTHER]: 2, ...dropped })
+      await vi.waitFor(() => expect(dropLines().some((l: string) => l.includes(OTHER))).toBe(true))
+      return net
+    }
+
+    it('keeps a device offline when its drop count is malformed, and says nothing about it', async () => {
+      // Entry by entry rather than all-or-nothing: one bad value must not discard a file whose `rule`
+      // and `at` are the fields every other decision here is made from — and a value that is not a
+      // count must not be reported as one.
+      // **`'5'`, not `'lots'`.** The first attempt used a word, and it did not discriminate: `'lots' > 0`
+      // is `false` in JavaScript, so the guard downstream filtered it whether or not the parse did.
+      // A numeric string is what actually gets past that comparison — `'5' > 0` is true — and it is
+      // the realistic corruption too, from a provider that formatted a count as text.
+      const net = await tickedWith({ [UDID]: '5' })
+      expect(net.state(UDID)).toMatchObject({ offline: true })
+      expect(lost, 'a malformed drop count was read as enforcement stopping').toEqual([])
+      expect(dropLines().filter((l: string) => l.includes(UDID)), 'a value that is not a count was reported as one')
+        .toEqual([])
+    })
+
+    it('says a device is proven enforcing when the provider reports drops for it', async () => {
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      stateWith([UDID], { [UDID]: 3 })
+      await vi.waitFor(() => expect(dropLines().length).toBeGreaterThan(0))
+      expect(dropLines()[0]).toContain(UDID)
+      expect(dropLines()[0], 'the count is not in the line that exists to carry it').toContain('3')
+    })
+
+    it('says nothing for a device with zero drops', async () => {
+      // The control for the line above, and the shape of the whole feature: a zero proves nothing, so
+      // it produces nothing. Without this the assertion above passes on a line printed unconditionally.
+      await tickedWith({ [UDID]: 0 })
+      expect(dropLines().filter((l: string) => l.includes(UDID)), 'zero drops was announced as evidence')
+        .toEqual([])
+    })
+
+    it('reads zero drops exactly as it reads no drops at all', async () => {
+      // **The one that fails if someone later makes zero mean something.** An offline device that
+      // opens no connections drops nothing, which is what a simulator sitting on a screen does — so a
+      // zero is the common case and proves nothing. Nothing may treat it as failure.
+      armed()
+      const a = make()
+      await a.setOffline(UDID, true)
+      stateWith([UDID], { [UDID]: 0 })
+      const withZero = a.state(UDID)
+
+      await a.setOffline(UDID, false)
+      await a.setOffline(UDID, true)
+      stateWithout([UDID])
+      expect(a.state(UDID), 'a zero drop count changed the answer').toEqual(withZero)
+      expect(lost).toEqual([])
+    })
+
+    it('changes no reason when the provider reports drops', async () => {
+      // Evidence is one-directional and goes to the log; it must not become a state a control renders
+      // (R7). Drops present, and the answer is byte-identical to drops absent.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      stateWithout([UDID])
+      const before = net.state(UDID)
+      stateWith([UDID], { [UDID]: 42 })
+      await vi.waitFor(() => expect(net.state(UDID)).toEqual(before))
+      expect(lost).toEqual([])
+    })
+
+    it('does not carry a previous offline episode\'s drops into the next one', async () => {
+      // **The provider cannot close this and this class can.** Its prune runs at render time and its
+      // `ruleWatch` only advances when a flow arrives, so a device toggled off, on and off again with
+      // neither in between leaves it having never seen the empty rule — and it republishes the old
+      // count against the new episode. The agent knows what the provider cannot: that a tester
+      // toggled. Taking the file's current count as the baseline is what makes the stale number
+      // harmless.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      stateWith([UDID], { [UDID]: 6 })
+      await vi.waitFor(() => expect(dropLines().length).toBe(1))
+
+      // Off and on again. The count stays in the file across both, which is what a provider that
+      // never saw the empty rule publishes — and what the agent's seed has to render harmless.
+      await net.setOffline(UDID, false)
+      await net.setOffline(UDID, true)
+      await new Promise((r) => setTimeout(r, 120))
+      expect(dropLines().length, 'a previous episode\'s drops were announced as this one\'s evidence')
+        .toBe(1)
+
+      // And a drop that is genuinely new still counts.
+      stateWith([UDID], { [UDID]: 9 })
+      await vi.waitFor(() => expect(dropLines().length).toBe(2))
+      expect(dropLines()[1]).toContain('9')
+    })
+
+    it('does not report a fraction of a flow', async () => {
+      // A count is flows, and `dropped 0.5 flow(s)` is a sentence no reader should be handed. It is
+      // also the one malformed shape the `> 0` guard downstream cannot catch on its own — unlike a
+      // negative, and unlike a word, a fraction is a finite number greater than zero.
+      await tickedWith({ [UDID]: 0.5 })
+      expect(dropLines().filter((l: string) => l.includes(UDID)), 'a fraction of a flow was reported')
+        .toEqual([])
+    })
+
+    it('claims nothing about a device this agent never took offline', async () => {
+      // **The state file is host-wide.** Another agent's devices, and rule entries this instance never
+      // wrote, appear in it — so the loop has to run over `this.offline` and not over the file's own
+      // keys. `checkLivenessLocked` already refuses the mirror image of this ("somebody else's device
+      // appearing in the rule must not make this one look unenforced"); the evidence line owes the
+      // same refusal pointed the other way.
+      //
+      // Measured: sourcing the loop from `Object.entries(file.droppedByDevice)` passed all 67 tests
+      // before this one existed, because every fixture's keys were a subset of what was offline.
+      const net = await tickedWith({ [THIRD]: 9 })
+      expect(dropLines().filter((l: string) => l.includes(THIRD)),
+        'evidence was claimed for a device this agent never took offline').toEqual([])
+      expect(net.state(OTHER)).toMatchObject({ offline: true })
+    })
+
+    it('reports every offline device that has drops, not just the first', async () => {
+      // The other mutation that was green: a `break` after the first line. `tickedWith`'s first device
+      // is deliberately the silent one, so a loop that stopped early still satisfied the wait.
+      armed(UDID); armed(OTHER)
+      const net = make()
+      await net.setOffline(UDID, true)
+      await net.setOffline(OTHER, true)
+      stateWith([UDID, OTHER], { [UDID]: 4, [OTHER]: 7 })
+      await vi.waitFor(() => expect(dropLines().length).toBeGreaterThanOrEqual(2))
+      expect(dropLines().some((l: string) => l.includes(UDID))).toBe(true)
+      expect(dropLines().some((l: string) => l.includes(OTHER))).toBe(true)
+    })
+
+    it('says it once, not once a second', async () => {
+      // This runs on the liveness interval, so an unconditional line repeats for as long as the device
+      // stays offline — 600 of them in a ten-minute session, in the stream where the enforcement-lost
+      // report is what someone is looking for. Only an increase is news.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      stateWith([UDID], { [UDID]: 2 })
+      await vi.waitFor(() => expect(dropLines().length).toBe(1))
+      // Several more ticks at 20ms against a file that has not moved.
+      await new Promise((r) => setTimeout(r, 120))
+      expect(dropLines().length, 'the same evidence was announced again').toBe(1)
+
+      // And a genuine increase is still news.
+      stateWith([UDID], { [UDID]: 5 })
+      await vi.waitFor(() => expect(dropLines().length).toBe(2))
+      expect(dropLines()[1]).toContain('5')
+    })
+
+    it('does not call a device proven enforcing in the same breath as declaring it lost', async () => {
+      // Both readings come from the file that froze, so an unguarded loop says "enforcement observed"
+      // and then reports that enforcement stopped — about the same device, one line apart.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      // Stale by more than three pulses, and carrying drops from before it froze.
+      writeFileSync(join(dir, 'state.json'), JSON.stringify({
+        at: Math.floor(Date.now() / 1000) - 60, pulseSeconds: 1, rule: [UDID],
+        droppedByDevice: { [UDID]: 7 },
+      }))
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+      expect(dropLines(), 'a device declared lost was announced as proven enforcing').toEqual([])
+      void net
+    })
 
     it('reports a device whose enforcement stopped and takes the other layers down', async () => {
       // **The measurement this exists for**: killing the provider leaves the kernel passing that
