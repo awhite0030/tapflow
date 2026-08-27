@@ -4,7 +4,13 @@ import type { DeviceAgent } from './DeviceAgent.js'
 // Optional network-control capability (take the device under test off the network and back), kept
 // OUT of the core DeviceAgent interface (ISP): the mechanism is platform-asymmetric and opt-in, so
 // only agents that can do it implement it. Consumers must feature-detect with hasNetworkControl().
-// Same shape as AudioStreamCapability, and for the same reason.
+//
+// **The only capability interface left, and that is the shape working out rather than a gap.**
+// `AudioStreamCapability` sat beside this one and was deleted: no implementer, no consumer, and no
+// `AgentCapability` string, because audio is not feature-detected at all — the dashboard plays
+// whatever frames arrive. An interface declared for a detection nobody performs, of a feature built
+// through a different mechanism, tells a third-party implementer to do something neither first-party
+// agent does.
 
 // The state shape and its reason set are **wire** types, so `@tapflowio/protocol` owns them and this
 // re-exports rather than re-declares — the rule `types.ts` states for `ClipboardErrorPayload` and the
@@ -29,10 +35,11 @@ export type { NetworkStatePayload, NetworkUnavailableReason }
  * that MCP calls these. It does not, and a second session-addressed API that no out-of-process caller
  * can reach would have closed the issues without preventing anything.
  *
- * **What an embedded caller owes instead.** These resolve the device themselves, and the two agents
- * do it differently — iOS refuses when several are live, Android takes the first it registered. An
- * in-process caller holding more than one session should use the wire path, or the agent's own
- * session-addressed handlers, rather than these.
+ * **What an embedded caller owes instead.** These resolve the device themselves, and **both agents now
+ * refuse rather than choose** when more than one is live — Android took the first it had registered
+ * until #617, which is the sentence this paragraph used to carry. An in-process caller holding more
+ * than one session should use the wire path, or the agent's own session-addressed handlers, rather
+ * than these: not because the pick is arbitrary any more, but because it is now an error.
  */
 export interface NetworkControlCapability {
   /** Take the device off the network, or put it back. Returns the state that resulted, which may
