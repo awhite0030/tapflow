@@ -1083,7 +1083,12 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
         this.network.target(launchState.deviceId, bundleId)
           .catch((e: unknown) => logger.warn('could not name the network target:', (e as Error).message))
           .then(() => this.simctl.launchApp(launchState.deviceId, bundleId))
-          .then(() => {
+          .then((pid) => {
+            // **After the launch, with the pid it returned.** The network control measures how long a
+            // started process has gone without reporting its hooks; opening that window before
+            // `simctl launch` had run put the launch itself inside the budget, and left it open when
+            // the launch failed. A null or unchanged pid means no new process, so nothing is owed.
+            this.network.markLaunched(launchState.deviceId, pid)
             // Track the foreground app so ui:tree:request can query it via XCUITest.
             this.lastBundleIds.set(launchState.deviceId, bundleId)
             // Audio: the whole-sim tap's poll picks up the launched app process within one interval;

@@ -1,5 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process'
-import { accessSync, constants, existsSync, readdirSync } from 'node:fs'
+import { accessSync, constants, existsSync, readdirSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -58,9 +58,16 @@ function buildIosChecks(isMac: boolean): DoctorCheck[] {
       },
       ...buildNetFilterChecks(),
       checkNetworkHook(),
+      // **`checkHookSymbols` is deliberately NOT here**, unlike the two above it. It runs `xcrun`, and
+      // the comment at the top of this branch is the reason the branch exists: on a Mac with no
+      // Xcode, `xcrun` pops the Command Line Tools install dialog out of a diagnostic command. The
+      // netfilter checks belong because they are filesystem reads; this one is not.
+      //
+      // Nothing is lost by its absence: without Xcode there is no simulator SDK to read, so its
+      // answer here could only ever have been "cannot tell".
     ]
   }
-  return [checkXcode(), checkSimctl(), checkBootedSimulator(), ...buildNetFilterChecks(), checkNetworkHook()]
+  return [checkXcode(), checkSimctl(), checkBootedSimulator(), ...buildNetFilterChecks(), checkNetworkHook(), checkHookSymbols()]
 }
 
 /**
@@ -159,6 +166,90 @@ function buildNetFilterChecks(): DoctorCheck[] {
  * A warning rather than a failure, matching the filter's checks: a session works without it and only
  * iOS network control does not.
  */
+/**
+ * The symbols the injected library rebinds, and where this Xcode says they live.
+ *
+ * **A copy, and the copy is the point rather than a shortcut.** The list lives in
+ * `packages/ios-agent/src/network-hook.m`'s `wanted[]`, which this package does not ship — and it
+ * cannot be read back out of the shipped dylib either: three of the four are resolved with
+ * `dlsym(RTLD_DEFAULT, name)`, so they are C string literals rather than import entries, and only
+ * `getaddrinfo` appears in its symbol table at all (measured). So the two lists are kept in step by
+ * `scripts/__tests__/hookSymbolsChecked.test.mjs`, which reads `wanted[]` and fails when they differ.
+ */
+const HOOK_SYMBOLS = ['getaddrinfo', 'nw_path_get_status', 'nw_path_monitor_set_update_handler', 'nw_path_monitor_set_queue']
+
+/** The SDK stubs that between them declare everything the hook needs. */
+const SDK_STUBS = ['usr/lib/libSystem.tbd', 'System/Library/Frameworks/Network.framework/Network.tbd']
+
+/**
+ * **Does this Xcode still export what the hook rebinds** (#629).
+ *
+ * The install is all-or-none and each entry begins with `dlsym(RTLD_DEFAULT, name)`, so one symbol
+ * removed or renamed by a new Xcode takes the whole feature down — and a tester finds out by launching
+ * an app and reading a dead control. This is the half of that which can be answered by reading.
+ *
+ * **Reading, and nothing else.** No simulator is booted, installed to or launched into, and no
+ * environment is written. `doctor` diagnoses prerequisites; the version of this that ran a probe app
+ * inside a simulator was refused for that reason, and because on this product's model a booted
+ * simulator is usually somebody's live session. #629 carries the argument.
+ *
+ * What it therefore does **not** answer: whether rebinding still works once the symbols are found.
+ * That is settled at runtime, where the verdict file already reports it.
+ */
+function checkHookSymbols(): DoctorCheck {
+  let sdk: string
+  try {
+    sdk = execSync('xcrun --sdk iphonesimulator --show-sdk-path', {
+      encoding: 'utf8', stdio: 'pipe', timeout: PROBE_TIMEOUT_MS,
+    }).trim()
+  } catch {
+    // `checkXcode` on this path already reports an unconfigured Xcode, so this says only what it
+    // could not do rather than diagnosing the cause a second time in different words.
+    return { label: 'Network hook symbols', ok: false, warn: true, detail: 'Skipped — no iOS simulator SDK to read.' }
+  }
+
+  // **All of them or none**, because the two files partition the symbols between them: `getaddrinfo`
+  // is declared only in `libSystem.tbd` and the three `nw_path_*` only in `Network.tbd`. With one file
+  // missing, three symbols read as absent — and the message below would tell someone their Xcode had
+  // dropped them and ask them to file a bug about it. A layout this does not recognise is "cannot
+  // tell", never "removed".
+  const stubs = SDK_STUBS.map((rel) => join(sdk, rel))
+  let declared: string
+  try {
+    if (!stubs.every((p) => existsSync(p))) throw new Error('layout')
+    // Wrapped like every other probe in this file, for the reason its header gives: a read that throws
+    // between the check and the open — an SDK replaced mid-update — would reject the whole command and
+    // take the Android section down with it.
+    declared = stubs.map((p) => readFileSync(p, 'utf8')).join('\n')
+  } catch {
+    return {
+      label: 'Network hook symbols',
+      ok: false,
+      warn: true,
+      detail: `Could not read the export lists under ${sdk}, so whether this Xcode still provides them is unknown.`,
+    }
+  }
+
+  const missing = HOOK_SYMBOLS.filter((sym) => !new RegExp(`\\b_${sym}\\b`).test(declared))
+
+  if (missing.length > 0) {
+    return {
+      label: 'Network hook symbols',
+      ok: false,
+      warn: true,
+      detail: `The SDK at ${sdk} does not declare ${missing.join(', ')}. The injected library needs all of them, so iOS network control would fail once an app is launched. Please report this with your Xcode version.`,
+    }
+  }
+  // **What this does and does not say.** It read the SDK; the library is injected into a process
+  // running against a *simulator runtime*, and a Mac usually has several — measured here: one SDK
+  // (26.5) against six runtimes back to 17.2. A symbol the SDK declares can still be absent from an
+  // older runtime, and the match is target-blind besides: `libSystem.tbd` is a multi-document file
+  // whose macOS/Catalyst documents are visible to this regex. So this is evidence that the symbols
+  // have not been withdrawn, not a guarantee that a given session will find them — which is why the
+  // label says what was read.
+  return { label: `Network hook symbols (${sdk.split('/').pop()})`, ok: true }
+}
+
 function checkNetworkHook(): DoctorCheck {
   const hook = shippedHookPath()
   if (hook === null) {
