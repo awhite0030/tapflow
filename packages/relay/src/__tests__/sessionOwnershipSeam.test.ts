@@ -425,9 +425,20 @@ describe('session ownership seam', () => {
     const requester = networkRequesterFor(sessionId)
     expect(requester).toBeDefined()
 
+    const reached = vi.fn()
+    const requesters = (server as unknown as {
+      networkStateRequesters: Map<string, NetworkRequester>
+    }).networkStateRequesters
+    const observedRequester = Object.assign(
+      () => { reached(); requester!() },
+      { dispose: () => requester!.dispose() },
+    )
+    requesters.set(sessionId, observedRequester)
+
     await rejoin(sessionId, browser)
     await rejoin(sessionId, browser)
-    expect(networkRequesterFor(sessionId)).toBe(requester)
+    expect(reached).toHaveBeenCalledTimes(2)
+    expect(networkRequesterFor(sessionId)).toBe(observedRequester)
 
     agent.close(); browser.close()
   })
