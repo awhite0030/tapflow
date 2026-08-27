@@ -83,6 +83,20 @@ and waiting out sleeps.
   that *you* create, not one the reviewer has to discover it needs. This applies to a read-only
   reviewer too — it is reading files, so editing them mid-run means it may report on text you have
   already changed.
+- **And "you" is not only this session.** The rule above is written as discipline, which quietly
+  assumes the only other process is the one making the promise. It is not: another session of your own
+  — a second terminal reviewing somebody's PR, an editor task, anything holding the same clone — moves
+  the branch under a running review, and no amount of care on this side prevents it. Measured on
+  2026-08-28: two channels were reviewing a branch when a concurrent session checked out `pr-656` and
+  then a third branch. Neither had been told this could happen.
+
+  **So the reviewer prompt names the commit, and the reviewer checks.** Both channels noticed — one via
+  `git reflog` — and finished by reading blobs with `git show <sha>:<path>`, so both reports were
+  sound and their findings verified against the real files afterwards. That is the behaviour to ask
+  for rather than to be lucky about: give the reviewer the full HEAD hash you want reviewed, and say
+  that if `git rev-parse HEAD` no longer matches it, it should read blobs at that hash instead of the
+  working tree and say so in its report. A reviewer that silently trusts the tree reports on a change
+  that is not there.
 
 ## The cleared list ages with the diff
 
