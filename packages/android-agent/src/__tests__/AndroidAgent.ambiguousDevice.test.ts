@@ -20,6 +20,7 @@ import type { AdbRunner } from '../adb'
 /** The internals these tests seed — the relay would, over a socket this test does not open. */
 interface Internals {
   deviceStates: Map<string, { sessionId: string; deviceId: string; touchHelper: unknown }>
+  ownedDevices: Set<string>
 }
 const internals = (agent: AndroidAgent) => agent as unknown as Internals
 
@@ -35,8 +36,15 @@ function adbWith(devices: Array<{ deviceId: string; serial: string | null }>): A
   return adb
 }
 
-/** An agent holding `n` registered devices, the first `live` of them launched. */
-function agentWith(n: number, live: number) {
+/**
+ * An agent holding `n` registered devices, the first `live` of them attached to adb, and `owned` of
+ * those launched by tapflow itself.
+ *
+ * The two are genuinely different: `AdbWrapper.listDevices` syncs the serial map from `adb devices`
+ * on every call, so a developer's own emulator has a serial too. `owned` defaults to none, which is
+ * the state the refusal tests want.
+ */
+function agentWith(n: number, live: number, owned = 0) {
   const devices = Array.from({ length: n }, (_, i) => ({
     deviceId: `avd:Device_${i}`,
     serial: i < live ? `emulator-55${i}${i}` : null,
@@ -46,8 +54,9 @@ function agentWith(n: number, live: number) {
   const states = internals(agent).deviceStates
   devices.forEach((d, i) => {
     states.set(`session-${i}`, { sessionId: `session-${i}`, deviceId: d.deviceId, touchHelper: null })
+    if (i < owned) internals(agent).ownedDevices.add(d.deviceId)
   })
-  return { agent, adb }
+  return { agent, adb, devices }
 }
 
 describe('AndroidAgent — a session-less entry point cannot choose between devices', () => {
@@ -77,8 +86,8 @@ describe('AndroidAgent — a session-less entry point cannot choose between devi
   it('counts a registered-but-never-launched device as absent, not as a rival', async () => {
     // `deviceStates` holds one entry per *registered* device and a Mac reports every AVD it has. If
     // registration counted as liveness, a second AVD nobody booted would make every entry point
-    // refuse — the feature removed by its own fix. The serial map is only written on launch, which is
-    // the liveness check `IOSAgent.soleDeviceState`'s comment already names for this class.
+    // refuse — the feature removed by its own fix. What separates them is the
+    // liveness `AdbWrapper` actually provides: `adb devices` reports it attached.
     const { agent, adb } = agentWith(4, 1)
     vi.spyOn(adb, 'screenshot').mockResolvedValue(Buffer.from('png'))
     await expect(agent.screenshot()).resolves.toBeInstanceOf(Buffer)
@@ -100,6 +109,44 @@ describe('AndroidAgent — a session-less entry point cannot choose between devi
   it('still refuses a touch it cannot aim', () => {
     const { agent } = agentWith(2, 2)
     expect(() => agent.touchStart(1, 1)).toThrow(/cannot choose between them/)
+  })
+
+  it('prefers the device tapflow launched over one that was already there', async () => {
+    // **The common desk, and the reason the refusal is not enough on its own.** `adb devices` reports
+    // a developer's own emulator exactly like tapflow's, and `AdbWrapper` syncs the serial map from
+    // it on every `listDevices()` — so "has a serial" is two devices here and one obvious answer.
+    // `IOSAgent.soleLiveDeviceState` narrows the same way, after a version that did not made every
+    // caller refuse on a two-simulator desk.
+    const { agent, adb, devices } = agentWith(2, 2, 1)
+    const shot = Buffer.from('png')
+    const spy = vi.spyOn(adb, 'screenshot').mockResolvedValue(shot)
+    await expect(agent.screenshot()).resolves.toBe(shot)
+    expect(spy.mock.calls[0]?.[0], 'it answered for the emulator tapflow did not launch')
+      .toBe(adb.getSerial(devices[0]!.deviceId))
+  })
+
+  it('still refuses when tapflow launched both', async () => {
+    // **The control for the narrowing.** Without it the test above passes on a resolver that simply
+    // takes the first owned device, which is the silent pick this whole change removes.
+    const { agent } = agentWith(2, 2, 2)
+    await expect(agent.screenshot()).rejects.toThrow(/2 booted devices/)
+  })
+
+  it('refuses on every entry point, not only the ones with their own test', async () => {
+    // Eleven members share the resolver and three had assertions. `stream()` is the one that most
+    // needed one: it is the only member the change gave hand-written resolution to, and it had no
+    // test anywhere in this package — so a version that picked a device by scanning for a video
+    // source would have been green everywhere.
+    const { agent } = agentWith(2, 2)
+    const ambiguous = /cannot choose between them/
+    await expect(agent.installApp('/tmp/x.apk')).rejects.toThrow(ambiguous)
+    await expect(agent.launchApp('com.example')).rejects.toThrow(ambiguous)
+    await expect(agent.queryUITree()).rejects.toThrow(ambiguous)
+    await expect(agent.openUrl('https://example.com')).rejects.toThrow(ambiguous)
+    await expect(agent.networkState()).rejects.toThrow(ambiguous)
+    await expect(agent.touchMove(1, 1)).rejects.toThrow(ambiguous)
+    await expect(agent.touchEnd()).rejects.toThrow(ambiguous)
+    expect(() => agent.stream()).toThrow(ambiguous)
   })
 
   it('leaves `sessionId` answering, because a read is not the risk this fixes', () => {

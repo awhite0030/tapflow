@@ -13,8 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   implemented them, nothing called them, and audio was never a detectable capability — it has no
   `AgentCapability` string because nothing gates on it, and the agents stream it through their own
   per-session machinery. An interface declared for a detection nobody performs told a third-party
-  platform to do something neither built-in agent does. `Migrate:` if you built a platform against it,
-  drop `implements AudioStreamCapability`; the frame types are unchanged and still exported —
+  platform to do something neither built-in agent does. `Migrate:` if you built a platform against it, drop the
+  `implements AudioStreamCapability` clause **and its import** — leaving the import behind is a hard
+  error, not a warning. If you *called* `hasAudioCapability`, drop the check: audio was never gated,
+  so there is nothing to detect. The frame types are unchanged and still exported —
   `AudioFormat`, `AudioFrame`, `AudioSampleFormat` and `AudioChannels` now come from the package's
   shared types rather than from that file.
 

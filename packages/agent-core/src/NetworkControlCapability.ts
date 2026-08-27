@@ -35,10 +35,11 @@ export type { NetworkStatePayload, NetworkUnavailableReason }
  * that MCP calls these. It does not, and a second session-addressed API that no out-of-process caller
  * can reach would have closed the issues without preventing anything.
  *
- * **What an embedded caller owes instead.** These resolve the device themselves, and the two agents
- * do it differently — iOS refuses when several are live, Android takes the first it registered. An
- * in-process caller holding more than one session should use the wire path, or the agent's own
- * session-addressed handlers, rather than these.
+ * **What an embedded caller owes instead.** These resolve the device themselves, and **both agents now
+ * refuse rather than choose** when more than one is live — Android took the first it had registered
+ * until #617, which is the sentence this paragraph used to carry. An in-process caller holding more
+ * than one session should use the wire path, or the agent's own session-addressed handlers, rather
+ * than these: not because the pick is arbitrary any more, but because it is now an error.
  */
 export interface NetworkControlCapability {
   /** Take the device off the network, or put it back. Returns the state that resulted, which may

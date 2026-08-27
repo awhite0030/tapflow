@@ -80,10 +80,15 @@ defect being fixed here."* This class did not, and eleven members each took
 written from the one above it. For a read that answers about a device nobody asked about; for
 `setNetworkOffline` it takes a device off the network while somebody else is testing on it (#617).
 
-**Liveness is having a serial**, and iOS specified that for this class too: `soleDeviceState`'s comment
-calls it "the liveness check `AndroidAgent` gets for free from `getSerial` (its serial map is only
-populated on launch)". `deviceStates` holds one entry per *registered* AVD and a Mac reports every AVD
-it has, so counting registration as liveness would make every entry point refuse on an ordinary machine.
+**Liveness is `adb` reporting the emulator attached, and ownership is what narrows it.** `deviceStates`
+holds one entry per *registered* AVD and a Mac reports every AVD it has, so registration is not
+liveness — but neither is having a serial, quite: `AdbWrapper.listDevices` syncs that map from
+`adb devices` on every call, so a developer's own emulator is in it too. (`IOSAgent.soleDeviceState`
+says this map is "only populated on launch"; that is wrong, and it is the claim this change was first
+written on.) `ownedDevices` records the AVDs tapflow launched and is preferred when more than one is
+live, so the common desk — your emulator plus a tester's — resolves instead of refusing.
+`IOSAgent.soleLiveDeviceState` narrows the same way, after a version that did not made every caller
+refuse on a two-simulator desk.
 
 Two things stay as they were, deliberately:
 
@@ -93,6 +98,13 @@ Two things stay as they were, deliberately:
 - **Absence stays a no-op for the touch methods.** They have always been silent without a device, and
   `touchStart` returns `void` so a throw is the only signal it could give. `soleLive()` is the variant
   that demands a device; `soleLiveOrNone()` is the one they use.
+
+**Ambiguity is an error even for input, and there this class diverges from iOS on purpose.**
+`IOSAgent.liveDeviceState` returns `undefined` when it cannot choose, so a tap on a two-simulator desk
+silently does nothing. Silence is the failure mode this repo keeps removing — a tester taps, nothing
+moves, and no channel says why. `touchMove` was made `async` for the same reason: it declared
+`Promise<void>` and could not throw before, so a caller that wrote `.catch()` on that signature would
+have been broken by the one path this change added.
 
 **None of this touches the wire path.** Anything carrying a session resolves through
 `serialFor(sessionId)` and always has — the browser names its session on every message.

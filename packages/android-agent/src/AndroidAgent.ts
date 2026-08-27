@@ -1032,6 +1032,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
             logger.warn('emu kill before wipe failed (already gone?):', (e as Error).message)
           })
           this.adb.clearSerial(avdId)
+      this.ownedDevices.delete(avdId)
         } else {
           // Live process, no console to ask. Safe here and only here — the data a hard stop could
           // damage is about to be wiped.
@@ -1064,6 +1065,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
           await this.launcher.waitForBoot(serial)
           if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
           this.adb.setSerial(avdId, serial)
+          this.ownedDevices.add(avdId)
         } finally {
           // The emulator now holds the port (or boot failed) — drop the reservation either way.
           if (grpcPort !== undefined) this.pendingGrpcPorts.delete(grpcPort)
@@ -1129,6 +1131,18 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
   // a ping from the guest fails. iOS has to hook three layers to reach the same place.
 
   /** The serial for a session's device, or undefined when nothing is booted. */
+  /**
+   * The AVDs **this agent launched**, which is not the same as the ones `adb` can see.
+   *
+   * `AdbWrapper.serialMap` is synced from `adb devices` on every `listDevices()`, so it holds a
+   * developer's own emulator as readily as tapflow's. Written here at the two places tapflow starts
+   * one and cleared at the three where it stops one — the same shape and the same purpose as
+   * `IOSAgent.ownedDevices`, which exists because that platform hit this first: its
+   * `soleDeviceState` comment records a version that counted every booted simulator and "made all
+   * the callers above refuse with '2 booted devices' on the common two-simulator desk".
+   */
+  private readonly ownedDevices = new Set<string>()
+
   private serialFor(sessionId: string): string | undefined {
     const state = this.deviceStates.get(sessionId)
     return state ? this.adb.getSerial(state.deviceId) : undefined
@@ -1368,6 +1382,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         logger.warn('emu kill failed (already gone?):', (e as Error).message)
       })
       this.adb.clearSerial(avdId)
+      this.ownedDevices.delete(avdId)
     }
     this.sendMsg({
       type: 'device:shutdown-done',
@@ -2074,6 +2089,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     const serial = await this.launcher.findSerial(avdName)
     await this.launcher.waitForBoot(serial)
     this.adb.setSerial(avdId, serial)
+    this.ownedDevices.add(avdId)
   }
 
   async shutdown(avdId: string): Promise<void> {
@@ -2081,6 +2097,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     if (serial) {
       await this.adb.shutdown(serial)
       this.adb.clearSerial(avdId)
+      this.ownedDevices.delete(avdId)
     }
   }
 
@@ -2094,14 +2111,32 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
    * that answers about the wrong device; for `setNetworkOffline` it takes a device off the network
    * while somebody else is testing on it (#617).
    *
-   * **Liveness is having a serial, and iOS specified that too.** `soleDeviceState`'s comment calls it
-   * "the liveness check `AndroidAgent` gets for free from `getSerial` (its serial map is only
-   * populated on launch)" — so there is no second tier here of the kind iOS needs, where a `booted`
-   * flag can be stale.
+   * **Liveness is `adb` reporting the emulator attached — not tapflow having launched it.**
+   * `IOSAgent.soleDeviceState`'s comment says this map is "only populated on launch" and that is
+   * **wrong**: `AdbWrapper.listDevices` syncs it from `adb devices` on every call, taking every
+   * `emulator-*` in state `device` whoever started it, and dropping the ones that went away. The
+   * claim was inherited from that comment and checked afterwards; it is recorded here so the next
+   * reader does not inherit it again.
+   *
+   * So a developer with their own emulator open, plus one a tester booted, is two live devices — and
+   * refusing there would be the feature removed by its own fix. `ownedDevices` is what separates
+   * them, and it is why that set exists rather than the serial map being enough on its own. **iOS
+   * narrows the same way for the same desk** (`soleLiveDeviceState`), after a version that did not.
+   *
+   * **What ownership does not cover**: an emulator tapflow launched and someone else killed keeps
+   * its serial *and* its ownership until the next `listDevices()` syncs the map (`AdbWrapper` calls
+   * that removal "stale serials"). A ghost can still make a live device ambiguous for that window.
+   * Refusing is the safe direction there, and the window closes on the next device listing.
    *
    * **Absence is not an error here**, because the touch entry points have always no-opped without a
    * device and making them throw would change more than the ambiguity this fixes. `soleLive` is the
    * variant that demands one.
+   *
+   * **Ambiguity is an error even for input, and there this class diverges from iOS on purpose.**
+   * `IOSAgent.liveDeviceState` returns `undefined` when it cannot choose, so a tap on a
+   * two-simulator desk silently does nothing. Silence is the failure mode this repo keeps removing:
+   * a tester taps, nothing moves, and no channel says why. `touchStart` returns `void` so a throw is
+   * the only signal available to it, and `touchMove`/`touchEnd` reject.
    */
   private soleLiveOrNone(): { state: DeviceState; serial: string } | undefined {
     const live: Array<{ state: DeviceState; serial: string }> = []
@@ -2110,10 +2145,17 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
       if (serial) live.push({ state, serial })
     }
     if (live.length === 0) return undefined
-    if (live.length > 1) {
-      throw new ValidationError(`${live.length} booted devices — this entry point cannot choose between them`)
+    // **Ownership narrows liveness, and only when it can** — `IOSAgent.soleLiveDeviceState`'s line
+    // for the same desk. A developer's own emulator plus tapflow's is two live devices and one
+    // obvious answer; when ownership says nothing (nothing launched through tapflow yet, or an agent
+    // that reconnected before it booted anything) there is no narrowing to apply and refusing is the
+    // honest reply.
+    const mine = live.filter((l) => this.ownedDevices.has(l.state.deviceId))
+    const pool = mine.length > 0 ? mine : live
+    if (pool.length > 1) {
+      throw new ValidationError(`${pool.length} booted devices — this entry point cannot choose between them`)
     }
-    return live[0]
+    return pool[0]
   }
 
   /** `soleLiveOrNone`, for the callers that have nothing to do without a device. */
@@ -2158,9 +2200,11 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     this.soleLiveOrNone()?.state.touchHelper?.touchStart(x, y)
   }
 
-  touchMove(x: number, y: number): Promise<void> {
+  // `async`, so the refusal arrives as a rejection rather than escaping at the call site. It declared
+  // `Promise<void>` and could not throw before this change; a caller that wrote `.catch()` on the
+  // strength of that signature would have been broken by exactly the path this change added.
+  async touchMove(x: number, y: number): Promise<void> {
     this.soleLiveOrNone()?.state.touchHelper?.touchMove(x, y)
-    return Promise.resolve()
   }
 
   // The platform-neutral DeviceAgent contract has no ack channel, so the outcome is dropped on
