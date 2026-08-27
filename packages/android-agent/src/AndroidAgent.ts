@@ -321,6 +321,18 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     this.sleepBlocker = options.sleepBlocker ?? (process.env.VITEST ? { acquire() {}, release() {} } : createSleepBlocker())
   }
 
+  /**
+   * **The one entry point that still takes the first registered session, and that is a decision.**
+   *
+   * Every other session-less member goes through `soleLiveOrNone` and refuses when the choice is
+   * ambiguous (#617). This one does not, for the reason #617 gives itself: reading and writing are
+   * not the same risk. The worst case here is answering about the wrong device; there it is taking
+   * someone else's device off the network while they are using it.
+   *
+   * It also answers *before* any device is chosen — it is what an agent reports about itself — so a
+   * refusal would turn "which session am I on" into an error on a healthy multi-device Mac.
+   * `IOSAgent.sessionId` is identical, deliberately.
+   */
   get sessionId(): string | null {
     const first = this.deviceStates.values().next().value
     return first?.sessionId ?? null
@@ -1309,20 +1321,19 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
    * A device that is not booted still throws: there is no state to describe.
    */
   async setNetworkOffline(offline: boolean): Promise<NetworkStatePayload> {
-    const sessionId = this.deviceStates.keys().next().value
-    const serial = sessionId ? this.serialFor(sessionId) : undefined
-    if (!serial) throw new PlatformError('No booted device')
+    // **The write #617 was filed about.** This took the first-registered session, so on an agent
+    // holding several it took *someone else's* device off the network while they were testing on it.
+    const { state, serial } = this.soleLive()
     // Same fallback as the WS path, for the reason recorded there.
-    const state = this.deviceStates.get(sessionId!)
-    const before = await this.readNetworkState(serial, state?.lastNetworkOffline)
-    if (state && before.available) state.lastNetworkOffline = before.offline
+    const before = await this.readNetworkState(serial, state.lastNetworkOffline)
+    if (before.available) state.lastNetworkOffline = before.offline
     try {
       const result = await this.adb.setAirplaneMode(serial, offline)
       // **And it remembers, which this path did not.** The WS path has always stored the confirmed
       // value, so a caller that toggled through MCP and then lost the device read `false` from a
       // memory nothing had written — the fallback above had nothing to fall back to. Only a confirmed
       // result counts, for the reason the WS path gives: an unconfirmed one is already a guess.
-      if (state && result.confirmed) state.lastNetworkOffline = result.offline
+      if (result.confirmed) state.lastNetworkOffline = result.offline
       return this.classifyWrite(result, offline)
     } catch {
       return { offline: before.offline, available: false, reason: 'state-unconfirmed' }
@@ -1330,11 +1341,9 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
   }
 
   async networkState(): Promise<NetworkStatePayload> {
-    const sessionId = this.deviceStates.keys().next().value
-    const serial = sessionId ? this.serialFor(sessionId) : undefined
-    if (!serial) throw new PlatformError('No booted device')
-    const known = this.deviceStates.get(sessionId!)?.lastNetworkOffline
-    const state = await this.readNetworkState(serial, known)
+    const live = this.soleLive()
+    const known = live.state.lastNetworkOffline
+    const state = await this.readNetworkState(live.serial, known)
     // **`false` is not "unknown", it is "on the network".** A device nobody has ever observed, whose
     // read has now failed, has no position to report — and answering `offline: false` there claims the
     // one direction that hides the problem, which is what the WS report path stays silent about
@@ -2075,36 +2084,67 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     }
   }
 
+  /**
+   * The one live device, or a refusal — **the resolver every session-less entry point shares.**
+   *
+   * `IOSAgent.soleOf` has done this since #607 and says why: *"Refusing beats guessing: this interface
+   * has no way to say which device is meant, and picking one silently is the whole defect being fixed
+   * here."* Same defect, same interface, and this class never got it — eleven entry points each took
+   * `deviceStates.values().next().value`, the entry the relay happened to register first. For a read
+   * that answers about the wrong device; for `setNetworkOffline` it takes a device off the network
+   * while somebody else is testing on it (#617).
+   *
+   * **Liveness is having a serial, and iOS specified that too.** `soleDeviceState`'s comment calls it
+   * "the liveness check `AndroidAgent` gets for free from `getSerial` (its serial map is only
+   * populated on launch)" — so there is no second tier here of the kind iOS needs, where a `booted`
+   * flag can be stale.
+   *
+   * **Absence is not an error here**, because the touch entry points have always no-opped without a
+   * device and making them throw would change more than the ambiguity this fixes. `soleLive` is the
+   * variant that demands one.
+   */
+  private soleLiveOrNone(): { state: DeviceState; serial: string } | undefined {
+    const live: Array<{ state: DeviceState; serial: string }> = []
+    for (const state of this.deviceStates.values()) {
+      const serial = this.adb.getSerial(state.deviceId)
+      if (serial) live.push({ state, serial })
+    }
+    if (live.length === 0) return undefined
+    if (live.length > 1) {
+      throw new ValidationError(`${live.length} booted devices — this entry point cannot choose between them`)
+    }
+    return live[0]
+  }
+
+  /** `soleLiveOrNone`, for the callers that have nothing to do without a device. */
+  private soleLive(): { state: DeviceState; serial: string } {
+    const live = this.soleLiveOrNone()
+    if (!live) throw new ValidationError('no booted device — call connect() first')
+    return live
+  }
+
   async installApp(apkPath: string): Promise<void> {
-    const first = this.deviceStates.values().next().value
-    const serial = first ? this.adb.getSerial(first.deviceId) : undefined
-    if (!serial) throw new ValidationError('no booted device — call connect() first')
-    await this.adb.installApp(serial, apkPath)
+    await this.adb.installApp(this.soleLive().serial, apkPath)
   }
 
   async launchApp(packageName: string): Promise<void> {
-    const first = this.deviceStates.values().next().value
-    const serial = first ? this.adb.getSerial(first.deviceId) : undefined
-    if (!serial) throw new ValidationError('no booted device — call connect() first')
-    await this.adb.launchApp(serial, packageName)
+    await this.adb.launchApp(this.soleLive().serial, packageName)
   }
 
   async screenshot(): Promise<Buffer> {
-    const first = this.deviceStates.values().next().value
-    const serial = first ? this.adb.getSerial(first.deviceId) : undefined
-    if (!serial) throw new ValidationError('no booted device — call connect() first')
-    return this.adb.screenshot(serial)
+    return this.adb.screenshot(this.soleLive().serial)
   }
 
   async queryUITree(): Promise<UIElement[]> {
-    const first = this.deviceStates.values().next().value
-    const serial = first ? this.adb.getSerial(first.deviceId) : undefined
-    if (!serial) throw new ValidationError('no booted device — call connect() first')
-    return parseUiAutomatorDump(await this.adb.dumpUiHierarchy(serial))
+    return parseUiAutomatorDump(await this.adb.dumpUiHierarchy(this.soleLive().serial))
   }
 
   stream(): ReadableStream<Buffer> {
-    const state = this.deviceStates.values().next().value
+    // **Resolved by `soleLiveOrNone`, then checked for frames separately.** Liveness here is a video
+    // source rather than a serial, and the two are not the same: a device can be launched and have no
+    // stream yet. Routing the *choice* through the shared resolver fixes the ambiguity without
+    // swallowing this method's own message.
+    const state = this.soleLiveOrNone()?.state
     // Works on either video backend (scrcpy for real devices, gRPC host-encode for emulators).
     const frames = state?.scrcpySession?.video.start() ?? state?.emulatorVideo?.frames()
     if (!frames) throw new ValidationError('no active video stream — call connect() first')
@@ -2115,13 +2155,11 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
   }
 
   touchStart(x: number, y: number): void {
-    const first = this.deviceStates.values().next().value
-    first?.touchHelper?.touchStart(x, y)
+    this.soleLiveOrNone()?.state.touchHelper?.touchStart(x, y)
   }
 
   touchMove(x: number, y: number): Promise<void> {
-    const first = this.deviceStates.values().next().value
-    first?.touchHelper?.touchMove(x, y)
+    this.soleLiveOrNone()?.state.touchHelper?.touchMove(x, y)
     return Promise.resolve()
   }
 
@@ -2129,14 +2167,10 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
   // purpose — but it must be consumed rather than left floating: the helper now returns a promise,
   // and an adb failure escaping here would be an unhandled rejection.
   async touchEnd(): Promise<void> {
-    const first = this.deviceStates.values().next().value
-    await first?.touchHelper?.touchEnd()
+    await this.soleLiveOrNone()?.state.touchHelper?.touchEnd()
   }
 
   async openUrl(url: string): Promise<void> {
-    const first = this.deviceStates.values().next().value
-    const serial = first ? this.adb.getSerial(first.deviceId) : undefined
-    if (!serial) throw new ValidationError('no booted device — call connect() first')
-    await this.adb.openUrl(serial, url)
+    await this.adb.openUrl(this.soleLive().serial, url)
   }
 }
