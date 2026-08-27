@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **`AudioStreamCapability` and `hasAudioCapability` are gone from `@tapflowio/agent-core`.** Nothing
+  implemented them, nothing called them, and audio was never a detectable capability — it has no
+  `AgentCapability` string because nothing gates on it, and the agents stream it through their own
+  per-session machinery. An interface declared for a detection nobody performs told a third-party
+  platform to do something neither built-in agent does. `Migrate:` if you built a platform against it,
+  drop `implements AudioStreamCapability`; the frame types are unchanged and still exported —
+  `AudioFormat`, `AudioFrame`, `AudioSampleFormat` and `AudioChannels` now come from the package's
+  shared types rather than from that file.
+
 ### Added
 
 - **Restart a device without leaving the session** ([#628](https://github.com/jo-duchan/tapflow/issues/628)). The network control could tell you to restart the device, and there was no way to do it from the screen you were on — the same is true of the input errors that say a device is not booted. The only route was back to the device list to pick it again, which loses the session. There is now a restart button in the toolbar, last in the group that holds the device's own controls. **It asks first**, because whatever state you had built up on the device does not come back; installed apps and their data do, since this restarts rather than erases — wiping is still the toggle on the device list where a session is being started. If the device does not answer, tapflow says so rather than spinning, and an answer that arrives late still finishes the restart rather than leaving the device switched off.
@@ -21,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Full reset now works on Android.** The toggle wipes the emulator's user data before booting it, the counterpart to erasing a simulator on iOS — so a tester can start from a first-launch state without touching Android Studio. Because the wipe can only be applied while the emulator starts, one that is already running is stopped and started again, which is what iOS does for the same reason; expect the extra boot. If it will not stop — or if tapflow cannot see well enough to tell — the boot fails and says so rather than quietly handing you a device that was never wiped. `-no-snapshot` was already passed on every boot and is **not** this: it skips the saved snapshot and keeps user data, so nothing was being wiped before ([#447](https://github.com/jo-duchan/tapflow/issues/447)).
 
 ### Fixed
+
+- **A tapflow agent no longer answers for a device you did not ask about** ([#617](https://github.com/jo-duchan/tapflow/issues/617)). On a Mac running two Android emulators, the entry points that take no session — the ones an embedded caller or a third-party platform would use — resolved the device by whichever the relay registered first. A screenshot could come back from the other emulator, and taking a device off the network could take *somebody else's* off instead, while they were testing on it. They now refuse and say how many they found, which is what the iOS agent has done since the feature shipped. Nothing changes for the browser: every control you touch names its session already.
 
 - **The network button no longer describes a device that is restarting** ([#625](https://github.com/jo-duchan/tapflow/issues/625)). A restart keeps the session, and the control only reset when the session changed — so for the half-minute an emulator takes to come back it kept showing the position from before, while the device was being brought up with the opposite setting. It now waits for the device to say where it is, the way it does on a first boot.
 - **The device toolbar's groups mean something, and the same button is in the same place on both platforms** ([#634](https://github.com/jo-duchan/tapflow/issues/634)). The buttons are ordered by what you are doing to the device — move around the app, leave the device in a state, take something out of the session, change the environment around it — and Android's order came from the agent while iOS's came from the browser, which meant a change in one package could rearrange the toolbar in another with nothing to notice.

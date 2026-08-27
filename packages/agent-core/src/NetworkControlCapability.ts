@@ -4,7 +4,13 @@ import type { DeviceAgent } from './DeviceAgent.js'
 // Optional network-control capability (take the device under test off the network and back), kept
 // OUT of the core DeviceAgent interface (ISP): the mechanism is platform-asymmetric and opt-in, so
 // only agents that can do it implement it. Consumers must feature-detect with hasNetworkControl().
-// Same shape as AudioStreamCapability, and for the same reason.
+//
+// **The only capability interface left, and that is the shape working out rather than a gap.**
+// `AudioStreamCapability` sat beside this one and was deleted: no implementer, no consumer, and no
+// `AgentCapability` string, because audio is not feature-detected at all — the dashboard plays
+// whatever frames arrive. An interface declared for a detection nobody performs, of a feature built
+// through a different mechanism, tells a third-party implementer to do something neither first-party
+// agent does.
 
 // The state shape and its reason set are **wire** types, so `@tapflowio/protocol` owns them and this
 // re-exports rather than re-declares — the rule `types.ts` states for `ClipboardErrorPayload` and the
