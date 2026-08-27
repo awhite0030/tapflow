@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SimulatorNetwork } from '../SimulatorNetwork.js'
+import { SimulatorNetwork, LAUNCH_VERDICT_DEADLINE_MS } from '../SimulatorNetwork.js'
 
 const UDID = 'AAAAAAAA-1111-2222-3333-444444444444'
 const OTHER = 'BBBBBBBB-5555-6666-7777-888888888888'
@@ -177,7 +177,10 @@ describe('SimulatorNetwork', () => {
   })
 
   afterEach(() => {
+    // **Restored here, not per test.** The deadline cases below use fake timers, and a leak turns
+    // every `vi.waitFor` in the liveness suite into a five-second timeout — measured: six of them.
     for (const n of made) n.dispose()
+    vi.useRealTimers()
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -359,6 +362,64 @@ describe('SimulatorNetwork', () => {
     const net = make()
     await net.arm(UDID)
     expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'awaiting-app' })
+  })
+
+  it('still says awaiting-app while the launch is inside the dylib\'s own self-check', async () => {
+    // **The control for the deadline, and the reason it is a deadline rather than a flag.** The
+    // verdict is written from a constructor, which reads as instant and is not: the constructor runs
+    // `tf_self_check()` first, and that waits up to three seconds on a semaphore. An absent verdict in
+    // that window is a healthy install mid-check, and calling it broken there would report a working
+    // one as dead.
+    vi.useFakeTimers()
+    const net = make()
+    await net.arm(UDID)
+    await net.target(UDID, 'com.example.app')
+    vi.advanceTimersByTime(LAUNCH_VERDICT_DEADLINE_MS - 1)
+    expect(net.state(UDID)).toMatchObject({ reason: 'awaiting-app' })
+  })
+
+  it('stops saying "launch an app" to a tester who already did', async () => {
+    // **The behaviour this change exists for.** `state()` already guards the loud half — a
+    // `DYLD_INSERT_LIBRARIES` path with nothing at it — because dyld ignores that without a word. A
+    // library that *is* there and still does not load, from a wrong architecture or a runtime change,
+    // is the same silence one step further along: no verdict is ever written, and `awaiting-app` then
+    // tells someone who has launched an app to launch an app, for the life of the session.
+    vi.useFakeTimers()
+    const net = make()
+    await net.arm(UDID)
+    await net.target(UDID, 'com.example.app')
+    vi.advanceTimersByTime(LAUNCH_VERDICT_DEADLINE_MS + 1)
+    expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
+  })
+
+  it('gives a second launch its own window', async () => {
+    // `target()` clears the verdict and re-marks, so the next app starts from waiting rather than
+    // inheriting the previous one's failure — which would report an app that has not run yet on the
+    // evidence of one that has exited.
+    vi.useFakeTimers()
+    const net = make()
+    await net.arm(UDID)
+    await net.target(UDID, 'com.example.app')
+    vi.advanceTimersByTime(LAUNCH_VERDICT_DEADLINE_MS + 1)
+    expect(net.state(UDID)).toMatchObject({ reason: 'hooks-not-installed' })
+
+    await net.target(UDID, 'com.example.other')
+    expect(net.state(UDID), 'the new app inherited the old one\'s verdict').toMatchObject({ reason: 'awaiting-app' })
+  })
+
+  it('does not carry a launch across a boot', async () => {
+    // `arm()` runs on every boot. A launch recorded before it describes a process that no longer
+    // exists, so leaving it behind would make a freshly booted device read as broken from its first
+    // `state()` call — on the strength of an app that ran in the previous session.
+    vi.useFakeTimers()
+    const net = make()
+    await net.arm(UDID)
+    await net.target(UDID, 'com.example.app')
+    vi.advanceTimersByTime(LAUNCH_VERDICT_DEADLINE_MS + 1)
+    expect(net.state(UDID)).toMatchObject({ reason: 'hooks-not-installed' })
+
+    await net.arm(UDID)
+    expect(net.state(UDID), 'a boot inherited the previous session\'s launch').toMatchObject({ reason: 'awaiting-app' })
   })
 
   it('does not claim the injection is in place when the environment could not be set', async () => {

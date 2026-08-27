@@ -1,5 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process'
-import { accessSync, constants, existsSync, readdirSync } from 'node:fs'
+import { accessSync, constants, existsSync, readdirSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -58,9 +58,10 @@ function buildIosChecks(isMac: boolean): DoctorCheck[] {
       },
       ...buildNetFilterChecks(),
       checkNetworkHook(),
+      checkHookSymbols(),
     ]
   }
-  return [checkXcode(), checkSimctl(), checkBootedSimulator(), ...buildNetFilterChecks(), checkNetworkHook()]
+  return [checkXcode(), checkSimctl(), checkBootedSimulator(), ...buildNetFilterChecks(), checkNetworkHook(), checkHookSymbols()]
 }
 
 /**
@@ -159,6 +160,74 @@ function buildNetFilterChecks(): DoctorCheck[] {
  * A warning rather than a failure, matching the filter's checks: a session works without it and only
  * iOS network control does not.
  */
+/**
+ * The symbols the injected library rebinds, and where this Xcode says they live.
+ *
+ * **A copy, and the copy is the point rather than a shortcut.** The list lives in
+ * `packages/ios-agent/src/network-hook.m`'s `wanted[]`, which this package does not ship — and it
+ * cannot be read back out of the shipped dylib either: three of the four are resolved with
+ * `dlsym(RTLD_DEFAULT, name)`, so they are C string literals rather than import entries, and only
+ * `getaddrinfo` appears in its symbol table at all (measured). So the two lists are kept in step by
+ * `scripts/__tests__/hookSymbolsChecked.test.mjs`, which reads `wanted[]` and fails when they differ.
+ */
+const HOOK_SYMBOLS = ['getaddrinfo', 'nw_path_get_status', 'nw_path_monitor_set_update_handler', 'nw_path_monitor_set_queue']
+
+/** The SDK stubs that between them declare everything the hook needs. */
+const SDK_STUBS = ['usr/lib/libSystem.tbd', 'System/Library/Frameworks/Network.framework/Network.tbd']
+
+/**
+ * **Does this Xcode still export what the hook rebinds** (#629).
+ *
+ * The install is all-or-none and each entry begins with `dlsym(RTLD_DEFAULT, name)`, so one symbol
+ * removed or renamed by a new Xcode takes the whole feature down — and a tester finds out by launching
+ * an app and reading a dead control. This is the half of that which can be answered by reading.
+ *
+ * **Reading, and nothing else.** No simulator is booted, installed to or launched into, and no
+ * environment is written. `doctor` diagnoses prerequisites; the version of this that ran a probe app
+ * inside a simulator was refused for that reason, and because on this product's model a booted
+ * simulator is usually somebody's live session. #629 carries the argument.
+ *
+ * What it therefore does **not** answer: whether rebinding still works once the symbols are found.
+ * That is settled at runtime, where the verdict file already reports it.
+ */
+function checkHookSymbols(): DoctorCheck {
+  let sdk: string
+  try {
+    sdk = execSync('xcrun --sdk iphonesimulator --show-sdk-path', {
+      encoding: 'utf8', stdio: 'pipe', timeout: PROBE_TIMEOUT_MS,
+    }).trim()
+  } catch {
+    // Silent on purpose: `checkXcode` above already reports a missing or unconfigured Xcode, and a
+    // second line saying the same thing differently is how a report stops being read.
+    return { label: 'Network hook symbols', ok: false, warn: true, detail: 'Skipped — no iOS simulator SDK to read.' }
+  }
+
+  const stubs = SDK_STUBS.map((rel) => join(sdk, rel)).filter((p) => existsSync(p))
+  if (stubs.length === 0) {
+    return {
+      label: 'Network hook symbols',
+      ok: false,
+      warn: true,
+      detail: `Cannot read the export lists under ${sdk}, so it is not known whether this Xcode still provides them.`,
+    }
+  }
+
+  // Read once: two files, tens of kilobytes, and every symbol is looked for in both rather than in the
+  // one it lives in today — which file declares a symbol is Apple's business and has changed before.
+  const declared = stubs.map((p) => readFileSync(p, 'utf8')).join('\n')
+  const missing = HOOK_SYMBOLS.filter((sym) => !new RegExp(`\\b_${sym}\\b`).test(declared))
+
+  if (missing.length > 0) {
+    return {
+      label: 'Network hook symbols',
+      ok: false,
+      warn: true,
+      detail: `This Xcode no longer exports ${missing.join(', ')}. Telling an app it is offline needs all of them, so iOS network control will fail once an app is launched. Please report this with your Xcode version.`,
+    }
+  }
+  return { label: 'Network hook symbols', ok: true }
+}
+
 function checkNetworkHook(): DoctorCheck {
   const hook = shippedHookPath()
   if (hook === null) {

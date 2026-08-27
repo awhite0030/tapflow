@@ -103,6 +103,22 @@ const FILTER_STATE_FILES = [
  *  time it takes for three of them to go missing. */
 const LIVENESS_INTERVAL_MS = 1_000
 
+/**
+ * How long after a launch an absent verdict is still ordinary (#629).
+ *
+ * **Derived from the dylib rather than picked.** Its verdict is written from a
+ * `__attribute__((constructor))`, which reads as "milliseconds" and is wrong: the constructor runs
+ * `tf_self_check()` first, and that waits on a semaphore for up to **3 seconds** for a path update
+ * (`network-hook.m`). So a perfectly healthy install produces no verdict for three seconds after the
+ * process starts, plus whatever the launch itself took.
+ *
+ * 10s is that plus room for a loaded Mac starting a large app. Generous on purpose: past this the
+ * answer changes from "waiting" to "this cannot work", and being early would put that verdict on an
+ * install that was about to succeed. The cost of being late is that a tester sees `awaiting-app` for a
+ * few seconds longer — which is the true answer for those seconds.
+ */
+export const LAUNCH_VERDICT_DEADLINE_MS = 10_000
+
 /** What the provider pulses at **while it is enforcing something** (`Provider.swift`, `pulseSeconds`).
  *  Held here as well because a file written before the rule changed declares the *idle* rate, so the
  *  rate to expect next cannot always be read out of the file. Change one and change the other. */
@@ -204,6 +220,14 @@ export class SimulatorNetwork {
    * ends forget together.
    */
   private readonly dropsReported = new Map<string, number>()
+  /**
+   * When a launch was last issued for each device (#629).
+   *
+   * A timestamp rather than a timer: `state()` is synchronous and called from several paths, and there
+   * is nothing to cancel — a second launch overwrites this, and a verdict arriving makes it
+   * irrelevant. A timer would have to be cancelled on both.
+   */
+  private readonly launchedAt = new Map<string, number>()
   /** Runs only while something is offline. See `updateLiveness`. */
   private liveness: ReturnType<typeof setInterval> | undefined
   /** Set by `dispose`. Without it, work that was already in flight puts the interval back: both
@@ -267,6 +291,11 @@ export class SimulatorNetwork {
     this.filterVerdict.delete(udid)
     this.offlineSince.delete(udid)
     this.dropsReported.delete(udid)
+    // **With the verdict it belongs to.** A boot is a new process for every app, so a launch recorded
+    // before it describes one that no longer exists — and leaving it behind means a freshly booted
+    // device reads as `hooks-not-installed` from its first `state()` call, on the strength of an app
+    // that ran in the previous session.
+    this.launchedAt.delete(udid)
     this.setCondition(udid, false)
     rmSync(this.verdictPath(udid), { force: true })
 
@@ -307,6 +336,10 @@ export class SimulatorNetwork {
    */
   async target(udid: string, bundleId: string): Promise<void> {
     rmSync(this.verdictPath(udid), { force: true })
+    // **The launch is marked here because this is already the call that clears the verdict.** The two
+    // belong together: from this moment an absent verdict means "the app has not written one yet"
+    // rather than "no app has run", and after the deadline it means neither — see `state()`.
+    this.launchedAt.set(udid, Date.now())
     await this.simctl.setSimulatorEnv(udid, 'TAPFLOW_TARGET_BUNDLE', bundleId)
   }
 
@@ -527,9 +560,23 @@ export class SimulatorNetwork {
     // second is what every iOS session looks like before its app starts, so folding it into
     // `not-armed` put the wrong remedy on the common case.
     if (verdict === 'missing') {
-      return this.armed.has(udid)
-        ? { offline, available: false, reason: 'awaiting-app' }
-        : { offline, available: false, reason: 'not-armed' }
+      if (!this.armed.has(udid)) return { offline, available: false, reason: 'not-armed' }
+      // **A launch that produced no verdict is not a device waiting for one** (#629), and this is the
+      // second form of the failure the `isFile` guard above exists for. That one covers a path dyld
+      // ignores because nothing is there; this covers a library that is there and still does not load
+      // — a wrong architecture, a runtime change, a signature. dyld says nothing in either case.
+      //
+      // Without it, `awaiting-app` says "launch an app through tapflow" to a tester who has already
+      // launched one, for the life of the session: word for word the sentence the comment above calls
+      // the quietest failure in the feature.
+      //
+      // The window before the deadline is genuinely `awaiting-app` — the dylib may still be inside its
+      // own three-second self-check — which is why this is a deadline and not a flag.
+      const launched = this.launchedAt.get(udid)
+      if (launched !== undefined && Date.now() - launched > LAUNCH_VERDICT_DEADLINE_MS) {
+        return { offline, available: false, reason: 'hooks-not-installed' }
+      }
+      return { offline, available: false, reason: 'awaiting-app' }
     }
     if (verdict === 'failed') return { offline, available: false, reason: 'hooks-not-installed' }
     // **`state-unconfirmed`, because that is what happened: a read that could not be confirmed.**
@@ -560,6 +607,7 @@ export class SimulatorNetwork {
     this.filterVerdict.delete(udid)
     this.offlineSince.delete(udid)
     this.dropsReported.delete(udid)
+    this.launchedAt.delete(udid)
     // Unconditional, for the reason `arm()` gives at length: the set is this process's memory and the
     // rule is the host's. An agent that restarted knows of no offline device, so `delete` answers
     // false and the write was skipped — leaving the udid named in the rule for the rest of the Mac's
