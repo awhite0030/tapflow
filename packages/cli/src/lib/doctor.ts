@@ -58,7 +58,13 @@ function buildIosChecks(isMac: boolean): DoctorCheck[] {
       },
       ...buildNetFilterChecks(),
       checkNetworkHook(),
-      checkHookSymbols(),
+      // **`checkHookSymbols` is deliberately NOT here**, unlike the two above it. It runs `xcrun`, and
+      // the comment at the top of this branch is the reason the branch exists: on a Mac with no
+      // Xcode, `xcrun` pops the Command Line Tools install dialog out of a diagnostic command. The
+      // netfilter checks belong because they are filesystem reads; this one is not.
+      //
+      // Nothing is lost by its absence: without Xcode there is no simulator SDK to read, so its
+      // answer here could only ever have been "cannot tell".
     ]
   }
   return [checkXcode(), checkSimctl(), checkBootedSimulator(), ...buildNetFilterChecks(), checkNetworkHook(), checkHookSymbols()]
@@ -197,24 +203,33 @@ function checkHookSymbols(): DoctorCheck {
       encoding: 'utf8', stdio: 'pipe', timeout: PROBE_TIMEOUT_MS,
     }).trim()
   } catch {
-    // Silent on purpose: `checkXcode` above already reports a missing or unconfigured Xcode, and a
-    // second line saying the same thing differently is how a report stops being read.
+    // `checkXcode` on this path already reports an unconfigured Xcode, so this says only what it
+    // could not do rather than diagnosing the cause a second time in different words.
     return { label: 'Network hook symbols', ok: false, warn: true, detail: 'Skipped — no iOS simulator SDK to read.' }
   }
 
-  const stubs = SDK_STUBS.map((rel) => join(sdk, rel)).filter((p) => existsSync(p))
-  if (stubs.length === 0) {
+  // **All of them or none**, because the two files partition the symbols between them: `getaddrinfo`
+  // is declared only in `libSystem.tbd` and the three `nw_path_*` only in `Network.tbd`. With one file
+  // missing, three symbols read as absent — and the message below would tell someone their Xcode had
+  // dropped them and ask them to file a bug about it. A layout this does not recognise is "cannot
+  // tell", never "removed".
+  const stubs = SDK_STUBS.map((rel) => join(sdk, rel))
+  let declared: string
+  try {
+    if (!stubs.every((p) => existsSync(p))) throw new Error('layout')
+    // Wrapped like every other probe in this file, for the reason its header gives: a read that throws
+    // between the check and the open — an SDK replaced mid-update — would reject the whole command and
+    // take the Android section down with it.
+    declared = stubs.map((p) => readFileSync(p, 'utf8')).join('\n')
+  } catch {
     return {
       label: 'Network hook symbols',
       ok: false,
       warn: true,
-      detail: `Cannot read the export lists under ${sdk}, so it is not known whether this Xcode still provides them.`,
+      detail: `Could not read the export lists under ${sdk}, so whether this Xcode still provides them is unknown.`,
     }
   }
 
-  // Read once: two files, tens of kilobytes, and every symbol is looked for in both rather than in the
-  // one it lives in today — which file declares a symbol is Apple's business and has changed before.
-  const declared = stubs.map((p) => readFileSync(p, 'utf8')).join('\n')
   const missing = HOOK_SYMBOLS.filter((sym) => !new RegExp(`\\b_${sym}\\b`).test(declared))
 
   if (missing.length > 0) {
@@ -222,10 +237,17 @@ function checkHookSymbols(): DoctorCheck {
       label: 'Network hook symbols',
       ok: false,
       warn: true,
-      detail: `This Xcode no longer exports ${missing.join(', ')}. Telling an app it is offline needs all of them, so iOS network control will fail once an app is launched. Please report this with your Xcode version.`,
+      detail: `The SDK at ${sdk} does not declare ${missing.join(', ')}. The injected library needs all of them, so iOS network control would fail once an app is launched. Please report this with your Xcode version.`,
     }
   }
-  return { label: 'Network hook symbols', ok: true }
+  // **What this does and does not say.** It read the SDK; the library is injected into a process
+  // running against a *simulator runtime*, and a Mac usually has several — measured here: one SDK
+  // (26.5) against six runtimes back to 17.2. A symbol the SDK declares can still be absent from an
+  // older runtime, and the match is target-blind besides: `libSystem.tbd` is a multi-document file
+  // whose macOS/Catalyst documents are visible to this regex. So this is evidence that the symbols
+  // have not been withdrawn, not a guarantee that a given session will find them — which is why the
+  // label says what was read.
+  return { label: `Network hook symbols (${sdk.split('/').pop()})`, ok: true }
 }
 
 function checkNetworkHook(): DoctorCheck {

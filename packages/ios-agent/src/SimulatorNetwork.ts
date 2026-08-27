@@ -228,6 +228,8 @@ export class SimulatorNetwork {
    * irrelevant. A timer would have to be cancelled on both.
    */
   private readonly launchedAt = new Map<string, number>()
+  /** The pid of the last launch that actually started a process, per device. See `markLaunched`. */
+  private readonly launchedPid = new Map<string, number>()
   /** Runs only while something is offline. See `updateLiveness`. */
   private liveness: ReturnType<typeof setInterval> | undefined
   /** Set by `dispose`. Without it, work that was already in flight puts the interval back: both
@@ -296,6 +298,7 @@ export class SimulatorNetwork {
     // device reads as `hooks-not-installed` from its first `state()` call, on the strength of an app
     // that ran in the previous session.
     this.launchedAt.delete(udid)
+    this.launchedPid.delete(udid)
     this.setCondition(udid, false)
     rmSync(this.verdictPath(udid), { force: true })
 
@@ -336,11 +339,29 @@ export class SimulatorNetwork {
    */
   async target(udid: string, bundleId: string): Promise<void> {
     rmSync(this.verdictPath(udid), { force: true })
-    // **The launch is marked here because this is already the call that clears the verdict.** The two
-    // belong together: from this moment an absent verdict means "the app has not written one yet"
-    // rather than "no app has run", and after the deadline it means neither — see `state()`.
-    this.launchedAt.set(udid, Date.now())
     await this.simctl.setSimulatorEnv(udid, 'TAPFLOW_TARGET_BUNDLE', bundleId)
+  }
+
+  /**
+   * A process started, so a verdict is now owed — `markLaunched` opens the window `state()` measures.
+   *
+   * **Called after the launch, not before it, and that is a correction.** The mark was first set at
+   * the top of `target()`, which put `simctl spawn … launchctl setenv`, `simctl launch` and the app's
+   * whole dyld load *inside* the budget — none of it measured — and left the mark standing when the
+   * launch failed outright, so a launch that never happened reported the hooks as broken ten seconds
+   * later.
+   *
+   * **Only for a pid that is new.** `simctl launch` is issued without `--terminate-running-process`,
+   * so launching a bundle that is already running returns the existing pid and starts nothing. The
+   * verdict is written from a dyld constructor — once per process — so nothing will rewrite the file
+   * `target()` just deleted, and starting a deadline there would report a permanently dead control
+   * over an app whose hooks are live and watching. That case stays what it was before this change,
+   * which is wrong but harmless; #692 has the decision it needs.
+   */
+  markLaunched(udid: string, pid: number | null): void {
+    if (pid === null || this.launchedPid.get(udid) === pid) return
+    this.launchedPid.set(udid, pid)
+    this.launchedAt.set(udid, Date.now())
   }
 
   /**
@@ -608,6 +629,7 @@ export class SimulatorNetwork {
     this.offlineSince.delete(udid)
     this.dropsReported.delete(udid)
     this.launchedAt.delete(udid)
+    this.launchedPid.delete(udid)
     // Unconditional, for the reason `arm()` gives at length: the set is this process's memory and the
     // rule is the host's. An agent that restarted knows of no offline device, so `delete` answers
     // false and the write was skipped — leaving the udid named in the rule for the rest of the Mac's

@@ -18,13 +18,27 @@ const ROOT = join(import.meta.dirname, '..', '..')
 const HOOK = 'packages/ios-agent/src/network-hook.m'
 const DOCTOR = 'packages/cli/src/lib/doctor.ts'
 
-/** The `name` field of every entry in the dylib's `wanted[]` table. */
+/**
+ * The `name` field of every entry in the dylib's `wanted[]` table.
+ *
+ * **`[A-Za-z0-9_]`, not `[a-z_]`.** The first version could not see a symbol with a capital or a
+ * digit — so `SCNetworkReachabilityGetFlags`, which is the other API an app reads to decide it is
+ * offline and the obvious next entry in this table, parsed as nothing at all. The mutation this file's
+ * header names as the one that costs something passed green for exactly those names.
+ */
 function rebound() {
   const src = readFileSync(join(ROOT, HOOK), 'utf8')
   const start = src.indexOf('wanted[] = {')
   expect(start, 'wanted[] is gone — this check no longer guards anything').toBeGreaterThan(-1)
   const block = src.slice(start, src.indexOf('};', start))
-  return [...block.matchAll(/\{"([a-z_]+)"/g)].map((m) => m[1]).sort()
+  const names = [...block.matchAll(/\{"([A-Za-z0-9_]+)"/g)].map((m) => m[1])
+  // **Counted independently of the names**, because a name the regex cannot read does not fail — it
+  // vanishes, and both lists then agree on a stale subset. Every entry ends with the address of its
+  // original, so that is the count to compare against.
+  const entries = block.split('(void **)&').length - 1
+  expect(names.length, `read ${names.length} symbol names from ${entries} entries in wanted[] — one is written in a shape this parser cannot see`)
+    .toBe(entries)
+  return names.sort()
 }
 
 /** The list `doctor` reads the SDK stubs for. */
@@ -32,7 +46,11 @@ function checked() {
   const src = readFileSync(join(ROOT, DOCTOR), 'utf8')
   const m = src.match(/const HOOK_SYMBOLS = \[([^\]]*)\]/)
   expect(m, 'HOOK_SYMBOLS is gone from doctor').toBeTruthy()
-  return [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]).sort()
+  const names = [...m[1].matchAll(/'([A-Za-z0-9_]+)'/g)].map((x) => x[1])
+  // Same reason, the other side: a quoted entry the class cannot read would drop out silently.
+  expect(names.length, "doctor's list has an entry this parser cannot read")
+    .toBe(m[1].split(',').filter((x) => x.trim().length > 0).length)
+  return names.sort()
 }
 
 describe('doctor checks the symbols the hook actually needs', () => {

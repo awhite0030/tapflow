@@ -374,6 +374,7 @@ describe('SimulatorNetwork', () => {
     const net = make()
     await net.arm(UDID)
     await net.target(UDID, 'com.example.app')
+    net.markLaunched(UDID, 4242)
     vi.advanceTimersByTime(LAUNCH_VERDICT_DEADLINE_MS - 1)
     expect(net.state(UDID)).toMatchObject({ reason: 'awaiting-app' })
   })
@@ -388,6 +389,7 @@ describe('SimulatorNetwork', () => {
     const net = make()
     await net.arm(UDID)
     await net.target(UDID, 'com.example.app')
+    net.markLaunched(UDID, 4242)
     vi.advanceTimersByTime(LAUNCH_VERDICT_DEADLINE_MS + 1)
     expect(net.state(UDID)).toEqual({ offline: false, available: false, reason: 'hooks-not-installed' })
   })
@@ -400,10 +402,12 @@ describe('SimulatorNetwork', () => {
     const net = make()
     await net.arm(UDID)
     await net.target(UDID, 'com.example.app')
+    net.markLaunched(UDID, 4242)
     vi.advanceTimersByTime(LAUNCH_VERDICT_DEADLINE_MS + 1)
     expect(net.state(UDID)).toMatchObject({ reason: 'hooks-not-installed' })
 
     await net.target(UDID, 'com.example.other')
+    net.markLaunched(UDID, 4343)
     expect(net.state(UDID), 'the new app inherited the old one\'s verdict').toMatchObject({ reason: 'awaiting-app' })
   })
 
@@ -415,11 +419,64 @@ describe('SimulatorNetwork', () => {
     const net = make()
     await net.arm(UDID)
     await net.target(UDID, 'com.example.app')
+    net.markLaunched(UDID, 4242)
     vi.advanceTimersByTime(LAUNCH_VERDICT_DEADLINE_MS + 1)
     expect(net.state(UDID)).toMatchObject({ reason: 'hooks-not-installed' })
 
     await net.arm(UDID)
     expect(net.state(UDID), 'a boot inherited the previous session\'s launch').toMatchObject({ reason: 'awaiting-app' })
+
+    // **And the pid is forgotten with it**, which is a second fact. Pids are reused, so a launch after
+    // a boot can legitimately carry a number the previous session already saw — and if that number
+    // were still remembered, the new process's window would never open and its failure would read as
+    // "waiting for an app" forever.
+    net.markLaunched(UDID, 4242)
+    vi.advanceTimersByTime(LAUNCH_VERDICT_DEADLINE_MS + 1)
+    expect(net.state(UDID), 'a reused pid was mistaken for the launch before the boot')
+      .toMatchObject({ reason: 'hooks-not-installed' })
+  })
+
+  it('starts no clock for a launch that never happened', async () => {
+    // **The window opens on a process, not on an intent.** The mark was first set at the top of
+    // `target()`, above `simctl spawn … launchctl setenv` and above `simctl launch` — so a launch
+    // that failed outright (a wrong bundle id, an app not installed) left it standing, and ten
+    // seconds later the control reported the hooks as broken over a launch nobody ever completed.
+    vi.useFakeTimers()
+    const net = make()
+    await net.arm(UDID)
+    await net.target(UDID, 'com.example.app')
+    vi.advanceTimersByTime(LAUNCH_VERDICT_DEADLINE_MS * 3)
+    expect(net.state(UDID), 'a launch that never started was reported as a broken injection')
+      .toMatchObject({ reason: 'awaiting-app' })
+
+    // And a launch whose pid could not be read is the same thing: `simctl launch` prints
+    // `bundle: <pid>` and `launchApp` returns null when it cannot parse one, which is not evidence
+    // that a process exists. Measured — without this the null case opened a window.
+    net.markLaunched(UDID, null)
+    vi.advanceTimersByTime(LAUNCH_VERDICT_DEADLINE_MS + 1)
+    expect(net.state(UDID), 'an unreadable pid was treated as a started process')
+      .toMatchObject({ reason: 'awaiting-app' })
+  })
+
+  it('starts no clock when the launch produced no new process', async () => {
+    // `simctl launch` is issued without `--terminate-running-process`, so launching a bundle that is
+    // already running returns the existing pid and starts nothing — and the verdict is written from a
+    // dyld constructor, once per process. Nothing will rewrite the file `target()` just deleted, so a
+    // deadline here would report a permanently dead control over an app whose hooks are live. That
+    // case stays as wrong as it was before this change and no worse; #692 carries the decision.
+    vi.useFakeTimers()
+    const net = make()
+    await net.arm(UDID)
+    await net.target(UDID, 'com.example.app')
+    net.markLaunched(UDID, 4242)
+    vi.advanceTimersByTime(LAUNCH_VERDICT_DEADLINE_MS + 1)
+    expect(net.state(UDID)).toMatchObject({ reason: 'hooks-not-installed' })
+
+    // The same app relaunched: same pid, so the clock must not restart either.
+    await net.target(UDID, 'com.example.app')
+    net.markLaunched(UDID, 4242)
+    expect(net.state(UDID), 'a relaunch that started nothing opened a new window')
+      .toMatchObject({ reason: 'hooks-not-installed' })
   })
 
   it('does not claim the injection is in place when the environment could not be set', async () => {

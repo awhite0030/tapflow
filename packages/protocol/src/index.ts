@@ -593,6 +593,16 @@ export type NetworkUnavailableReason =
    * It was written for the first alone, and the second arrived with #653. The distinction that
    * matters to a consumer is unchanged — the control is dead and no button helps — so they stay one
    * member; but "the agent proved this by trying" was the whole doc, and it is false of the second.
+   *
+   * **A third arrived with #629, and it is not a settled fact — it is a deadline.** An app was
+   * launched and wrote no verdict at all within the time one takes to write it, which happens when
+   * the library is present and armed and dyld still does not load it: a wrong architecture, a runtime
+   * change, a signature. Nothing was observed, and the member is chosen *because* nothing was.
+   *
+   * That makes it weaker than the two above and it is still this member rather than
+   * `state-unconfirmed`, because the consumer's move is the same and `state-unconfirmed` promises that
+   * looking again helps. Looking again does not help here; launching a different app might. Anyone
+   * treating this member as proof should read this paragraph first.
    */
   | 'hooks-not-installed'
   /** Nothing was delivered for this boot — a re-arm that did not happen, or a device booted outside
