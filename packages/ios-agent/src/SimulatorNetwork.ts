@@ -379,8 +379,25 @@ export class SimulatorNetwork {
     }
 
     this.filterVerdict.delete(udid)
-    if (offline) this.offlineSince.set(udid, Math.floor(Date.now() / 1000))
-    else { this.offlineSince.delete(udid); this.dropsReported.delete(udid) }
+    if (offline) {
+      this.offlineSince.set(udid, Math.floor(Date.now() / 1000))
+      // **Seeded from whatever the file already says, and this is the episode boundary.**
+      //
+      // The provider prunes its own counts when a device leaves the rule, but only while rendering —
+      // and its `ruleWatch` only advances when a flow arrives. So a device toggled off, on, and off
+      // again with no flow and no pulse in between leaves the provider having never seen the empty
+      // rule, and it republishes the previous episode's count as if it belonged to this one.
+      //
+      // **The provider cannot fix that, because it cannot see an episode.** It knows a rule, not that
+      // a tester toggled a control. This class does. Taking the current count as the baseline makes a
+      // stale number harmless whatever the provider does: only drops *above* it are evidence for this
+      // episode, and if there were none the answer is silence, which is what zero has always meant
+      // here.
+      this.dropsReported.set(udid, this.readFilterState()?.droppedByDevice[udid] ?? 0)
+    } else {
+      this.offlineSince.delete(udid)
+      this.dropsReported.delete(udid)
+    }
     this.setCondition(udid, offline)
     // **Layer 3 only reports, so its failure is not a reason and must not undo the two that do.**
     // Unswallowed, one `status_bar` failure threw out of here with layers 1 and 2 already applied: the

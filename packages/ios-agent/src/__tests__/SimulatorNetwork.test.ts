@@ -88,7 +88,13 @@ function fakeHostBinary(dir: string, log: string, sleepMs = 0, failNth = 0): str
     + `printf '%s,%s' "$CUR" "$ADD" | tr ',' '\\n' | grep -v '^$' | sort -u > "$S.all"\n`
     + `if [ -s "$S.rem" ]; then OUT=$(grep -vxF -f "$S.rem" "$S.all" | paste -sd, -); else OUT=$(paste -sd, - < "$S.all"); fi\n`
     + `printf '%s' "$OUT" > "$S.rule" && mv "$S.rule" "${dir}/rule"\n`
-    + `printf '{"at":%s,"pulseSeconds":1,"rule":%s}\\n' "$(date +%s)" "$(printf '%s' "$OUT" | ${ruleToJson})" > "$S.state" && mv "$S.state" "${dir}/state.json"\n`
+    // **The counts are carried across a rewrite, because the provider carries them.** Its render
+    // serialises a store that survives; it does not start each file from nothing. A double that
+    // dropped `droppedByDevice` on every host run made the stale-count case unreachable — the very
+    // case #654's episode boundary exists for — and a test written against it passed on a device that
+    // had no drops at all.
+    + `DROPS=$(cat "${dir}/drops.json" 2>/dev/null || echo '{}')\n`
+    + `printf '{"at":%s,"pulseSeconds":1,"rule":%s,"droppedByDevice":%s}\\n' "$(date +%s)" "$(printf '%s' "$OUT" | ${ruleToJson})" "$DROPS" > "$S.state" && mv "$S.state" "${dir}/state.json"\n`
     + `rm -f "$S.rem" "$S.all"\n`
     // argv goes to its own file: the log line still carries the **resulting rule**, which is what the
     // assertions below are about, and argv is available separately for the tests that are about what
@@ -809,18 +815,33 @@ describe('SimulatorNetwork', () => {
         at: Math.floor(Date.now() / 1000), pulseSeconds: 1, rule,
       }))
 
-    const stateWith = (rule: string[], droppedByDevice: unknown) =>
+    /** Writes the file *and* the sidecar the fake host reads, so a host run carries the counts on. */
+    const stateWith = (rule: string[], droppedByDevice: unknown) => {
+      writeFileSync(join(dir, 'drops.json'), JSON.stringify(droppedByDevice))
       writeFileSync(join(dir, 'state.json'), JSON.stringify({
         at: Math.floor(Date.now() / 1000), pulseSeconds: 1, rule, droppedByDevice,
       }))
+    }
 
     it('keeps a device offline when the provider is too old to report drops', async () => {
+      // **`state()` is synchronous, so waiting on it proves nothing about the liveness loop** — it is
+      // already true the moment the device goes offline, and the wait returns before a single 20ms
+      // tick has read the file. The same vacuity was found twice on this branch; this is the third
+      // instance, and it is closed the same way: a positive from the seam under test.
+      //
+      // Here that positive comes last. The file is deliberately one an older provider wrote, so it
+      // produces nothing to wait for — but making the device stale at the end and watching `lost`
+      // arrive proves the loop was reading this file all along.
       armed()
       const net = make()
       await net.setOffline(UDID, true)
       stateWithout([UDID])
-      await vi.waitFor(() => expect(net.state(UDID)).toMatchObject({ offline: true }))
+      await new Promise((r) => setTimeout(r, 120))
+      expect(net.state(UDID)).toMatchObject({ offline: true })
       expect(lost, 'an older provider was read as one that stopped enforcing').toEqual([])
+
+      staleState([UDID], -60)
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
     })
 
     /**
@@ -914,6 +935,33 @@ describe('SimulatorNetwork', () => {
       stateWith([UDID], { [UDID]: 42 })
       await vi.waitFor(() => expect(net.state(UDID)).toEqual(before))
       expect(lost).toEqual([])
+    })
+
+    it('does not carry a previous offline episode\'s drops into the next one', async () => {
+      // **The provider cannot close this and this class can.** Its prune runs at render time and its
+      // `ruleWatch` only advances when a flow arrives, so a device toggled off, on and off again with
+      // neither in between leaves it having never seen the empty rule — and it republishes the old
+      // count against the new episode. The agent knows what the provider cannot: that a tester
+      // toggled. Taking the file's current count as the baseline is what makes the stale number
+      // harmless.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      stateWith([UDID], { [UDID]: 6 })
+      await vi.waitFor(() => expect(dropLines().length).toBe(1))
+
+      // Off and on again. The count stays in the file across both, which is what a provider that
+      // never saw the empty rule publishes — and what the agent's seed has to render harmless.
+      await net.setOffline(UDID, false)
+      await net.setOffline(UDID, true)
+      await new Promise((r) => setTimeout(r, 120))
+      expect(dropLines().length, 'a previous episode\'s drops were announced as this one\'s evidence')
+        .toBe(1)
+
+      // And a drop that is genuinely new still counts.
+      stateWith([UDID], { [UDID]: 9 })
+      await vi.waitFor(() => expect(dropLines().length).toBe(2))
+      expect(dropLines()[1]).toContain('9')
     })
 
     it('does not report a fraction of a flow', async () => {
