@@ -916,6 +916,78 @@ describe('SimulatorNetwork', () => {
       expect(lost).toEqual([])
     })
 
+    it('does not report a fraction of a flow', async () => {
+      // A count is flows, and `dropped 0.5 flow(s)` is a sentence no reader should be handed. It is
+      // also the one malformed shape the `> 0` guard downstream cannot catch on its own — unlike a
+      // negative, and unlike a word, a fraction is a finite number greater than zero.
+      await tickedWith({ [UDID]: 0.5 })
+      expect(dropLines().filter((l: string) => l.includes(UDID)), 'a fraction of a flow was reported')
+        .toEqual([])
+    })
+
+    it('claims nothing about a device this agent never took offline', async () => {
+      // **The state file is host-wide.** Another agent's devices, and rule entries this instance never
+      // wrote, appear in it — so the loop has to run over `this.offline` and not over the file's own
+      // keys. `checkLivenessLocked` already refuses the mirror image of this ("somebody else's device
+      // appearing in the rule must not make this one look unenforced"); the evidence line owes the
+      // same refusal pointed the other way.
+      //
+      // Measured: sourcing the loop from `Object.entries(file.droppedByDevice)` passed all 67 tests
+      // before this one existed, because every fixture's keys were a subset of what was offline.
+      const net = await tickedWith({ [THIRD]: 9 })
+      expect(dropLines().filter((l: string) => l.includes(THIRD)),
+        'evidence was claimed for a device this agent never took offline').toEqual([])
+      expect(net.state(OTHER)).toMatchObject({ offline: true })
+    })
+
+    it('reports every offline device that has drops, not just the first', async () => {
+      // The other mutation that was green: a `break` after the first line. `tickedWith`'s first device
+      // is deliberately the silent one, so a loop that stopped early still satisfied the wait.
+      armed(UDID); armed(OTHER)
+      const net = make()
+      await net.setOffline(UDID, true)
+      await net.setOffline(OTHER, true)
+      stateWith([UDID, OTHER], { [UDID]: 4, [OTHER]: 7 })
+      await vi.waitFor(() => expect(dropLines().length).toBeGreaterThanOrEqual(2))
+      expect(dropLines().some((l: string) => l.includes(UDID))).toBe(true)
+      expect(dropLines().some((l: string) => l.includes(OTHER))).toBe(true)
+    })
+
+    it('says it once, not once a second', async () => {
+      // This runs on the liveness interval, so an unconditional line repeats for as long as the device
+      // stays offline — 600 of them in a ten-minute session, in the stream where the enforcement-lost
+      // report is what someone is looking for. Only an increase is news.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      stateWith([UDID], { [UDID]: 2 })
+      await vi.waitFor(() => expect(dropLines().length).toBe(1))
+      // Several more ticks at 20ms against a file that has not moved.
+      await new Promise((r) => setTimeout(r, 120))
+      expect(dropLines().length, 'the same evidence was announced again').toBe(1)
+
+      // And a genuine increase is still news.
+      stateWith([UDID], { [UDID]: 5 })
+      await vi.waitFor(() => expect(dropLines().length).toBe(2))
+      expect(dropLines()[1]).toContain('5')
+    })
+
+    it('does not call a device proven enforcing in the same breath as declaring it lost', async () => {
+      // Both readings come from the file that froze, so an unguarded loop says "enforcement observed"
+      // and then reports that enforcement stopped — about the same device, one line apart.
+      armed()
+      const net = make()
+      await net.setOffline(UDID, true)
+      // Stale by more than three pulses, and carrying drops from before it froze.
+      writeFileSync(join(dir, 'state.json'), JSON.stringify({
+        at: Math.floor(Date.now() / 1000) - 60, pulseSeconds: 1, rule: [UDID],
+        droppedByDevice: { [UDID]: 7 },
+      }))
+      await vi.waitFor(() => expect(lost).toEqual([UDID]))
+      expect(dropLines(), 'a device declared lost was announced as proven enforcing').toEqual([])
+      void net
+    })
+
     it('reports a device whose enforcement stopped and takes the other layers down', async () => {
       // **The measurement this exists for**: killing the provider leaves the kernel passing that
       // simulator's traffic for about 5.8 seconds, and 23–27 requests got through each time. The

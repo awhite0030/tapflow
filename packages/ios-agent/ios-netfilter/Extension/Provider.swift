@@ -289,11 +289,21 @@ private final class Heartbeat {
         json += ",\"flows\":{\"simulator\":\(flowsSimulator),\"host\":\(flowsHost)"
         json += ",\"unresolved\":\(flowsUnresolved),\"dropped\":\(flowsDropped)"
         json += ",\"idle\":\(flowsIdle)}"
-        // **Pruned to the current rule rather than to what arrived.** A Mac cycles through simulators
-        // and every udid that ever had a flow dropped would otherwise stay in the file for the life of
-        // the provider, growing it without bound and describing devices nobody is looking at. What a
-        // reader wants is evidence about what is being enforced *now*.
-        let perDevice = droppedByUDID.filter { rule.contains($0.key) }
+        // **The store is pruned, not a copy of it** — and the difference is the whole value of the
+        // field. `filter` returns a new dictionary, so an earlier version left the counts in memory
+        // while publishing a pruned view: take a device offline, drop twelve flows, bring it back
+        // online, take it offline again, and the very next file said `{"A": 12}` before a single flow
+        // had been dropped in that episode. The agent reads that as "enforcement observed" — the
+        // exact lie this field exists to close, told with a number attached.
+        //
+        // A count also has to be per *episode*, not per provider lifetime, or "has it dropped
+        // anything since I took it offline" has no answer here.
+        //
+        // **Pruning too eagerly is the safe direction.** A transient unreadable `vendorConfiguration`
+        // would read as an empty rule and wipe the counts; they then restart from zero, and zero
+        // proves nothing by design. The other way round produces a false proof.
+        droppedByUDID = droppedByUDID.filter { rule.contains($0.key) }
+        let perDevice = droppedByUDID
         let dropped = (try? JSONSerialization.data(withJSONObject: perDevice))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         json += ",\"droppedByDevice\":\(dropped)"
@@ -410,9 +420,13 @@ class Provider: NEFilterDataProvider {
     }
 
     override func handleNewFlow(_ flow: NEFilterFlow) -> NEFilterNewFlowVerdict {
-        let token = flow.sourceAppAuditToken
-        let pid = token.flatMap(pidFromAuditToken) ?? -1
-        let asid = token.map(asidFromToken) ?? 0
+        // **The rule is read before the audit token, so the idle path touches neither.**
+        // `sourceAppAuditToken` materialises a `Data` on every flow and `pid`/`asid` are unused below
+        // when there is nothing to enforce — leaving them above the early return would have kept a
+        // per-flow allocation in the path this change exists to empty.
+        //
+        // `ruleWatch.noteIfChanged` stays above it on purpose: the forced publish on a rule change
+        // depends on it running for every flow, idle ones included.
         let rule = offlineUDIDs(filterConfiguration)
         let ruleChanged = ruleWatch.noteIfChanged(rule)
 
@@ -428,13 +442,23 @@ class Provider: NEFilterDataProvider {
         // this on every connection since.
         //
         // **The heartbeat is not affected**, which is the thing to check before believing this is
-        // free. The file is written by the `DispatchSourceTimer` in `startFilter`, once a second;
-        // `note` only refreshes it opportunistically when one is due. A provider seeing no flows at
-        // all has always published, so one that stops counting them still does.
+        // free — and the mechanism is the other way round from how this comment first described it.
+        // `note` is the *primary* writer: `dueLocked` uses a hardcoded 1.0s, so a Mac with traffic
+        // publishes at 1Hz through this path. The `DispatchSourceTimer` ticks every second but
+        // `pulse` writes only every `pulseSeconds(enforcing:) - 0.25` — 4.75s while the rule is
+        // empty — so it is the fallback, not the source.
+        //
+        // What makes this safe is therefore not the timer but that `.idle` still goes through `note`:
+        // the flow is counted and `dueLocked` runs exactly as before, so the publication rate is
+        // unchanged. A provider seeing no flows at all still publishes on the timer alone.
         if rule.isEmpty {
             heartbeat.note(.idle, walkNanos: nil, rule: rule, ruleChanged: ruleChanged)
             return .allow()
         }
+
+        let token = flow.sourceAppAuditToken
+        let pid = token.flatMap(pidFromAuditToken) ?? -1
+        let asid = token.map(asidFromToken) ?? 0
 
         // **How long the attribution actually takes** (#641). The walk was suspected of being an
         // unaffordable per-flow cost and nobody had measured it, so it is counted here rather than

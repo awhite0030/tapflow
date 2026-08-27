@@ -108,20 +108,30 @@ const LIVENESS_INTERVAL_MS = 1_000
  *  rate to expect next cannot always be read out of the file. Change one and change the other. */
 const ENFORCING_PULSE_SECONDS = 1
 
-/** What the provider's state file says. `pulseSeconds` is read rather than assumed: the provider
- *  changes its own rate (1s while enforcing, 5s idle) and publishes the one in force, so a threshold
- *  derived from this stays right when that changes. */
-/** The non-negative integers in an untrusted object, entry by entry. Anything else is dropped rather
- *  than failing the whole read — see `droppedByDevice`. */
+/**
+ * The non-negative counts in an untrusted object, entry by entry.
+ *
+ * Anything else is dropped rather than failing the whole read — see `droppedByDevice`. This file is
+ * written by a root-owned process on the other side of a version boundary, so a value that is not a
+ * count is a thing to discard, not a reason to disbelieve the rest.
+ *
+ * **`Number.isInteger`, because these are flows** and `dropped 0.5 flow(s)` is a sentence no reader
+ * should be handed. **The array guard and the `>= 0` do not change today's output** — an array index
+ * cannot be a udid, and a negative would fail the `> 0` test at the only place this is consumed. They
+ * are here for the second consumer, and that is stated rather than left to look load-bearing.
+ */
 function numbersIn(raw: unknown): Record<string, number> {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}
   const out: Record<string, number> = {}
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) out[k] = v
+    if (typeof v === 'number' && Number.isInteger(v) && v >= 0) out[k] = v
   }
   return out
 }
 
+/** What the provider's state file says. `pulseSeconds` is read rather than assumed: the provider
+ *  changes its own rate (1s while enforcing, 5s idle) and publishes the one in force, so a threshold
+ *  derived from this stays right when that changes. */
 interface FilterStateFile {
   at: number
   pulseSeconds: number
@@ -181,6 +191,19 @@ export class SimulatorNetwork {
   /** When each device's offline rule was confirmed, in whole seconds. Read by `checkLiveness` to tell
    *  a file that disagrees from one that is simply older than the write. */
   private readonly offlineSince = new Map<string, number>()
+  /**
+   * The drop count last reported for each offline device (#654).
+   *
+   * **Two things need it.** The liveness check runs every second, so a device with any drops at all
+   * would otherwise repeat the same line 600 times in a ten-minute session — into the stream where
+   * the enforcement-lost report a person is actually looking for arrives. And the provider's count is
+   * per episode but the *file* is a snapshot: only an increase since the last read is news.
+   *
+   * Cleared wherever `offlineSince` is, so a device that goes offline again starts from nothing —
+   * an absent entry reads as zero, and the provider prunes its own counts per episode too, so both
+   * ends forget together.
+   */
+  private readonly dropsReported = new Map<string, number>()
   /** Runs only while something is offline. See `updateLiveness`. */
   private liveness: ReturnType<typeof setInterval> | undefined
   /** Set by `dispose`. Without it, work that was already in flight puts the interval back: both
@@ -243,6 +266,7 @@ export class SimulatorNetwork {
     // was true of the dylib's file and not of this, which is exactly how it was missed.
     this.filterVerdict.delete(udid)
     this.offlineSince.delete(udid)
+    this.dropsReported.delete(udid)
     this.setCondition(udid, false)
     rmSync(this.verdictPath(udid), { force: true })
 
@@ -356,7 +380,7 @@ export class SimulatorNetwork {
 
     this.filterVerdict.delete(udid)
     if (offline) this.offlineSince.set(udid, Math.floor(Date.now() / 1000))
-    else this.offlineSince.delete(udid)
+    else { this.offlineSince.delete(udid); this.dropsReported.delete(udid) }
     this.setCondition(udid, offline)
     // **Layer 3 only reports, so its failure is not a reason and must not undo the two that do.**
     // Unswallowed, one `status_bar` failure threw out of here with layers 1 and 2 already applied: the
@@ -518,6 +542,7 @@ export class SimulatorNetwork {
     // booted into the same udid next.
     this.filterVerdict.delete(udid)
     this.offlineSince.delete(udid)
+    this.dropsReported.delete(udid)
     // Unconditional, for the reason `arm()` gives at length: the set is this process's memory and the
     // rule is the host's. An agent that restarted knows of no offline device, so `delete` answers
     // false and the write was skipped — leaving the udid named in the rule for the rest of the Mac's
@@ -667,11 +692,27 @@ export class SimulatorNetwork {
     // Deliberately outside the `lost` branch: it is worth saying that a device is *proven* enforcing,
     // not only that one stopped being.
     if (file) {
+      // **Over `this.offline`, never over the file's own keys.** The state file is host-wide: another
+      // agent's devices and rule entries this instance never wrote can be in it, and claiming evidence
+      // about those is the same mistake the loop above refuses to make — "somebody else's device
+      // appearing in the rule must not make this one look unenforced", pointed the other way.
       for (const udid of this.offline) {
-        const drops = file.droppedByDevice[udid]
-        if (drops !== undefined && drops > 0) {
+        // **Not for a device this tick just declared lost.** The file that froze is where both
+        // readings come from, so without this the log says "enforcement observed" and then reports
+        // that enforcement stopped, one line apart, about the same device — a flat contradiction
+        // handed to the person the line exists for.
+        if (lost.includes(udid)) continue
+        const drops = file.droppedByDevice[udid] ?? 0
+        // **Only an increase is news.** This runs once a second, so a device with any drops at all
+        // would repeat the same line for as long as it stays offline — 600 of them in a ten-minute
+        // session, in the stream where the enforcement-lost report actually matters. A count that
+        // went *down* is a provider that restarted; it re-reports from there rather than staying
+        // silent until it passes the old high-water mark.
+        const reported = this.dropsReported.get(udid) ?? 0
+        if (drops > reported) {
           console.log(`[network] filter has dropped ${drops} flow(s) for ${udid} — enforcement observed, not just delivered`)
         }
+        if (drops !== reported) this.dropsReported.set(udid, drops)
       }
     }
     if (lost.length === 0) return
@@ -679,6 +720,7 @@ export class SimulatorNetwork {
     for (const udid of lost) {
       this.offline.delete(udid)
       this.offlineSince.delete(udid)
+      this.dropsReported.delete(udid)
       this.filterVerdict.set(udid, 'lost')
     }
     // **`remove: lost` is the whole point of this write, and naming only `add` was a regression.**
