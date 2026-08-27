@@ -10,8 +10,9 @@
 // Asserted as **relative order in the accessibility tree**, not as a count or a snapshot: a count
 // passes on buttons in the wrong groups, and a snapshot fails on every unrelated style change and
 // gets updated without being read.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { SimulatorToolbar } from '@/components/device/shared/SimulatorToolbar'
 
 /** Stand-ins for what the viewers pass, labelled so the assertions read as the rule does. */
@@ -21,9 +22,10 @@ const deviceButtons = <button aria-label="Software keyboard" />
  *  button drift outside every group unnoticed — which is the one flat-run state this all exists to end. */
 const launch = <button aria-label="Launch app" />
 
-function toolbar({ network = true }: { network?: boolean } = {}) {
+function toolbar({ network = true, onReboot = () => {} }: { network?: boolean; onReboot?: () => void } = {}) {
   return render(
     <SimulatorToolbar
+      reboot={{ pending: false, onReboot }}
       joined
       onScreenshot={() => {}}
       onRecordToggle={() => {}}
@@ -71,6 +73,18 @@ describe('the device toolbar groups by what the tester is doing to the device', 
     toolbar()
     const groups = screen.getAllByRole('group').map((g) => g.getAttribute('aria-label'))
     expect(groups).toEqual(['Navigation', 'Device', 'Capture', 'Environment'])
+  })
+
+  it('closes the Device group with the restart, after rotate', () => {
+    // A restart acts on the device like the power button does, and a group runs frequent → rare, so
+    // it is the last thing in Device rather than the first (#628, and the rule in
+    // `packages/dashboard/AGENTS.md`). Asserted as *last in its own group* rather than as an index,
+    // because an index moves whenever a platform hands the group another button.
+    toolbar()
+    const device = within(screen.getByRole('group', { name: 'Device' }))
+    const names = device.getAllByRole('button').map((b) => b.getAttribute('aria-label') ?? '')
+    expect(names, 'the restart is not in the Device group at all').toContain('Restart the device')
+    expect(names.at(-1), 'something was placed after the restart').toBe('Restart the device')
   })
 
   it('puts each button in the group the rule assigns it to', () => {
@@ -121,5 +135,68 @@ describe('the device toolbar groups by what the tester is doing to the device', 
     const names = screen.getAllByRole('button').map((b) => b.getAttribute('aria-label') ?? '')
     expect(names.at(-1), 'Environment is the last group and the network control is its only member')
       .toMatch(/device (offline|online|network)/i)
+  })
+})
+
+describe('restarting the device asks first', () => {
+  // The device does not come back the way it left, and the tester may have spent ten minutes getting
+  // it into the state they are about to lose. Both halves are tested: a dialog that always confirms
+  // is the same as no dialog.
+  it('does not restart on the click that opens the dialog', async () => {
+    const onReboot = vi.fn()
+    toolbar({ onReboot })
+    await userEvent.click(screen.getByRole('button', { name: 'Restart the device' }))
+    expect(screen.getByRole('alertdialog'), 'no confirmation was raised').toBeTruthy()
+    expect(onReboot, 'the device restarted before anyone confirmed').not.toHaveBeenCalled()
+  })
+
+  it('restarts nothing when the dialog is dismissed', async () => {
+    const onReboot = vi.fn()
+    toolbar({ onReboot })
+    await userEvent.click(screen.getByRole('button', { name: 'Restart the device' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onReboot).not.toHaveBeenCalled()
+  })
+
+  it('restarts once when it is confirmed', async () => {
+    const onReboot = vi.fn()
+    toolbar({ onReboot })
+    await userEvent.click(screen.getByRole('button', { name: 'Restart the device' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Restart' }))
+    expect(onReboot).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the same words it answers to', async () => {
+    // WCAG 2.5.3: the visible label has to be contained in the accessible name, or voice control
+    // saying what is on screen misses the button. These were two literals — "Restart device" against
+    // "Restart the device" — and they disagreed outright while pending, when the name changed and the
+    // tooltip did not.
+    toolbar()
+    const button = screen.getByRole('button', { name: 'Restart the device' })
+    await userEvent.hover(button)
+    const tip = await screen.findByRole('tooltip')
+    expect(button.getAttribute('aria-label'), 'the visible label is not part of the name')
+      .toContain(tip.textContent)
+  })
+
+  it('cannot be pressed again while a restart is running', async () => {
+    // `aria-disabled` rather than `disabled`, so the control keeps its place in the tab order and
+    // stays describable — which means the guard has to be in the handler, and this is what holds it.
+    const onReboot = vi.fn()
+    render(
+      <SimulatorToolbar
+        joined onScreenshot={() => {}} onRecordToggle={() => {}} recordState="idle"
+        onRotate={() => {}} onDeepLink={() => {}}
+        reboot={{ pending: true, onReboot }}
+      />,
+    )
+    const button = screen.getByRole('button', { name: 'Restarting the device' })
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    // Through `userEvent`, not `button.click()`. The raw DOM call leaves React's state update
+    // unflushed at the assertion, so the dialog reads as absent whether the guard is there or not —
+    // measured: deleting the guard changed nothing until this line did.
+    await userEvent.click(button)
+    expect(screen.queryByRole('alertdialog'), 'a busy control still opened the dialog').toBeNull()
+    expect(onReboot).not.toHaveBeenCalled()
   })
 })

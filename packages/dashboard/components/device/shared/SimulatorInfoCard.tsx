@@ -126,9 +126,25 @@ export function SimulatorInfoCard(props: SimulatorInfoCardProps) {
         </div>
       )}
 
+      {/* **The region is always mounted and the sentence arrives inside it**, which is the shape a
+          live region has to have. This sentence is the only thing that says what a boot is doing, and
+          after #628 a keyboard user is parked beside it for a whole restart.
+          `role="status"` on the `<p>` itself does not work: that element is conditional, so the region
+          and its first sentence land in the same commit with nothing to compare against — "Starting
+          device…" and "Boot failed…" are exactly the transitions that go missing. Mounting the `<p>`
+          unconditionally instead adds a line's height to every card with nothing to say, and a second
+          sr-only copy of the text puts the same sentence in the tree twice. An empty wrapper costs
+          neither. */}
+      {/* `sr-only` while empty, which is `position: absolute` — so it stops being a flex item and stops
+          consuming one of the parent's `gap-3`. The normal state of this card is *no* sentence at all
+          (connected, joined, ready, installed), and that is where a permanently mounted 0-height child
+          would still have added 12px. The node is the same one either way, which is the whole point of
+          mounting it early. */}
+      <div role="status" className={statusText ? undefined : 'sr-only'}>
       {statusText && (
         <p className="text-[12px] text-muted-foreground leading-relaxed break-all">{statusText}</p>
       )}
+      </div>
 
       <PerformanceModeNotice open={noticeOpen} onOpenChange={handleNoticeOpenChange} />
     </div>
