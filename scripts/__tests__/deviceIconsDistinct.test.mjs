@@ -34,14 +34,21 @@ const VIEWERS = {
  */
 const SHARED_BUSY = new Set(['Loader2'])
 
-/** The lucide components a file imports — everything it can draw. */
+/**
+ * The lucide components a file imports — everything it can draw.
+ *
+ * **Normalised past an alias**, because the identity that matters is the glyph and the alias is the
+ * local name for it: `Power as RestartIcon` draws exactly what `Power` draws, and comparing raw
+ * specifiers would have called them two different icons — letting the collision this file exists for
+ * back in through a rename.
+ */
 function iconsIn(relPath) {
   const src = readFileSync(join(ROOT, relPath), 'utf8')
   const imp = src.match(/import\s*\{([^}]*)\}\s*from\s*'lucide-react'/)
   expect(imp, `${relPath} no longer imports from lucide-react — this check reads nothing`).toBeTruthy()
   return imp[1]
     .split(',')
-    .map((s) => s.trim())
+    .map((s) => s.trim().replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim())
     .filter((s) => s.length > 0 && !SHARED_BUSY.has(s))
 }
 
@@ -73,9 +80,17 @@ describe('a device toolbar draws each control differently', () => {
   it('keeps the two platforms drawing shared controls the same way', () => {
     // The other direction, and the reason this file cannot simply demand global uniqueness: a control
     // both platforms have must look the same on both, or a tester switching between them is relearning
-    // the toolbar. Measured: `Play` (launch) and `Home` are the overlap, and that is the whole of it.
-    const shared = iconsIn(VIEWERS.iOS).filter((n) => iconsIn(VIEWERS.Android).includes(n))
-    expect(shared, 'the platforms stopped sharing any icon at all — check they still share controls')
-      .not.toEqual([])
+    // the toolbar.
+    //
+    // **Named rather than merely counted.** This asserted only that *something* was shared, while the
+    // sentence above it claimed `Play` and `Home` were the whole overlap — so a version where both of
+    // those stopped being shared and some unrelated icon started would have passed under a comment
+    // saying otherwise. Naming them makes a change to the overlap a decision: adding a control both
+    // platforms have should fail here once, and be added here on purpose.
+    const shared = iconsIn(VIEWERS.iOS)
+      .filter((n) => iconsIn(VIEWERS.Android).includes(n))
+      .sort()
+    expect(shared, 'the set of controls both platforms draw the same way changed')
+      .toEqual(['Home', 'Play'])
   })
 })
