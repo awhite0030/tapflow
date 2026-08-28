@@ -178,6 +178,8 @@ describe('QASession — Full reset applies to exactly one pick (#439)', () => {
 
     expect(screen.queryByRole('switch')).not.toBeInTheDocument()
 
+    // This only pins Android's default mount; the armed capability guard is covered by the
+    // mixed-agent case below.
     await user.click(screen.getByText('Pixel 7'))
     expect(viewerMounts).toEqual([{ deviceId: 'dev-a', resetMode: 'app-only' }])
   })
