@@ -19,8 +19,8 @@
   relay now asks the agent to re-read the device, from the same block that already asks for a
   keyframe, and the Android agent answers with an uncorrelated report.
 
-  The relay asks only agents that announce `network-control`, so an agent without the feature — every
-  iOS agent, for now — is never asked and a viewer never has to guess from a silence.
+  The relay asks only agents that announce `network-control`, so an agent without the feature — one
+  predating this release, say — is never asked and a viewer never has to guess from a silence.
 
   Caching it in the relay would have been cheaper and wrong: the relay caches only what it can
   invalidate, and airplane mode changes when someone types `adb` in a terminal.
@@ -29,8 +29,8 @@
   viewer, `network:state` and `network:error` back, and a `NetworkControlCapability` beside
   `DeviceAgent` for the agents that implement it.
 
-  No agent implements it yet and no control renders it — this is the contract, landing before the
-  platforms so each one has something to build against.
+  This is the contract, and it landed before the platforms so each one had something to build
+  against; both of them and the control ship in this same release.
 
   **`network-control` in `capabilities` claims less than the other two entries do.** `clipboard` and
   `full-reset` are settled facts about an agent's own code, but that string is sent once at
@@ -68,7 +68,7 @@
 
 - 04c7090: **Take the device off the network from the browser.** The control that #607 asked for is on screen.
 
-  A button in the simulator toolbar puts an Android emulator into airplane mode and takes it back out, so the offline banner, the failed retry and the stale cached screen can be seen without touching a terminal. It appears only for an agent that says it can do this, which today means Android — iOS follows, and will need no dashboard change when it lands.
+  A button in the simulator toolbar puts an Android emulator into airplane mode and takes it back out, so the offline banner, the failed retry and the stale cached screen can be seen without touching a terminal. It appears only for an agent that says it can do this, which is why the iOS half needed no dashboard change when it landed alongside this one.
 
   It has four positions rather than two, and that is deliberate. A device nobody has heard from yet and one whose report never came are drawn differently from each other and from both on and off — because saying "on the network" about a device nobody has heard from is exactly the mistake this feature exists to catch. Neither is disabled: clicking is what asks the device, so a session with no report has a way out rather than a dead end.
 

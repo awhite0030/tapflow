@@ -51,8 +51,8 @@
   injection, because the injection arms at boot and names its target when an app is launched. A
   control that claimed to work before then would be the false green this feature exists to prevent.
 
-  **This needs a signed system extension on the host, which is not yet distributed** — an agent
-  without it reports `available: false` rather than failing, so nothing else about a session changes.
+  **This needs a signed system extension on the host, which ships with tapflow as of this release**
+  — an agent without it installed reports `available: false` rather than failing, so nothing else about a session changes.
 
 - 964c145: Check the hook's symbols before use, and stop telling a tester to launch an app they already launched
 

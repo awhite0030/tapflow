@@ -33,8 +33,8 @@
   viewer, `network:state` and `network:error` back, and a `NetworkControlCapability` beside
   `DeviceAgent` for the agents that implement it.
 
-  No agent implements it yet and no control renders it — this is the contract, landing before the
-  platforms so each one has something to build against.
+  This is the contract, and it landed before the platforms so each one had something to build
+  against; both of them and the control ship in this same release.
 
   **`network-control` in `capabilities` claims less than the other two entries do.** `clipboard` and
   `full-reset` are settled facts about an agent's own code, but that string is sent once at

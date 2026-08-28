@@ -84,6 +84,23 @@ model: claude-opus-4-8
   - **2FA 계정에서는 이 명령이 `EOTP`로 실패한다** — 브라우저 인증이 필요해 자동화할 수 없다. 사용자에게 명령을 넘긴다.
 - **루트 `CHANGELOG.md`**: changeset 관리 밖(Keep a Changelog 수동) → `[Unreleased]`를 `[X.Y.Z] - YYYY-MM-DD`(오늘 날짜)로 승격하고 Added/Changed/Fixed를 채운다.
   - **하단 compare 링크도 함께 갱신**(놓치기 쉬움): `[Unreleased]`를 `vX.Y.Z...HEAD`로 바꾸고, `[X.Y.Z]: .../compare/v{직전}...vX.Y.Z` 링크를 새로 추가한다. 직전 릴리즈 링크가 빠져 있으면 이번에 함께 메운다.
+- **단계 배송이 남긴 거짓말을 훑는다** — 루트와 **패키지별 CHANGELOG 양쪽**. 여러 PR에 걸쳐 들어온 기능은
+  각 PR 시점에 "아직 화면에 없다"를 `[Unreleased]`와 changeset 본문에 적어 넣는데, 승격하면 그 전부가 **한
+  섹션 안에** 놓여 서로를 반박한다. 그 문장이 참이었다가 거짓이 되는 순간은 승격뿐이라, 여기가 잡을 수 있는
+  유일한 지점이다.
+
+  ```sh
+  # 0.20.0 섹션만 훑는다. 표현은 그때그때 다르니 결과를 눈으로 읽는다.
+  for f in CHANGELOG.md packages/*/CHANGELOG.md; do
+    awk '/^#+ \[?0\.20\.0/{f=1;next} /^#+ \[?0\.19\./{f=0} f' "$f" \
+      | grep -nEi "not yet|yet to|for now|still to come|(iOS|Android) follows|when it lands|nothing (is )?visible|not on screen" \
+      | sed "s|^|$f: |"
+  done
+  ```
+
+  **패키지별 CHANGELOG를 빼먹지 않는다.** v0.20.0 준비 때 루트만 고쳤고, CodeRabbit이 패키지 쪽에서 같은
+  결함을 4건 찾았다. 이어서 훑으니 **6개 패키지에 8곳**이었다 — changeset 하나가 패키지 셋을 지목하면 같은
+  본문이 셋 모두에 복제되기 때문이다. changeset은 이미 소비돼 사라졌으므로, 고칠 수 있는 곳은 생성된 파일뿐이다.
 - **dashboard**: private + `ignore` → 건드리지 않는다.
 
 ## 8. 검증
