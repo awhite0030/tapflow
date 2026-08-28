@@ -23,6 +23,8 @@ function agentCapabilities(text) {
   return new Set(stringLiterals(match[1]))
 }
 
+// This spelling floor only sees direct literal checks: aliases, constants, and template literals are
+// deliberately outside its scope, so it is not a whole-program capability-consumer fence.
 const capabilityCheck = /\b(?:agentCapabilities|(?:\w+\??\.)?capabilities)\??\.includes\(\s*(['"])([^\r\n]*?)\1\s*\)/g
 
 function capabilityChecks(text) {
@@ -44,10 +46,10 @@ function dashboardCapabilityConsumers() {
 describe('dashboard capability consumers', () => {
   it('reports undeclared double-quoted capability checks', () => {
     const declared = agentCapabilities(agentCore)
-    const consumers = capabilityChecks('agentCapabilities.includes("full-erase")')
+    const consumers = capabilityChecks('agentCapabilities.includes("undeclared-capability")')
 
-    expect(consumers).toEqual(['full-erase'])
-    expect(consumers.filter((capability) => !declared.has(capability))).toEqual(['full-erase'])
+    expect(consumers).toEqual(['undeclared-capability'])
+    expect(consumers.filter((capability) => !declared.has(capability))).toEqual(['undeclared-capability'])
   })
 
   it('only checks capabilities AgentCapability declares', () => {
