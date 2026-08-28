@@ -190,7 +190,16 @@ model: claude-opus-4-8
       # `--max-time`, because a stalled request has no limit of its own and the deadline is only
     # checked between rounds — one hung connection and the poll never reaches it again. A timeout
     # is just this round failing for that package; the next round retries it.
-    doc=$(curl -sf --max-time 30 "https://registry.npmjs.org/$(printf '%s' "$name" | sed 's|/|%2f|')") \
+    #
+    # Bounded by what is left rather than a flat 30s: nine stalled packages at 30s each is a
+    # 270-second round, and the deadline cannot govern a round it is only consulted after. When
+    # nothing is left, the package is recorded as unchecked rather than skipped — skipping it
+    # silently would let a round end with an empty pending list and announce success for packages
+    # no request was ever made about.
+    left=$(( deadline - $(date +%s) ))
+    if [ "$left" -le 0 ]; then missing="$missing $name@$ver(unchecked, deadline)"; continue; fi
+    [ "$left" -gt 30 ] && left=30
+    doc=$(curl -sf --max-time "$left" "https://registry.npmjs.org/$(printf '%s' "$name" | sed 's|/|%2f|')") \
         || { missing="$missing $name@$ver(no document)"; continue; }
       got=$(printf '%s' "$doc" | python3 -c 'import json,sys
   d = json.load(sys.stdin); v = sys.argv[1]
