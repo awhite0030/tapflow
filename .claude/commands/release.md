@@ -187,7 +187,10 @@ model: claude-opus-4-8
     missing=""; stale=""
     while read -r name ver; do
       [ -n "$name" ] || continue
-      doc=$(curl -sf "https://registry.npmjs.org/$(printf '%s' "$name" | sed 's|/|%2f|')") \
+      # `--max-time`, because a stalled request has no limit of its own and the deadline is only
+    # checked between rounds — one hung connection and the poll never reaches it again. A timeout
+    # is just this round failing for that package; the next round retries it.
+    doc=$(curl -sf --max-time 30 "https://registry.npmjs.org/$(printf '%s' "$name" | sed 's|/|%2f|')") \
         || { missing="$missing $name@$ver(no document)"; continue; }
       got=$(printf '%s' "$doc" | python3 -c 'import json,sys
   d = json.load(sys.stdin); v = sys.argv[1]
@@ -208,7 +211,10 @@ model: claude-opus-4-8
       exit 1
     fi
     echo "[$(date +%H:%M:%S)] waiting:$missing$stale"
-    sleep 30
+    # Never sleep past the deadline: with a short PUBLISH_TIMEOUT a fixed sleep is what decides
+    # when the check gives up, instead of the deadline doing it.
+    nap=$(( deadline - $(date +%s) )); [ "$nap" -gt 30 ] && nap=30
+    sleep "$nap"
   done
   ```
 
