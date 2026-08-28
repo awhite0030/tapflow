@@ -84,6 +84,46 @@ model: claude-opus-4-8
   - **2FA 계정에서는 이 명령이 `EOTP`로 실패한다** — 브라우저 인증이 필요해 자동화할 수 없다. 사용자에게 명령을 넘긴다.
 - **루트 `CHANGELOG.md`**: changeset 관리 밖(Keep a Changelog 수동) → `[Unreleased]`를 `[X.Y.Z] - YYYY-MM-DD`(오늘 날짜)로 승격하고 Added/Changed/Fixed를 채운다.
   - **하단 compare 링크도 함께 갱신**(놓치기 쉬움): `[Unreleased]`를 `vX.Y.Z...HEAD`로 바꾸고, `[X.Y.Z]: .../compare/v{직전}...vX.Y.Z` 링크를 새로 추가한다. 직전 릴리즈 링크가 빠져 있으면 이번에 함께 메운다.
+- **단계 배송이 남긴 거짓말을 훑는다** — 루트와 **패키지별 CHANGELOG 양쪽**. 여러 PR에 걸쳐 들어온 기능은
+  각 PR 시점에 "아직 화면에 없다"를 `[Unreleased]`와 changeset 본문에 적어 넣는데, 승격하면 그 전부가 **한
+  섹션 안에** 놓여 서로를 반박한다. 그 문장이 참이었다가 거짓이 되는 순간은 승격뿐이라, 여기가 잡을 수 있는
+  유일한 지점이다.
+
+  ```sh
+  set -o pipefail
+  # 버전은 타이핑하지 말고 유도한다 — `changeset version`이 방금 쓴 것과, 그 직전 태그.
+  ver=$(node -p "require('./packages/cli/package.json').version")
+  prev=$(git describe --tags --abbrev=0 --match 'v*' | sed 's/^v//')
+  found=0
+  for f in CHANGELOG.md packages/*/CHANGELOG.md; do
+    sec=$(awk -v v="$ver" -v p="$prev" '$0 ~ "^#+ \\[?" v {s=1; next} $0 ~ "^#+ \\[?" p {s=0} s' "$f") \
+      || { echo "could not read $f"; exit 1; }
+    [ -n "$sec" ] || continue
+    found=$((found + 1))
+    printf '%s\n' "$sec" \
+      | grep -nEi "\byet\b|for now|still to come|(iOS|Android) follows|when it lands|nothing (is )?visible|not on screen|no agent|nothing reads" \
+      | sed "s|^|$f: |"
+  done
+  [ "$found" -ge 5 ] || { echo "only $found changelog(s) carried a $ver section — the sweep read almost nothing"; exit 1; }
+  echo "swept $found changelogs for $ver (previous $prev)"
+  ```
+
+  **위 dist-tag 항목의 세 교훈이 여기에도 그대로 적용된다** — 처음 쓴 판은 셋 다 어겼고, #696에서 지적받았다.
+  버전을 `0.20.0`으로 박아두면 다음 사이클에 그것을 안 고친 순간 모든 awk 범위가 비고, 파일마다 0줄을 뱉으며
+  전부 "clean"으로 읽힌다. 일부러 깨뜨려 재보니 **예전 판은 어긋난 버전에도, 못 읽는 파일에도 아무것도 찍지
+  않고 exit 0**이었다. 그래서 버전은 유도하고, `awk` 실패는 전파하고, 섹션을 실제로 찾은 파일 수를 세어
+  바닥(5개)에 못 미치면 멈춘다. 마지막 줄이 몇 개를 읽었는지 말하는 것도 같은 이유다 — 출력이 없다는 것과
+  아무것도 안 읽었다는 것은 화면에서 똑같이 생겼다.
+
+  **`yet`은 통째로 잡고, 결과를 손으로 거른다.** 처음엔 `not yet`으로 좁게 적었고 그게 정확히 이 게이트가
+  막으려던 실패를 냈다 — 네 문장 중 셋만 잡고, **가장 널리 복제된** "No agent implements it yet"을 놓쳤다.
+  넓힌 `\byet\b`는 v0.20.0에서 11건을 물어오고 그중 진짜는 1건이지만, 그 1건("Nothing reads that file
+  yet")은 좁은 패턴도 CodeRabbit도 못 찾은 다섯 번째였다. 나머지 10건은 "a device nobody has heard from
+  yet"처럼 기기 상태를 말하는 정상 문장이다. **울타리가 아니라 바닥이고**, 비용은 문단 열 개를 읽는 것이다.
+
+  **패키지별 CHANGELOG를 빼먹지 않는다.** v0.20.0 준비 때 루트만 고쳤고, CodeRabbit이 패키지 쪽에서 같은
+  결함을 4건 찾았다. 이어서 훑으니 **6개 패키지에 8곳**이었다 — changeset 하나가 패키지 셋을 지목하면 같은
+  본문이 셋 모두에 복제되기 때문이다. changeset은 이미 소비돼 사라졌으므로, 고칠 수 있는 곳은 생성된 파일뿐이다.
 - **dashboard**: private + `ignore` → 건드리지 않는다.
 
 ## 8. 검증
