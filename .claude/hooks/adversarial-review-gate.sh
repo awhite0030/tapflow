@@ -23,9 +23,15 @@ printf '%s' "$cmd" | grep -qE '(^[[:space:]]*|(;|&&|\||\$\()[[:space:]]*|(^|[[:s
 # record for that unrelated branch, referencing its own HEAD, satisfied the gate.
 #
 # Asked of git rather than tested with `[ -d ]`: a path that exists and is not a
-# work tree has to reach the fallback, not fail open past it.
+# work tree has to reach the fallback, not fail open past it. HEAD is asked for in
+# the same breath, because `--show-toplevel` alone succeeds on a repo with no
+# commits — and the `|| exit 0` further down would then turn the gate off for the
+# checkout the PR actually belongs to, rather than falling back to it. The empty
+# case is checked first: `git -C ""` runs against the hook's own directory, which
+# is nobody's checkout in particular.
 root=$(printf '%s' "$input" | jq -r '.cwd // ""')
-git -C "$root" rev-parse --show-toplevel >/dev/null 2>&1 || root="${CLAUDE_PROJECT_DIR:-.}"
+[ -n "$root" ] && git -C "$root" rev-parse --show-toplevel HEAD >/dev/null 2>&1 \
+  || root="${CLAUDE_PROJECT_DIR:-.}"
 cd "$root" 2>/dev/null || exit 0
 # The record sits at the repo root, not beside wherever the shell happens to sit.
 top=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0

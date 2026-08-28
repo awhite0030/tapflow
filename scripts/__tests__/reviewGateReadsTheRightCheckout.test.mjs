@@ -21,15 +21,18 @@ import { tmpdir } from 'node:os'
 const HOOK = join(import.meta.dirname, '..', '..', '.claude', 'hooks', 'adversarial-review-gate.sh')
 const CREATE = 'gh pr create --base main'
 
-let repo, worktree, elsewhere, sha
+let repo, worktree, elsewhere, unborn, sha
 
 const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim()
 
 /** Run the hook the way Claude Code does: JSON on stdin, exit code and stderr out. */
-function gate(command, { cwd = repo, projectDir = repo } = {}) {
+function gate(command, { cwd = repo, projectDir = repo, spawnIn } = {}) {
   const res = spawnSync('bash', [HOOK], {
     input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd, tool_input: { command } }),
     env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+    // `spawnIn` is the hook process's own directory, which only matters for the empty-cwd case:
+    // `git -C ""` reads it, so the test has to be able to make it a repo that WOULD satisfy the gate.
+    ...(spawnIn ? { cwd: spawnIn } : {}),
     encoding: 'utf8',
   })
   return { code: res.status, stderr: res.stderr ?? '' }
@@ -47,6 +50,8 @@ const unrecord = (dir, branch) => {
 beforeAll(() => {
   repo = mkdtempSync(join(tmpdir(), 'gate-repo-'))
   elsewhere = mkdtempSync(join(tmpdir(), 'gate-notarepo-'))
+  unborn = mkdtempSync(join(tmpdir(), 'gate-unborn-'))
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: unborn })
   git('init', '-b', 'main')
   git('config', 'user.email', 't@example.com')
   git('config', 'user.name', 'T')
@@ -62,7 +67,7 @@ beforeAll(() => {
 })
 
 afterAll(() => {
-  for (const d of [repo, worktree, elsewhere]) rmSync(d, { recursive: true, force: true })
+  for (const d of [repo, worktree, elsewhere, unborn]) rmSync(d, { recursive: true, force: true })
 })
 
 describe('the review gate', () => {
@@ -125,6 +130,31 @@ describe('the review gate', () => {
     expect(gate(CREATE, { cwd: elsewhere }).code, 'a cwd outside any repo disabled the gate').toBe(2)
     record(repo, 'main', sha)
     expect(gate(CREATE, { cwd: elsewhere }).code, 'and it still passes a reviewed branch').toBe(0)
+  })
+
+  it('falls back from a work tree that has no commits yet', () => {
+    // **The other half of the same guard.** `--show-toplevel` succeeds on a repo with no commits, so
+    // asking only that question lets the resolution through, and the `|| exit 0` on the HEAD lookup
+    // below then turns the gate off for the checkout the PR belongs to rather than falling back to
+    // it. A scratch repo a session initialised and never committed to is enough to reach it.
+    unrecord(repo, 'main')
+    expect(gate(CREATE, { cwd: unborn }).code, 'an unborn work tree disabled the gate').toBe(2)
+    record(repo, 'main', sha)
+    expect(gate(CREATE, { cwd: unborn }).code, 'and it still passes a reviewed branch').toBe(0)
+  })
+
+  it('falls back when cwd is empty, rather than reading the hook\'s own directory', () => {
+    // `git -C ""` runs against whatever directory the hook process happens to be launched in, which
+    // is nobody's checkout in particular — so an empty `cwd` has to be caught before the probe, not
+    // by it. The hook is launched inside `repo`, which IS recorded, while the project directory is
+    // the unrecorded worktree: a pass could then only come from judging `repo`, which nothing asked
+    // about.
+    expect(gate(CREATE, { cwd: '', projectDir: worktree, spawnIn: repo }).code,
+      "an empty cwd judged the hook's own directory").toBe(2)
+    // The control, so this cannot pass on a gate that refuses every empty cwd outright: with the
+    // project directory recorded, the fallback still answers yes.
+    expect(gate(CREATE, { cwd: '', projectDir: repo, spawnIn: repo }).code,
+      'the fallback stopped accepting a reviewed branch').toBe(0)
   })
 
   it('falls back when cwd does not exist at all', () => {
