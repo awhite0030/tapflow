@@ -90,13 +90,30 @@ model: claude-opus-4-8
   유일한 지점이다.
 
   ```sh
-  # 0.20.0 섹션만 훑는다. 표현은 그때그때 다르니 결과를 눈으로 읽는다.
+  set -o pipefail
+  # 버전은 타이핑하지 말고 유도한다 — `changeset version`이 방금 쓴 것과, 그 직전 태그.
+  ver=$(node -p "require('./packages/cli/package.json').version")
+  prev=$(git describe --tags --abbrev=0 --match 'v*' | sed 's/^v//')
+  found=0
   for f in CHANGELOG.md packages/*/CHANGELOG.md; do
-    awk '/^#+ \[?0\.20\.0/{f=1;next} /^#+ \[?0\.19\./{f=0} f' "$f" \
-      | grep -nEi "\\byet\\b|for now|still to come|(iOS|Android) follows|when it lands|nothing (is )?visible|not on screen|no agent|nothing reads" \
+    sec=$(awk -v v="$ver" -v p="$prev" '$0 ~ "^#+ \\[?" v {s=1; next} $0 ~ "^#+ \\[?" p {s=0} s' "$f") \
+      || { echo "could not read $f"; exit 1; }
+    [ -n "$sec" ] || continue
+    found=$((found + 1))
+    printf '%s\n' "$sec" \
+      | grep -nEi "\byet\b|for now|still to come|(iOS|Android) follows|when it lands|nothing (is )?visible|not on screen|no agent|nothing reads" \
       | sed "s|^|$f: |"
   done
+  [ "$found" -ge 5 ] || { echo "only $found changelog(s) carried a $ver section — the sweep read almost nothing"; exit 1; }
+  echo "swept $found changelogs for $ver (previous $prev)"
   ```
+
+  **위 dist-tag 항목의 세 교훈이 여기에도 그대로 적용된다** — 처음 쓴 판은 셋 다 어겼고, #696에서 지적받았다.
+  버전을 `0.20.0`으로 박아두면 다음 사이클에 그것을 안 고친 순간 모든 awk 범위가 비고, 파일마다 0줄을 뱉으며
+  전부 "clean"으로 읽힌다. 일부러 깨뜨려 재보니 **예전 판은 어긋난 버전에도, 못 읽는 파일에도 아무것도 찍지
+  않고 exit 0**이었다. 그래서 버전은 유도하고, `awk` 실패는 전파하고, 섹션을 실제로 찾은 파일 수를 세어
+  바닥(5개)에 못 미치면 멈춘다. 마지막 줄이 몇 개를 읽었는지 말하는 것도 같은 이유다 — 출력이 없다는 것과
+  아무것도 안 읽었다는 것은 화면에서 똑같이 생겼다.
 
   **`yet`은 통째로 잡고, 결과를 손으로 거른다.** 처음엔 `not yet`으로 좁게 적었고 그게 정확히 이 게이트가
   막으려던 실패를 냈다 — 네 문장 중 셋만 잡고, **가장 널리 복제된** "No agent implements it yet"을 놓쳤다.
