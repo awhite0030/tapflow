@@ -2220,7 +2220,7 @@ export class RelayServer {
     if (handled) return
 
     // SPA static fallback
-    this.serveStatic(req, res)
+    await this.serveStatic(req, res)
   }
 
   private serveUpload(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -2240,51 +2240,80 @@ export class RelayServer {
       .pipe(res)
   }
 
-  private serveStatic(req: http.IncomingMessage, res: http.ServerResponse): void {
+  private async serveStatic(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const urlPath = (req.url ?? '/').split('?')[0]
     let filePath = path.join(this.publicDir, urlPath === '/' ? '/index.html' : urlPath)
 
+    const statOrNull = async (p: string) => fs.promises.stat(p).catch(() => null)
+
+    let stat = await statOrNull(filePath)
     // Next.js static export: try exact path, then path/index.html (trailingSlash)
-    if (!fs.existsSync(filePath)) {
+    if (!stat || !stat.isFile()) {
       const withIndex = path.join(filePath, 'index.html')
-      if (fs.existsSync(withIndex)) {
+      stat = await statOrNull(withIndex)
+      if (stat && stat.isFile()) {
         filePath = withIndex
       } else {
         // SPA fallback → index.html
         filePath = path.join(this.publicDir, 'index.html')
+        stat = await statOrNull(filePath)
       }
     }
 
-    if (!fs.existsSync(filePath)) {
+    if (!stat || !stat.isFile()) {
       res.writeHead(404); res.end('Not found'); return
     }
 
+    const etag = `W/"${stat.size.toString(16)}-${stat.mtime.getTime().toString(16)}"`
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304)
+      res.end()
+      return
+    }
+
     const contentType = MIME_TYPES[path.extname(filePath)] ?? 'text/html'
-    const headers: Record<string, string> = { 'Content-Type': contentType }
+    const headers: Record<string, string> = {
+      'Content-Type': contentType,
+      'ETag': etag,
+      'Last-Modified': stat.mtime.toUTCString(),
+    }
 
     // Content-hashed build assets never change → cache them forever.
     if (urlPath.startsWith('/assets/')) {
       headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    } else if (filePath.endsWith('index.html')) {
+      headers['Cache-Control'] = 'no-cache'
     }
 
-    // Serve the build-time .br sibling when accepted (precompressed → no runtime CPU on the stream path).
+    // Serve the build-time .br or .gz sibling when accepted (precompressed → no runtime CPU on the stream path).
     const acceptHeader = req.headers['accept-encoding']
     const accept = Array.isArray(acceptHeader) ? acceptHeader.join(',') : acceptHeader ?? ''
-    const brAccepted = accept.split(',').some((token) => {
+    const acceptedTokens = accept.split(',').map((token) => {
       const [name, ...params] = token.trim().split(';')
       const coding = name.trim().toLowerCase()
-      if (coding !== 'br' && coding !== '*') return false
       const qParam = params.map((p) => p.trim()).find((p) => p.startsWith('q='))
       const q = qParam ? Number(qParam.slice(2)) : 1
-      return !Number.isNaN(q) && q > 0
+      return { coding, q: !Number.isNaN(q) ? q : 1 }
     })
+
+    const brAccepted = acceptedTokens.some((t) => (t.coding === 'br' || t.coding === '*') && t.q > 0)
+    const gzAccepted = acceptedTokens.some((t) => (t.coding === 'gzip' || t.coding === '*') && t.q > 0)
+
     let servePath = filePath
-    const hasBr = fs.existsSync(filePath + '.br')
+    const [brStat, gzStat] = await Promise.all([
+      statOrNull(filePath + '.br'),
+      statOrNull(filePath + '.gz')
+    ])
+
     // Vary whenever a compressed variant exists, even if raw is served, so caches don't cross-serve.
-    if (hasBr) headers['Vary'] = 'Accept-Encoding'
-    if (brAccepted && hasBr) {
+    if (brStat || gzStat) headers['Vary'] = 'Accept-Encoding'
+
+    if (brAccepted && brStat && brStat.isFile()) {
       servePath = filePath + '.br'
       headers['Content-Encoding'] = 'br'
+    } else if (gzAccepted && gzStat && gzStat.isFile()) {
+      servePath = filePath + '.gz'
+      headers['Content-Encoding'] = 'gzip'
     }
 
     res.writeHead(200, headers)

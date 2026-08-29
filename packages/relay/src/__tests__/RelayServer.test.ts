@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
+import http from 'http'
 import crypto from 'crypto'
 import fs from 'fs'
 import net from 'net'
@@ -1529,6 +1530,76 @@ describe('RelayServer', () => {
       expect(s.purgeOldResourcesTimer).toBeNull()
       expect(s.purgeBuildsTimer).toBeNull()
       expect(s.flushResourcesTimer).toBeNull()
+    })
+  })
+
+  describe('serveStatic', () => {
+    const publicDir = path.join(__dirname, '../../public')
+    const indexPath = path.join(publicDir, 'index.html')
+    const assetPath = path.join(publicDir, 'assets/test.js')
+    const brPath = assetPath + '.br'
+    const gzPath = assetPath + '.gz'
+
+    beforeAll(() => {
+      fs.mkdirSync(path.dirname(indexPath), { recursive: true })
+      fs.mkdirSync(path.dirname(assetPath), { recursive: true })
+      fs.writeFileSync(indexPath, '<html></html>')
+      fs.writeFileSync(assetPath, 'console.log("raw")')
+      fs.writeFileSync(brPath, 'console.log("br")')
+      fs.writeFileSync(gzPath, 'console.log("gz")')
+    })
+
+    afterAll(() => {
+      fs.rmSync(publicDir, { recursive: true, force: true })
+    })
+
+    const req = (path: string, headers: Record<string, string> = {}) => new Promise<{ statusCode: number, headers: Record<string, string | string[] | undefined>, body: string }>((resolve, reject) => {
+      const req = http.request({ port, path, headers }, (res) => {
+        let body = ''
+        res.on('data', d => body += d)
+        res.on('end', () => resolve({ statusCode: res.statusCode!, headers: res.headers, body }))
+      })
+      req.on('error', reject)
+      req.end()
+    })
+
+    it('sets ETag, Last-Modified, and Cache-Control on index.html', async () => {
+      const res = await req('/')
+      expect(res.statusCode).toBe(200)
+      expect(res.headers['etag'] as string).toMatch(/^W\/"[0-9a-f]+-[0-9a-f]+"$/)
+      expect(res.headers['last-modified']).toBeDefined()
+      expect(res.headers['cache-control']).toBe('no-cache')
+
+      const res2 = await req('/', { 'if-none-match': res.headers['etag'] as string })
+      expect(res2.statusCode).toBe(304)
+      expect(res2.body).toBe('')
+    })
+
+    it('sets Cache-Control immutable on /assets', async () => {
+      const res = await req('/assets/test.js')
+      expect(res.statusCode).toBe(200)
+      expect(res.headers['cache-control']).toBe('public, max-age=31536000, immutable')
+    })
+
+    it('serves raw when no Accept-Encoding', async () => {
+      const res = await req('/assets/test.js')
+      expect(res.statusCode).toBe(200)
+      expect(res.headers['content-encoding']).toBeUndefined()
+      expect(res.body).toBe('console.log("raw")')
+    })
+
+    it('serves br when br is accepted', async () => {
+      const res = await req('/assets/test.js', { 'accept-encoding': 'gzip, deflate, br' })
+      expect(res.statusCode).toBe(200)
+      expect(res.headers['content-encoding']).toBe('br')
+      expect(res.body).toBe('console.log("br")')
+    })
+
+    it('serves gzip when gzip is accepted and br is not', async () => {
+      const res = await req('/assets/test.js', { 'accept-encoding': 'gzip, deflate' })
+      expect(res.statusCode).toBe(200)
+      expect(res.headers['content-encoding']).toBe('gzip')
+      expect(res.body).toBe('console.log("gz")')
     })
   })
 })
