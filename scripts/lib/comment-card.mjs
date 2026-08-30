@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import { ghInvocations, tokenize } from './gh-command.mjs'
 
 /**
@@ -13,13 +14,49 @@ import { ghInvocations, tokenize } from './gh-command.mjs'
  * adjectives. What it cannot do is judge whether a paragraph belongs; that stays a decision.
  */
 
-/** Every `gh` call that posts prose into a conversation. `create` is not one — a PR body is a
- *  different genre with its own template, and the card is about comments. */
+/**
+ * Every `gh` call that posts prose into a conversation.
+ *
+ * `create` is not one — a PR body is a different genre with its own template, and the card is about
+ * comments. **`close` and `reopen` are**, which review caught: all four of
+ * `gh {pr,issue} {close,reopen}` take `-c/--comment` and leave one, verified against the binary.
+ * They only count when that flag is present, since closing something silently publishes nothing.
+ */
 function commentInvocations(cmd) {
-  return [
+  const direct = [
     ...ghInvocations(cmd, 'pr', ['comment', 'review']),
     ...ghInvocations(cmd, 'issue', ['comment']),
   ]
+  const withComment = [
+    ...ghInvocations(cmd, 'pr', ['close', 'reopen']),
+    ...ghInvocations(cmd, 'issue', ['close', 'reopen']),
+  ].filter((words) => words.some((w, i) => (w === '-c' || w === '--comment') ? words[i + 1] !== undefined
+    : /^(-c|--comment)=/.test(w)))
+  return [...direct, ...withComment]
+}
+
+/** `gh api` flags that consume the next token, so it is not the endpoint. */
+const API_VALUE_FLAGS = new Set([
+  '--method', '-X', '--field', '-f', '--raw-field', '-F', '--input', '--header', '-H',
+  '--jq', '-q', '--template', '-t', '--hostname', '--preview', '-p', '--cache',
+])
+
+/**
+ * The positional endpoint of a `gh api` call — the first word that is neither a flag nor a flag's
+ * value.
+ *
+ * **Scanning every token for a comments-shaped path picked field values.** A quoted field stays one
+ * token, so `gh api repos/o/r/issues -f 'body=See /comments/123'` looked like a call to a comments
+ * endpoint and was blocked; it creates an issue. The endpoint is a position, so it is read as one.
+ */
+function apiEndpoint(words) {
+  for (let i = 2; i < words.length; i++) {
+    const w = words[i]
+    if (API_VALUE_FLAGS.has(w)) { i++; continue }
+    if (w.startsWith('-')) continue
+    return w
+  }
+  return null
 }
 
 /** The value of a `gh api` flag, in both spellings: `--method GET` and `--method=GET`. */
@@ -52,8 +89,10 @@ function apiFlag(words, ...names) {
 function apiCommentInvocations(cmd) {
   const found = []
   for (const words of ghInvocations(cmd, 'api', null)) {
-    const path = words.find((w) => /\/(comments|replies)(\/|$|\?)/.test(w))
-    if (!path) continue
+    // `reviews` is here because a review created with a body publishes prose, which review caught:
+    // `POST /repos/{o}/{r}/pulls/{n}/reviews` is the API form of `gh pr review --body`.
+    const endpoint = apiEndpoint(words)
+    if (!endpoint || !/\/(comments|replies|reviews)(\/|$|\?)/.test(endpoint)) continue
     const method = (apiFlag(words, '--method', '-X') ?? '').toUpperCase()
     if (method === 'GET' || method === 'HEAD') continue
     const hasInput = words.some((w) => w === '--input' || w.startsWith('--input='))
@@ -69,6 +108,29 @@ function apiCommentInvocations(cmd) {
 
 export function postsAComment(cmd) {
   return commentInvocations(cmd).length + apiCommentInvocations(cmd).length > 0
+}
+
+/**
+ * The same file, allowing for symlinks.
+ *
+ * `path.resolve` normalises `..` and makes a path absolute; it does not follow links, and on macOS
+ * `/var` is one — so a checkout reached through a symlinked parent produced two spellings of the
+ * same card and the comparison said no. Falls back to the resolved strings when a path no longer
+ * exists, which a transcript's record often does.
+ */
+function samePath(a, b) {
+  if (path.resolve(a) === path.resolve(b)) return true
+  try { return fs.realpathSync(a) === fs.realpathSync(b) } catch { return false }
+}
+
+/** Does this tool input name the card — by the path the gate resolved, or by the repo-relative form
+ *  a shell command would use? */
+function namesCard(input, cardPath, relative) {
+  if (input == null) return false
+  const fp = input.file_path
+  if (typeof fp === 'string') return samePath(fp, cardPath)
+  const text = JSON.stringify(input)
+  return text.includes(cardPath) || text.includes(relative)
 }
 
 /**
@@ -88,7 +150,9 @@ export function postsAComment(cmd) {
  * paid for, where a matcher assuming key order saw 6 of 34. Only lines that mention the card are
  * parsed, so a 35 MB transcript costs a substring scan and a handful of `JSON.parse` calls.
  */
-export function cardWasRead(transcriptPath, cardName = 'COMMENT-CARD.md') {
+export function cardWasRead(transcriptPath, cardPath) {
+  const cardName = path.basename(cardPath)
+  const relative = path.join(path.basename(path.dirname(cardPath)), cardName)
   let text
   try { text = fs.readFileSync(transcriptPath, 'utf8') } catch { return false }
   if (!text.includes(cardName)) return false
@@ -101,14 +165,15 @@ export function cardWasRead(transcriptPath, cardName = 'COMMENT-CARD.md') {
     // direct way the card's content reaches the context, and reading only `message.content` blocked
     // the person who had just supplied it.
     const att = rec?.attachment
-    if (att && (String(att.filename ?? '').endsWith(cardName)
-      || String(att.content?.file?.filePath ?? '').endsWith(cardName))) return true
+    for (const p of [att?.filename, att?.content?.file?.filePath]) {
+      if (typeof p === 'string' && samePath(p, cardPath)) return true
+    }
     for (const c of rec?.message?.content ?? []) {
       // The `input` test is what excludes a text block naming the card — today's non-tool blocks
       // carry no `input` at all, so the type guard cannot currently change an answer. It stays for
       // block shapes that do not exist yet, and is named here rather than asserted, because a
       // fixture invented to make it fail would be testing the fixture.
-      if (c?.type === 'tool_use' && JSON.stringify(c.input ?? null).includes(cardName)) return true
+      if (c?.type === 'tool_use' && namesCard(c.input, cardPath, relative)) return true
     }
   }
   return false
@@ -125,7 +190,7 @@ export function cardWasRead(transcriptPath, cardName = 'COMMENT-CARD.md') {
 export function judge(cmd, { cardPath, transcriptPath, exists = (p) => fs.existsSync(p) } = {}) {
   if (!postsAComment(cmd)) return { blocked: false }
   if (!cardPath || !exists(cardPath)) return { blocked: false }
-  if (cardWasRead(transcriptPath ?? '')) return { blocked: false }
+  if (cardWasRead(transcriptPath ?? '', path.resolve(cardPath))) return { blocked: false }
   return { blocked: true, reason: 'card-not-read' }
 }
 

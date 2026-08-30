@@ -22,7 +22,11 @@ const HOOK = path.join(REPO, '.claude/hooks/comment-card-gate.sh')
 
 /** A transcript line carrying one tool call, in the shape the runtime writes. */
 const record = (name, input) => JSON.stringify({ message: { content: [{ type: 'tool_use', name, input }] } })
-const READ_CARD = record('Read', { file_path: '/repo/.work/COMMENT-CARD.md' })
+const CARD = path.resolve('/repo/.work/COMMENT-CARD.md')
+const READ_CARD = record('Read', { file_path: CARD })
+/** `cardWasRead` against the card this repo would resolve, which is the whole point of the second
+ *  argument: a filename match accepted `/tmp/COMMENT-CARD.md` and `NOT-COMMENT-CARD.md` alike. */
+const sawCard = (tx) => cardWasRead(tx, CARD)
 
 describe('which commands post a comment', () => {
   const POSTS = {
@@ -85,6 +89,26 @@ describe('which commands post a comment', () => {
     ]) expect(postsAComment(c), c).toBe(true)
   })
 
+  it('sees a closing or reopening comment', () => {
+    // All four of `gh {pr,issue} {close,reopen}` take `-c/--comment` and leave one, verified against
+    // the binary. Only with the flag: closing something silently publishes nothing.
+    for (const c of ['gh pr close 1 --comment "done"', 'gh issue close 1 -c "done"', 'gh pr reopen 1 --comment=x']) {
+      expect(postsAComment(c), c).toBe(true)
+    }
+    expect(postsAComment('gh pr close 1 --delete-branch')).toBe(false)
+  })
+
+  it('sees a review created through the API', () => {
+    // `POST /repos/{o}/{r}/pulls/{n}/reviews` with a body is the API form of `gh pr review --body`.
+    expect(postsAComment('gh api --method POST repos/o/r/pulls/1/reviews -f body=x')).toBe(true)
+  })
+
+  it('reads the endpoint by position, not by scanning every token', () => {
+    // A quoted field stays one token, so scanning for a comments-shaped path picked the *value* and
+    // blocked a command that creates an issue.
+    expect(postsAComment("gh api repos/o/r/issues -f 'body=See /comments/123'")).toBe(false)
+  })
+
   it('sees --input with no method, which gh sends as a POST', () => {
     // The form where `--input` is the only signal there is: supplying a body makes `POST` the
     // default, so nothing on the line says so. With an explicit `--method POST` the method carries
@@ -109,17 +133,24 @@ describe('whether the card was read this session', () => {
   }
 
   it('is true after a Read of it', () => {
-    expect(withTranscript([READ_CARD], cardWasRead)).toBe(true)
+    expect(withTranscript([READ_CARD], sawCard)).toBe(true)
   })
 
   it('is false when the name only appears in prose', () => {
     // A gate satisfied by its own block message would never fire twice.
     const mention = JSON.stringify({ message: { content: [{ type: 'text', text: 'read .work/COMMENT-CARD.md first' }] } })
-    expect(withTranscript([mention], cardWasRead)).toBe(false)
+    expect(withTranscript([mention], sawCard)).toBe(false)
+  })
+
+  it('is false for a card that is not this repository\'s', () => {
+    // A filename match took any of these. The gate resolves a path; the check now compares it.
+    for (const fp of ['/tmp/COMMENT-CARD.md', '/other/repo/.work/COMMENT-CARD.md', '/repo/.work/NOT-COMMENT-CARD.md']) {
+      expect(withTranscript([record('Read', { file_path: fp })], sawCard), fp).toBe(false)
+    }
   })
 
   it('is false when another file was read', () => {
-    expect(withTranscript([record('Read', { file_path: '/repo/AGENTS.md' })], cardWasRead)).toBe(false)
+    expect(withTranscript([record('Read', { file_path: '/repo/AGENTS.md' })], sawCard)).toBe(false)
   })
 
   it('counts an @path attachment, which is not a tool call at all', () => {
@@ -128,35 +159,31 @@ describe('whether the card was read this session', () => {
     // supplied the card.
     const attached = JSON.stringify({
       type: 'user',
-      attachment: {
-        type: 'file',
-        filename: '/repo/.work/COMMENT-CARD.md',
-        content: { type: 'text', file: { filePath: '/repo/.work/COMMENT-CARD.md', content: '# card' } },
-      },
+      attachment: { type: 'file', filename: CARD, content: { type: 'text', file: { filePath: CARD, content: '# card' } } },
       message: null,
     })
-    expect(withTranscript([attached], cardWasRead)).toBe(true)
+    expect(withTranscript([attached], sawCard)).toBe(true)
   })
 
   it('does not count an attachment of some other file', () => {
     const other = JSON.stringify({ type: 'user', attachment: { type: 'file', filename: '/repo/AGENTS.md' }, message: null })
-    expect(withTranscript([other], cardWasRead)).toBe(false)
+    expect(withTranscript([other], sawCard)).toBe(false)
   })
 
   it('counts the other ways the content reaches the context', () => {
     // Narrowing to `Read` excluded all three of these for no reason: authoring the card, editing it,
     // and reading it through the shell all put it in front of the writer.
-    expect(withTranscript([record('Write', { file_path: '/repo/.work/COMMENT-CARD.md', content: '#' })], cardWasRead)).toBe(true)
-    expect(withTranscript([record('Edit', { replace_all: false, file_path: '/repo/.work/COMMENT-CARD.md' })], cardWasRead)).toBe(true)
-    expect(withTranscript([record('Bash', { command: 'cat .work/COMMENT-CARD.md' })], cardWasRead)).toBe(true)
+    expect(withTranscript([record('Write', { file_path: CARD, content: '#' })], sawCard)).toBe(true)
+    expect(withTranscript([record('Edit', { replace_all: false, file_path: CARD })], sawCard)).toBe(true)
+    expect(withTranscript([record('Bash', { command: 'cat .work/COMMENT-CARD.md' })], sawCard)).toBe(true)
   })
 
   it('survives an unparseable line', () => {
-    expect(withTranscript(['not json at all', READ_CARD], cardWasRead)).toBe(true)
+    expect(withTranscript(['not json at all', READ_CARD], sawCard)).toBe(true)
   })
 
   it('is false when the transcript cannot be read', () => {
-    expect(cardWasRead('/nowhere/at/all.jsonl')).toBe(false)
+    expect(cardWasRead('/nowhere/at/all.jsonl', CARD)).toBe(false)
   })
 })
 
@@ -189,6 +216,8 @@ describe('the hook itself, spawned', () => {
   const readSource = (f) => readFileSync(path.join(REPO, 'scripts', f), 'utf8')
 
   /** A throwaway checkout carrying a card, so the hook resolves a root the way it will in use. */
+  /** `transcript` may be a function of the throwaway repo's path, since the card's resolved location
+   *  is now what the check compares against. */
   const inRepo = (cmd, { card = true, transcript = [], from = '.' } = {}) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'card-repo-'))
     spawnSync('git', ['init', '-q', dir])
@@ -201,7 +230,8 @@ describe('the hook itself, spawned', () => {
       writeFileSync(path.join(dir, 'scripts', f), readSource(f))
     }
     const tx = path.join(dir, 't.jsonl')
-    writeFileSync(tx, transcript.join('\n') + '\n')
+    const lines = typeof transcript === 'function' ? transcript(dir) : transcript
+    writeFileSync(tx, lines.join('\n') + '\n')
     mkdirSync(path.join(dir, from), { recursive: true })
     try {
       return spawnSync('bash', [HOOK], {
@@ -214,6 +244,12 @@ describe('the hook itself, spawned', () => {
     }
   }
 
+  it('does not accept a read of some other repository\'s card', () => {
+    // The fixture that used to pass this suite: a `Read` of `/repo/.work/COMMENT-CARD.md` while the
+    // card actually lives in the throwaway checkout. Matching by filename accepted it.
+    expect(inRepo('gh pr comment 701 --body "x"', { transcript: [READ_CARD] }).status).toBe(2)
+  })
+
   it('blocks a comment when the card has not been read', () => {
     const r = inRepo('gh pr comment 701 --body "x"')
     expect(r.status).toBe(2)
@@ -221,7 +257,8 @@ describe('the hook itself, spawned', () => {
   })
 
   it('allows it once the card has been read', () => {
-    expect(inRepo('gh pr comment 701 --body "x"', { transcript: [READ_CARD] }).status).toBe(0)
+    const readItThere = (dir) => [record('Read', { file_path: path.join(dir, '.work/COMMENT-CARD.md') })]
+    expect(inRepo('gh pr comment 701 --body "x"', { transcript: readItThere }).status).toBe(0)
   })
 
   it('allows it in a checkout with no card', () => {
