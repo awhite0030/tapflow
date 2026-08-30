@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+
+- relay: add AWS Route53 DNS provider for Let's Encrypt certificates (#284). Uses hand-rolled AWS SigV4 authentication to remain dependency-free. Configured via `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in your environment.
+
 
 ### Fixed
 
