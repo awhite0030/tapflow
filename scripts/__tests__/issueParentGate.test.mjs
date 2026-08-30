@@ -9,17 +9,21 @@
 // through a prefilter that never calls it is not a gate.
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { judge, issueCreateInvocations, hasParent, hasStandalone } from '../lib/issue-parent.mjs'
-import { tokenize, bodyFileArg, heredocs } from '../lib/gh-command.mjs'
+import { tokenize, bodyFileArg, bodyArg, titleArg, heredocs, readBodyFile } from '../lib/gh-command.mjs'
 
 const REPO = path.resolve(import.meta.dirname, '../..')
 const PARENT = 'Parent: #607'
 
-/** `judge` with no filesystem: every body is supplied inline. */
+/** `judge` with no filesystem: every body is supplied inline, keyed as the command writes it. The
+ *  reader is handed a resolved path, so the keys are resolved to match. */
 const verdict = (cmd, files = {}) => judge(cmd, (p) => {
-  if (!(p in files)) throw new Error('ENOENT')
-  return files[p]
+  const key = Object.keys(files).find((k) => path.resolve(k) === p)
+  if (key === undefined) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e }
+  return files[key]
 })
 
 describe('which commands are issue creations', () => {
@@ -302,5 +306,178 @@ describe('the hook reports the reason it decided on', () => {
     expect(r.status).toBe(2)
     expect(r.stderr).toMatch(/names no parent/i)
     expect(r.stderr).toMatch(/Parent: #607/)
+  })
+})
+
+// ── Added after the adversarial review of this branch ───────────────────────────────────────────
+
+describe('an operator does not need a space to end a command', () => {
+  // **Every one of these is valid shell and hid the invocation completely.** `tokenize` split on
+  // whitespace alone, so an operator glued to `gh` stayed inside that word and command position was
+  // never reached. `ASSIGNMENT` made the commonest form worse rather than better: `URL=$(gh` is a
+  // prefix match, so the mechanism added to see through `GH_REPO=o/r gh issue create` swallowed the
+  // capture form whole. Predates this branch; found by the review of it.
+  const GLUED = {
+    'a command substitution': `URL=$(${CREATE} --title t --body "a bug")`,
+    'an unspaced &&': `true&&${CREATE} --title t --body "a bug"`,
+    'an unspaced ;': `cd /tmp;${CREATE} --title t --body "a bug"`,
+    'an unspaced subshell': `(${CREATE} --title t --body "a bug")`,
+    'an unspaced pipe': `echo x|${CREATE} --body "a bug"`,
+  }
+  for (const [name, cmd] of Object.entries(GLUED)) {
+    it(`sees one behind ${name}`, () => {
+      expect(issueCreateInvocations(cmd)).toHaveLength(1)
+      expect(verdict(cmd).blocked, 'and judges it').toBe(true)
+    })
+  }
+
+  it('sees one behind xargs, which keeps the next word in command position', () => {
+    expect(issueCreateInvocations(`echo t | xargs ${CREATE} --body "a bug"`)).toHaveLength(1)
+  })
+
+  it('still ends the slice at the operator that follows, spaced or not', () => {
+    // The borrowed-flags case, now reachable without spaces: `echo`'s --body must not count as this
+    // invocation's.
+    expect(verdict(`${CREATE} --web&&echo --body "${PARENT}"`).blocked).toBe(true)
+  })
+
+  it('does not treat an operator inside a quoted argument as one', () => {
+    expect(verdict(`${CREATE} --body "${PARENT}" --title "a && b | c;"`).blocked).toBe(false)
+  })
+})
+
+describe('a heredoc opener ends its line', () => {
+  it('does not strip on a `<<` written inside an argument', () => {
+    // Introduced by the payload strip and caught by review. `<<EOF` matched anywhere on a line, so a
+    // command that merely *mentions* one began deleting lines until a later heredoc supplied the
+    // terminator — and took a real invocation with it. Requiring the opener to end its line
+    // separates the two, and the conservative direction of that rule is to strip nothing, which
+    // leaves the text scanned rather than skipped.
+    const cmd = [
+      'grep -n "<<EOF" scripts/lib/gh-command.mjs',
+      `${CREATE} --title x --body "a bug"`,
+      "cat > /tmp/n.md <<'EOF'",
+      'text',
+      'EOF',
+    ].join('\n')
+    expect(issueCreateInvocations(cmd)).toHaveLength(1)
+    expect(verdict(cmd).blocked).toBe(true)
+  })
+
+  it('still strips a real one, quoted delimiter and all', () => {
+    expect(verdict(`${CREATE} --body-file - <<'EOF'\n${PARENT}\nEOF`).blocked).toBe(false)
+  })
+
+  it('reads CRLF line endings the same way it reads LF', () => {
+    // `heredocs` split on /\r?\n/ while the strip split on '\n', so under CRLF the terminator line
+    // was `EOF\r`, never matched, and the payload was kept — bringing back the exact prose
+    // regression this branch exists to fix, on the line endings a Windows contributor produces.
+    // The terminator must not be the last line: joining three lines leaves the final `EOF` without
+    // its `\r`, which matches the delimiter by accident and strips the payload for the wrong reason.
+    // That shape passed under the mutation, which is how this probe was found to be measuring nothing.
+    const doc = [`cat > plan.md <<'EOF'`, `A) cd /elsewhere && ${CREATE} --body-file rel.md`, 'EOF', 'echo done']
+    expect(issueCreateInvocations(doc.join('\r\n')), 'CRLF').toEqual([])
+    expect(issueCreateInvocations(doc.join('\n')), 'LF').toEqual([])
+  })
+})
+
+describe('a short flag may carry its value', () => {
+  // pflag accepts a shorthand's value attached to it, verified against the binary: `gh issue list
+  // -Lx` answers `invalid argument "x" for "-L, --limit" flag`. The readers matched only an exact
+  // `-F`/`-b`/`-t` token or `--long=`, so a correctly-filed issue was refused for a body it does
+  // have — and the language gate, which shares these readers, saw no text to check at all.
+  it('reads a value attached to the shorthand', () => {
+    expect(bodyFileArg(tokenize(`${CREATE} -F/tmp/body.md`))).toBe('/tmp/body.md')
+    expect(bodyFileArg(tokenize(`${CREATE} -F-`)), 'stdin').toBe('-')
+    expect(bodyArg(tokenize(`${CREATE} -b"${PARENT}"`))).toBe(PARENT)
+    expect(titleArg(tokenize(`${CREATE} -t"a title"`))).toBe('a title')
+  })
+
+  it('does not read a long flag as a shorthand carrying a value', () => {
+    // `'--title'.startsWith('-t')`, so the prefix rule has to refuse a double dash or it answers
+    // `itle` for every long spelling the gate was already reading correctly.
+    expect(titleArg(tokenize(`${CREATE} --title x`))).toBe('x')
+    expect(bodyArg(tokenize(`${CREATE} --body y`))).toBe('y')
+    expect(bodyFileArg(tokenize(`${CREATE} --body-file z`))).toBe('z')
+    expect(bodyFileArg(tokenize(`${CREATE} --body-file=z`))).toBe('z')
+  })
+
+  it('allows an issue whose body arrives that way, and blocks one that does not', () => {
+    expect(verdict(`${CREATE} -b"${PARENT}"`).blocked).toBe(false)
+    expect(verdict(`${CREATE} -b"a bug"`).reason).toBe('no-parent')
+  })
+})
+
+describe('an unreadable body file is told why', () => {
+  const run = (cmd, cwd = REPO) => spawnSync('bash', [path.join(REPO, '.claude/hooks/issue-parent-gate.sh')], {
+    input: JSON.stringify({ tool_input: { command: cmd }, cwd }),
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
+  })
+
+  // **One message for every errno reproduced this fix's own defect inside it.** A typo in an
+  // absolute path, a directory and a permissions failure were all answered with "pass an absolute
+  // path", which the author already had.
+  it('separates a missing absolute path from a relative one', () => {
+    expect(run(`${CREATE} --title T --body-file /nowhere/at/all.md`).stderr).toMatch(/No file is there/)
+    expect(run(`${CREATE} --title T --body-file rel.md`).stderr).toMatch(/relative to the directory/)
+  })
+
+  it('names a directory and a permissions failure as themselves', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'gate-'))
+    expect(run(`${CREATE} --title T --body-file ${dir}`).stderr).toMatch(/is a directory/)
+
+    const locked = path.join(dir, 'locked.md')
+    writeFileSync(locked, 'x')
+    chmodSync(locked, 0o000)
+    expect(run(`${CREATE} --title T --body-file ${locked}`).stderr).toMatch(/permissions/)
+    chmodSync(locked, 0o644)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('reads a relative body file from the checkout the session is in', () => {
+    // The hook runs from the repository root while `gh` runs where the session is, so resolving
+    // against the payload's cwd is what lets a relative path be read at all rather than reported.
+    const dir = mkdtempSync(path.join(tmpdir(), 'gate-'))
+    writeFileSync(path.join(dir, 'body.md'), `${PARENT}\n`)
+    expect(run(`${CREATE} --title T --body-file body.md`, dir).status).toBe(0)
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('a body file that is not a regular file', () => {
+  // **A gate that hangs is worse than one that blocks.** `readFileSync` on a FIFO with no writer
+  // blocks until the hook times out, and the language gate reaching body files put that on the
+  // `gh pr create` path for the first time. `statSync` does not open the file, so it answers at once.
+  it('answers instead of blocking on a FIFO', () => {
+    // **Read in a child process, on purpose.** `readFileSync` is synchronous, so without the guard
+    // it blocks the worker thread and vitest's own `testTimeout` cannot interrupt it — the suite
+    // hangs rather than failing, which turns a regression into a stopped CI job instead of a red
+    // one. The child carries the timeout, so a missing guard shows up as `killed`.
+    const dir = mkdtempSync(path.join(tmpdir(), 'gate-'))
+    const fifo = path.join(dir, 'body.md')
+    spawnSync('mkfifo', [fifo])
+    try {
+      const r = spawnSync(process.execPath, [
+        '--input-type=module',
+        '-e',
+        `import { readBodyFile } from ${JSON.stringify(path.join(REPO, 'scripts/lib/gh-command.mjs'))}
+         try { readBodyFile(${JSON.stringify(fifo)}); console.log('read') }
+         catch (e) { console.log('threw:' + e.code) }`,
+      ], { encoding: 'utf8', timeout: 4000 })
+      expect(r.signal, 'the reader blocked on a FIFO instead of answering').toBeNull()
+      expect(r.stdout.trim()).toBe('threw:ENOTFILE')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 15000)
+
+  it('gives a directory its own errno so the message can name it', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'gate-'))
+    try {
+      expect(() => readBodyFile(dir)).toThrow(expect.objectContaining({ code: 'EISDIR' }))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

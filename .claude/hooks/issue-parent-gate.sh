@@ -19,13 +19,29 @@
 # a `--title` could satisfy a rule about bodies. The decision is in `scripts/issue-parent-gate.mjs`,
 # where it is tested. Node is spawned only for a command that mentions both words, which is rare.
 
+# The prefilter reads the command rather than the whole payload: the JSON carries `cwd`, so a repo
+# path could supply words the command never had. And the root comes from the session's own checkout,
+# the way `adversarial-review-gate.sh` resolves it (#699) -- `CLAUDE_PROJECT_DIR` alone turns the
+# gate off for a session in a worktree, which finds no `scripts/` there. Falling back to the raw
+# input, and to the project dir, keeps the gate on rather than silently off.
 input=$(cat)
-cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
 
-case "$input" in
+cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)
+[ -n "$cmd" ] || cmd=$input
+
+case "$cmd" in
   *gh*issue*) ;;
   *) exit 0 ;;
 esac
+
+root=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null)
+if [ -n "$root" ] && top=$(git -C "$root" rev-parse --show-toplevel 2>/dev/null); then
+  root=$top
+else
+  root="${CLAUDE_PROJECT_DIR:-.}"
+fi
+cd "$root" 2>/dev/null || exit 0
+
 [ -f scripts/issue-parent-gate.mjs ] || exit 0
 
 printf '%s' "$input" | node scripts/issue-parent-gate.mjs

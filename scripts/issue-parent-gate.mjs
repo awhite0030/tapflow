@@ -35,13 +35,31 @@ or found several heredocs and will not guess which one is the body.
 
 Nothing has been decided about the Parent: line — the body was never read.`
 
-/** Names the path that was opened, because the reason it was not found is never in the command. */
-const unreadableBodyFile = (detail) => `Blocked: ${detail}
+/**
+ * Names the path that was opened and why it could not be read.
+ *
+ * **The cause is not always the relative path**, and saying so anyway reproduces inside this fix the
+ * exact defect it exists to end: a typo in an absolute path, a directory, and a permissions failure
+ * were all answered with "pass an absolute path", which the author already had.
+ */
+const CAUSE = {
+  EISDIR: 'That path is a directory.',
+  EACCES: 'That path is not readable — check its permissions.',
+  EPERM: 'That path is not readable — check its permissions.',
+  ELOOP: 'That path is a symlink loop.',
+}
 
-The gate runs from the repository root, not from the directory your command runs in, so a relative
---body-file resolves against the repo. Pass an absolute path, or --body, and re-run.
+function unreadableBodyFile(v) {
+  const why = CAUSE[v.code]
+    ?? (v.file !== v.resolved
+      ? `It was written relative to the directory your command runs in, and resolved as above.`
+      : `No file is there.`)
+  return `Blocked: ${v.detail}
+
+${why}
 
 Nothing has been decided about the Parent: line — the body was never read.`
+}
 
 const MESSAGES = {
   'no-parent': () => NO_PARENT,
@@ -57,15 +75,22 @@ for await (const chunk of process.stdin) raw += chunk
 // cooperative-but-forgetful agent, not an adversary, and a gate that dies noisily on a malformed
 // payload would block every Bash call in the session.
 let cmd
-try { cmd = JSON.parse(raw)?.tool_input?.command ?? '' } catch { process.exit(0) }
+let cwd
+try {
+  const payload = JSON.parse(raw)
+  cmd = payload?.tool_input?.command ?? ''
+  // The directory the command would run in. The hook itself runs from the repository root, so
+  // without this a relative --body-file is looked for in the wrong tree and reported as missing.
+  cwd = typeof payload?.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd()
+} catch { process.exit(0) }
 if (typeof cmd !== 'string' || !cmd) process.exit(0)
 
 let verdict
-try { verdict = judge(cmd) } catch { process.exit(0) }
+try { verdict = judge(cmd, undefined, cwd) } catch { process.exit(0) }
 if (!verdict.blocked) process.exit(0)
 
 // An unrecognised reason falls back to the parent rule rather than to silence: a new reason added
 // without a message here should still block, since blocking is what the verdict said.
-const message = (MESSAGES[verdict.reason] ?? MESSAGES['no-parent'])(verdict.detail)
+const message = (MESSAGES[verdict.reason] ?? MESSAGES['no-parent'])(verdict)
 process.stderr.write(`${message}\n`)
 process.exit(2)

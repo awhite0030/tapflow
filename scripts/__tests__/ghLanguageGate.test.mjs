@@ -11,7 +11,8 @@
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
-import { judge, authoringInvocations } from '../lib/gh-language.mjs'
+import { readFileSync } from 'node:fs'
+import { judge, authoringInvocations, koreanLine } from '../lib/gh-language.mjs'
 
 const REPO = path.resolve(import.meta.dirname, '../..')
 const KO = '한글 본문'
@@ -20,10 +21,12 @@ const KO = '한글 본문'
 const PR_CREATE = ['gh', 'pr', 'create'].join(' ')
 const ISSUE_CREATE = ['gh', 'issue', 'create'].join(' ')
 
-/** `judge` with no filesystem: every body file is supplied inline. */
+/** `judge` with no filesystem: every body file is supplied inline, keyed as the command writes it.
+ *  The reader is handed a resolved path, so the keys are resolved to match. */
 const verdict = (cmd, files = {}) => judge(cmd, (p) => {
-  if (!(p in files)) throw new Error('ENOENT')
-  return files[p]
+  const key = Object.keys(files).find((k) => path.resolve(k) === p)
+  if (key === undefined) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e }
+  return files[key]
 })
 
 describe('which commands author something on GitHub', () => {
@@ -101,12 +104,12 @@ describe('Korean is judged where it reaches GitHub, and nowhere else', () => {
 })
 
 describe('what this gate cannot see', () => {
-  it('lets an unreadable body file through', () => {
-    // **A floor, not a fence,** and the boundary is deliberate. The gate judges from the repo root
-    // while the command runs wherever its own `cd` put it, so a relative path can be readable to
-    // `gh` and not to this. Blocking every such path would refuse correct work for a file the gate
-    // merely could not open; the issue-parent gate reports that case for issues, and for a PR the
-    // remaining exposure is a Korean body passed by a relative path from another directory.
+  it('lets an unreadable body file with no heredoc behind it through', () => {
+    // **A floor, not a fence,** and the boundary is deliberate. The gate resolves against the
+    // session's directory while the command may `cd` first, so a path can be readable to `gh` and
+    // not to this. Blocking every such path would refuse correct work over a file the gate merely
+    // could not open. What remains uncovered is a Korean body passed by a path only the command can
+    // reach, with nothing in the command to read instead.
     expect(verdict(`${PR_CREATE} -F somewhere/else.md`).blocked).toBe(false)
   })
 
@@ -145,5 +148,96 @@ describe('the hook itself, spawned', () => {
       env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
     })
     expect(r.status, 'a malformed payload would block every Bash call in the session').toBe(0)
+  })
+})
+
+// ── Added after the adversarial review of this branch ───────────────────────────────────────────
+
+describe('an English body may name a Korean string', () => {
+  // **Merged PR #660 is the case.** Its body is 60+ lines of English with one line reading
+  // `Renamed sidebar labels to "Network Control" and "네트워크 제어."` — and a codepoint test blocks
+  // it, then advises rewriting that label in English, which would make the sentence false. The repo
+  // ships `docs/ko/`, so naming Korean labels and paths is a live workflow rather than a
+  // hypothetical. A line counts as Korean when its Hangul outnumbers its Latin letters.
+  const PR660 = '  * Renamed sidebar labels to "Network Control" and "네트워크 제어."'
+
+  it('allows the line #660 actually shipped', () => {
+    expect(koreanLine(PR660)).toBeNull()
+    expect(verdict(`${PR_CREATE} -F b.md`, { 'b.md': `## Summary\n\nEnglish.\n\n${PR660}\n` }).blocked).toBe(false)
+  })
+
+  it('still catches the sentence around it', () => {
+    expect(koreanLine(`${PR660}\n사이드바 라벨 이름을 바꿨습니다.`)).toBe('사이드바 라벨 이름을 바꿨습니다.')
+  })
+
+  it('catches a title that is mostly Korean even with an English prefix', () => {
+    expect(verdict(`${PR_CREATE} --title "docs: 네트워크 제어 가이드"`).blocked).toBe(true)
+  })
+
+  it('reports the offending line, not just the argument', () => {
+    expect(verdict(`${PR_CREATE} --body "en line\n한글 문장입니다."`).line).toBe('한글 문장입니다.')
+  })
+})
+
+describe('a body file the same command is about to write', () => {
+  it('is judged from the heredoc, since the file does not exist yet', () => {
+    // The headline hole, still open for the single-call shape: a heredoc writes the body and `gh`
+    // sends it in the same Bash call, so at gate time there is no file to read and the Korean sat
+    // unread in the payload. `lets an unreadable body file through` asserted the absence and locked
+    // it in, which is why no mutation found it.
+    const cmd = `cat > /tmp/nb.md <<'EOF'\n## Summary\n\n${KO}입니다.\nEOF\n\n${PR_CREATE} --title T --body-file /tmp/nb.md`
+    expect(verdict(cmd).blocked).toBe(true)
+  })
+
+  it('allows the same shape with an English heredoc', () => {
+    const cmd = `cat > /tmp/nb.md <<'EOF'\n## Summary\n\nA fix.\nEOF\n\n${PR_CREATE} --title T --body-file /tmp/nb.md`
+    expect(verdict(cmd).blocked).toBe(false)
+  })
+
+  it('prefers the file when there is one to read', () => {
+    const cmd = `cat > b.md <<'EOF'\n${KO}\nEOF\n\n${PR_CREATE} -F b.md`
+    expect(verdict(cmd, { 'b.md': 'English on disk.' }).blocked, 'disk wins over the payload').toBe(false)
+  })
+})
+
+describe('a short flag carrying its value reaches this gate too', () => {
+  it('blocks Korean attached to the shorthand', () => {
+    // The readers are shared with the parent gate, where missing this is a false block. Here it is a
+    // bypass: no text found means nothing to check.
+    expect(verdict(`${PR_CREATE} -t"${KO} 제목"`).blocked).toBe(true)
+    expect(verdict(`${PR_CREATE} -b"${KO}입니다"`).blocked).toBe(true)
+  })
+})
+
+describe('the hook resolves the checkout the session is in', () => {
+  const runIn = (cmd, cwd, projectDir) => spawnSync('bash', [path.join(REPO, '.claude/hooks/gh-language-gate.sh')], {
+    input: JSON.stringify({ tool_input: { command: cmd }, cwd }),
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+  })
+
+  it('still judges when CLAUDE_PROJECT_DIR points somewhere else', () => {
+    // Deriving the root from the project dir alone turns the gate off for a session in a worktree,
+    // or one whose project dir is stale: `scripts/` is not there, so the prefilter gives up. The
+    // sibling review gate resolves this from the payload's cwd (#699); this one now does too.
+    expect(runIn(`${PR_CREATE} --title "${KO} 제목"`, REPO, '/nope/nope').status).toBe(2)
+  })
+
+  it('falls back to the project dir when the cwd is not a checkout', () => {
+    expect(runIn(`${PR_CREATE} --title "${KO} 제목"`, '/nope/nope', REPO).status).toBe(2)
+  })
+
+  it('reads the command out of the payload before matching it', () => {
+    // **A source-text floor, and it says so.** The prefilter used to match the whole JSON payload,
+    // whose `cwd` supplies words the command never had — in a checkout under `personal-project`,
+    // `*gh*pr*` meant "contains gh", and `rg -n "highlight"` paid for a node process. The fix is
+    // cost, not behaviour: both spellings exit 0 on such a command, so nothing observable from
+    // outside can fail. Asserting the exit code here would read as coverage and be unable to fail,
+    // which `contributing/test-and-guard-coverage.md` names as the shape to avoid. This checks the
+    // one thing that is visible instead.
+    const hook = readFileSync(path.join(REPO, '.claude/hooks/gh-language-gate.sh'), 'utf8')
+    expect(hook).toMatch(/case "\$cmd" in/)
+    expect(hook, 'the payload is not the haystack').not.toMatch(/case "\$input" in/)
+    expect(runIn('rg -n "highlight" --pretty src', REPO, REPO).status, 'and it still allows it').toBe(0)
   })
 })

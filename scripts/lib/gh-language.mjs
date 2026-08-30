@@ -1,5 +1,5 @@
-import fs from 'node:fs'
-import { ghInvocations, titleArg, bodyArg, bodyFileArg, heredocs } from './gh-command.mjs'
+import path from 'node:path'
+import { ghInvocations, titleArg, bodyArg, bodyFileArg, heredocs, readBodyFile } from './gh-command.mjs'
 
 /**
  * Are this PR's or issue's title and body in English, as AGENTS.md requires?
@@ -14,8 +14,35 @@ import { ghInvocations, titleArg, bodyArg, bodyFileArg, heredocs } from './gh-co
  * heredoc behind `--body-file -`. Everything else in the command is somebody else's text.
  */
 
-/** Hangul anywhere. The rule is about the language of the prose, not about a particular character. */
 const HANGUL = /\p{Script=Hangul}/u
+const LATIN = /\p{Script=Latin}/u
+
+/**
+ * The first line whose prose is Korean, or null.
+ *
+ * **Judged per line and by predominance, not by any Hangul at all.** The rule AGENTS.md states is
+ * that the prose is English so contributors of any language can read it, and an English sentence
+ * that *names* a Korean string satisfies it. Merged PR #660 carries
+ * `Renamed sidebar labels to "Network Control" and "네트워크 제어."` in an otherwise English body;
+ * a codepoint test blocks it and then advises rewriting the label in English, which would make the
+ * sentence false. The repo ships `docs/ko/`, so naming Korean labels and paths is a live workflow.
+ *
+ * A line counts as Korean when its Hangul outnumbers its Latin letters — a quoted label inside an
+ * English sentence never does, and a Korean sentence always does.
+ */
+export function koreanLine(text) {
+  for (const line of String(text).split(/\r?\n/)) {
+    if (!HANGUL.test(line)) continue
+    let hangul = 0
+    let latin = 0
+    for (const ch of line) {
+      if (HANGUL.test(ch)) hangul++
+      else if (LATIN.test(ch)) latin++
+    }
+    if (hangul > latin) return line.trim()
+  }
+  return null
+}
 
 /** Every `gh` call that writes a title or body to GitHub. `comment` is not one: a review comment is
  *  a conversation, and the rule AGENTS.md states is about PR and issue titles and bodies. */
@@ -29,12 +56,14 @@ export function authoringInvocations(cmd) {
 /**
  * @param {string} cmd the Bash command the tool was asked to run
  * @param {(p: string) => string} [readFile] injected for the tests
- * @returns {{ blocked: boolean, where?: string }} `where` names the argument it found Korean in
+ * @param {string} [cwd] the directory the command would run in, from the hook payload
+ * @returns {{ blocked: boolean, where?: string, line?: string }}
  */
-export function judge(cmd, readFile = (p) => fs.readFileSync(p, 'utf8')) {
+export function judge(cmd, readFile = readBodyFile, cwd = process.cwd()) {
   for (const words of authoringInvocations(cmd)) {
-    for (const [where, text] of textsReachingGitHub(words, cmd, readFile)) {
-      if (HANGUL.test(text)) return { blocked: true, where }
+    for (const [where, text] of textsReachingGitHub(words, cmd, readFile, cwd)) {
+      const line = koreanLine(text)
+      if (line !== null) return { blocked: true, where, line }
     }
   }
   return { blocked: false }
@@ -43,13 +72,17 @@ export function judge(cmd, readFile = (p) => fs.readFileSync(p, 'utf8')) {
 /**
  * Every piece of prose this invocation would publish, paired with what to call it in the message.
  *
- * **An unreadable body file is skipped rather than blocked, and that is a real limit.** The gate
- * runs from the repository root while the command runs wherever its own `cd` put it, so a relative
+ * **A body file the same command is about to write does not exist yet**, and that is the natural
+ * single-call shape: a heredoc writes the body, then `gh pr create --body-file` sends it. Reading
+ * the file then fails and the Korean sits unread in the payload — the very hole the port was for.
+ * So an unreadable body file falls back to the command's sole heredoc, which is where that body is.
+ *
+ * With no heredoc to fall back to, an unreadable file is skipped rather than blocked, and that limit
+ * is real: the gate resolves against the session's directory while the command may `cd` first, so a
  * path can be readable to `gh` and not to this. Blocking every such path would refuse correct work
- * over a file the gate merely could not open. What that leaves uncovered is a Korean body passed by
- * a relative path from another directory — a floor, not a fence.
+ * over a file the gate merely could not open. A floor, not a fence.
  */
-function* textsReachingGitHub(words, cmd, readFile) {
+function* textsReachingGitHub(words, cmd, readFile, cwd) {
   const title = titleArg(words)
   if (title !== null) yield ['--title', title]
 
@@ -57,16 +90,17 @@ function* textsReachingGitHub(words, cmd, readFile) {
   if (body !== null) yield ['--body', body]
 
   const file = bodyFileArg(words)
+  const docs = heredocs(cmd)
   if (file !== null && file !== '-') {
     let contents = null
-    try { contents = readFile(file) } catch { contents = null }
+    try { contents = readFile(path.resolve(cwd, file)) } catch { contents = null }
     if (contents !== null) yield [`the body file ${file}`, contents]
+    else if (docs.length === 1) yield [`the heredoc written to ${file}`, docs[0]]
   }
   if (file === '-') {
-    // One heredoc is the body. Several means the command builds text elsewhere too, and picking
-    // would be guessing — the parent gate blocks on that ambiguity because a wrong guess there is
-    // permissive; here a wrong guess would refuse someone else's prose, so it is left alone.
-    const docs = heredocs(cmd)
+    // Several heredocs means the command builds text elsewhere too, and picking would be guessing —
+    // the parent gate blocks on that ambiguity because a wrong guess there is permissive; here a
+    // wrong guess would refuse someone else's prose, so it is left alone.
     if (docs.length === 1) yield ['the heredoc body', docs[0]]
   }
 }

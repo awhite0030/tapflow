@@ -1,7 +1,6 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import { proseLines } from './prose-lines.mjs'
-import { ghInvocations, bodyFileArg, bodyArg, heredocs } from './gh-command.mjs'
+import { ghInvocations, bodyFileArg, bodyArg, heredocs, readBodyFile } from './gh-command.mjs'
 
 /**
  * Does an issue split out of other work name what it came from?
@@ -52,14 +51,16 @@ export function hasStandalone(body) {
 /**
  * @param {string} cmd the Bash command the tool was asked to run
  * @param {(p: string) => string} [readFile] injected for the tests
- * @returns {{ blocked: boolean, reason?: 'unreadable-body-file' | 'no-body' | 'no-parent', detail?: string }}
+ * @param {string} [cwd] the directory the command would run in, from the hook payload
+ * @returns {{ blocked: boolean, reason?: 'unreadable-body-file' | 'no-body' | 'no-parent', detail?: string,
+ *             file?: string, resolved?: string, code?: string | null }}
  *
  * **`reason` exists because the caller printed one message for three outcomes.** A body file the
  * gate could not open was reported as a body naming no parent, which sends the author to add a line
  * that is already there — measured filing #700, whose body carried `Parent: #609` throughout. The
  * three were distinguished here from the start; only the printing collapsed them.
  */
-export function judge(cmd, readFile = (p) => fs.readFileSync(p, 'utf8')) {
+export function judge(cmd, readFile = readBodyFile, cwd = process.cwd()) {
   const invocations = issueCreateInvocations(cmd)
   if (invocations.length === 0) return { blocked: false }
 
@@ -70,9 +71,11 @@ export function judge(cmd, readFile = (p) => fs.readFileSync(p, 'utf8')) {
     let unreadable = null
     const file = bodyFileArg(words)
     if (file && file !== '-') {
-      // Resolved for the message only. `readFile` keeps the path as written so an injected reader
-      // can be keyed on it, and so the failure names what was actually opened.
-      try { body = readFile(file) } catch { unreadable = path.resolve(file) }
+      // **Resolved against the session's directory, not the gate's.** The hook runs from the
+      // repository root while `gh` runs where the session is, so resolving here is what lets a
+      // relative path written from a subdirectory be read at all rather than merely reported.
+      const resolved = path.resolve(cwd, file)
+      try { body = readFile(resolved) } catch (err) { unreadable = { file, resolved, code: err?.code ?? null } }
     }
     if (body === null) body = bodyArg(words)
     // A heredoc reaches `--body-file -`; its text is in the command and nowhere else. Reading the
@@ -85,7 +88,7 @@ export function judge(cmd, readFile = (p) => fs.readFileSync(p, 'utf8')) {
     }
 
     if (body === null && unreadable !== null) {
-      return { blocked: true, reason: 'unreadable-body-file', detail: `could not read the body file at ${unreadable}` }
+      return { blocked: true, reason: 'unreadable-body-file', ...unreadable, detail: `could not read the body file at ${unreadable.resolved}` }
     }
     if (body === null) return { blocked: true, reason: 'no-body', detail: 'no body could be read from the command' }
     if (!hasParent(body) && !hasStandalone(body)) {
