@@ -2,9 +2,15 @@
 // The decision half of `.claude/hooks/issue-parent-gate.sh`. Reads the PreToolUse payload on stdin,
 // exits 0 to allow and 2 to block. Kept out of the shell because the rules are parsing rules and the
 // shell version got three of them wrong — see `scripts/lib/issue-parent.mjs`.
+//
+// **A blocked command is told which rule it broke.** This file used to print one constant for all
+// three outcomes, so a body file the gate could not open was answered with the parent rule — and the
+// author goes to add a line the body already has. That happened filing #700, whose body carried
+// `Parent: #609` the whole time; the real fault was a relative `--body-file` resolved against the
+// repo root rather than the directory the command would have run in.
 import { judge } from './lib/issue-parent.mjs'
 
-const MESSAGE = `Blocked: this issue names no parent.
+const NO_PARENT = `Blocked: this issue names no parent.
 
 An issue split out of other work needs a line of its own in the body:
 
@@ -22,6 +28,45 @@ And before filing at all: a finding under ~10 lines that the lens you are alread
 is fixed in that PR, not deferred. AGENTS.md > "An adjacent defect is fixed here unless it needs its
 own decision".`
 
+const NO_BODY = `Blocked: no body could be read from this issue creation.
+
+The gate reads --body, --body-file, or the heredoc behind \`--body-file -\`. It found none of them,
+or found several heredocs and will not guess which one is the body.
+
+Nothing has been decided about the Parent: line — the body was never read.`
+
+/**
+ * Names the path that was opened and why it could not be read.
+ *
+ * **The cause is not always the relative path**, and saying so anyway reproduces inside this fix the
+ * exact defect it exists to end: a typo in an absolute path, a directory, and a permissions failure
+ * were all answered with "pass an absolute path", which the author already had.
+ */
+const CAUSE = {
+  EISDIR: 'That path is a directory.',
+  EACCES: 'That path is not readable — check its permissions.',
+  EPERM: 'That path is not readable — check its permissions.',
+  ELOOP: 'That path is a symlink loop.',
+}
+
+function unreadableBodyFile(v) {
+  const why = CAUSE[v.code]
+    ?? (v.file !== v.resolved
+      ? `It was written relative to the directory your command runs in, and resolved as above.`
+      : `No file is there.`)
+  return `Blocked: ${v.detail}
+
+${why}
+
+Nothing has been decided about the Parent: line — the body was never read.`
+}
+
+const MESSAGES = {
+  'no-parent': () => NO_PARENT,
+  'no-body': () => NO_BODY,
+  'unreadable-body-file': unreadableBodyFile,
+}
+
 let raw = ''
 process.stdin.setEncoding('utf8')
 for await (const chunk of process.stdin) raw += chunk
@@ -30,11 +75,22 @@ for await (const chunk of process.stdin) raw += chunk
 // cooperative-but-forgetful agent, not an adversary, and a gate that dies noisily on a malformed
 // payload would block every Bash call in the session.
 let cmd
-try { cmd = JSON.parse(raw)?.tool_input?.command ?? '' } catch { process.exit(0) }
+let cwd
+try {
+  const payload = JSON.parse(raw)
+  cmd = payload?.tool_input?.command ?? ''
+  // The directory the command would run in. The hook itself runs from the repository root, so
+  // without this a relative --body-file is looked for in the wrong tree and reported as missing.
+  cwd = typeof payload?.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd()
+} catch { process.exit(0) }
 if (typeof cmd !== 'string' || !cmd) process.exit(0)
 
 let verdict
-try { verdict = judge(cmd) } catch { process.exit(0) }
+try { verdict = judge(cmd, undefined, cwd) } catch { process.exit(0) }
 if (!verdict.blocked) process.exit(0)
-process.stderr.write(`${MESSAGE}\n`)
+
+// An unrecognised reason falls back to the parent rule rather than to silence: a new reason added
+// without a message here should still block, since blocking is what the verdict said.
+const message = (MESSAGES[verdict.reason] ?? MESSAGES['no-parent'])(verdict)
+process.stderr.write(`${message}\n`)
 process.exit(2)

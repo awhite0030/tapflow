@@ -1,5 +1,6 @@
-import fs from 'node:fs'
+import path from 'node:path'
 import { proseLines } from './prose-lines.mjs'
+import { ghInvocations, bodyFileArg, bodyArg, heredocs, heredocWrittenTo, readBodyFile } from './gh-command.mjs'
 
 /**
  * Does an issue split out of other work name what it came from?
@@ -8,7 +9,8 @@ import { proseLines } from './prose-lines.mjs'
  * and three of its four rules were wrong in the same way: they matched text anywhere in the command
  * instead of parsing anything. `gh issue new` — an undocumented alias that works — went straight
  * through, so did `GH_REPO=o/r gh issue create`, `-F "issue body.md"` read the file `issue`, and
- * `Parent: #607` in a `--title` satisfied a gate about bodies.
+ * `Parent: #607` in a `--title` satisfied a gate about bodies. The parsing itself now lives in
+ * `gh-command.mjs`, because the language gate needed the same reading and had its own regex.
  *
  * It also means this repo stops keeping a third, weaker copy of "which lines of a markdown body
  * count". `check-changeset.mjs` already had `proseLines`, whose own comment warns that a second copy
@@ -16,105 +18,8 @@ import { proseLines } from './prose-lines.mjs'
  * merely quotes one must not trip it — the same rule, now shared rather than re-derived.
  */
 
-/**
- * Split a shell command into words the way the shell would, enough for this job: single quotes are
- * literal, double quotes group, a backslash escapes the next character.
- *
- * Not a shell parser and not trying to be. It cannot see through `$VAR`, `$(…)` or an alias, and the
- * caller treats an unresolvable body as "no parent found" — which fails toward blocking, which for a
- * cooperative agent costs one line and for a wrong guess costs nothing.
- */
-export function tokenize(cmd) {
-  const out = []
-  let cur = ''
-  let started = false
-  let quote = null
-  for (let i = 0; i < cmd.length; i++) {
-    const c = cmd[i]
-    if (quote === "'") {
-      if (c === "'") quote = null
-      else cur += c
-      continue
-    }
-    if (quote === '"') {
-      if (c === '"') quote = null
-      else if (c === '\\' && i + 1 < cmd.length && '"\\$`'.includes(cmd[i + 1])) cur += cmd[++i]
-      else cur += c
-      continue
-    }
-    if (c === "'" || c === '"') { quote = c; started = true; continue }
-    if (c === '\\' && i + 1 < cmd.length) { cur += cmd[++i]; started = true; continue }
-    if (/\s/.test(c)) {
-      if (started || cur) out.push(cur)
-      cur = ''
-      started = false
-      continue
-    }
-    cur += c
-    started = true
-  }
-  if (started || cur) out.push(cur)
-  return out
-}
-
-/** `FOO=bar`, the form that let `GH_REPO=o/r gh issue create` past a matcher anchored on `gh`. */
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
-
-/** Wrappers that keep the next word in command position. */
-const PASSTHROUGH = new Set(['env', 'sudo', 'command', 'nohup', 'time'])
-
-/** Separators after which a new command begins. */
-const SEPARATOR = new Set([';', '&&', '||', '|', '&', '(', ')', '{', '}', 'then', 'do', 'else', '!'])
-
-/**
- * Every `gh issue create` (or `new`) in the command, as the token slice that starts at `gh`.
- *
- * Command position is tracked rather than pattern-matched, so this repo's own docs — which print
- * `gh issue create` inside prose and inside `echo` — do not trip it, while the wrapped and prefixed
- * forms do.
- */
-export function issueCreateInvocations(cmd) {
-  const words = tokenize(cmd)
-  const found = []
-  let atStart = true
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i]
-    if (SEPARATOR.has(w)) { atStart = true; continue }
-    if (!atStart) continue
-    let j = i
-    while (j < words.length && (ASSIGNMENT.test(words[j]) || PASSTHROUGH.has(words[j]))) j++
-    if (words[j] === 'gh' && words[j + 1] === 'issue' && (words[j + 2] === 'create' || words[j + 2] === 'new')) {
-      // **Stop at the next separator.** Running to the end of the token list meant a later command's
-      // flags counted as this one's: `gh issue create --web && echo --body "Parent: #607"` was
-      // allowed, because `bodyArg` found `echo`'s argument.
-      let end = j
-      while (end < words.length && !SEPARATOR.has(words[end])) end++
-      found.push(words.slice(j, end))
-    }
-    atStart = false
-  }
-  return found
-}
-
-/** The `--body-file` / `-F` argument, quoting resolved. `-` means stdin, which is not a path. */
-export function bodyFileArg(words) {
-  for (let i = 0; i < words.length; i++) {
-    if (words[i] === '--body-file' || words[i] === '-F') return words[i + 1] ?? null
-    const eq = /^--body-file=(.*)$/.exec(words[i])
-    if (eq) return eq[1]
-  }
-  return null
-}
-
-/** The `--body` / `-b` argument, quoting resolved. */
-export function bodyArg(words) {
-  for (let i = 0; i < words.length; i++) {
-    if (words[i] === '--body' || words[i] === '-b') return words[i + 1] ?? null
-    const eq = /^--body=(.*)$/.exec(words[i])
-    if (eq) return eq[1]
-  }
-  return null
-}
+/** Every `gh issue create` (or `new`) in the command, as the token slice that starts at `gh`. */
+export const issueCreateInvocations = (cmd) => ghInvocations(cmd, 'issue', ['create', 'new'])
 
 /**
  * `Parent: #607` on a line of its own.
@@ -144,39 +49,18 @@ export function hasStandalone(body) {
 }
 
 /**
- * Every heredoc payload in a command, in order.
- *
- * Enough for `--body-file -`, which is the only reason this exists: `<<EOF`, `<<'EOF'`, `<<"EOF"`
- * and `<<-EOF`, terminated by a line that is the delimiter alone. The caller blocks when a command
- * carries more than one, because picking is guessing.
- */
-export function heredocs(cmd) {
-  const lines = cmd.split(/\r?\n/)
-  const out = []
-  for (let i = 0; i < lines.length; i++) {
-    const m = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/.exec(lines[i])
-    if (!m) continue
-    const [, dash, , delim] = m
-    const body = []
-    let j = i + 1
-    for (; j < lines.length; j++) {
-      const candidate = dash ? lines[j].replace(/^\t+/, '') : lines[j]
-      if (candidate === delim) break
-      body.push(lines[j])
-    }
-    if (j >= lines.length) continue          // never terminated: not a payload anyone can read
-    out.push(body.join('\n'))
-    i = j
-  }
-  return out
-}
-
-/**
  * @param {string} cmd the Bash command the tool was asked to run
  * @param {(p: string) => string} [readFile] injected for the tests
- * @returns {{ blocked: boolean, detail?: string }}
+ * @param {string} [cwd] the directory the command would run in, from the hook payload
+ * @returns {{ blocked: boolean, reason?: 'unreadable-body-file' | 'no-body' | 'no-parent', detail?: string,
+ *             file?: string, resolved?: string, code?: string | null }}
+ *
+ * **`reason` exists because the caller printed one message for three outcomes.** A body file the
+ * gate could not open was reported as a body naming no parent, which sends the author to add a line
+ * that is already there — measured filing #700, whose body carried `Parent: #609` throughout. The
+ * three were distinguished here from the start; only the printing collapsed them.
  */
-export function judge(cmd, readFile = (p) => fs.readFileSync(p, 'utf8')) {
+export function judge(cmd, readFile = readBodyFile, cwd = process.cwd()) {
   const invocations = issueCreateInvocations(cmd)
   if (invocations.length === 0) return { blocked: false }
 
@@ -184,9 +68,18 @@ export function judge(cmd, readFile = (p) => fs.readFileSync(p, 'utf8')) {
     // **Only the body is consulted.** `haystack = the whole command` let a `--title` satisfy a rule
     // about bodies, which is the gate agreeing with itself rather than with the issue.
     let body = null
+    let unreadable = null
     const file = bodyFileArg(words)
     if (file && file !== '-') {
-      try { body = readFile(file) } catch { body = null }
+      // **Resolved against the session's directory, not the gate's.** The hook runs from the
+      // repository root while `gh` runs where the session is, so resolving here is what lets a
+      // relative path written from a subdirectory be read at all rather than merely reported.
+      const resolved = path.resolve(cwd, file)
+      // A heredoc this same command writes to that path is the body; the file on disk, if any, is
+      // about to be replaced by it.
+      const pending = heredocWrittenTo(cmd, resolved, cwd)
+      if (pending !== null) body = pending
+      else try { body = readFile(resolved) } catch (err) { unreadable = { file, resolved, code: err?.code ?? null } }
     }
     if (body === null) body = bodyArg(words)
     // A heredoc reaches `--body-file -`; its text is in the command and nowhere else. Reading the
@@ -198,8 +91,13 @@ export function judge(cmd, readFile = (p) => fs.readFileSync(p, 'utf8')) {
       body = docs.length === 1 ? docs[0] : null
     }
 
-    if (body === null) return { blocked: true, detail: 'no body could be read from the command' }
-    if (!hasParent(body) && !hasStandalone(body)) return { blocked: true, detail: 'the body names no parent' }
+    if (body === null && unreadable !== null) {
+      return { blocked: true, reason: 'unreadable-body-file', ...unreadable, detail: `could not read the body file at ${unreadable.resolved}` }
+    }
+    if (body === null) return { blocked: true, reason: 'no-body', detail: 'no body could be read from the command' }
+    if (!hasParent(body) && !hasStandalone(body)) {
+      return { blocked: true, reason: 'no-parent', detail: 'the body names no parent' }
+    }
   }
   return { blocked: false }
 }
