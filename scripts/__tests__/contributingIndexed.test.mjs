@@ -16,9 +16,31 @@
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { proseLines } from '../lib/prose-lines.mjs'
 
 const root = join(import.meta.dirname, '../..')
 const dir = join(root, 'contributing')
+/**
+ * A document's prose lines, joined — the rows a reader would follow, without the ones a fenced or
+ * indented example prints.
+ *
+ * **A row inside a fence is an illustration, not a registration.** Matching the whole document let
+ * one populate the set and satisfy the completeness check for a record that has no real row;
+ * measured on a planted `ghost-record.md`, which passed the README half. `proseLines` is the same
+ * helper `issue-parent.mjs` uses to keep a quoted marker from switching a gate off — one copy, and
+ * this is the third caller.
+ */
+const proseOf = (text) => [...proseLines(text)].map(({ line }) => line).join('\n')
+const prose = (file) => proseOf(readFileSync(file, 'utf8'))
+
+/** `| [name.md](./name.md) | type | topics |` — the row shape, with the type captured. */
+const ROW = /^\| \[([^\]]+\.md)\]\(\.\/([^)]+\.md)\) \| (\S+) \| .+ \|$/gm
+/** The same, as `INDEX.md` writes it: the href carries the `contributing/` prefix. */
+const INDEX_ROW = /^\|\s*\[[^\]]+\]\(\.\/contributing\/([^)]+\.md)\)/gm
+
+const rowsIn = (text) => [...proseOf(text).matchAll(ROW)]
+const indexedIn = (text) => new Set([...proseOf(text).matchAll(INDEX_ROW)].map((m) => m[1]))
+
 const readme = readFileSync(join(dir, 'README.md'), 'utf8')
 const index = readFileSync(join(root, 'INDEX.md'), 'utf8')
 
@@ -27,8 +49,7 @@ const records = readdirSync(dir)
   .filter((f) => f.endsWith('.md') && f !== 'README.md')
   .sort()
 
-/** `| [name.md](./name.md) | type | topics |` — the row shape, with the type captured. */
-const rowMatches = [...readme.matchAll(/^\| \[([^\]]+\.md)\]\(\.\/([^)]+\.md)\) \| (\S+) \| .+ \|$/gm)]
+const rowMatches = rowsIn(readme)
 const rows = new Map(rowMatches.map((m) => [m[1], { href: m[2], type: m[3] }]))
 
 /**
@@ -39,9 +60,7 @@ const rows = new Map(rowMatches.map((m) => [m[1], { href: m[2], type: m[3] }]))
  * Today every mention happens to be a row — measured, all 28 — which is exactly the state in which
  * a check like this reads as working.
  */
-const indexed = new Set(
-  [...index.matchAll(/^\|\s*\[[^\]]+\]\(\.\/contributing\/([^)]+\.md)\)/gm)].map((m) => m[1]),
-)
+const indexed = indexedIn(index)
 
 /** The `type:` line from a record's own frontmatter. */
 function declaredType(file) {
@@ -74,6 +93,27 @@ describe('the indexes do not describe files that are not there', () => {
     // is registered; it can never say a registration still has a record behind it, so a deleted
     // one leaves its row in place with nothing able to notice.
     expect([...indexed].filter((f) => !records.includes(f))).toEqual([])
+  })
+
+  it('does not accept a row printed inside a fenced example', () => {
+    // An illustration is not a registration. Matching the whole document let a fenced row populate
+    // the set, so a record with no real row satisfied the completeness check — planted as
+    // `ghost-record.md`, it passed the README half. Asserted on the parsing rather than by editing
+    // the committed file, which a test cannot do to prove a negative.
+    const doc = [
+      '| File | type | topics |',
+      '|------|------|--------|',
+      '| [real.md](./real.md) | rationale | x |',
+      '',
+      '```markdown',
+      '| [fenced.md](./fenced.md) | rationale | x |',
+      '```',
+      '',
+      '    | [indented.md](./indented.md) | rationale | x |',
+    ].join('\n')
+    expect(rowsIn(doc).map((m) => m[1]), 'the README shape').toEqual(['real.md'])
+    const idx = doc.replace(/\]\(\.\//g, '](./contributing/')
+    expect([...indexedIn(idx)], 'and the INDEX.md shape').toEqual(['real.md'])
   })
 
   it('lists each record once, not once per group it could belong to', () => {
