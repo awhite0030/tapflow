@@ -7,8 +7,17 @@
 // existing document is what `Edit` is for, so the gate was blind to the common case while reporting
 // nothing wrong.
 //
-// The shapes below are copied from real transcript records rather than invented, because the bug was
-// entirely in the gap between the shape assumed and the shape written.
+// Widening the regex fixed that case and kept the shape of the bug, which review then found: still
+// blind to `MultiEdit` with `edits` before `file_path`, counting `.mdx` for an unanchored `\.md`, and
+// missing the record entirely if the runtime emitted spaced JSON. The hook parses with `jq` now, so
+// none of those is a question about key order any more.
+//
+// **The `input` shapes below are the real ones** — verified against the corpus, `Edit` writes
+// `{"replace_all": …, "file_path": …}` and `Write` writes `{"file_path": …}` — but the envelope is
+// not: a real record also carries `id`, `parentUuid`, `message.model` and more. They are omitted
+// because nothing here reads them, and saying so is the point: the previous version of this comment
+// claimed the records were copied, which was true of the half that mattered and overstated for the
+// rest.
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
@@ -23,6 +32,8 @@ const record = (name, input) => JSON.stringify({ message: { content: [{ type: 't
 
 const EDIT = (file) => record('Edit', { replace_all: false, file_path: file, old_string: 'a', new_string: 'b' })
 const WRITE = (file) => record('Write', { file_path: file, content: 'x' })
+/** `edits` before `file_path`: the order a regex scoped with `[^}]*` could never reach. */
+const MULTI_EDIT = (file) => record('MultiEdit', { edits: [{ old_string: 'a', new_string: 'b' }], file_path: file })
 const AI_TELLS = record('Skill', { skill: 'ai-tells', args: 'en detect' })
 
 /** Run the gate over a transcript built from `lines`. Returns its stdout (a JSON verdict, or ''). */
@@ -66,6 +77,27 @@ describe('which docs edits the gate can see', () => {
     expect(blocked([EDIT('/repo/packages/relay/src/server.ts'), WRITE('/repo/AGENTS.md')])).toBe(false)
   })
 
+  it('sees a MultiEdit whose file_path comes after its edits', () => {
+    // The order a `[^}]*` scan cannot reach, because the `}` closing the first edit ends the scan.
+    // `MultiEdit` writes no records on this machine today, which is exactly why a half-blind matcher
+    // for it would go unnoticed if it came back.
+    expect(blocked([MULTI_EDIT('/repo/docs/guide/agent.md')])).toBe(true)
+  })
+
+  it('counts only .md, not every suffix that starts with it', () => {
+    for (const f of ['/repo/docs/a.mdx', '/repo/docs/a.md.bak', '/repo/docs/a.markdown']) {
+      expect(blocked([EDIT(f)]), f).toBe(false)
+    }
+  })
+
+  it('does not depend on the transcript being written without spaces', () => {
+    // The runtime writes compact JSON today. A matcher that only works because of that is one
+    // serialisation change away from counting zero, which is the regression this file is about.
+    const spaced = JSON.stringify(JSON.parse(EDIT('/repo/docs/guide/agent.md')), null, 1)
+      .replace(/\n\s*/g, ' ')
+    expect(blocked([spaced])).toBe(true)
+  })
+
   it('does not fire on a docs path that is only mentioned in the replaced text', () => {
     // `[^}]*` keeps the match inside the same `input` object, so a source edit whose old_string
     // quotes a docs path is not a docs edit. Scoping to the whole line would have counted it.
@@ -76,6 +108,37 @@ describe('which docs edits the gate can see', () => {
       new_string: 'see the guide',
     })
     expect(blocked([line])).toBe(false)
+  })
+})
+
+describe('the hook agrees with a real parse of the same transcript', () => {
+  // **The oracle.** Every case above asserts one shape at a time, which is how a matcher and its
+  // tests come to agree with each other about a wrong shape — the failure this whole file exists
+  // for. This one computes the answer independently, by parsing, and asks the hook to match it.
+  const CORPUS = [
+    EDIT('/repo/docs/guide/agent.md'),
+    WRITE('/repo/docs/ko/guide/agent.md'),
+    MULTI_EDIT('/repo/docs/reference/cli.md'),
+    EDIT('/repo/packages/relay/src/server.ts'),
+    EDIT('/repo/docs/a.mdx'),
+    record('Edit', { replace_all: false, file_path: '/repo/src/x.ts', old_string: 'docs/guide/agent.md', new_string: '' }),
+    'not json at all',
+  ]
+
+  /** What a JSON parse says the answer is, with no regard for how the line is spelled. */
+  const byParsing = (lines) => lines.filter((line) => {
+    let rec
+    try { rec = JSON.parse(line) } catch { return false }
+    return (rec.message?.content ?? []).some((c) =>
+      c.type === 'tool_use'
+      && ['Edit', 'Write', 'MultiEdit'].includes(c.name)
+      && /\/docs\/.*\.md$/.test(c.input?.file_path ?? ''))
+  }).length
+
+  it('blocks exactly when a parse finds a docs edit', () => {
+    expect(byParsing(CORPUS), 'three docs edits, three decoys, one unparseable line').toBe(3)
+    expect(blocked(CORPUS)).toBe(true)
+    expect(blocked(CORPUS.filter((l) => byParsing([l]) === 0)), 'decoys alone').toBe(false)
   })
 })
 

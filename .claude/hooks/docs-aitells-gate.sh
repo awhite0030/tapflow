@@ -23,18 +23,28 @@ tx=$(printf '%s' "$input" | jq -r '.transcript_path // ""' 2>/dev/null) || exit 
 active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null) || exit 0
 [ "$active" = "true" ] && exit 0
 
-# How many times docs/*.md was edited.
+# **Counted by parsing the transcript, not by matching its serialisation.**
 #
-# **`file_path` is not the first field of the tool input, and requiring it to be made this gate see
-# 6 of 34 docs edits.** `Write` serialises `{"file_path": …}`, so it matched; `Edit` serialises
-# `{"replace_all": false, "file_path": …}` and never did — 1102 `Edit` records in this project's
-# transcripts, not one of them adjacent. Editing an existing doc is what `Edit` is for, so the gate
-# was blind to the common case and green about it. Scoped to the same `input` object with `[^}]*`
-# rather than to the whole line, which keeps an unrelated tool call on the same line out of it.
-edited=$(grep -cE '"name":"(Edit|Write|MultiEdit)","input":\{[^}]*"file_path":"[^"]*/docs/[^"]*\.md' "$tx" || true)
-# How many times the ai-tells skill was invoked. Matched on the key rather than on the reminder's
-# own wording, which would otherwise satisfy the gate by being injected.
-ran=$(grep -cE '"skill": *"ai-tells"' "$tx" || true)
+# The previous matcher was a regex requiring `file_path` to be the first key of the tool input, and
+# it saw 6 of 34 docs edits: true of `Write`, false of `Edit`, which is what changing an existing
+# document uses. Widening the regex fixed that case and left the shape of the bug — review found it
+# still blind to `MultiEdit` with `edits` before `file_path` (the `}` closing an edit object ends the
+# scan), counting `.mdx` and `.md.bak` for an unanchored `\.md`, and missing the whole record if the
+# runtime ever emitted spaced JSON.
+#
+# `jq` answers all of those at once and the hook already depends on it two lines up, so the
+# dependency is not new. Measured against every transcript on this machine: identical counts to the
+# regex it replaces, 34 and 34, and 0.37s on the largest (35 MB) against grep's 0.03s — paid once, at
+# the end of a session.
+#
+# `fromjson?` skips a line that is not JSON, which is what a transcript truncated mid-write looks
+# like. A `docs` directory that is not the repo's own still counts: this repo has one `docs` tree,
+# and over-inclusion on a gate whose override is "stop again" is the safe direction.
+tool_paths='fromjson? | .message.content[]? | select(.type=="tool_use")'
+edited=$(jq -rR "$tool_paths"' | select(.name=="Edit" or .name=="Write" or .name=="MultiEdit") | .input.file_path // empty | select(test("/docs/.*[.]md$"))' "$tx" 2>/dev/null | wc -l) || edited=0
+# Which skills ran. Matched on the invocation rather than on the reminder's own wording, which is
+# injected into the transcript and would otherwise let the gate satisfy itself.
+ran=$(jq -rR "$tool_paths"' | select(.name=="Skill") | .input.skill // empty | select(.=="ai-tells")' "$tx" 2>/dev/null | wc -l) || ran=0
 
 if [ "${edited:-0}" -gt 0 ] && [ "${ran:-0}" -eq 0 ]; then
   jq -n '{
