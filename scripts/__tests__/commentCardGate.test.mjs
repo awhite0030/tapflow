@@ -1,0 +1,197 @@
+// The gate that asks for the comment card before a comment goes out under the user's account.
+//
+// **It is wired locally and tested here on purpose.** The wiring lives in gitignored
+// `settings.local.json` so a contributor never loads it; the script is tracked so it is not the one
+// gate in this repo without tests. Every other gate here turned out to have a hole that only a test
+// found — a matcher blind to `Edit`, a prefilter blind to `g"h"`, a flag reader taking the first
+// occurrence where pflag takes the last — and this one judges prose, which is more subtly wrong.
+//
+// The contributor-safety assertion below is the load-bearing one. Layers 1 and 2 are "it was not
+// wired for them"; only layer 3, allowing the command outright when the card is absent, survives
+// somebody wiring it by mistake.
+import { describe, it, expect } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { postsAComment, cardWasRead, judge } from '../lib/comment-card.mjs'
+import { ghInvocations } from '../lib/gh-command.mjs'
+
+const REPO = path.resolve(import.meta.dirname, '../..')
+const HOOK = path.join(REPO, '.claude/hooks/comment-card-gate.sh')
+
+/** A transcript line carrying one tool call, in the shape the runtime writes. */
+const record = (name, input) => JSON.stringify({ message: { content: [{ type: 'tool_use', name, input }] } })
+const READ_CARD = record('Read', { file_path: '/repo/.work/COMMENT-CARD.md' })
+
+describe('which commands post a comment', () => {
+  const POSTS = {
+    'a PR comment': 'gh pr comment 701 --body "x"',
+    'an issue comment': 'gh issue comment 700 --body "x"',
+    'a review with a body': 'gh pr review 701 --comment --body "x"',
+    'an inline reply through the API': 'gh api repos/o/r/pulls/701/comments/1/replies -F body=@r.md',
+    'behind a separator': 'git status && gh pr comment 701 --body "x"',
+    'with the command word broken by quotes': 'g"h" pr comment 701 --body "x"',
+  }
+  for (const [name, cmd] of Object.entries(POSTS)) {
+    it(`sees ${name}`, () => {
+      expect(postsAComment(cmd)).toBe(true)
+    })
+  }
+
+  const DOES_NOT = {
+    'reading comments': 'gh api repos/o/r/pulls/701/comments --jq ".[].body"',
+    'listing them': 'gh pr view 701 --json comments',
+    'creating a PR': 'gh pr create --title x --body-file b.md',
+    'creating an issue': 'gh issue create --title x --body "Parent: #607"',
+    'the words inside a script string': 'node -e "console.log(\'gh pr comment\')"',
+    'the words in a heredoc payload': 'cat > plan.md <<EOF\nrun gh pr comment when ready\nEOF',
+  }
+  for (const [name, cmd] of Object.entries(DOES_NOT)) {
+    it(`ignores ${name}`, () => {
+      expect(postsAComment(cmd)).toBe(false)
+    })
+  }
+
+  it('needs something after `gh api` to be an invocation at all', () => {
+    // `gh api` takes a path where the other nouns take a verb, so this consumer asks the parser for
+    // "any third token". Any has to mean one that is there — otherwise a bare `gh api`, or a `gh api`
+    // ending a command, reads as a call with no arguments.
+    expect(ghInvocations('gh api repos/o/r/pulls/1/comments', 'api', null)).toHaveLength(1)
+    expect(ghInvocations('gh api', 'api', null)).toHaveLength(0)
+    expect(ghInvocations('echo x && gh api', 'api', null)).toHaveLength(0)
+  })
+
+  it('separates reading an API path from writing to it', () => {
+    // `gh api …/comments` is how the thread is read, and reading it is the *first* step the card
+    // asks for. A gate that blocked that would block its own remedy.
+    expect(postsAComment('gh api repos/o/r/pulls/1/comments')).toBe(false)
+    expect(postsAComment('gh api repos/o/r/pulls/1/comments -f body=hi')).toBe(true)
+  })
+})
+
+describe('whether the card was read this session', () => {
+  const withTranscript = (lines, fn) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'card-'))
+    const tx = path.join(dir, 't.jsonl')
+    writeFileSync(tx, lines.join('\n') + '\n')
+    try { return fn(tx) } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+
+  it('is true after a Read of it', () => {
+    expect(withTranscript([READ_CARD], cardWasRead)).toBe(true)
+  })
+
+  it('is false when the name only appears in prose', () => {
+    // A gate satisfied by its own block message would never fire twice.
+    const mention = JSON.stringify({ message: { content: [{ type: 'text', text: 'read .work/COMMENT-CARD.md first' }] } })
+    expect(withTranscript([mention], cardWasRead)).toBe(false)
+  })
+
+  it('is false when another file was read', () => {
+    expect(withTranscript([record('Read', { file_path: '/repo/AGENTS.md' })], cardWasRead)).toBe(false)
+  })
+
+  it('counts the other ways the content reaches the context', () => {
+    // Narrowing to `Read` excluded all three of these for no reason: authoring the card, editing it,
+    // and reading it through the shell all put it in front of the writer.
+    expect(withTranscript([record('Write', { file_path: '/repo/.work/COMMENT-CARD.md', content: '#' })], cardWasRead)).toBe(true)
+    expect(withTranscript([record('Edit', { replace_all: false, file_path: '/repo/.work/COMMENT-CARD.md' })], cardWasRead)).toBe(true)
+    expect(withTranscript([record('Bash', { command: 'cat .work/COMMENT-CARD.md' })], cardWasRead)).toBe(true)
+  })
+
+  it('survives an unparseable line', () => {
+    expect(withTranscript(['not json at all', READ_CARD], cardWasRead)).toBe(true)
+  })
+
+  it('is false when the transcript cannot be read', () => {
+    expect(cardWasRead('/nowhere/at/all.jsonl')).toBe(false)
+  })
+})
+
+describe('a contributor is unaffected even if this is wired for them', () => {
+  it('allows the command outright when the card is absent', () => {
+    // **Layer 3, and the only one that survives a mistake.** The card lives under gitignored
+    // `.work/` and the wiring under gitignored `settings.local.json`, so a contributor does not
+    // reach this — but neither of those is a property of the code.
+    const v = judge('gh pr comment 1 --body "x"', {
+      cardPath: '/repo/.work/COMMENT-CARD.md',
+      transcriptPath: '/nowhere.jsonl',
+      exists: () => false,
+    })
+    expect(v.blocked).toBe(false)
+  })
+
+  it('blocks the same command when the card is there and unread', () => {
+    // The contrast is what makes the assertion above mean something: without it, "allows" could be
+    // true for any reason at all.
+    const v = judge('gh pr comment 1 --body "x"', {
+      cardPath: '/repo/.work/COMMENT-CARD.md',
+      transcriptPath: '/nowhere.jsonl',
+      exists: () => true,
+    })
+    expect(v).toMatchObject({ blocked: true, reason: 'card-not-read' })
+  })
+})
+
+describe('the hook itself, spawned', () => {
+  const readSource = (f) => readFileSync(path.join(REPO, 'scripts', f), 'utf8')
+
+  /** A throwaway checkout carrying a card, so the hook resolves a root the way it will in use. */
+  const inRepo = (cmd, { card = true, transcript = [] } = {}) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'card-repo-'))
+    spawnSync('git', ['init', '-q', dir])
+    if (card) {
+      mkdirSync(path.join(dir, '.work'), { recursive: true })
+      writeFileSync(path.join(dir, '.work/COMMENT-CARD.md'), '# card\n')
+    }
+    mkdirSync(path.join(dir, 'scripts/lib'), { recursive: true })
+    for (const f of ['comment-card-gate.mjs', 'lib/comment-card.mjs', 'lib/gh-command.mjs']) {
+      writeFileSync(path.join(dir, 'scripts', f), readSource(f))
+    }
+    const tx = path.join(dir, 't.jsonl')
+    writeFileSync(tx, transcript.join('\n') + '\n')
+    try {
+      return spawnSync('bash', [HOOK], {
+        input: JSON.stringify({ tool_input: { command: cmd }, cwd: dir, transcript_path: tx }),
+        encoding: 'utf8',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: dir },
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('blocks a comment when the card has not been read', () => {
+    const r = inRepo('gh pr comment 701 --body "x"')
+    expect(r.status).toBe(2)
+    expect(r.stderr).toMatch(/COMMENT-CARD\.md/)
+  })
+
+  it('allows it once the card has been read', () => {
+    expect(inRepo('gh pr comment 701 --body "x"', { transcript: [READ_CARD] }).status).toBe(0)
+  })
+
+  it('allows it in a checkout with no card', () => {
+    expect(inRepo('gh pr comment 701 --body "x"', { card: false }).status).toBe(0)
+  })
+
+  it('blocks a spelling the raw text does not contain', () => {
+    // The prefilter matches what the shell would leave, the way the sibling gates do. Without the
+    // squash, `g"h" pr comment` is a real invocation the hook never looks at.
+    expect(inRepo('g"h" pr comment 701 --body "x"').status).toBe(2)
+  })
+
+  it('allows an unrelated command without paying for node', () => {
+    expect(inRepo('git status --short').status).toBe(0)
+  })
+
+  it('fails open on a payload it cannot parse', () => {
+    const r = spawnSync('bash', [HOOK], {
+      input: 'not json, gh pr comment',
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
+    })
+    expect(r.status, 'a broken gate would block every Bash call in the session').toBe(0)
+  })
+})

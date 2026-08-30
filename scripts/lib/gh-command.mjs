@@ -207,10 +207,14 @@ export function withoutHeredocPayloads(cmd) {
  * Command position is tracked rather than pattern-matched, so this repo's own docs — which print
  * these commands inside prose, inside `echo`, and inside heredocs — do not trip it, while the
  * wrapped, prefixed and unspaced forms do.
+ *
+ * **`verbs: null` matches any third token**, which is what `gh api` needs: it takes a path where the
+ * other nouns take a verb, so there is nothing to enumerate.
  */
 export function ghInvocations(cmd, noun, verbs) {
   const words = tokenize(withoutHeredocPayloads(cmd))
-  const wanted = new Set(verbs)
+  const anyVerb = verbs === null
+  const wanted = new Set(verbs ?? [])
   const found = []
   let atStart = true
   for (let i = 0; i < words.length; i++) {
@@ -219,7 +223,7 @@ export function ghInvocations(cmd, noun, verbs) {
     if (!atStart) continue
     let j = i
     while (j < words.length && (ASSIGNMENT.test(words[j]) || PASSTHROUGH.has(words[j]))) j++
-    if (words[j] === 'gh' && words[j + 1] === noun && wanted.has(words[j + 2])) {
+    if (words[j] === 'gh' && words[j + 1] === noun && (anyVerb ? words[j + 2] !== undefined : wanted.has(words[j + 2]))) {
       // **Stop at the next separator.** Running to the end of the token list meant a later command's
       // flags counted as this one's: `gh issue create --web && echo --body "Parent: #607"` was
       // allowed, because `bodyArg` found `echo`'s argument.
