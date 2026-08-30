@@ -64,9 +64,39 @@ describe('which commands post a comment', () => {
 
   it('separates reading an API path from writing to it', () => {
     // `gh api …/comments` is how the thread is read, and reading it is the *first* step the card
-    // asks for. A gate that blocked that would block its own remedy.
-    expect(postsAComment('gh api repos/o/r/pulls/1/comments')).toBe(false)
-    expect(postsAComment('gh api repos/o/r/pulls/1/comments -f body=hi')).toBe(true)
+    // asks for. A gate that blocked that would block its own remedy. Each read below is a form
+    // `gh api --help` documents, and the first two were blocked before review.
+    for (const c of [
+      'gh api repos/o/r/pulls/1/comments',
+      'gh api --method GET repos/o/r/issues/1/comments -f per_page=100',
+      'gh api -X GET repos/o/r/issues/1/comments -f per_page=100',
+      'gh api repos/o/r/issues/1/comments --paginate',
+      'gh api repos/o/r/issues/1/comments --jq ".[].body"',
+    ]) expect(postsAComment(c), c).toBe(false)
+  })
+
+  it('sees a body that arrives without a field flag', () => {
+    // `--input` carries the whole request body, which is the natural form once a reply has been
+    // written to a file — and reading only field flags missed it completely.
+    for (const c of [
+      'gh api --method POST repos/o/r/issues/1/comments --input b.json',
+      'gh api -X POST repos/o/r/pulls/1/comments/1/replies --input b.json',
+      'gh api --method=PATCH repos/o/r/issues/comments/1 -f body=x',
+    ]) expect(postsAComment(c), c).toBe(true)
+  })
+
+  it('sees --input with no method, which gh sends as a POST', () => {
+    // The form where `--input` is the only signal there is: supplying a body makes `POST` the
+    // default, so nothing on the line says so. With an explicit `--method POST` the method carries
+    // it and this guard cannot be seen to matter.
+    expect(postsAComment('gh api repos/o/r/issues/1/comments --input b.json')).toBe(true)
+  })
+
+  it('does not treat a GET as a write even when a body rides along', () => {
+    // The one combination where the method guard decides. Everywhere else the body-field rule
+    // already answers, which is why removing this guard leaves the rest of the suite green.
+    expect(postsAComment('gh api --method GET repos/o/r/issues/1/comments --input q.json')).toBe(false)
+    expect(postsAComment('gh api --method GET repos/o/r/issues/1/comments -f body=x')).toBe(false)
   })
 })
 
@@ -90,6 +120,27 @@ describe('whether the card was read this session', () => {
 
   it('is false when another file was read', () => {
     expect(withTranscript([record('Read', { file_path: '/repo/AGENTS.md' })], cardWasRead)).toBe(false)
+  })
+
+  it('counts an @path attachment, which is not a tool call at all', () => {
+    // The most direct way the content arrives, and it carries no `message`: 64 such records in this
+    // project's transcripts. Reading only `message.content` blocked the person who had just
+    // supplied the card.
+    const attached = JSON.stringify({
+      type: 'user',
+      attachment: {
+        type: 'file',
+        filename: '/repo/.work/COMMENT-CARD.md',
+        content: { type: 'text', file: { filePath: '/repo/.work/COMMENT-CARD.md', content: '# card' } },
+      },
+      message: null,
+    })
+    expect(withTranscript([attached], cardWasRead)).toBe(true)
+  })
+
+  it('does not count an attachment of some other file', () => {
+    const other = JSON.stringify({ type: 'user', attachment: { type: 'file', filename: '/repo/AGENTS.md' }, message: null })
+    expect(withTranscript([other], cardWasRead)).toBe(false)
   })
 
   it('counts the other ways the content reaches the context', () => {
@@ -138,7 +189,7 @@ describe('the hook itself, spawned', () => {
   const readSource = (f) => readFileSync(path.join(REPO, 'scripts', f), 'utf8')
 
   /** A throwaway checkout carrying a card, so the hook resolves a root the way it will in use. */
-  const inRepo = (cmd, { card = true, transcript = [] } = {}) => {
+  const inRepo = (cmd, { card = true, transcript = [], from = '.' } = {}) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'card-repo-'))
     spawnSync('git', ['init', '-q', dir])
     if (card) {
@@ -151,9 +202,10 @@ describe('the hook itself, spawned', () => {
     }
     const tx = path.join(dir, 't.jsonl')
     writeFileSync(tx, transcript.join('\n') + '\n')
+    mkdirSync(path.join(dir, from), { recursive: true })
     try {
       return spawnSync('bash', [HOOK], {
-        input: JSON.stringify({ tool_input: { command: cmd }, cwd: dir, transcript_path: tx }),
+        input: JSON.stringify({ tool_input: { command: cmd }, cwd: path.join(dir, from), transcript_path: tx }),
         encoding: 'utf8',
         env: { ...process.env, CLAUDE_PROJECT_DIR: dir },
       })
@@ -180,6 +232,23 @@ describe('the hook itself, spawned', () => {
     // The prefilter matches what the shell would leave, the way the sibling gates do. Without the
     // squash, `g"h" pr comment` is a real invocation the hook never looks at.
     expect(inRepo('g"h" pr comment 701 --body "x"').status).toBe(2)
+  })
+
+  it('finds the card from a subdirectory, which is where a session usually is', () => {
+    // `payload.cwd` is the session's working directory, not the repo root — 26 distinct values in
+    // this project's transcripts and exactly one of them the root. Resolving the card against it
+    // looked equivalent and silently turned the gate off for the rest of any session that had
+    // `cd`-ed anywhere.
+    expect(inRepo('gh pr comment 701 --body "x"', { from: 'packages/relay' }).status).toBe(2)
+  })
+
+  it('fails open when the payload carries no transcript', () => {
+    const r = spawnSync('bash', [HOOK], {
+      input: JSON.stringify({ tool_input: { command: 'gh pr comment 1 --body x' }, cwd: REPO }),
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
+    })
+    expect(r.status, 'every other missing field lets the command through').toBe(0)
   })
 
   it('allows an unrelated command without paying for node', () => {

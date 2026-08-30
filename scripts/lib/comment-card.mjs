@@ -22,20 +22,47 @@ function commentInvocations(cmd) {
   ]
 }
 
+/** The value of a `gh api` flag, in both spellings: `--method GET` and `--method=GET`. */
+function apiFlag(words, ...names) {
+  for (let i = 0; i < words.length; i++) {
+    if (names.includes(words[i])) return words[i + 1] ?? null
+    for (const n of names) {
+      if (words[i].startsWith(`${n}=`)) return words[i].slice(n.length + 1)
+    }
+  }
+  return null
+}
+
 /**
- * `gh api …/comments` and `…/replies` with a body — the form an inline review reply takes.
+ * `gh api …/comments` and `…/replies` that would publish something.
  *
- * Not reachable through `ghInvocations`, whose shape is `gh <noun> <verb>`. Matched on the path
- * argument instead, and only when something is being written: a `POST` is the default for `gh api`
- * once a field is supplied, so the presence of a body field is the signal rather than the method.
+ * Not reachable through `ghInvocations`, whose shape is `gh <noun> <verb>`, so the path argument is
+ * what identifies it. What counts as writing took three corrections from review, each against
+ * `gh api --help` as the authority:
+ *
+ * - **`--input` carries a whole body with no field flag at all** — "a request body may be read from
+ *   file specified by `--input`" — and it is the natural form for a reply written to a file first.
+ *   Reading only field flags missed it entirely.
+ * - **A field does not mean a write.** "To send the parameters as a `GET` query string instead, use
+ *   `--method GET`" — so `--method GET … -f per_page=100` is a *read*, and blocking it blocks the
+ *   first thing the card asks for. Only a field named `body` is a body.
+ * - An explicit write method counts on its own, since a `POST` to a comments path is one whatever
+ *   else is on the line.
  */
 function apiCommentInvocations(cmd) {
   const found = []
   for (const words of ghInvocations(cmd, 'api', null)) {
     const path = words.find((w) => /\/(comments|replies)(\/|$|\?)/.test(w))
-    const writes = words.some((w) => w === '-f' || w === '-F' || w === '--field' || w === '--raw-field'
-      || /^-{1,2}(f|F|field|raw-field)=/.test(w))
-    if (path && writes) found.push(words)
+    if (!path) continue
+    const method = (apiFlag(words, '--method', '-X') ?? '').toUpperCase()
+    if (method === 'GET' || method === 'HEAD') continue
+    const hasInput = words.some((w) => w === '--input' || w.startsWith('--input='))
+    const hasBody = words.some((w, i) => {
+      const flags = ['-f', '-F', '--field', '--raw-field']
+      if (flags.includes(w)) return /^body=/.test(words[i + 1] ?? '')
+      return flags.some((f) => w.startsWith(`${f}=`)) && /^body=/.test(w.slice(w.indexOf('=') + 1))
+    })
+    if (hasInput || hasBody || ['POST', 'PATCH', 'PUT'].includes(method)) found.push(words)
   }
   return found
 }
@@ -69,6 +96,13 @@ export function cardWasRead(transcriptPath, cardName = 'COMMENT-CARD.md') {
     if (!line.includes(cardName)) continue
     let rec
     try { rec = JSON.parse(line) } catch { continue }
+    // **An `@path` mention is not a tool call and carries no `message` at all** — it arrives as its
+    // own record with an `attachment`, 64 of them in this project's transcripts. It is the most
+    // direct way the card's content reaches the context, and reading only `message.content` blocked
+    // the person who had just supplied it.
+    const att = rec?.attachment
+    if (att && (String(att.filename ?? '').endsWith(cardName)
+      || String(att.content?.file?.filePath ?? '').endsWith(cardName))) return true
     for (const c of rec?.message?.content ?? []) {
       // The `input` test is what excludes a text block naming the card — today's non-tool blocks
       // carry no `input` at all, so the type guard cannot currently change an answer. It stays for

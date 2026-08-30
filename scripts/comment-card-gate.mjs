@@ -31,13 +31,24 @@ try { payload = JSON.parse(raw) } catch { process.exit(0) }
 const cmd = payload?.tool_input?.command
 if (typeof cmd !== 'string' || !cmd) process.exit(0)
 
-const root = typeof payload?.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd()
+// Fail open here too. Every other missing field lets the command through; a missing transcript is
+// the one that used to block, which is the wrong direction for a gate whose whole posture is that
+// it guards a cooperative reader.
+const transcript = payload?.transcript_path
+if (typeof transcript !== 'string' || !transcript) process.exit(0)
+
+// **The shell already resolved the root and `cd`-ed there**, so this is it. Re-deriving it from
+// `payload.cwd` looked equivalent and was not: that field is the session's working directory, which
+// is a subdirectory for most of a session's life — 26 distinct values in this project's transcripts,
+// exactly one of them the repo root. The gate then looked for the card under `packages/relay/.work/`,
+// found nothing, and allowed the command for the same reason a contributor's checkout allows it.
+const root = process.cwd()
 
 let verdict
 try {
   verdict = judge(cmd, {
     cardPath: path.join(root, CARD),
-    transcriptPath: payload?.transcript_path,
+    transcriptPath: transcript,
   })
 } catch { process.exit(0) }
 
