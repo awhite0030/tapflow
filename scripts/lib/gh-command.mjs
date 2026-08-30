@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import path from 'node:path'
 
 /**
  * Reading a Bash command well enough to tell a `gh` invocation from the words that spell one.
@@ -83,8 +84,17 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 /** Wrappers that keep the next word in command position. */
 const PASSTHROUGH = new Set(['env', 'sudo', 'command', 'nohup', 'time', 'xargs'])
 
-/** Separators after which a new command begins. */
-const SEPARATOR = new Set([NEWLINE, ';', ';;', '&', '&&', '|', '||', '(', ')', '{', '}', 'then', 'do', 'else', '!'])
+/**
+ * Separators after which a new command begins.
+ *
+ * **The control-flow keywords are here because they take a command as their condition.** `if`,
+ * `elif`, `while` and `until` left `atStart` false, so `if gh issue create …; then` was invisible to
+ * both gates — the mirror of `then`/`do`/`else`, which were in the set from the start.
+ */
+const SEPARATOR = new Set([
+  NEWLINE, ';', ';;', '&', '&&', '|', '||', '(', ')', '{', '}',
+  'if', 'elif', 'then', 'while', 'until', 'do', 'else', '!',
+])
 
 /**
  * The opening of a heredoc: `<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`.
@@ -107,7 +117,31 @@ const lines = (cmd) => cmd.split(/\r?\n/)
  * The caller blocks when a command carries more than one, because picking is guessing. A heredoc
  * that is never terminated has no payload anyone can read and is skipped.
  */
-export function heredocs(cmd) {
+export const heredocs = (cmd) => heredocEntries(cmd).map((e) => e.body)
+
+/**
+ * The redirection target on a line, or null — the last one, since a later `>` wins.
+ *
+ * `&` is excluded so `2>&1` is not read as a filename, and `<`/`|`/`;` cannot appear in the target.
+ */
+const REDIRECT = /(?:^|\s)\d?>>?\s*(?!&)("[^"]*"|'[^']*'|[^\s<>|&;]+)/g
+
+function redirectTarget(line) {
+  let target = null
+  for (const m of line.matchAll(REDIRECT)) target = m[1].replace(/^['"]|['"]$/g, '')
+  return target
+}
+
+/**
+ * Every heredoc payload with the file its opening line redirects to, if any.
+ *
+ * **Which heredoc is the body is a question about the redirection, not about how many there are.**
+ * Treating the command's only heredoc as the body did two wrong things at once: an unrelated one was
+ * blamed on a body file whose contents were never read, and a heredoc *overwriting* an existing body
+ * file was ignored in favour of the stale text on disk — so a body the command was about to replace
+ * is what got judged, and the replacement reached GitHub unread.
+ */
+export function heredocEntries(cmd) {
   const src = lines(cmd)
   const out = []
   for (let i = 0; i < src.length; i++) {
@@ -121,11 +155,20 @@ export function heredocs(cmd) {
       if (candidate === delim) break
       body.push(src[j])
     }
-    if (j >= src.length) continue          // never terminated: not a payload anyone can read
-    out.push(body.join('\n'))
+    if (j >= src.length) continue
+    out.push({ target: redirectTarget(src[i]), body: body.join('\n') })
     i = j
   }
   return out
+}
+
+/** The payload of a heredoc this command writes to `resolvedPath`, or null. What a command is about
+ *  to write is what reaches GitHub, so it outranks whatever is on disk now. */
+export function heredocWrittenTo(cmd, resolvedPath, cwd) {
+  for (const { target, body } of heredocEntries(cmd)) {
+    if (target !== null && path.resolve(cwd, target) === resolvedPath) return body
+  }
+  return null
 }
 
 /**
@@ -196,17 +239,22 @@ export function ghInvocations(cmd, noun, verbs) {
  * verified against the binary, `gh issue list -Lx` answers `invalid argument "x" for "-L, --limit"`.
  * The prefix rule refuses a double dash, or `--title` — which does start with `-t` — would come back
  * as `itle`.
+ *
+ * **The last occurrence wins, because that is what pflag does.** A scalar flag given twice overwrites,
+ * so reading the first let `--body "Parent: #607" --body "a bug"` satisfy the gate with text GitHub
+ * would never receive.
  */
 function flagArg(words, long, short) {
   const eq = new RegExp(`^${long}=([\\s\\S]*)$`)
+  let found = null
   for (let i = 0; i < words.length; i++) {
     const w = words[i]
-    if (w === long || w === short) return words[i + 1] ?? null
+    if (w === long || w === short) { found = words[i + 1] ?? null; continue }
     const m = eq.exec(w)
-    if (m) return m[1]
-    if (!w.startsWith('--') && w.startsWith(short) && w.length > short.length) return w.slice(short.length)
+    if (m) { found = m[1]; continue }
+    if (!w.startsWith('--') && w.startsWith(short) && w.length > short.length) found = w.slice(short.length)
   }
-  return null
+  return found
 }
 
 /** The `--body-file` / `-F` argument, quoting resolved. `-` means stdin, which is not a path. */

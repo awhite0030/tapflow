@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { ghInvocations, titleArg, bodyArg, bodyFileArg, heredocs, readBodyFile } from './gh-command.mjs'
+import { ghInvocations, titleArg, bodyArg, bodyFileArg, heredocs, heredocWrittenTo, readBodyFile } from './gh-command.mjs'
 
 /**
  * Are this PR's or issue's title and body in English, as AGENTS.md requires?
@@ -90,17 +90,26 @@ function* textsReachingGitHub(words, cmd, readFile, cwd) {
   if (body !== null) yield ['--body', body]
 
   const file = bodyFileArg(words)
-  const docs = heredocs(cmd)
   if (file !== null && file !== '-') {
-    let contents = null
-    try { contents = readFile(path.resolve(cwd, file)) } catch { contents = null }
-    if (contents !== null) yield [`the body file ${file}`, contents]
-    else if (docs.length === 1) yield [`the heredoc written to ${file}`, docs[0]]
+    const resolved = path.resolve(cwd, file)
+    // **What the command is about to write outranks what is on disk.** A heredoc overwriting an
+    // existing body file was losing to the stale text, so a Korean body replacing an English one
+    // reached GitHub unjudged; and with no target to match on, an unrelated heredoc was blamed on a
+    // body file whose contents were never read.
+    const pending = heredocWrittenTo(cmd, resolved, cwd)
+    if (pending !== null) yield [`the heredoc written to ${file}`, pending]
+    else {
+      let contents = null
+      try { contents = readFile(resolved) } catch { contents = null }
+      if (contents !== null) yield [`the body file ${file}`, contents]
+    }
   }
   if (file === '-') {
-    // Several heredocs means the command builds text elsewhere too, and picking would be guessing —
-    // the parent gate blocks on that ambiguity because a wrong guess there is permissive; here a
-    // wrong guess would refuse someone else's prose, so it is left alone.
+    const docs = heredocs(cmd)
+    // Stdin has no redirection target to match on, so the sole-heredoc rule still applies here.
+    // Several means the command builds text elsewhere too and picking would be guessing — the parent
+    // gate blocks on that ambiguity because a wrong guess there is permissive; here a wrong guess
+    // would refuse someone else's prose, so it is left alone.
     if (docs.length === 1) yield ['the heredoc body', docs[0]]
   }
 }

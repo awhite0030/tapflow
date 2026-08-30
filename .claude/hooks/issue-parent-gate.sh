@@ -13,6 +13,13 @@
 # A `Parent:` line is greppable, so the parent's checklist can be regenerated instead of maintained
 # by memory.
 #
+# **What the prefilter cannot see is an obfuscated spelling.** `g"h" issue create` survives quote
+# removal as a real invocation and never matches the raw text, so the gate exits before the parser
+# runs. Left as it is on purpose: these gates state a cooperative-but-forgetful agent as their threat
+# model, writing `g"h"` is intent rather than forgetfulness, and the alternative — dropping the
+# prefilter — puts a node process on every Bash call in the session, which is the cost it exists to
+# avoid.
+#
 # **This file is only the prefilter.** Deciding needs the command tokenized and the body parsed, and
 # the version that tried both in shell got three rules wrong at once — `gh issue new` walked through,
 # so did an environment assignment before `gh`, `-F "issue body.md"` read a file called `issue`, and

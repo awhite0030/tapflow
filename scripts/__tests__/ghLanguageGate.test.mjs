@@ -194,9 +194,26 @@ describe('a body file the same command is about to write', () => {
     expect(verdict(cmd).blocked).toBe(false)
   })
 
-  it('prefers the file when there is one to read', () => {
-    const cmd = `cat > b.md <<'EOF'\n${KO}\nEOF\n\n${PR_CREATE} -F b.md`
-    expect(verdict(cmd, { 'b.md': 'English on disk.' }).blocked, 'disk wins over the payload').toBe(false)
+  it('prefers the pending write to the stale file it replaces', () => {
+    // **This assertion used to say the opposite, and the opposite was a bypass.** An English body on
+    // disk, overwritten by a Korean heredoc in the same call: judging the file judges text that no
+    // longer exists by the time `gh` runs. Written as "disk wins over the payload", it read like a
+    // decision and was a hole with a test holding it open.
+    const cmd = `cat > b.md <<'EOF'\n${KO}입니다.\nEOF\n\n${PR_CREATE} -F b.md`
+    expect(verdict(cmd, { 'b.md': 'English on disk.' }).blocked).toBe(true)
+  })
+
+  it('does not blame an unrelated heredoc on the body file', () => {
+    // The other half: with no target to match on, the command's only heredoc was assigned to a body
+    // file whose contents were never read — and the message named that path.
+    const cmd = `cat > notes.md <<'EOF'\n${KO}입니다.\nEOF\n\n${PR_CREATE} -F body.md`
+    expect(verdict(cmd, { 'body.md': 'English body.' }).blocked).toBe(false)
+    expect(verdict(cmd).blocked, 'nor when the body file cannot be read at all').toBe(false)
+  })
+
+  it('still judges the heredoc that writes a body file which does not exist yet', () => {
+    const cmd = `cat > b.md <<'EOF'\n${KO}입니다.\nEOF\n\n${PR_CREATE} -F b.md`
+    expect(verdict(cmd).blocked).toBe(true)
   })
 })
 

@@ -20,6 +20,13 @@
 # it (#699). Deriving it from `CLAUDE_PROJECT_DIR` alone means a session in a worktree — or one whose
 # project dir points anywhere else — finds no `scripts/` and the gate turns itself off.
 #
+# **What the prefilter cannot see is an obfuscated spelling.** `g"h" issue create` survives quote
+# removal as a real invocation and never matches the raw text, so the gate exits before the parser
+# runs. Left as it is on purpose: these gates state a cooperative-but-forgetful agent as their threat
+# model, writing `g"h"` is intent rather than forgetfulness, and the alternative — dropping the
+# prefilter — puts a node process on every Bash call in the session, which is the cost it exists to
+# avoid.
+#
 # **This file is only the prefilter.** Deciding needs the command tokenized and the body read, which
 # is `scripts/gh-language-gate.mjs`, where it is tested.
 

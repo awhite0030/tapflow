@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { proseLines } from './prose-lines.mjs'
-import { ghInvocations, bodyFileArg, bodyArg, heredocs, readBodyFile } from './gh-command.mjs'
+import { ghInvocations, bodyFileArg, bodyArg, heredocs, heredocWrittenTo, readBodyFile } from './gh-command.mjs'
 
 /**
  * Does an issue split out of other work name what it came from?
@@ -75,7 +75,11 @@ export function judge(cmd, readFile = readBodyFile, cwd = process.cwd()) {
       // repository root while `gh` runs where the session is, so resolving here is what lets a
       // relative path written from a subdirectory be read at all rather than merely reported.
       const resolved = path.resolve(cwd, file)
-      try { body = readFile(resolved) } catch (err) { unreadable = { file, resolved, code: err?.code ?? null } }
+      // A heredoc this same command writes to that path is the body; the file on disk, if any, is
+      // about to be replaced by it.
+      const pending = heredocWrittenTo(cmd, resolved, cwd)
+      if (pending !== null) body = pending
+      else try { body = readFile(resolved) } catch (err) { unreadable = { file, resolved, code: err?.code ?? null } }
     }
     if (body === null) body = bodyArg(words)
     // A heredoc reaches `--body-file -`; its text is in the command and nowhere else. Reading the

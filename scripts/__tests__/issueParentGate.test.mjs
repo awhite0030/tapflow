@@ -481,3 +481,48 @@ describe('a body file that is not a regular file', () => {
     }
   })
 })
+
+describe('a command reached through a control condition', () => {
+  // `if`, `elif`, `while` and `until` take a command as their condition, so the word after one is in
+  // command position — the mirror of `then`/`do`/`else`, which were separators from the start.
+  // Without them `if gh issue create …; then` was invisible to both gates.
+  for (const kw of ['if', 'elif', 'while', 'until']) {
+    it(`is seen after \`${kw}\``, () => {
+      const cmd = `${kw} ${CREATE} --title x --body "a bug"; then :; fi`
+      expect(issueCreateInvocations(cmd)).toHaveLength(1)
+      expect(verdict(cmd).blocked).toBe(true)
+    })
+  }
+})
+
+describe('a scalar flag given twice', () => {
+  it('is read the way pflag reads it — the last one wins', () => {
+    // Reading the first let a command satisfy the gate with text GitHub would never receive:
+    // `--body "Parent: #607" --body "a bug"` sends the second.
+    expect(verdict(`${CREATE} --title x --body "${PARENT}" --body "a bug"`).blocked).toBe(true)
+    expect(verdict(`${CREATE} --title x --body "a bug" --body "${PARENT}"`).blocked).toBe(false)
+    expect(bodyFileArg(tokenize(`${CREATE} -F first.md --body-file second.md`))).toBe('second.md')
+  })
+})
+
+describe('a body file the command writes before sending it', () => {
+  it('is judged from the heredoc that targets it, not from the disk', () => {
+    const cmd = `cat > b.md <<'EOF'\n${PARENT}\nEOF\n\n${CREATE} --title x -F b.md`
+    expect(verdict(cmd, { 'b.md': 'no parent on disk' }).blocked, 'the pending write carries it').toBe(false)
+  })
+
+  it('does not take an unrelated heredoc for the body', () => {
+    const cmd = `cat > notes.md <<'EOF'\n${PARENT}\nEOF\n\n${CREATE} --title x -F b.md`
+    expect(verdict(cmd, { 'b.md': 'no parent on disk' }).blocked, 'notes.md is not the body').toBe(true)
+  })
+
+  it('reads a quoted redirection target', () => {
+    const cmd = `cat > "my body.md" <<'EOF'\n${PARENT}\nEOF\n\n${CREATE} --title x -F "my body.md"`
+    expect(verdict(cmd).blocked).toBe(false)
+  })
+
+  it('does not read `2>&1` as a redirection target', () => {
+    const cmd = `cat > b.md 2>&1 <<'EOF'\n${PARENT}\nEOF\n\n${CREATE} --title x -F b.md`
+    expect(verdict(cmd).blocked).toBe(false)
+  })
+})
