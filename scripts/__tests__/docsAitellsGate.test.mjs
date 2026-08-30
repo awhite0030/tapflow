@@ -73,6 +73,14 @@ describe('which docs edits the gate can see', () => {
     expect(blocked([EDIT('/repo/docs/ko/guide/agent.md')])).toBe(true)
   })
 
+  it('sees Markdown at any depth under docs/', () => {
+    // The prose said `docs/*.md`, which in a reader's head excludes a nested path even though the
+    // shell glob and the jq filter both take it. Every doc in this repo is nested.
+    for (const f of ['/repo/docs/a.md', '/repo/docs/guide/agent.md', '/repo/docs/ko/reference/cli.md']) {
+      expect(blocked([EDIT(f)]), f).toBe(true)
+    }
+  })
+
   it('does not fire on an edit outside docs/', () => {
     expect(blocked([EDIT('/repo/packages/relay/src/server.ts'), WRITE('/repo/AGENTS.md')])).toBe(false)
   })

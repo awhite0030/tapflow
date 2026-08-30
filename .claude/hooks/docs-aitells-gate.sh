@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Stop: if this session edited docs/*.md and never ran /ai-tells detect, block finishing and ask for
+# Stop: if this session edited any Markdown under `docs/` — at any depth — and never ran
+# /ai-tells detect, block finishing and ask for
 # the pass. Running ai-tells once satisfies it, so there is no loop.
 #
 # **English, because a contributor's agent reads it.** `.claude/` is committed, so these hooks fire

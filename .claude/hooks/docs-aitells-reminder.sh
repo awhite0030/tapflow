@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PostToolUse(Edit|Write|MultiEdit): editing prose under docs/ injects a reminder to run the
+# PostToolUse(Edit|Write|MultiEdit): editing prose under `docs/` at any depth injects a reminder to run the
 # ai-tells detect pass. A nudge, not a gate — the gate is at Stop (docs-aitells-gate.sh).
 #
 # **English, because a contributor's agent reads it.** `.claude/` is committed, so these hooks fire
