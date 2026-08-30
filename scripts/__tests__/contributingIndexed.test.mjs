@@ -31,7 +31,6 @@ const dir = join(root, 'contributing')
  * this is the third caller.
  */
 const proseOf = (text) => [...proseLines(text)].map(({ line }) => line).join('\n')
-const prose = (file) => proseOf(readFileSync(file, 'utf8'))
 
 /** `| [name.md](./name.md) | type | topics |` — the row shape, with the type captured. */
 const ROW = /^\| \[([^\]]+\.md)\]\(\.\/([^)]+\.md)\) \| (\S+) \| .+ \|$/gm
