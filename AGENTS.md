@@ -46,6 +46,9 @@ For the product direction and philosophy behind these — Manual First, Flow Cap
 - **Stop before risky actions** — get user confirmation before any hard-to-reverse operation (`git push --force`, `git reset --hard`, sending messages to external systems, DB drops, etc.). Specifically:
   - Only create commits or PRs when the user explicitly requests it.
   - **Do not merge PRs.** Always leave merging to the user — even with `--admin`. Create the PR and stop.
+    Enforced by the PreToolUse hook `.claude/hooks/pr-merge-guard.sh`, which blocks `gh pr merge` and
+    `gh pr review` in command position. It does not cover the `gh api` and git plumbing equivalents:
+    same threat model, a cooperative agent rather than an adversary.
   - **Avoid breaking changes.** If unavoidable, report to the user and get approval before proceeding. Breaking change scope: public API / interface signature changes, DB schema changes, WebSocket message protocol changes, CLI command / flag changes.
 
 ---
@@ -59,6 +62,20 @@ For the product direction and philosophy behind these — Manual First, Flow Cap
 → [CONTRIBUTING.md](./CONTRIBUTING.md)
 
 Write GitHub PR and issue titles/bodies in **English**, and write new code comments in **English** too. (Conversation and docs follow the existing KO/EN rules.) Code comments default to English so contributors of any language can read and extend them — existing Korean comments stay until the line they sit on is changed.
+
+The PR and issue half is enforced by `.claude/hooks/gh-language-gate.sh`, which reads the title, the
+body, the contents of a `--body-file`, and the heredoc behind `--body-file -` — so the form
+CONTRIBUTING recommends is covered rather than only the text typed inline. **A line counts as Korean
+only when its Hangul outnumbers its Latin letters**, so an English sentence naming a Korean UI label
+passes; #660 shipped one. `gh pr comment` is deliberately out of scope, because a review comment is a
+conversation and the rule is about titles and bodies.
+
+**Docs prose is checked before the session ends.** Editing any Markdown under `docs/` — nested too,
+so `docs/ko/guide/agent.md` counts — and finishing without running
+`/ai-tells detect` is blocked by `.claude/hooks/docs-aitells-gate.sh`, with
+`docs-aitells-reminder.sh` nudging at the moment of the edit. The check is a **lint, not a
+laundry**: it flags AI-writing tells in prose a human wrote, and `rewrite` stays manual and
+docs-only. Stopping a second time passes, so the block is a prompt rather than a wall.
 
 When starting a **new** task that requires code changes (not when continuing work on an existing branch):
 1. `git checkout main && git pull origin main` — start from the latest main.
