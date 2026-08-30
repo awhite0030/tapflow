@@ -58,7 +58,7 @@ export async function cmdStart(opts: StartOptions): Promise<void> {
   }
   const httpScheme = tls ? 'https' : 'http'
   const wsScheme = tls ? 'wss' : 'ws'
-  const agentConnectHost = tls && displayHost !== 'localhost' ? displayHost : '<this-ip>'
+  const agentConnectHost = tls && displayHost.toLowerCase() !== 'localhost' ? displayHost : '<this-ip>'
   // The co-located agent connects over localhost; the agent accepts the domain cert there (see isLocalhostWss).
   const relayUrl = `${wsScheme}://localhost:${RELAY_PORT}`
 

@@ -147,18 +147,18 @@ describe('cmdRelayStart', () => {
     expect(line).not.toContain('ws://localhost:4000')
   })
 
-  it('TLS host가 localhost로 fallback되면 agent-connect 안내는 placeholder를 유지', async () => {
+  it.each(['localhost', 'Localhost'])('TLS host가 %s로 fallback되면 agent-connect 안내는 placeholder를 유지', async (displayHost) => {
     vi.mocked(config).tls = { mode: 'import-cert', certPath: '/cert.pem', keyPath: '/key.pem' }
     vi.mocked(createCertProvider).mockReturnValue({
       ensureCert: vi.fn().mockResolvedValue({ cert: 'CERT', key: 'KEY' }),
     } as never)
-    vi.mocked(resolveRelayDisplayHost).mockReturnValue('localhost')
+    vi.mocked(resolveRelayDisplayHost).mockReturnValue(displayHost)
 
     await cmdRelayStart({})
 
     const line = agentConnectLine(output)
     expect(line).toContain('wss://<host>:4000')
-    expect(line).not.toContain('wss://localhost:4000')
+    expect(line).not.toContain(`wss://${displayHost}:4000`)
   })
 
   it('Connect Mac agents 안내에 --token PAT와 발급처가 포함됨', async () => {

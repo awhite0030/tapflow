@@ -169,7 +169,7 @@ describe('cmdStart', () => {
     expect(line).not.toContain('ws://localhost:4000')
   })
 
-  it('TLS host가 localhost로 fallback되면 relay-only agent-connect 안내는 placeholder를 유지', async () => {
+  it.each(['localhost', 'Localhost'])('TLS host가 %s로 fallback되면 relay-only agent-connect 안내는 placeholder를 유지', async (displayHost) => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux')
     mockExecSync.mockImplementation((cmd) => {
       if ((cmd as string) === 'which adb') throw new Error('not found')
@@ -179,7 +179,7 @@ describe('cmdStart', () => {
     vi.mocked(createCertProvider).mockReturnValue({
       ensureCert: vi.fn().mockResolvedValue({ cert: 'CERT', key: 'KEY' }),
     } as never)
-    vi.mocked(resolveRelayDisplayHost).mockReturnValue('localhost')
+    vi.mocked(resolveRelayDisplayHost).mockReturnValue(displayHost)
     const output: string[] = []
     vi.spyOn(console, 'log').mockImplementation((...args) => output.push(args.join(' ')))
 
@@ -187,7 +187,7 @@ describe('cmdStart', () => {
 
     const line = agentConnectLine(output)
     expect(line).toContain('wss://<this-ip>:4000')
-    expect(line).not.toContain('wss://localhost:4000')
+    expect(line).not.toContain(`wss://${displayHost}:4000`)
   })
 
   it('macOS + adb 있으면 iOS와 Android 모두 연결', async () => {

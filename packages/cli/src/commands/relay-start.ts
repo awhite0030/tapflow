@@ -41,7 +41,7 @@ export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
   }
   const httpScheme = tls ? 'https' : 'http'
   const wsScheme = tls ? 'wss' : 'ws'
-  const agentConnectHost = tls && displayHost !== 'localhost' ? displayHost : '<host>'
+  const agentConnectHost = tls && displayHost.toLowerCase() !== 'localhost' ? displayHost : '<host>'
 
   const proxyWarning = proxyWithoutPublicUrlWarning(config)
   if (proxyWarning) warn(proxyWarning)
