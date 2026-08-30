@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -49,6 +49,7 @@ const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 type Props = { buildId: number }
 
 export function CommentPanel({ buildId }: Props) {
+   const fileErrorId = useId()
   const [comments, setComments] = useState<Comment[]>([])
   const [body, setBody] = useState('')
   const [file, setFile] = useState<File | null>(null)
@@ -197,15 +198,10 @@ export function CommentPanel({ buildId }: Props) {
             onChange={(e) => setBody(e.target.value)}
             className="min-h-16 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-sm"
           />
-          {(file || fileError) && (
-            <div className="px-3 -mt-1 pb-1">
-              {file && <p className="text-xs text-muted-foreground">{file.name}</p>}
-              {fileError && (
-                <p id="file-error" role="alert" className="text-xs text-destructive">
-                  {fileError}
-                </p>
-              )}
-            </div>
+          {fileError && (
+            <p id={fileErrorId} role="alert" className="text-xs text-destructive">
+              {fileError}
+            </p>
           )}
           <div className="flex items-center gap-2 px-2 py-2">
             <Button
@@ -214,6 +210,7 @@ export function CommentPanel({ buildId }: Props) {
               size="icon"
               className="h-7 w-7 text-muted-foreground"
               aria-label="Attach image"
+              aria-describedby={fileError ? fileErrorId : undefined}
               onClick={() => fileRef.current?.click()}
             >
               <ImagePlus className="h-4 w-4" aria-hidden="true" />
@@ -223,7 +220,6 @@ export function CommentPanel({ buildId }: Props) {
               type="file"
               accept="image/png,image/jpeg,image/webp"
               className="hidden"
-              aria-describedby={fileError ? 'file-error' : undefined}
               onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileChange(f) }}
             />
             <div className="flex-1" />

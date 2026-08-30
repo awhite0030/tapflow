@@ -122,7 +122,7 @@ export function MacResources() {
               <button
                 key={name}
                 onClick={() => setSelectedAgent(name)}
-                aria-current={isSelected ? 'page' : undefined}
+                aria-pressed={isSelected}
                 className={[
                   'flex items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent transition-colors',
                   isSelected ? 'bg-accent font-medium' : '',
