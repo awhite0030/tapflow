@@ -198,10 +198,15 @@ export function CommentPanel({ buildId }: Props) {
             onChange={(e) => setBody(e.target.value)}
             className="min-h-16 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-sm"
           />
-          {fileError && (
-            <p id={fileErrorId} role="alert" className="text-xs text-destructive">
-              {fileError}
-            </p>
+          {(file || fileError) && (
+            <div className="px-3 -mt-1 pb-1">
+              {file && <p className="text-xs text-muted-foreground">{file.name}</p>}
+              {fileError && (
+                <p id={fileErrorId} role="alert" className="text-xs text-destructive">
+                  {fileError}
+                </p>
+              )}
+            </div>
           )}
           <div className="flex items-center gap-2 px-2 py-2">
             <Button
