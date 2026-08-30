@@ -253,8 +253,31 @@ describe('the hook resolves the checkout the session is in', () => {
     // which `contributing/test-and-guard-coverage.md` names as the shape to avoid. This checks the
     // one thing that is visible instead.
     const hook = readFileSync(path.join(REPO, '.claude/hooks/gh-language-gate.sh'), 'utf8')
-    expect(hook).toMatch(/case "\$cmd" in/)
+    // Asserted on what the haystack is *derived from*, not on one spelling of it: the first version
+    // pinned `case "$cmd" in` and broke the moment the same command was squashed into `$squashed`
+    // first, which changed nothing about the property being held. That is the standing cost of a
+    // source-text floor, and pinning the derivation is as close to the property as text gets.
+    expect(hook, 'the haystack comes from the command').toMatch(/squashed=\$\{cmd\/\//)
     expect(hook, 'the payload is not the haystack').not.toMatch(/case "\$input" in/)
     expect(runIn('rg -n "highlight" --pretty src', REPO, REPO).status, 'and it still allows it').toBe(0)
+  })
+})
+
+describe('the prefilter matches what the shell would leave', () => {
+  const run = (cmd) => spawnSync('bash', [path.join(REPO, '.claude/hooks/gh-language-gate.sh')], {
+    input: JSON.stringify({ tool_input: { command: cmd }, cwd: REPO }),
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
+  })
+
+  it('reaches the parser through a quoted break in the command word', () => {
+    // Same hole as the issue-parent gate's, and the same one line closes it. Without it a Korean
+    // title sails past on a spelling that is a real invocation everywhere except in the raw text.
+    expect(run(`g"h" pr create --title "${KO} 제목"`).status).toBe(2)
+    expect(run(`gh p"r" create --title "${KO} 제목"`).status).toBe(2)
+  })
+
+  it('still lets an unrelated command past', () => {
+    expect(run('rg -n "highlight" --pretty src').status).toBe(0)
   })
 })

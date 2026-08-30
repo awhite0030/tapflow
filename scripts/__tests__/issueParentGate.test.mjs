@@ -526,3 +526,35 @@ describe('a body file the command writes before sending it', () => {
     expect(verdict(cmd).blocked).toBe(false)
   })
 })
+
+describe('the prefilter matches what the shell would leave', () => {
+  const run = (cmd) => spawnSync('bash', [path.join(REPO, '.claude/hooks/issue-parent-gate.sh')], {
+    input: JSON.stringify({ tool_input: { command: cmd }, cwd: REPO }),
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
+  })
+
+  // The prefilter reads raw text and the parser reads a tokenized command, so a spelling that only
+  // becomes `gh issue create` after quote removal was a real invocation the gate exited before
+  // seeing. Squashing the characters the shell strips costs nothing, because it can only widen what
+  // reaches the parser — and the parser is what decides.
+  const SPELLINGS = {
+    'a double-quoted break': 'g"h" issue create --title x --body "a bug"',
+    'a single-quoted break': "g'h' issue create --title x --body 'a bug'",
+    'a break in the noun': 'gh iss"ue" create --title x --body "a bug"',
+    'a backslash escape': 'g\\h issue create --title x --body "a bug"',
+  }
+  for (const [name, cmd] of Object.entries(SPELLINGS)) {
+    it(`reaches the parser through ${name}`, () => {
+      expect(run(cmd).status).toBe(2)
+    })
+  }
+
+  it('still lets an unrelated command past without paying for node', () => {
+    // The widening has to stay narrow enough to be worth having. These are the shapes the prefilter
+    // exists for, and none of them contains the pair after squashing.
+    for (const cmd of ['rg -n "highlight" --pretty src', 'npm run build 2>&1 | grep -i high', 'git status --short']) {
+      expect(run(cmd).status, cmd).toBe(0)
+    }
+  })
+})

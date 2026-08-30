@@ -13,12 +13,12 @@
 # A `Parent:` line is greppable, so the parent's checklist can be regenerated instead of maintained
 # by memory.
 #
-# **What the prefilter cannot see is an obfuscated spelling.** `g"h" issue create` survives quote
-# removal as a real invocation and never matches the raw text, so the gate exits before the parser
-# runs. Left as it is on purpose: these gates state a cooperative-but-forgetful agent as their threat
-# model, writing `g"h"` is intent rather than forgetfulness, and the alternative — dropping the
-# prefilter — puts a node process on every Bash call in the session, which is the cost it exists to
-# avoid.
+# **It matches what the shell would leave, not what was typed.** The prefilter reads raw text while
+# the parser reads a tokenized command, so `g"h" issue create` -- a real invocation -- was not in the
+# raw text and the gate exited before the parser ever saw it. Removing the quotes and backslashes the
+# shell removes closes that for nothing, because squashing only ever *widens* what reaches the
+# parser, and the parser is the half that decides. It remains a prefilter rather than a decision:
+# `$VAR` and `$(...)` are unresolved here, as they are there.
 #
 # **This file is only the prefilter.** Deciding needs the command tokenized and the body parsed, and
 # the version that tried both in shell got three rules wrong at once — `gh issue new` walked through,
@@ -36,7 +36,14 @@ input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)
 [ -n "$cmd" ] || cmd=$input
 
-case "$cmd" in
+
+# The characters the shell strips on the way to a command word. Two substitutions rather than one
+# bracket expression: a backslash inside one is its own argument about quoting, and this has to be
+# read correctly by whoever edits it next.
+squashed=${cmd//[\"\']/}
+squashed=${squashed//\\/}
+
+case "$squashed" in
   *gh*issue*) ;;
   *) exit 0 ;;
 esac
