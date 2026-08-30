@@ -122,13 +122,20 @@ export function MacResources() {
               <button
                 key={name}
                 onClick={() => setSelectedAgent(name)}
+                aria-current={isSelected ? 'page' : undefined}
                 className={[
                   'flex items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent transition-colors',
                   isSelected ? 'bg-accent font-medium' : '',
                 ].join(' ')}
               >
-                <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-muted-foreground/40'}`} />
+                <span
+                  className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                    isOnline ? 'bg-emerald-400' : 'bg-muted-foreground/40'
+                  }`}
+                  aria-hidden="true"
+                />
                 <span className="truncate min-w-0">{name}</span>
+                <span className="sr-only">{isOnline ? 'Online' : 'Offline'}</span>
               </button>
             )
           })
@@ -137,6 +144,7 @@ export function MacResources() {
 
       {/* Main content */}
       <div className="flex-1 min-w-0 overflow-auto">
+        <h1 className="sr-only">Mac Resources</h1>
         {!selectedAgent ? (
           <div className="flex h-full items-center justify-center gap-2 text-muted-foreground">
             <Monitor className="h-8 w-8" />
@@ -145,7 +153,7 @@ export function MacResources() {
         ) : (
           <div className="flex flex-col gap-6 p-6">
             <div className="flex items-center justify-between">
-              <h1 className="text-base font-semibold">{selectedAgent}</h1>
+              <h2 className="text-base font-semibold">{selectedAgent}</h2>
               <Tabs value={range} onValueChange={(v) => setRange(v as Range)}>
                 <TabsList>
                   {(Object.keys(RANGE_LABELS) as Range[]).map((r) => (
