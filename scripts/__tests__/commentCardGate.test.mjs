@@ -27,6 +27,8 @@ const READ_CARD = record('Read', { file_path: CARD })
 /** `cardWasRead` against the card this repo would resolve, which is the whole point of the second
  *  argument: a filename match accepted `/tmp/COMMENT-CARD.md` and `NOT-COMMENT-CARD.md` alike. */
 const sawCard = (tx) => cardWasRead(tx, CARD)
+/** A Bash record with the directory it ran in, which is what a relative mention is resolved against. */
+const bashAt = (cwd, command) => JSON.stringify({ cwd, message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } })
 
 describe('which commands post a comment', () => {
   const POSTS = {
@@ -149,6 +151,26 @@ describe('whether the card was read this session', () => {
     }
   })
 
+  it('resolves a relative shell mention against the directory it ran in', () => {
+    // `cat .work/COMMENT-CARD.md` counted the same from anywhere, so a command that failed — or ran
+    // in a different checkout — satisfied the gate. Every transcript record carries the `cwd` the
+    // call ran in; this project's carry 22 distinct ones, so the wrong-directory case is the common
+    // one rather than a corner.
+    const repo = path.dirname(path.dirname(CARD))
+    expect(withTranscript([bashAt(repo, 'cat .work/COMMENT-CARD.md')], sawCard), 'at the root').toBe(true)
+    expect(withTranscript([bashAt(path.join(repo, 'packages/relay'), 'cat .work/COMMENT-CARD.md')], sawCard),
+      'in a subdirectory, where it fails').toBe(false)
+    expect(withTranscript([bashAt('/somewhere/else', 'cat .work/COMMENT-CARD.md')], sawCard),
+      'in another checkout').toBe(false)
+  })
+
+  it('takes an absolute mention with no directory to resolve against', () => {
+    const noCwd = JSON.stringify({ message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: `cat ${CARD}` } }] } })
+    expect(withTranscript([noCwd], sawCard)).toBe(true)
+    const relativeNoCwd = JSON.stringify({ message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'cat .work/COMMENT-CARD.md' } }] } })
+    expect(withTranscript([relativeNoCwd], sawCard), 'a relative one has nothing to resolve with').toBe(false)
+  })
+
   it('is false when another file was read', () => {
     expect(withTranscript([record('Read', { file_path: '/repo/AGENTS.md' })], sawCard)).toBe(false)
   })
@@ -175,7 +197,7 @@ describe('whether the card was read this session', () => {
     // and reading it through the shell all put it in front of the writer.
     expect(withTranscript([record('Write', { file_path: CARD, content: '#' })], sawCard)).toBe(true)
     expect(withTranscript([record('Edit', { replace_all: false, file_path: CARD })], sawCard)).toBe(true)
-    expect(withTranscript([record('Bash', { command: 'cat .work/COMMENT-CARD.md' })], sawCard)).toBe(true)
+    expect(withTranscript([bashAt(path.dirname(path.dirname(CARD)), 'cat .work/COMMENT-CARD.md')], sawCard)).toBe(true)
   })
 
   it('survives an unparseable line', () => {

@@ -123,14 +123,25 @@ function samePath(a, b) {
   try { return fs.realpathSync(a) === fs.realpathSync(b) } catch { return false }
 }
 
-/** Does this tool input name the card — by the path the gate resolved, or by the repo-relative form
- *  a shell command would use? */
-function namesCard(input, cardPath, relative) {
+/**
+ * Does this tool input name the card — by the path the gate resolved, or by the repo-relative form a
+ * shell command would use?
+ *
+ * **A relative mention is resolved against the record's own directory.** Every transcript record
+ * carries the `cwd` the call ran in, and this project's carry 22 distinct ones. Without using it,
+ * `cat .work/COMMENT-CARD.md` counted the same whether it ran at the repo root, in
+ * `packages/relay` where it fails, or in a different checkout entirely — so a command that never
+ * read the card satisfied the gate. A record with no `cwd` cannot resolve a relative mention and
+ * does not get one; the absolute form still counts, since it needs no directory to be unambiguous.
+ */
+function namesCard(input, cardPath, relative, recordCwd) {
   if (input == null) return false
   const fp = input.file_path
   if (typeof fp === 'string') return samePath(fp, cardPath)
   const text = JSON.stringify(input)
-  return text.includes(cardPath) || text.includes(relative)
+  if (text.includes(cardPath)) return true
+  if (!recordCwd || !text.includes(relative)) return false
+  return samePath(path.resolve(recordCwd, relative), cardPath)
 }
 
 /**
@@ -142,9 +153,11 @@ function namesCard(input, cardPath, relative) {
  * reason. What the rule has to exclude is the gate's own block message, which names the card and
  * would otherwise let it fire exactly once ever.
  *
- * A floor, not a fence: `grep -l COMMENT-CARD` is a tool call naming it and would count, without the
- * content having been seen. That direction costs a missed prompt for a cooperative reader, which is
- * the threat model these gates state.
+ * A floor, not a fence, and the boundary is narrower than it was: a command naming the card in the
+ * directory that holds it counts whether or not it read anything — `ls .work/COMMENT-CARD.md` does.
+ * Whether the read *succeeded* is not checked, because that needs the result rather than the call.
+ * That direction costs a missed prompt for a cooperative reader, which is the threat model these
+ * gates state.
  *
  * Parses the transcript rather than matching its serialisation — the lesson `docs-aitells-gate.sh`
  * paid for, where a matcher assuming key order saw 6 of 34. Only lines that mention the card are
@@ -173,7 +186,7 @@ export function cardWasRead(transcriptPath, cardPath) {
       // carry no `input` at all, so the type guard cannot currently change an answer. It stays for
       // block shapes that do not exist yet, and is named here rather than asserted, because a
       // fixture invented to make it fail would be testing the fixture.
-      if (c?.type === 'tool_use' && namesCard(c.input, cardPath, relative)) return true
+      if (c?.type === 'tool_use' && namesCard(c.input, cardPath, relative, rec?.cwd)) return true
     }
   }
   return false
