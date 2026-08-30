@@ -9,10 +9,9 @@
 // through a prefilter that never calls it is not a gate.
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { judge, tokenize, issueCreateInvocations, bodyFileArg, hasParent, hasStandalone, heredocs } from '../lib/issue-parent.mjs'
+import { judge, issueCreateInvocations, hasParent, hasStandalone } from '../lib/issue-parent.mjs'
+import { tokenize, bodyFileArg, heredocs } from '../lib/gh-command.mjs'
 
 const REPO = path.resolve(import.meta.dirname, '../..')
 const PARENT = 'Parent: #607'
@@ -202,5 +201,106 @@ describe('the hook itself, spawned', () => {
       env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
     })
     expect(r.status, 'a malformed payload would block every Bash call in the session').toBe(0)
+  })
+})
+
+// ── Added with the gate-misdiagnosis work ───────────────────────────────────────────────────────
+
+/** `gh issue create`, assembled rather than written, so this file can be edited from a heredoc. */
+const CREATE = ['gh', 'issue', 'create'].join(' ')
+
+describe('a blocked command is told which rule it broke', () => {
+  // **Both failures printed one constant.** The decision layer separated them from the first commit
+  // and the entrypoint dropped `detail`, so a body file the gate could not open was reported as a
+  // body naming no parent — and the author goes off to add a line that is already there. Measured
+  // filing #700: the body had `Parent: #609` on its own line the whole time.
+  it('separates an unreadable body file from a body that names nothing', () => {
+    expect(verdict(`${CREATE} --body-file rel.md`).reason).toBe('unreadable-body-file')
+    expect(verdict(`${CREATE} --body "a bug"`).reason).toBe('no-parent')
+  })
+
+  it('separates a body file it could not read from no body at all', () => {
+    expect(verdict(`${CREATE} --title x`).reason).toBe('no-body')
+  })
+
+  it('names the path it tried, resolved', () => {
+    // The hook judges from `CLAUDE_PROJECT_DIR`, so a relative `--body-file` is resolved against the
+    // repo root rather than the cwd the command would actually run in. Following the command's own
+    // `cd` would be guessing; saying which path was opened is not, and it is the whole fix.
+    expect(verdict(`${CREATE} --body-file rel.md`).detail).toContain(path.resolve('rel.md'))
+  })
+
+  it('still blocks all three', () => {
+    // The reasons are for the message. Nothing about which rule broke may change whether it blocks.
+    for (const cmd of [`${CREATE} --body-file rel.md`, `${CREATE} --title x`, `${CREATE} --body "a bug"`]) {
+      expect(verdict(cmd).blocked, cmd).toBe(true)
+    }
+  })
+})
+
+describe('a heredoc payload is text, not a command', () => {
+  it('does not read an invocation written inside one', () => {
+    // Found by being blocked from writing the plan document for this change: its prose carried
+    // `&& gh issue create --body-file rel.md` as an example, and a heredoc payload tokenizes as bare
+    // words, so that line landed in command position. Quoting is what saves `echo "…"` and the grep
+    // pattern above; nothing was saving a heredoc, and the file's own header claims this case works.
+    const doc = ['cat > plan.md <<EOF', 'Repro:', `A) cd /elsewhere && ${CREATE} --body-file rel.md`, 'EOF'].join('\n')
+    expect(issueCreateInvocations(doc)).toEqual([])
+  })
+
+  it('reads the payload when the invocation outside it is real', () => {
+    // Two different questions, and the fix to the first must not answer the second. The payload is
+    // not where invocations live, and it is exactly where `--body-file -` gets its body.
+    expect(verdict(`${CREATE} --body-file - <<EOF\n${PARENT}\nEOF`).blocked).toBe(false)
+    expect(verdict(`${CREATE} --body-file - <<EOF\nnothing\nEOF`).blocked).toBe(true)
+  })
+
+  it('is not fooled by an unterminated one', () => {
+    // No terminator means no payload anyone can read, which `heredocs` already decides. Leaving the
+    // text scannable fails toward blocking, which is the safe direction for a gate.
+    expect(issueCreateInvocations(`${CREATE} --title x <<EOF\nstill the same command`)).toHaveLength(1)
+  })
+})
+
+describe('a newline begins a command', () => {
+  it('sees an invocation on a line of its own', () => {
+    // **A hole, not a nuisance.** `SEPARATOR` carried `;`, `&&` and `|` but not the newline, so
+    // command position never reset across lines and a multi-line Bash call — the ordinary shape for
+    // anything with a heredoc or a long flag list — walked straight past the gate.
+    const cmd = `git status\n${CREATE} --title x --body "a bug"`
+    expect(issueCreateInvocations(cmd)).toHaveLength(1)
+    expect(verdict(cmd).blocked).toBe(true)
+  })
+
+  it('judges each line-separated invocation on its own body', () => {
+    expect(verdict(`${CREATE} --body "${PARENT}"\n${CREATE} --body "a bug"`).blocked).toBe(true)
+    expect(verdict(`${CREATE} --body "${PARENT}"\n${CREATE} --body "${PARENT}"`).blocked).toBe(false)
+  })
+
+  it('does not treat a newline inside a quoted argument as one', () => {
+    // The tokenizer resolves quotes first, so a body with paragraphs stays one word.
+    expect(verdict(`${CREATE} --body "intro\n\n${PARENT}\n"`).blocked).toBe(false)
+  })
+})
+
+describe('the hook reports the reason it decided on', () => {
+  const run = (cmd) => spawnSync('bash', [path.join(REPO, '.claude/hooks/issue-parent-gate.sh')], {
+    input: JSON.stringify({ tool_input: { command: cmd } }),
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
+  })
+
+  it('does not answer an unreadable body file with the parent rule', () => {
+    const r = run(`${CREATE} --title x --body-file nowhere-at-all.md`)
+    expect(r.status).toBe(2)
+    expect(r.stderr, 'the misdiagnosis this change exists for').not.toMatch(/names no parent/i)
+    expect(r.stderr, 'and it says which path it opened').toContain(path.join(REPO, 'nowhere-at-all.md'))
+  })
+
+  it('still answers a parentless body with the parent rule', () => {
+    const r = run(`${CREATE} --title x --body "a bug"`)
+    expect(r.status).toBe(2)
+    expect(r.stderr).toMatch(/names no parent/i)
+    expect(r.stderr).toMatch(/Parent: #607/)
   })
 })
