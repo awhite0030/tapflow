@@ -514,6 +514,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@tapflowio/dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
       '@tapflowio/test-utils':
         specifier: workspace:*
         version: link:../test-utils
