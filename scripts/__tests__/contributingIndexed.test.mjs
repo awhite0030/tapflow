@@ -28,9 +28,19 @@ const records = readdirSync(dir)
   .sort()
 
 /** `| [name.md](./name.md) | type | topics |` — the row shape, with the type captured. */
-const rows = new Map(
-  [...readme.matchAll(/^\| \[([^\]]+\.md)\]\(\.\/([^)]+\.md)\) \| (\S+) \| .+ \|$/gm)]
-    .map((m) => [m[1], { href: m[2], type: m[3] }]),
+const rowMatches = [...readme.matchAll(/^\| \[([^\]]+\.md)\]\(\.\/([^)]+\.md)\) \| (\S+) \| .+ \|$/gm)]
+const rows = new Map(rowMatches.map((m) => [m[1], { href: m[2], type: m[3] }]))
+
+/**
+ * The records the root `INDEX.md` registers, read as **table rows** rather than as text anywhere.
+ *
+ * Searching the raw file for the path made the assertion satisfiable by a mention: a description
+ * naming another record, or a fenced example, and the row it is supposed to prove need never exist.
+ * Today every mention happens to be a row — measured, all 28 — which is exactly the state in which
+ * a check like this reads as working.
+ */
+const indexed = new Set(
+  [...index.matchAll(/^\|\s*\[[^\]]+\]\(\.\/contributing\/([^)]+\.md)\)/gm)].map((m) => m[1]),
 )
 
 /** The `type:` line from a record's own frontmatter. */
@@ -45,8 +55,8 @@ describe('every record is reachable from the index', () => {
     expect(records.filter((f) => !rows.has(f))).toEqual([])
   })
 
-  it('has a line in the root INDEX.md', () => {
-    expect(records.filter((f) => !index.includes(`contributing/${f}`))).toEqual([])
+  it('has a row in the root INDEX.md', () => {
+    expect(records.filter((f) => !indexed.has(f))).toEqual([])
   })
 
   it('is linked by its own name, so a renamed file breaks the row rather than pointing elsewhere', () => {
@@ -54,9 +64,25 @@ describe('every record is reachable from the index', () => {
   })
 })
 
-describe('the table does not describe files that are not there', () => {
-  it('lists no record that has been deleted or renamed', () => {
+describe('the indexes do not describe files that are not there', () => {
+  it('the README table lists no record that has been deleted or renamed', () => {
     expect([...rows.keys()].filter((f) => !records.includes(f))).toEqual([])
+  })
+
+  it('INDEX.md lists none either', () => {
+    // Held in both directions on both indexes. Walking only the files that exist can say a record
+    // is registered; it can never say a registration still has a record behind it, so a deleted
+    // one leaves its row in place with nothing able to notice.
+    expect([...indexed].filter((f) => !records.includes(f))).toEqual([])
+  })
+
+  it('lists each record once, not once per group it could belong to', () => {
+    // The table is grouped now, so a record can be filed in two groups — and a Map keyed on the
+    // filename collapses the second row into the first, which every other assertion here is happy
+    // with. Counted from the raw matches, which is the only place the duplicate still exists.
+    const counts = new Map()
+    for (const [, name] of rowMatches) counts.set(name, (counts.get(name) ?? 0) + 1)
+    expect([...counts].filter(([, n]) => n > 1).map(([f]) => f)).toEqual([])
   })
 
   it('repeats each record’s own frontmatter type', () => {
@@ -70,11 +96,18 @@ describe('the table does not describe files that are not there', () => {
 })
 
 describe('the check is looking at something', () => {
-  it('found the records that exist today', () => {
+  it('found at least the records that existed when this was written', () => {
     // **An anti-vacuity floor set from the measured count, not a round number.** An empty `records`
     // or an empty `rows` satisfies every assertion above by having nothing to disagree about — which
     // is what a wrong glob or a changed row shape produces, silently.
-    expect(records.length).toBe(28)
-    expect(rows.size).toBe(28)
+    //
+    // A floor rather than an equality, deliberately. Exact equality would fail every correctly
+    // registered new record, and the chore it creates buys nothing the assertions above do not
+    // already do: a row the regex stops matching is named by the completeness check before any
+    // count notices, and a duplicate collapses at the same number either way. The one job left is
+    // catching *nothing at all*, and a floor catches that.
+    expect(records.length).toBeGreaterThanOrEqual(28)
+    expect(rows.size).toBeGreaterThanOrEqual(28)
+    expect(indexed.size).toBeGreaterThanOrEqual(28)
   })
 })
