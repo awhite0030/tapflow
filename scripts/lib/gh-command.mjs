@@ -34,6 +34,9 @@ import path from 'node:path'
  */
 export const NEWLINE = '\0'
 
+/** The here-string operator, tokenized on its own so a quoted `<<<` cannot be read as one. */
+export const HERE_STRING_OP = '<<<'
+
 /** Unquoted characters that end a word and begin a new command. `(` and `)` are here so that both
  *  `(gh …)` and `$(gh …)` reach command position. */
 const OPERATOR = '&|;()'
@@ -63,6 +66,18 @@ export function tokenizeDetailed(cmd) {
       continue
     }
     if (c === "'" || c === '"') { quote = c; started = true; curQuoted = true; continue }
+    // **A here-string operator is its own token.** Scanning the raw text for `<<<` counted one
+    // written inside a quoted argument — `--title "docs: explain <<<here-strings"` — as a second
+    // body on stdin, and the callers' "exactly one body" rule then switched off and judged nothing.
+    // Emitting it here means quoting decides, because inside a quote these characters never reach
+    // this branch.
+    if (c === '<' && cmd.startsWith('<<<', i)) {
+      flush()
+      words.push(HERE_STRING_OP)
+      quoted.push(false)
+      i += 2
+      continue
+    }
     if (c === '\\' && cmd[i + 1] === '\n') { i++; continue }
     if (c === '\\' && i + 1 < cmd.length) { cur += cmd[++i]; started = true; curQuoted = true; continue }
     if (c === '\n') { flush(); words.push(NEWLINE); quoted.push(false); continue }
@@ -129,10 +144,12 @@ const separates = (word, isQuoted, atStart) =>
  * on its line in every shape this repo writes; one followed by a further redirection is treated as
  * no heredoc at all, which leaves its text scanned rather than skipped.
  */
-const HEREDOC_OPEN = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2\s*$/
+// **Not preceded by a third `<`.** Unanchored on the left, this matched from the second `<` of
+// `cat <<<EOF`, so a here-string was read as a heredoc opener and `withoutHeredocPayloads` deleted
+// every following line up to a matching terminator — taking real commands with it. Verified against
+// bash: `cat <<<EOF` newline `echo hi` runs `echo hi` as a command.
+const HEREDOC_OPEN = /(?<!<)<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2\s*$/
 
-/** A here-string, which differs from a heredoc opener by one `<` and carries its text inline. */
-const HERE_STRING = /<<<\s*("([^"]*)"|'([^']*)'|([^\s;|&<>]+))/g
 
 /** Split on either line ending. A CRLF command reaching `'\n'` alone left `EOF\r` never matching its
  *  delimiter, so every payload read as unterminated and the prose regression came back. */
@@ -153,12 +170,18 @@ export const heredocs = (cmd) => heredocEntries(cmd).map((e) => e.body)
  * only knew heredocs answered `no body could be read from the command` for a command that has one,
  * which sends the author to add a body that is already there.
  *
- * Scanned after heredoc payloads are removed, so a `<<<` written inside one is text rather than a
- * second body — the same reason `ghInvocations` strips them before looking for a command.
+ * **Read from tokens rather than from the raw text.** Matching `<<<` in the text found one inside a
+ * quoted argument and invented a second body, which turned the callers' sole-body rule off; and a
+ * regex arm of `"([^"]*)"` truncated a body at an escaped quote. The tokenizer already resolves both
+ * questions, so it answers them here. Heredoc payloads are stripped first, for the reason
+ * `ghInvocations` strips them: a payload is text, not a command.
  */
 export function hereStrings(cmd) {
+  const { words, quoted } = tokenizeDetailed(withoutHeredocPayloads(cmd))
   const out = []
-  for (const m of withoutHeredocPayloads(cmd).matchAll(HERE_STRING)) out.push(m[2] ?? m[3] ?? m[4])
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] === HERE_STRING_OP && !quoted[i] && i + 1 < words.length) out.push(words[i + 1])
+  }
   return out
 }
 
@@ -171,13 +194,16 @@ export function hereStrings(cmd) {
 export const stdinBodies = (cmd) => [...heredocs(cmd), ...hereStrings(cmd)]
 
 /**
- * The argument `<(…)` leaves behind.
+ * The argument a process substitution leaves behind.
  *
- * `(` is an operator token, so a process substitution arrives as the bare `<` that preceded it. It
- * is not a path and cannot become one without running the command, so a caller that reports it as a
- * file it could not open is naming something the author never wrote.
+ * `(` is an operator token, so `<(…)` and `>(…)` arrive as the bare `<` or `>` that preceded them.
+ * Neither is a path and neither can become one without running the command, so a caller that
+ * resolves it reports a file the author never wrote — `could not read the body file at /tmp/>`.
+ *
+ * **Both directions, because they are one keystroke apart.** Comparing against `<` alone left `>(…)`
+ * doing exactly what this export exists to stop.
  */
-export const PROCESS_SUBSTITUTION = '<'
+export const isProcessSubstitution = (arg) => arg === '<' || arg === '>'
 
 /**
  * The redirection target on a line, or null — the last one, since a later `>` wins.
@@ -311,15 +337,17 @@ export function ghInvocations(cmd, noun, verbs) {
  * so reading the first let `--body "Parent: #607" --body "a bug"` satisfy the gate with text GitHub
  * would never receive.
  */
-function flagArg(words, long, short) {
+export function flagArg(words, long, short) {
   const eq = new RegExp(`^${long}=([\\s\\S]*)$`)
   let found = null
   for (let i = 0; i < words.length; i++) {
     const w = words[i]
-    if (w === long || w === short) { found = words[i + 1] ?? null; continue }
+    if (w === long || (short !== undefined && w === short)) { found = words[i + 1] ?? null; continue }
     const m = eq.exec(w)
     if (m) { found = m[1]; continue }
-    if (!w.startsWith('--') && w.startsWith(short) && w.length > short.length) found = w.slice(short.length)
+    if (short !== undefined && !w.startsWith('--') && w.startsWith(short) && w.length > short.length) {
+      found = w.slice(short.length)
+    }
   }
   return found
 }
@@ -363,16 +391,91 @@ export function apiEndpoint(words) {
   return null
 }
 
-/** The value of a `gh api` flag, in both spellings: `--method GET` and `--method=GET`. */
-export function apiFlag(words, ...names) {
+/**
+ * The value of a `gh api` flag.
+ *
+ * **This is `flagArg`, and it used to be a second, weaker copy.** The copy compared tokens for
+ * equality and for a `--flag=` prefix, and so missed the two rules `flagArg` had already been
+ * corrected on, each against the binary: pflag takes the value attached to a shorthand
+ * (`gh api -Xput …` is a PUT), and a flag given twice takes the **last** occurrence. Both were live
+ * bypasses of gates built on it — `-Xput repos/o/r/pulls/1/merge` inferred `GET` and passed.
+ */
+export const apiFlag = (words, long, short) => flagArg(words, long, short)
+
+/**
+ * Every value given for a field flag, with the flag that carried it, in all four spellings gh
+ * accepts: `-f k=v`, `-fk=v`, `--field k=v`, `--field=k=v`.
+ *
+ * Two gates read fields — the comment card looks for a `query` or a `body`, the merge guard only
+ * asks whether any field is present — and both were reading three of the four spellings.
+ */
+export function flagEntries(words, flags) {
+  const out = []
   for (let i = 0; i < words.length; i++) {
-    if (names.includes(words[i])) return words[i + 1] ?? null
-    for (const n of names) {
-      if (words[i].startsWith(`${n}=`)) return words[i].slice(n.length + 1)
+    const w = words[i]
+    if (flags.includes(w)) { out.push({ flag: w, value: words[i + 1] ?? '' }); continue }
+    for (const f of flags) {
+      if (w.startsWith(`${f}=`)) { out.push({ flag: f, value: w.slice(f.length + 1) }); break }
+      if (!f.startsWith('--') && !w.startsWith('--') && w.startsWith(f) && w.length > f.length) {
+        out.push({ flag: f, value: w.slice(f.length) }); break
+      }
     }
   }
-  return null
+  return out
 }
+
+/** `gh api` field flags. `-F`/`--field` expand a leading `@` to a file; `-f`/`--raw-field` do not. */
+export const API_FIELD_FLAGS = ['-f', '-F', '--field', '--raw-field']
+const READS_FILE = new Set(['-F', '--field'])
+
+/**
+ * Is this endpoint GitHub's GraphQL one?
+ *
+ * Matched as a path segment rather than by equality: gh sends any endpoint containing `://`
+ * verbatim, so a full URL reaches the same place and is the spelling a docs page hands you.
+ */
+export const isGraphqlEndpoint = (endpoint) => !!endpoint && /(^|\/)graphql(\?|$)/.test(endpoint)
+
+/**
+ * Every GraphQL document a `gh api graphql` call would send, following the file and stdin forms.
+ *
+ * **Two gates ask the same question of it** — the comment card asks whether it publishes prose, the
+ * merge guard whether it merges or approves — so the reading lives here and each gate brings its own
+ * list of operation names. A document it cannot read is omitted rather than blocking: both gates
+ * allow what they cannot judge.
+ */
+export function graphqlDocuments(words, cmd, cwd, readFile = readBodyFile) {
+  const out = []
+  const fromStdin = () => {
+    const bodies = stdinBodies(cmd)
+    return bodies.length === 1 ? bodies[0] : null
+  }
+  const readAt = (ref) => {
+    try { return readFile(path.resolve(cwd, ref)) } catch { return null }
+  }
+  for (const { flag, value } of flagEntries(words, API_FIELD_FLAGS)) {
+    if (!value.startsWith('query=')) continue
+    const text = value.slice('query='.length)
+    if (!text.startsWith('@') || !READS_FILE.has(flag)) { out.push(text); continue }
+    const ref = text.slice(1)
+    out.push(ref === '-' ? fromStdin() : readAt(ref))
+  }
+  // `--input` carries the whole request body, query included, and needs no field flag at all.
+  const input = flagArg(words, '--input')
+  if (input === '-') out.push(fromStdin())
+  else if (input) out.push(readAt(input))
+  return out.filter((t) => typeof t === 'string')
+}
+
+/**
+ * Does any of these documents invoke one of `names`?
+ *
+ * `\b<name>\s*[({]` rather than a bare substring: a mutation is a field call, so the name is
+ * followed by its arguments or its selection set. That form survives an alias (`x: addComment(…)`),
+ * a variable-based document, and a newline before the paren — all verified.
+ */
+export const invokesOperation = (docs, names) =>
+  docs.some((d) => names.some((n) => new RegExp(`\\b${n}\\s*[({]`).test(d)))
 
 /**
  * The reader both gates use for a `--body-file`.

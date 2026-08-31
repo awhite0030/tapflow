@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { ghInvocations, tokenize, apiEndpoint, apiFlag, stdinBodies, readBodyFile }
-  from './gh-command.mjs'
+import { ghInvocations, tokenize, apiEndpoint, apiFlag, flagEntries, isGraphqlEndpoint,
+  graphqlDocuments, invokesOperation, API_FIELD_FLAGS, readBodyFile } from './gh-command.mjs'
 
 /**
  * Was the comment card read before writing a comment that goes out under the user's account?
@@ -62,11 +62,7 @@ function apiCommentInvocations(cmd) {
     const method = (apiFlag(words, '--method', '-X') ?? '').toUpperCase()
     if (method === 'GET' || method === 'HEAD') continue
     const hasInput = words.some((w) => w === '--input' || w.startsWith('--input='))
-    const hasBody = words.some((w, i) => {
-      const flags = ['-f', '-F', '--field', '--raw-field']
-      if (flags.includes(w)) return /^body=/.test(words[i + 1] ?? '')
-      return flags.some((f) => w.startsWith(`${f}=`)) && /^body=/.test(w.slice(w.indexOf('=') + 1))
-    })
+    const hasBody = fieldValues(words, 'body').length > 0
     if (hasInput || hasBody || ['POST', 'PATCH', 'PUT'].includes(method)) found.push(words)
   }
   return found
@@ -87,45 +83,11 @@ const COMMENT_MUTATIONS = [
   'addDiscussionComment', 'updateIssueComment',
 ]
 
-/** `gh api` field flags, in every spelling. `-F`/`--field` take `@file`; `-f`/`--raw-field` do not. */
-const FIELD_FLAGS = ['-f', '-F', '--field', '--raw-field']
-const READS_FILE = new Set(['-F', '--field'])
-
-/**
- * Every value given for one field name, with the flag that carried it.
- *
- * Read by name rather than by position: `gh api graphql -f query=… -f owner=…` puts the query
- * behind whichever flag happens to spell it, and only that one is a query.
- */
-function fieldValues(words, name) {
-  const out = []
-  const take = (flag, v) => { if (v.startsWith(`${name}=`)) out.push({ flag, value: v.slice(name.length + 1) }) }
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i]
-    if (FIELD_FLAGS.includes(w)) { take(w, words[i + 1] ?? ''); continue }
-    for (const f of FIELD_FLAGS) if (w.startsWith(`${f}=`)) take(f, w.slice(f.length + 1))
-  }
-  return out
-}
-
-/**
- * The text a field actually carries, following `@file` and `@-` where gh does.
- *
- * **The same question `--input` raised on the REST path, answered the same way.** A query written to
- * a file first is the natural form for anything long, and reading only the inline spelling would
- * mean the gate sees the short mutations and not the ones someone took care over.
- *
- * A file it cannot read yields null rather than blocking: this gate allows what it cannot judge.
- */
-function fieldText({ flag, value }, cmd, cwd, readFile) {
-  if (!value.startsWith('@') || !READS_FILE.has(flag)) return value
-  const ref = value.slice(1)
-  if (ref === '-') {
-    const bodies = stdinBodies(cmd)
-    return bodies.length === 1 ? bodies[0] : null
-  }
-  try { return readFile(path.resolve(cwd, ref)) } catch { return null }
-}
+/** Every value given for one field name. Read by name, since only a `body` field is a body. */
+const fieldValues = (words, name) =>
+  flagEntries(words, API_FIELD_FLAGS)
+    .filter((e) => e.value.startsWith(`${name}=`))
+    .map((e) => e.value.slice(name.length + 1))
 
 /**
  * `gh api graphql` calls that publish a comment.
@@ -142,19 +104,8 @@ function fieldText({ flag, value }, cmd, cwd, readFile) {
 function graphqlCommentInvocations(cmd, cwd, readFile) {
   const found = []
   for (const words of ghInvocations(cmd, 'api', null)) {
-    if (apiEndpoint(words) !== 'graphql') continue
-    const texts = fieldValues(words, 'query').map((f) => fieldText(f, cmd, cwd, readFile))
-    // `--input` carries the whole request body, query included, and needs no field flag at all.
-    const input = apiFlag(words, '--input')
-    if (input && input !== '-') {
-      try { texts.push(readFile(path.resolve(cwd, input))) } catch { /* unreadable: not judged */ }
-    } else if (input === '-') {
-      const bodies = stdinBodies(cmd)
-      if (bodies.length === 1) texts.push(bodies[0])
-    }
-    if (texts.some((t) => t && COMMENT_MUTATIONS.some((n) => new RegExp(`\\b${n}\\s*[({]`).test(t)))) {
-      found.push(words)
-    }
+    if (!isGraphqlEndpoint(apiEndpoint(words))) continue
+    if (invokesOperation(graphqlDocuments(words, cmd, cwd, readFile), COMMENT_MUTATIONS)) found.push(words)
   }
   return found
 }

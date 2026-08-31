@@ -4,8 +4,10 @@
 // which is one of its three callers, so a parser change was judged by one gate's fixtures while the
 // other two rode along. The cases here are about the reader rather than any gate's verdict.
 import { describe, it, expect } from 'vitest'
-import { ghInvocations, tokenize, tokenizeDetailed, hereStrings, stdinBodies, bodyFileArg }
-  from '../lib/gh-command.mjs'
+import {
+  ghInvocations, tokenize, tokenizeDetailed, hereStrings, stdinBodies, heredocs,
+  bodyFileArg, isProcessSubstitution, apiFlag, flagEntries,
+} from '../lib/gh-command.mjs'
 
 const creates = (cmd) => ghInvocations(cmd, 'issue', ['create']).length
 const merges = (cmd) => ghInvocations(cmd, 'pr', ['merge']).length
@@ -74,11 +76,36 @@ describe('a here-string is a body', () => {
     expect(hereStrings('cmd <<<bare')).toEqual(['bare'])
   })
 
-  it('is not confused with a heredoc opener', () => {
-    // `<<EOF` and `<<<text` differ by one character, and the heredoc regex is anchored to the end of
-    // its line, so neither may claim the other's text.
+  it('is not confused with a heredoc opener, in either direction', () => {
+    // `<<EOF` and `<<<text` differ by one character, and **both directions have to be asserted.**
+    // The first version of this test checked only that a heredoc is not read as a here-string, while
+    // the reverse was the broken one: `HEREDOC_OPEN` was unanchored on the left, so it matched from
+    // the second `<` of `cat <<<EOF` and `withoutHeredocPayloads` then deleted every following line
+    // up to a matching terminator — swallowing real commands. Bash runs them:
+    //   $ bash -c 'cat <<<EOF
+    //   echo SHOULD-RUN
+    //   EOF'    →  EOF / SHOULD-RUN / bash: EOF: command not found
     expect(hereStrings('cmd <<EOF\nbody\nEOF')).toEqual([])
     expect(stdinBodies('cmd <<EOF\nbody\nEOF')).toEqual(['body'])
+    expect(heredocs('cmd <<<EOF\necho hi\nEOF')).toEqual([])
+    expect(ghInvocations('cat <<<EOF\ngh issue create -t x\nEOF', 'issue', ['create'])).toHaveLength(1)
+  })
+
+  it('a <<< inside a quoted argument is text, not a second body', () => {
+    // **Scanning the raw command text counted this one**, so a title that merely mentions
+    // here-strings made `stdinBodies` return two — and every caller's "exactly one body" rule then
+    // switched off and judged nothing. That direction is a miss, not a false block: the Korean body
+    // below reached GitHub unjudged. Bash sees one stdin body here.
+    const cmd = 'gh pr create --title "docs: explain <<<here-strings" --body-file - <<EOF\nbody text\nEOF'
+    expect(stdinBodies(cmd)).toEqual(['body text'])
+    expect(hereStrings(cmd)).toEqual([])
+  })
+
+  it('reads a body through the quoting the shell would resolve', () => {
+    // Matching raw text with `"([^"]*)"` stopped at an escaped quote and handed the caller a
+    // fragment of the body that actually reaches GitHub. Tokens resolve it.
+    expect(hereStrings('cmd <<<"a\\"b"')).toEqual(['a"b'])
+    expect(hereStrings('cmd <<<"one two"')).toEqual(['one two'])
   })
 
   it('stdinBodies carries both, so an ambiguous command stays ambiguous', () => {
@@ -97,8 +124,47 @@ describe('a process substitution is a shape, not a path', () => {
     expect(bodyFileArg(tokenize('gh issue create -t x -F<(echo hi)'))).toBe('<')
   })
 
+  it('recognises both directions, which are one keystroke apart', () => {
+    // Comparing against `<` alone left `>(…)` doing exactly what this check exists to stop:
+    // `could not read the body file at /tmp/>`.
+    expect(isProcessSubstitution(bodyFileArg(tokenize('gh issue create -t x --body-file <(cat)')))).toBe(true)
+    expect(isProcessSubstitution(bodyFileArg(tokenize('gh issue create -t x --body-file >(cat)')))).toBe(true)
+  })
+
   it('an ordinary path is unaffected', () => {
     expect(bodyFileArg(tokenize('gh issue create -t x --body-file body.md'))).toBe('body.md')
     expect(bodyFileArg(tokenize('gh issue create -t x --body-file -'))).toBe('-')
+    expect(isProcessSubstitution('body.md')).toBe(false)
+    expect(isProcessSubstitution('-')).toBe(false)
+  })
+})
+
+describe('a flag argument is read in every spelling pflag accepts', () => {
+  // **Two rules that a second, weaker copy of this reader was missing**, each a live bypass of a
+  // gate built on it. `gh api -Xput …/pulls/1/merge` inferred GET and passed; a method given twice
+  // was read as the first, so `--method GET --method PUT` passed while bash sends PUT.
+  it('takes the value attached to a shorthand', () => {
+    expect(apiFlag(tokenize('gh api -Xput x'), '--method', '-X')).toBe('put')
+    expect(apiFlag(tokenize('gh api -XPUT x'), '--method', '-X')).toBe('PUT')
+  })
+
+  it('takes the last occurrence, because that is what pflag does', () => {
+    expect(apiFlag(tokenize('gh api --method GET --method PUT x'), '--method', '-X')).toBe('PUT')
+  })
+
+  it('works for a flag with no shorthand', () => {
+    expect(apiFlag(tokenize('gh api x --input b.json'), '--input')).toBe('b.json')
+  })
+
+  it('reads a field in all four spellings', () => {
+    const F = ['-f', '-F', '--field', '--raw-field']
+    for (const cmd of ['gh api x -f body=hi', 'gh api x -fbody=hi', 'gh api x --field body=hi', 'gh api x --field=body=hi']) {
+      expect(flagEntries(tokenize(cmd), F).map((e) => e.value), cmd).toEqual(['body=hi'])
+    }
+  })
+
+  it('does not read a long flag as an attached shorthand', () => {
+    // `--field=x` starts with `-f`; the `--` guard is what keeps it from being read as one.
+    expect(flagEntries(tokenize('gh api x --field=body=hi'), ['-f', '--field']).map((e) => e.flag)).toEqual(['--field'])
   })
 })

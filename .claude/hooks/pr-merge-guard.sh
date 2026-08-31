@@ -8,11 +8,15 @@
 # string. Measured across 150 sessions: 2191 parse failures against 1 success —
 # every multi-line command passed unguarded. Reading stdin with printf is the fix.
 #
-# Match the invocation only in command position: line start, after ; && |,
-# inside $( ) capture, or after then/do. A plain substring match would
-# false-positive on commit messages / docs that merely mention the command —
-# and this repo's own docs discuss `gh pr merge` by name.
+# The grep below matches the invocation only in command position: line start,
+# after ; && |, inside $( ) capture, or after then/do. A plain substring match
+# would false-positive on commit messages / docs that merely mention the
+# command — and this repo's own docs discuss `gh pr merge` by name.
 # Backticks are deliberately NOT a command position (markdown quoting).
+#
+# **That list of positions is not what bash means by command position**, which
+# is why the decision now lives in scripts/pr-merge-guard.mjs and this grep is
+# a backstop for when node cannot run. See the note above it, below.
 #
 # Fail-open by design (jq missing, unparseable payload), matching
 # adversarial-review-gate.sh: this gate guards a cooperative-but-forgetful
@@ -20,9 +24,8 @@
 # session on a missing jq, and the 2191 failures above are the calibration for
 # how long such a break can go unnoticed.
 #
-# The `gh api` equivalents ARE covered, below, by a parsing half in
-# scripts/pr-merge-guard.mjs. Still not covered: git plumbing, and GraphQL
-# mergePullRequest -- see scripts/lib/pr-merge.mjs for why that one waits.
+# Covered by the parsing half: the `gh api` REST endpoints and the GraphQL
+# mutations that merge or approve. Still not covered: git plumbing.
 
 input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""') || exit 0
@@ -57,15 +60,22 @@ if printf '%s' "$cmd" | grep -qE '(^[[:space:]]*|(;|&&|\||\$\()[[:space:]]*|(^|[
   exit 2
 fi
 
-# The `gh api` forms of the same two actions, which the grep above cannot judge: `gh api` names
-# what it acts on in a path and how in a flag, and the same path is a read or a write depending
-# on the method. Deciding that needs parsing, so it is `scripts/pr-merge-guard.mjs`, where it is
-# tested. What follows is only a prefilter over whether to pay for a node process.
+# Everything the grep above cannot judge, which turned out to be most of it. Two classes:
+#
+#   - the `gh api` forms, where the same path is a read or a write depending on the method;
+#   - the ordinary prefixes and wrappers, which the grep's notion of command position misses.
+#     Measured against this file before the parser was wired in: an assignment prefix, `env`,
+#     `sudo`, `command`, `xargs`, `if ...; then` and a background `&` all passed at exit 0 while
+#     the bare form was blocked.
+#
+# So the grep above is a backstop for when node cannot run, and the decision is
+# `scripts/pr-merge-guard.mjs`, where it is tested. What follows is a prefilter over whether to
+# pay for a node process.
 squashed=${cmd//[\"\']/}
 squashed=${squashed//\\/}
 
 case "$squashed" in
-  *gh*api*) ;;
+  *gh*api*|*gh*pr*) ;;
   *) exit 0 ;;
 esac
 

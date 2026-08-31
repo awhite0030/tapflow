@@ -36,6 +36,7 @@ describe('which commands post a comment', () => {
     'an issue comment': 'gh issue comment 700 --body "x"',
     'a review with a body': 'gh pr review 701 --comment --body "x"',
     'an inline reply through the API': 'gh api repos/o/r/pulls/701/comments/1/replies -F body=@r.md',
+    'a body behind an attached shorthand': 'gh api repos/o/r/issues/1/comments -fbody=hi',
     'behind a separator': 'git status && gh pr comment 701 --body "x"',
     'with the command word broken by quotes': 'g"h" pr comment 701 --body "x"',
     'a GraphQL mutation': "gh api graphql -f query='mutation{addComment(input:{subjectId:\"X\",body:\"hi\"}){clientMutationId}}'",
@@ -99,6 +100,18 @@ describe('which commands post a comment', () => {
     it('allows a query that only reads', () => {
       // The same distinction `--method GET` draws on the REST path: it publishes nothing.
       expect(postsAComment("gh api graphql -f query='query{viewer{login}}'")).toBe(false)
+    })
+
+    it('sees the full-URL spelling of the endpoint', () => {
+      // gh routes any endpoint containing `://` verbatim, so this reaches the same place — and it is
+      // the spelling a docs page hands you. The check was exact string equality; every other
+      // endpoint rule in this file was already a substring regex.
+      expect(postsAComment(`gh api https://api.github.com/graphql ${"-f query='mutation{addComment(input:{}){id}}'"}`)).toBe(true)
+    })
+
+    it('sees the query behind an attached shorthand', () => {
+      // pflag takes `-Fquery=…` as well as `-F query=…`.
+      expect(postsAComment("gh api graphql -Fquery='mutation{addComment(input:{}){id}}'")).toBe(true)
     })
 
     it('allows a mutation that publishes no prose', () => {

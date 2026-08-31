@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { proseLines } from './prose-lines.mjs'
-import { ghInvocations, bodyFileArg, bodyArg, stdinBodies, heredocWrittenTo, readBodyFile, PROCESS_SUBSTITUTION }
+import { ghInvocations, bodyFileArg, bodyArg, stdinBodies, heredocWrittenTo, readBodyFile, isProcessSubstitution }
   from './gh-command.mjs'
 
 /**
@@ -72,10 +72,11 @@ export function judge(cmd, readFile = readBodyFile, cwd = process.cwd()) {
     let body = null
     let unreadable = null
     const file = bodyFileArg(words)
-    // **A process substitution is a shape, not a path.** `--body-file <(…)` leaves the parser a bare
-    // `<`, and resolving that produced a report naming a file the author never wrote. Its text
-    // cannot be had without running the command, so the honest answer names the shape and stops.
-    if (file === PROCESS_SUBSTITUTION) {
+    // **A process substitution is a shape, not a path.** `--body-file <(…)` and `>(…)` leave the
+    // parser a bare `<` or `>`, and resolving either produced a report naming a file the author
+    // never wrote (`could not read the body file at /tmp/>`). The text cannot be had without running
+    // the command, so the honest answer names the shape and stops.
+    if (file !== null && isProcessSubstitution(file)) {
       return {
         blocked: true,
         reason: 'process-substitution',

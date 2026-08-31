@@ -5,6 +5,13 @@
 // allowed by all of them. The failure is silent by construction, so the policy is asserted here
 // rather than left to whichever hook is edited next.
 //
+// **How much this buys, measured rather than assumed.** Review asked what payload actually arrives
+// with no `command`, and the answer is: none that carries anything to judge. For the `Bash` tool
+// `tool_input.command` is always a non-empty string; the only sibling whose name matches the `Bash`
+// matcher is `BashOutput`, whose payload is `{bash_id}` and contains no command text at all. So the
+// fallback is a floor under a shape that does not arrive today, not a hole being closed — and the
+// case below says so, because a reader who takes it for the latter will over-trust it.
+//
 // **The assertions run the payload through to a verdict**, not just to exit 0. A test that only
 // checks the unexpected shape is allowed cannot tell a working fallback from a gate that died on the
 // way — the shape `contributing/test-and-guard-coverage.md` is about. So each case carries text the
@@ -74,6 +81,16 @@ describe('the fallback reaches a verdict, not just exit 0', () => {
   it('an ordinary payload is unaffected', () => {
     for (const hook of ['pr-merge-guard.sh', 'issue-parent-gate.sh', 'gh-language-gate.sh']) {
       expect(run(hook, { tool_input: { command: 'git status' }, cwd: REPO }).status, hook).toBe(0)
+    }
+  })
+
+  it('the one real payload without a command carries nothing to judge', () => {
+    // `BashOutput` is the only sibling tool whose name matches the `Bash` matcher, and its payload
+    // is a handle rather than a command. Recorded so the fallback is not read as closing a live
+    // hole: it is a floor under a shape that does not arrive today. If a future tool does arrive
+    // with command-shaped text under a different key, this is the case that will change.
+    for (const hook of ['pr-merge-guard.sh', 'adversarial-review-gate.sh', 'issue-parent-gate.sh']) {
+      expect(run(hook, { tool_input: { bash_id: 'bash_1' }, cwd: REPO }).status, hook).toBe(0)
     }
   })
 })
