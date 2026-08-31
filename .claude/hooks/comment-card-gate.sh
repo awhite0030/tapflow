@@ -29,8 +29,13 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null)
 squashed=${cmd//[\"\']/}
 squashed=${squashed//\\/}
 
+# **`graphql` is its own arm rather than a case-insensitive widening of the others.** A comment
+# posted through the API is spelled `addComment`, which no lowercase `*comment*` pattern matches, and
+# folding the whole filter to case-insensitive would make `*gh*` mean "contains gh" — that is the
+# cost this prefilter exists to avoid, measured once already when matching the payload rather than
+# the command. `graphql` is a subcommand and is always lowercase, so one more literal arm covers it.
 case "$squashed" in
-  *gh*comment*|*gh*review*|*gh*replies*) ;;
+  *gh*comment*|*gh*review*|*gh*replies*|*gh*api*graphql*) ;;
   *) exit 0 ;;
 esac
 

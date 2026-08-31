@@ -28,8 +28,13 @@ for await (const chunk of process.stdin) raw += chunk
 let payload
 try { payload = JSON.parse(raw) } catch { process.exit(0) }
 
-const cmd = payload?.tool_input?.command
-if (typeof cmd !== 'string' || !cmd) process.exit(0)
+// **A payload with no `command` is judged on the whole payload**, which is what the prefilter in the
+// shell half already does. `?? ''` made a missing key indistinguishable from an empty command, and an
+// empty command matches nothing, so an unexpected payload shape switched the gate off in silence.
+// Reading more than was asked for costs a false block; reading nothing costs the gate.
+let cmd = payload?.tool_input?.command
+if (typeof cmd !== 'string' || !cmd) cmd = raw
+if (!cmd) process.exit(0)
 
 // Fail open here too. Every other missing field lets the command through; a missing transcript is
 // the one that used to block, which is the wrong direction for a gate whose whole posture is that
@@ -47,6 +52,10 @@ const root = process.cwd()
 let verdict
 try {
   verdict = judge(cmd, {
+    // **Two different directories, deliberately.** The card is found from the repo root above; a
+    // `@file` inside a GraphQL field is resolved against the directory the command would run in,
+    // which is what `payload.cwd` is and what the issue-parent gate reads it for.
+    cwd: typeof payload?.cwd === 'string' && payload.cwd ? payload.cwd : root,
     cardPath: path.join(root, CARD),
     transcriptPath: transcript,
   })

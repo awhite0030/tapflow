@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { ghInvocations, tokenize } from './gh-command.mjs'
+import { ghInvocations, tokenize, apiEndpoint, apiFlag, stdinBodies, readBodyFile }
+  from './gh-command.mjs'
 
 /**
  * Was the comment card read before writing a comment that goes out under the user's account?
@@ -33,41 +34,6 @@ function commentInvocations(cmd) {
   ].filter((words) => words.some((w, i) => (w === '-c' || w === '--comment') ? words[i + 1] !== undefined
     : /^(-c|--comment)=/.test(w)))
   return [...direct, ...withComment]
-}
-
-/** `gh api` flags that consume the next token, so it is not the endpoint. */
-const API_VALUE_FLAGS = new Set([
-  '--method', '-X', '--field', '-f', '--raw-field', '-F', '--input', '--header', '-H',
-  '--jq', '-q', '--template', '-t', '--hostname', '--preview', '-p', '--cache',
-])
-
-/**
- * The positional endpoint of a `gh api` call — the first word that is neither a flag nor a flag's
- * value.
- *
- * **Scanning every token for a comments-shaped path picked field values.** A quoted field stays one
- * token, so `gh api repos/o/r/issues -f 'body=See /comments/123'` looked like a call to a comments
- * endpoint and was blocked; it creates an issue. The endpoint is a position, so it is read as one.
- */
-function apiEndpoint(words) {
-  for (let i = 2; i < words.length; i++) {
-    const w = words[i]
-    if (API_VALUE_FLAGS.has(w)) { i++; continue }
-    if (w.startsWith('-')) continue
-    return w
-  }
-  return null
-}
-
-/** The value of a `gh api` flag, in both spellings: `--method GET` and `--method=GET`. */
-function apiFlag(words, ...names) {
-  for (let i = 0; i < words.length; i++) {
-    if (names.includes(words[i])) return words[i + 1] ?? null
-    for (const n of names) {
-      if (words[i].startsWith(`${n}=`)) return words[i].slice(n.length + 1)
-    }
-  }
-  return null
 }
 
 /**
@@ -106,8 +72,97 @@ function apiCommentInvocations(cmd) {
   return found
 }
 
-export function postsAComment(cmd) {
-  return commentInvocations(cmd).length + apiCommentInvocations(cmd).length > 0
+
+/**
+ * GraphQL mutations that publish prose into a conversation.
+ *
+ * **The list is GitHub's rather than ours**, which is the reason this is an enumeration and not a
+ * pattern: `addComment` is the obvious one, but a review, a review comment and a discussion comment
+ * all publish too, and `updateIssueComment` republishes. A name GitHub adds later is a name this
+ * list has to grow — a `*Comment*` regex would instead catch `deleteIssueComment`, which publishes
+ * nothing, and miss `addPullRequestReview`, which does.
+ */
+const COMMENT_MUTATIONS = [
+  'addComment', 'addPullRequestReview', 'addPullRequestReviewComment',
+  'addDiscussionComment', 'updateIssueComment',
+]
+
+/** `gh api` field flags, in every spelling. `-F`/`--field` take `@file`; `-f`/`--raw-field` do not. */
+const FIELD_FLAGS = ['-f', '-F', '--field', '--raw-field']
+const READS_FILE = new Set(['-F', '--field'])
+
+/**
+ * Every value given for one field name, with the flag that carried it.
+ *
+ * Read by name rather than by position: `gh api graphql -f query=… -f owner=…` puts the query
+ * behind whichever flag happens to spell it, and only that one is a query.
+ */
+function fieldValues(words, name) {
+  const out = []
+  const take = (flag, v) => { if (v.startsWith(`${name}=`)) out.push({ flag, value: v.slice(name.length + 1) }) }
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]
+    if (FIELD_FLAGS.includes(w)) { take(w, words[i + 1] ?? ''); continue }
+    for (const f of FIELD_FLAGS) if (w.startsWith(`${f}=`)) take(f, w.slice(f.length + 1))
+  }
+  return out
+}
+
+/**
+ * The text a field actually carries, following `@file` and `@-` where gh does.
+ *
+ * **The same question `--input` raised on the REST path, answered the same way.** A query written to
+ * a file first is the natural form for anything long, and reading only the inline spelling would
+ * mean the gate sees the short mutations and not the ones someone took care over.
+ *
+ * A file it cannot read yields null rather than blocking: this gate allows what it cannot judge.
+ */
+function fieldText({ flag, value }, cmd, cwd, readFile) {
+  if (!value.startsWith('@') || !READS_FILE.has(flag)) return value
+  const ref = value.slice(1)
+  if (ref === '-') {
+    const bodies = stdinBodies(cmd)
+    return bodies.length === 1 ? bodies[0] : null
+  }
+  try { return readFile(path.resolve(cwd, ref)) } catch { return null }
+}
+
+/**
+ * `gh api graphql` calls that publish a comment.
+ *
+ * **A GraphQL call is identified by its contents, not its path.** Every other form the gate knows
+ * names what it acts on in the URL; here the path is the constant `graphql` and the operation is a
+ * string passed as a field value. So the endpoint check is the cheap half and the mutation name is
+ * the decision.
+ *
+ * A read-only query passes for the same reason `--method GET` does on the REST path: it publishes
+ * nothing. That is the whole distinction, and it is why the mutation names are enumerated rather
+ * than the word `mutation` being treated as enough — `mutation { addLabel… }` posts no prose.
+ */
+function graphqlCommentInvocations(cmd, cwd, readFile) {
+  const found = []
+  for (const words of ghInvocations(cmd, 'api', null)) {
+    if (apiEndpoint(words) !== 'graphql') continue
+    const texts = fieldValues(words, 'query').map((f) => fieldText(f, cmd, cwd, readFile))
+    // `--input` carries the whole request body, query included, and needs no field flag at all.
+    const input = apiFlag(words, '--input')
+    if (input && input !== '-') {
+      try { texts.push(readFile(path.resolve(cwd, input))) } catch { /* unreadable: not judged */ }
+    } else if (input === '-') {
+      const bodies = stdinBodies(cmd)
+      if (bodies.length === 1) texts.push(bodies[0])
+    }
+    if (texts.some((t) => t && COMMENT_MUTATIONS.some((n) => new RegExp(`\\b${n}\\s*[({]`).test(t)))) {
+      found.push(words)
+    }
+  }
+  return found
+}
+
+export function postsAComment(cmd, { cwd = process.cwd(), readFile = readBodyFile } = {}) {
+  return commentInvocations(cmd).length
+    + apiCommentInvocations(cmd).length
+    + graphqlCommentInvocations(cmd, cwd, readFile).length > 0
 }
 
 /**
@@ -200,8 +255,8 @@ export function cardWasRead(transcriptPath, cardPath) {
  * and this returns `blocked: false` when the card is absent. The first two are "it was not wired for
  * them"; only the third survives someone wiring it by mistake.
  */
-export function judge(cmd, { cardPath, transcriptPath, exists = (p) => fs.existsSync(p) } = {}) {
-  if (!postsAComment(cmd)) return { blocked: false }
+export function judge(cmd, { cardPath, transcriptPath, cwd, exists = (p) => fs.existsSync(p) } = {}) {
+  if (!postsAComment(cmd, cwd ? { cwd } : {})) return { blocked: false }
   if (!cardPath || !exists(cardPath)) return { blocked: false }
   if (cardWasRead(transcriptPath ?? '', path.resolve(cardPath))) return { blocked: false }
   return { blocked: true, reason: 'card-not-read' }

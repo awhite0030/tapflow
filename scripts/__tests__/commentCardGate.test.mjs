@@ -38,6 +38,7 @@ describe('which commands post a comment', () => {
     'an inline reply through the API': 'gh api repos/o/r/pulls/701/comments/1/replies -F body=@r.md',
     'behind a separator': 'git status && gh pr comment 701 --body "x"',
     'with the command word broken by quotes': 'g"h" pr comment 701 --body "x"',
+    'a GraphQL mutation': "gh api graphql -f query='mutation{addComment(input:{subjectId:\"X\",body:\"hi\"}){clientMutationId}}'",
   }
   for (const [name, cmd] of Object.entries(POSTS)) {
     it(`sees ${name}`, () => {
@@ -79,6 +80,75 @@ describe('which commands post a comment', () => {
       'gh api repos/o/r/issues/1/comments --paginate',
       'gh api repos/o/r/issues/1/comments --jq ".[].body"',
     ]) expect(postsAComment(c), c).toBe(false)
+  })
+
+  describe('a GraphQL mutation is identified by its contents, not its path', () => {
+    // Every other form the gate knows names what it acts on in the URL. Here the path is the
+    // constant `graphql` and the operation is a string passed as a field value, so the endpoint
+    // check is the cheap half and the mutation name is the decision.
+    const mutation = (op) => `gh api graphql -f query='mutation{${op}(input:{}){clientMutationId}}'`
+
+    // The list is GitHub's rather than ours, which is why it is enumerated: a `*Comment*` pattern
+    // would catch `deleteIssueComment`, which publishes nothing, and miss `addPullRequestReview`,
+    // which does.
+    for (const op of ['addComment', 'addPullRequestReview', 'addPullRequestReviewComment',
+      'addDiscussionComment', 'updateIssueComment']) {
+      it(`sees ${op}`, () => expect(postsAComment(mutation(op)), op).toBe(true))
+    }
+
+    it('allows a query that only reads', () => {
+      // The same distinction `--method GET` draws on the REST path: it publishes nothing.
+      expect(postsAComment("gh api graphql -f query='query{viewer{login}}'")).toBe(false)
+    })
+
+    it('allows a mutation that publishes no prose', () => {
+      expect(postsAComment(mutation('addLabelsToLabelable'))).toBe(false)
+      expect(postsAComment(mutation('deleteIssueComment'))).toBe(false)
+    })
+
+    it('reads a query written to a file', () => {
+      // The same question `--input` raised on the REST path, answered the same way: a query long
+      // enough to be written to a file is the one someone took care over.
+      const dir = mkdtempSync(path.join(tmpdir(), 'graphql-'))
+      const file = path.join(dir, 'q.graphql')
+      writeFileSync(file, 'mutation { addComment(input: {body: "hi"}) { clientMutationId } }')
+      try {
+        expect(postsAComment(`gh api graphql -F query=@${file}`, { cwd: dir })).toBe(true)
+        expect(postsAComment(`gh api graphql --input ${file}`, { cwd: dir })).toBe(true)
+      } finally { rmSync(dir, { recursive: true, force: true }) }
+    })
+
+    it('reads a query fed through stdin', () => {
+      const cmd = "gh api graphql -F query=@- <<'EOF'\nmutation { addComment(input: {}) { id } }\nEOF"
+      expect(postsAComment(cmd)).toBe(true)
+    })
+
+    it('allows a file it cannot read rather than blocking on it', () => {
+      // This gate allows what it cannot judge — the posture every other rule here takes.
+      expect(postsAComment('gh api graphql -F query=@/nonexistent/q.graphql')).toBe(false)
+    })
+
+    it('does not fire on the words in prose', () => {
+      expect(postsAComment('echo "gh api graphql addComment"')).toBe(false)
+      expect(postsAComment('cat > n.md <<EOF\ngh api graphql -f query=mutation{addComment}\nEOF')).toBe(false)
+    })
+
+    it('the prefilter lets the mutation reach the parser', () => {
+      // Both halves missed it: the path matcher looks for a `/comments` segment and the shell
+      // prefilter matches `*gh*comment*` in lowercase, while the mutation is spelled `addComment`.
+      // Node was never spawned, so neither half got a chance. Asserted through the hook because the
+      // prefilter is the half a unit test cannot see.
+      const r = spawnSync('bash', [HOOK], {
+        input: JSON.stringify({
+          tool_input: { command: "gh api graphql -f query='mutation{addComment(input:{}){id}}'" },
+          cwd: REPO,
+          transcript_path: path.join(REPO, 'no-such-transcript.jsonl'),
+        }),
+        encoding: 'utf8',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
+      })
+      expect(r.status).toBe(2)
+    })
   })
 
   it('sees a body that arrives without a field flag', () => {

@@ -20,11 +20,18 @@
 # session on a missing jq, and the 2191 failures above are the calibration for
 # how long such a break can go unnoticed.
 #
-# Not covered, deliberately: the `gh api` / git plumbing equivalents. Same
-# threat model — see the issue linked from the review record.
+# The `gh api` equivalents ARE covered, below, by a parsing half in
+# scripts/pr-merge-guard.mjs. Still not covered: git plumbing, and GraphQL
+# mergePullRequest -- see scripts/lib/pr-merge.mjs for why that one waits.
 
 input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""') || exit 0
+# **A payload with no `command` key is not an empty command.** `// ""` made the two identical, every
+# pattern below then failed, and the gate passed at exit 0 -- verified: `{"tool_input":{}}` allowed.
+# Falling back to the whole payload keeps the gate deciding, which is what the language and
+# issue-parent prefilters already do. The command-position rule still applies to it, so this catches
+# less than a substring scan would and costs no new false blocks on ordinary payloads.
+[ -n "$cmd" ] || cmd=$input
 
 # Join backslash-newline continuations before matching. grep decides line by
 # line, so `gh \` / `pr \` / `merge` on three physical lines reads as three
@@ -45,7 +52,34 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""') || exit 0
 # one, and the block message says to split such text into its own command.
 cmd=$(printf '%s' "$cmd" | perl -0777 -pe 's/\\\r?\n//g') || exit 0
 
-printf '%s' "$cmd" | grep -qE '(^[[:space:]]*|(;|&&|\||\$\()[[:space:]]*|(^|[[:space:]])(then|do)[[:space:]]+)gh[[:space:]]+pr[[:space:]]+(merge|review)' || exit 0
+if printf '%s' "$cmd" | grep -qE '(^[[:space:]]*|(;|&&|\||\$\()[[:space:]]*|(^|[[:space:]])(then|do)[[:space:]]+)gh[[:space:]]+pr[[:space:]]+(merge|review)'; then
+  echo "Blocked: creating the PR is yours to do; merging and approving are the user's — leave them, even with --admin (AGENTS.md > Core Principles). If this command is not actually merging or approving (the text merely mentions the command), split that text into a separate command." >&2
+  exit 2
+fi
 
-echo "Blocked: creating the PR is yours to do; merging and approving are the user's — leave them, even with --admin (AGENTS.md > Core Principles). If this command is not actually merging or approving (the text merely mentions the command), split that text into a separate command." >&2
-exit 2
+# The `gh api` forms of the same two actions, which the grep above cannot judge: `gh api` names
+# what it acts on in a path and how in a flag, and the same path is a read or a write depending
+# on the method. Deciding that needs parsing, so it is `scripts/pr-merge-guard.mjs`, where it is
+# tested. What follows is only a prefilter over whether to pay for a node process.
+squashed=${cmd//[\"\']/}
+squashed=${squashed//\\/}
+
+case "$squashed" in
+  *gh*api*) ;;
+  *) exit 0 ;;
+esac
+
+# The session's own checkout, the way `adversarial-review-gate.sh` resolves it (#699):
+# `CLAUDE_PROJECT_DIR` alone turns the gate off for a session in a worktree, which finds no
+# `scripts/` there.
+root=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null)
+if [ -n "$root" ] && top=$(git -C "$root" rev-parse --show-toplevel 2>/dev/null); then
+  root=$top
+else
+  root="${CLAUDE_PROJECT_DIR:-.}"
+fi
+cd "$root" 2>/dev/null || exit 0
+
+[ -f scripts/pr-merge-guard.mjs ] || exit 0
+
+printf '%s' "$input" | node scripts/pr-merge-guard.mjs

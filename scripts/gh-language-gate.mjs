@@ -25,12 +25,17 @@ let cmd
 let cwd
 try {
   const payload = JSON.parse(raw)
-  cmd = payload?.tool_input?.command ?? ''
+  cmd = payload?.tool_input?.command
+  // **A payload with no `command` is judged on the whole payload**, which is what the prefilter in
+  // the shell half already does. `?? ''` made a missing key indistinguishable from an empty command,
+  // and an empty command matches nothing, so an unexpected payload shape switched the gate off in
+  // silence. Reading more than was asked for costs a false block; reading nothing costs the gate.
+  if (typeof cmd !== 'string' || !cmd) cmd = raw
   // The directory the command would run in, so a relative --body-file is read from the tree the
   // session is in rather than from wherever the hook was launched.
   cwd = typeof payload?.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd()
 } catch { process.exit(0) }
-if (typeof cmd !== 'string' || !cmd) process.exit(0)
+if (!cmd) process.exit(0)
 
 let verdict
 try { verdict = judge(cmd, undefined, cwd) } catch { process.exit(0) }
