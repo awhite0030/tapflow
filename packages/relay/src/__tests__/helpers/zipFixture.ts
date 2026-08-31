@@ -22,6 +22,8 @@ function entryData(entry: ZipFixtureEntry): Buffer {
   return Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(entry.data)
 }
 
+// Keep this writer in-process: the repo has no ZIP library, and fixtures must not
+// depend on a system zip executable.
 function makeZip(entries: readonly ZipFixtureEntry[]): Buffer {
   const localParts: Buffer[] = []
   const centralParts: Buffer[] = []
@@ -93,6 +95,8 @@ export function writeZipFixture(zipPath: string, entries: readonly ZipFixtureEnt
 export function makeAppZip(tmpDir: string, appName: string, plistXml: string): string {
   const zipPath = path.join(tmpDir, `${appName}.app.zip`)
   return writeZipFixture(zipPath, [
+    // This explicit, apparently empty directory entry is load-bearing: production
+    // findAppDirInZip relies on unzip -l output containing a line ending in .app/.
     { name: `${appName}.app/` },
     { name: `${appName}.app/Info.plist`, data: plistXml },
     { name: `${appName}.app/${appName}`, data: Buffer.from([0xcf, 0xfa, 0xed, 0xfe]) },
