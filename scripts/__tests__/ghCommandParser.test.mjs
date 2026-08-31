@@ -41,6 +41,24 @@ describe('a reserved word is only reserved in command position', () => {
     expect(creates('(gh issue create -t x)')).toBe(1)
   })
 
+  it('a backtick opens a command the same way `$(` does', () => {
+    // **The two spellings of command substitution disagreed.** The dollar-paren form reached command
+    // position because `(` is an operator; the backtick form did not, because the backtick stayed
+    // glued to `gh` as one word. bash runs both — verified with a script file: `echo` of a
+    // backticked `printf RAN` prints `RAN`.
+    const SUB = 'gh issue create -t x'
+    expect(creates(`echo \`${SUB}\``), 'backtick').toBe(1)
+    expect(creates(`echo $(${SUB})`), 'dollar-paren').toBe(1)
+    expect(creates(`URL=\`${SUB}\``), 'assigned from a substitution').toBe(1)
+  })
+
+  it('a backtick inside single quotes is literal, as it is to the shell', () => {
+    // The reason this can be added without the false blocks the shell matcher avoids backticks for:
+    // quoting is already resolved here. bash prints the backticked text verbatim from single quotes
+    // and runs nothing.
+    expect(creates(`echo 'see \`gh issue create\` in the docs'`)).toBe(0)
+  })
+
   it('a quoted keyword is not a keyword even in command position', () => {
     // `"do" gh …` makes bash look for a command named `do`; the quotes take the word out of the
     // grammar. Treating it as a separator put `gh` in command position, which is a false block.

@@ -38,8 +38,15 @@ export const NEWLINE = '\0'
 export const HERE_STRING_OP = '<<<'
 
 /** Unquoted characters that end a word and begin a new command. `(` and `)` are here so that both
- *  `(gh …)` and `$(gh …)` reach command position. */
-const OPERATOR = '&|;()'
+ *  `(gh …)` and `$(gh …)` reach command position.
+ *
+ *  **A backtick is here for the same reason `(` is.** It opens a command substitution, and bash runs
+ *  what is inside one — verified. Leaving it out made the two spellings of one thing disagree: the
+ *  dollar-paren form of a merge was refused while the backtick form passed, because the backtick
+ *  stayed glued to `gh` as one word and never matched. Quoting still decides, as everywhere else
+ *  here: inside single quotes a backtick is literal and never reaches this branch, which is what
+ *  keeps prose that names a command from tripping it. */
+const OPERATOR = '&|;()`'
 
 export function tokenizeDetailed(cmd) {
   const words = []
@@ -122,7 +129,7 @@ const PASSTHROUGH = new Set(['env', 'sudo', 'command', 'nohup', 'time', 'xargs']
  * `elif`, `while` and `until` left `atStart` false, so `if gh issue create …; then` was invisible to
  * both gates — the mirror of `then`/`do`/`else`, which were in the set from the start.
  */
-const OPERATOR_SEP = new Set([NEWLINE, ';', ';;', '&', '&&', '|', '||', '(', ')'])
+const OPERATOR_SEP = new Set([NEWLINE, ';', ';;', '&', '&&', '|', '||', '(', ')', '`'])
 const RESERVED = new Set(['{', '}', 'if', 'elif', 'then', 'while', 'until', 'do', 'else', '!'])
 
 /**

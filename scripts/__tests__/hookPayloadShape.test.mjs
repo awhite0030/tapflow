@@ -19,6 +19,7 @@
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 const REPO = path.resolve(import.meta.dirname, '../..')
@@ -82,6 +83,32 @@ describe('the fallback reaches a verdict, not just exit 0', () => {
     for (const hook of ['pr-merge-guard.sh', 'issue-parent-gate.sh', 'gh-language-gate.sh']) {
       expect(run(hook, { tool_input: { command: 'git status' }, cwd: REPO }).status, hook).toBe(0)
     }
+  })
+
+  it('a node that fails is not a verdict', () => {
+    // **Only status 2 is this gate's answer.** Before, node's exit status was the hook's: a missing
+    // binary made the hook exit 127 and an import error made it exit 1, so every matching command in
+    // the session reported a hook error while blocking nothing — the opposite of the fail-open
+    // contract each of these files states at the top.
+    //
+    // Measured by putting a stub `node` ahead on PATH rather than by emptying PATH, which was the
+    // first attempt and proved nothing: with no PATH at all, `jq` fails first and the hook exits 0
+    // long before node is reached.
+    const bin = fs.mkdtempSync(path.join(tmpdir(), 'fakenode-'))
+    try {
+      for (const status of [1, 127]) {
+        fs.writeFileSync(path.join(bin, 'node'), `#!/bin/sh\nexit ${status}\n`, { mode: 0o755 })
+        for (const hook of READS_A_COMMAND) {
+          const r = spawnSync('bash', [path.join(HOOKS, hook)], {
+            input: JSON.stringify({ tool_input: { command: 'gh api --method PUT repos/o/r/pulls/1/merge' }, cwd: REPO }),
+            encoding: 'utf8',
+            cwd: REPO,
+            env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+          })
+          expect(r.status, `${hook} with node exiting ${status}`).toBe(0)
+        }
+      }
+    } finally { fs.rmSync(bin, { recursive: true, force: true }) }
   })
 
   it('the one real payload without a command carries nothing to judge', () => {

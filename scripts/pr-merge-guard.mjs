@@ -40,4 +40,7 @@ Creating the PR is yours to do; merging and approving are the user's — leave t
 A read of the same path is allowed: \`--method GET\` asks whether a PR is merged, or lists its
 reviews, without doing either.
 `)
-process.exit(2)
+// `exitCode` rather than `exit(2)`: writes to a pipe are asynchronous on Windows, and `exit`
+// discards whatever is still queued — the status would block but the reason could arrive cut off.
+// Nothing is pending after the stdin loop, so the process still ends here.
+process.exitCode = 2

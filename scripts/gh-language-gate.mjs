@@ -42,4 +42,7 @@ try { verdict = judge(cmd, undefined, cwd) } catch { process.exit(0) }
 if (!verdict.blocked) process.exit(0)
 
 process.stderr.write(`${message(verdict)}\n`)
-process.exit(2)
+// `exitCode` rather than `exit(2)`: writes to a pipe are asynchronous on Windows, and `exit`
+// discards whatever is still queued — the status would block but the reason could arrive cut off.
+// Nothing is pending after the stdin loop, so the process still ends here.
+process.exitCode = 2

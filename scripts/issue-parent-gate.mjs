@@ -112,4 +112,7 @@ if (!verdict.blocked) process.exit(0)
 // without a message here should still block, since blocking is what the verdict said.
 const message = (MESSAGES[verdict.reason] ?? MESSAGES['no-parent'])(verdict)
 process.stderr.write(`${message}\n`)
-process.exit(2)
+// `exitCode` rather than `exit(2)`: writes to a pipe are asynchronous on Windows, and `exit`
+// discards whatever is still queued — the status would block but the reason could arrive cut off.
+// Nothing is pending after the stdin loop, so the process still ends here.
+process.exitCode = 2
