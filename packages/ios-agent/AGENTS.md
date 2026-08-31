@@ -1,6 +1,6 @@
 ---
 type: rules
-topics: [ios, simulator, macos]
+topics: [ios, simulator, macos, network]
 status: living
 ---
 
@@ -13,6 +13,8 @@ status: living
 ## WHAT
 
 `IOSAgent`: controls iOS simulators via `xcrun simctl`, streams frames using SimulatorKit IOSurface callbacks, and injects touch / keyboard / button events directly via SimDeviceLegacyHIDClient. No WebDriverAgent.
+
+It also takes **one** simulator off the network and puts it back (#607), which on a device with no radio takes three mechanisms rather than one — a host system extension, an injected library, and the status bar. That is its own section at the end of this file, and none of the three is safe to touch alone.
 
 ## HOW
 
@@ -179,7 +181,8 @@ device lookup).
 Five things about it are easy to undo by accident:
 
 - **Running is not usable, and the helper says which it is.** It announces itself on stderr once it
-  holds its HID client and is about to read stdin (`touch-helper.swift:281`). Measured on a real
+  holds its HID client and is about to read stdin (the `info: touch-helper ready` line it writes to
+  stderr in `touch-helper.swift`). Measured on a real
   simulator: **186–247ms** after spawn (n=5), and a gesture written before that announcement lands
   **nothing** — the frames sit in the pipe and are drained in one go when it finally starts reading,
   collapsing a swipe into microseconds. So `isReady()` requires the announcement and `isRunning()`
@@ -493,3 +496,181 @@ issued for a device the list called `booted` too. Nothing short-circuits on the 
 **`device:ready` is not a sync point.** It is sent as soon as the stream is handed off, before the helpers a test is usually about to read are observable — so `waitForType(browser, 'device:ready')` returning does not mean `MockCapture` or `MockTouchHelper` has been constructed. Always `vi.waitFor` on the mock you are about to read, never on the message alone.
 
 There used to be a second reason: the relay replayed `device:ready` on `session:start` for any session whose device was up at registration, so the wait could latch an ack that belonged to no boot at all — that is what made the codec-negotiation test flake at ~2/10 suite runs. The replay now keys off whether the session announced a stream (relay `Session.readySent`), so a freshly registered `mockSimctl(true)` session no longer produces one. The `vi.waitFor` rule stands on the first reason alone.
+
+---
+
+### Network on/off — three layers, and none of them ships alone (#607)
+
+A simulator has no radio to switch off. It is host processes sharing the Mac's network stack, so
+"offline" is assembled by `SimulatorNetwork`, and the reason that class exists is that **each
+mechanism alone produces a result a tester would sign off on and be wrong about**:
+
+| | what it does | what it alone gets wrong |
+|---|---|---|
+| **1. host content filter** (`ios-netfilter`) | drops that simulator's flows at the kernel | the app still believes it is online — measured: traffic dead, `NWPathMonitor` reporting `satisfied` for the life of the process — and a pooled connection keeps working |
+| **2. injected dylib** (`bin/libtapflow-nethook.dylib`) | fakes the path status and **cuts the sockets the app already holds** | blocks nothing: faking `nw_path_get_status` does not stop `URLSession`, which reads the kernel's real path |
+| **3. status bar** | stops showing service | pixels |
+
+**Layer 1 leads in both directions, and the order is measured rather than chosen.** Going offline,
+the dylib cuts open sockets the moment the condition file appears; if the filter were not already
+dropping new flows at that instant the app simply reconnects — reproduced exactly that way, and the
+reconnected socket then survived the rest of the session. Coming back, the filter has to stop
+dropping *before* the app is told the path is satisfied, or the first thing it does with the good
+news is fail.
+
+#### It is a content filter, not a transparent proxy
+
+`NETransparentProxyProvider` was built first and sees **zero** simulator traffic: 217 flows reached
+its handler and every one was a host process. `NEFilterDataProvider` sees them. Do not re-propose
+the proxy.
+
+**A flow carries a bundle id and never a device**, so `Provider.swift` walks the flow's process up to
+its `launchd_sim` and reads the UDID out of that process's **arguments** — not its executable path,
+which is shared by every simulator on the runtime. The cache is keyed on `(pid, start time)`, not a
+bare pid: `launchd_sim`'s pid is reused readily, and a bare key attributes flows to simulators that
+no longer exist, which cuts a device nobody asked to cut with every log line agreeing it was right.
+`asid` looks like a cheaper key and is not one — two simulators share an asid.
+
+#### The host cannot revoke a connection it allowed
+
+`handleNewFlow`'s `.drop()` reaches new flows only, and `URLSession` keeps one connection for a whole
+session. Keeping every flow under a data verdict instead was built and measured unusable —
+`peekInboundBytes: 8192` produced **0** data callbacks, `1` produced **815,869** in forty seconds
+(one byte each) and still never an outbound callback on the app's reused connection. Apple is
+explicit that allowing a flow is one-way. So the cut happens **inside the app**, in the dylib, with
+`shutdown` rather than `close`: the owner sees the connection go away, which is what losing signal
+looks like, and the descriptor's number is not handed back for something else to be opened onto.
+
+#### Hooking is an inline patch, and it refuses more than it handles
+
+`fishhook` rewrites indirect symbol pointers and so reaches only images **outside** the dyld shared
+cache. Measured in a real `.app`: system frameworks call their neighbours with direct branches inside
+the cache, so neither the socket layer nor the path layer was reachable — the hooks that appeared to
+work were our own dylib's imports, which is also what made the first self-check a false positive.
+`inline-hook.c` patches the target function's own body instead.
+
+Four rules there are load-bearing, and each is a hole something already fell into:
+
+- **`connect`/`sendto` are refused by design.** They share a 16K libsystem_kernel page with
+  `mach_vm_protect`, so changing that page's protection un-maps the code performing the change — an
+  instruction abort, measured three times, killing the app in its dyld initialisers.
+- **The way back is published before the patch goes live.** `tf_hook_install` takes `original` as a
+  parameter for that reason; a caller storing it afterwards leaves a window where another thread
+  enters the replacement and tail-calls address zero.
+- **Every hook, or none — enforced, not just stated.** There is no uninstall, so a refusal on the
+  second target cannot undo the first. The replacements are neutered by `g_hooks_live` until the whole
+  set is in. `nw_path_monitor_set_queue` is in that set for a reason of its own: without it a replayed
+  handler has nowhere correct to run.
+- **A replayed handler runs on the queue its owner chose**, recorded from
+  `nw_path_monitor_set_queue` (#640). Firing on tapflow's own queue instead could run a third-party
+  handler concurrently with the framework's, and put UI work off the main thread — a crash in the app
+  under test, blamed on tapflow.
+- **Cutting a socket reads the descriptor twice and cannot pin it**, so the cut re-checks afterwards
+  and logs a mismatch (#643). `ENOTCONN` there is the cut having worked, not a race — the first
+  version of that check did not know the difference and flagged all four connections on its first
+  real run.
+- **No `SIMULATOR_UDID`, no activation.** Everything this library writes is keyed by it, and the
+  host's `/tmp` is the same `/tmp` inside every simulator on the Mac.
+
+#### What the agent trusts, and what it must not
+
+`state()` decides `available` from **three things, in order, and layer 1 is asked first**. Between
+layer 1 and the verdict sits the plainest question of the three: **is the library on disk at all.**
+It is `stat`ed rather than remembered, because `DYLD_INSERT_LIBRARIES` naming a path that does not
+exist is ignored by dyld without a word — so a damaged install arms cleanly, launches the app
+unhooked, and leaves `state()` asking for an app that is already running. The dylib's verdict
+file answers for layer 2 — only the target app writes it, and the file is keyed by udid alone, so any
+other process writing it would answer for an app that never ran (since #635 no other process
+activates at all: the library is delivered simulator-wide, but the gate admits one bundle id).
+
+What layer 1 is doing cannot be read there at all, and `state()` is synchronous — every re-join,
+every `device:ready`, every capability `networkState()` — so it **remembers** the last judgment instead. Without
+that memory one re-join repaints a Mac that cannot take devices offline as a healthy one, and the
+tester's toast is the only trace left that anything went wrong.
+
+`awaiting-app` is not an edge case: it is the state every iOS session is in between the device
+booting and its app launching, because the library is armed at boot and can only name its target at
+launch.
+
+**A hybrid app's web half is not told it is offline**, and that is a limitation rather than an
+unfound bug. WebKit's processes were measured never to load the library — dyld drops `DYLD_*` for
+them — so a WebView renders no `navigator.onLine` banner. Its traffic still fails, because layer 1
+works at the kernel for every process.
+
+The container app's **exit 0 means the save was accepted and nothing more.** The framework hands
+`vendorConfiguration` to the running provider afterwards with no acknowledgement, and the whole run
+returns in 27ms. Each failure has its own code (1 activation, 2 load, 3 save, 4 approval timed out,
+5 needs a reboot, 7 could not confirm) — `ios-netfilter/README.md` has the table.
+
+**So the rule is written and then confirmed** (#639). `--confirm` asks the running provider over XPC
+what it is holding — 0.26–0.74ms, measured — and `setOffline` refuses unless the answer says
+`enforcing` and names this device. Refusing matters more than it sounds: layers 2 and 3 work without
+layer 1 and neither blocks traffic, so applying them alone tells the app it is offline while every
+request it makes succeeds, which is the sign-off this feature exists to prevent.
+
+**The confirmation's timeout is the mechanism, not a backstop.** A call made while the provider is
+dead does not fail — measured 3/3, it blocks to the caller's own deadline, because launchd holds the
+mach name while the process is away. One second: about thirty times a healthy round trip and an
+eighth of the dashboard's request deadline.
+
+**And enforcement can stop after the fact**, which no confirmation can cover. Measured: killing the
+provider leaves the kernel passing that simulator's traffic for about 5.8 seconds before launchd has
+it back, 23–27 requests getting through each time. `SimulatorNetwork` watches the provider's state
+file while anything is offline and reports `enforcement-lost` — the one reason that invalidates work
+already done, so the dashboard interrupts rather than re-colours.
+
+#### Two things that will bite
+
+- **`booted` on `DeviceState` is a cache, not the truth.** `initDeviceStates` clears it on
+  `agent:registered`, which is every *reconnect*. Reading it as liveness shipped a regression twice
+  in one PR. The wire path uses `deviceFor` and the capability path `soleLiveDeviceId`; both ask
+  simctl before believing a device is down. The other six capability entry points still do not (#646).
+- **Tests must never reach the real filter.** `arm()` runs on every boot, so a suite that boots a
+  mock device was rewriting the host's live filter configuration once per boot test on any machine
+  with tapflow's extension installed — silently, because the class *reports* a missing container app
+  rather than failing. `IOSAgent` points its `SimulatorNetwork` at a nonexistent host binary under
+  vitest, and `options.network` injects one.
+
+#### Building the system extension
+
+Needs a paid Apple Developer account. Ad-hoc and self-signed builds do **not** load (measured
+`code=4`), and un-notarized Developer ID is Gatekeeper-rejected.
+
+```bash
+export DEVELOPMENT_TEAM=<10-character Team ID>
+packages/ios-agent/ios-netfilter/build.sh     # xcodegen → build → sign → notarize → staple
+```
+
+**The `CFBundleVersion` bump in `build.sh` is not decoration.** `OSSystemExtension` activation skips
+the replacement when the version matches — keeping the old bundle and the running provider — and
+returns success while nothing changed. xcodegen bakes the version in as a literal, which is why the
+script patches both `Info.plist`s after generating.
+
+**A replacement that goes unanswered is a released delegate, and it cost most of a day to find.**
+`submitRequest` returns and no delegate method is ever called — not an error, not a refusal, not an
+approval prompt. The host binary bounds it at 45s and exits 6, which is the only reason it is visible.
+
+`OSSystemExtensionRequest` holds its `delegate` **weakly**. Replacing an installed extension makes
+`sysextd` ask the app which one to keep — visible in the log as `initial activation decision:
+requestAppReplaceAction` followed by `notifying client of activation conflict` — and if the delegate
+has been collected by then, nothing answers and the framework cancels the connection. **A first
+install never shows it**, because there is no existing entry to ask about, so this appears only once
+you start iterating.
+
+```bash
+# what the failing case looks like
+log show --last 5m --debug --predicate 'process == "sysextd"' | grep -i conflict
+```
+
+Two guesses are recorded because they were wrong and cost time: accumulated versions
+`terminated waiting to uninstall on reboot` looked like the cause, but a restart cleared the list to
+one and the next replacement stalled identically; `lsregister -f` changed nothing. Neither could have
+helped — nothing was wrong with the system's state.
+
+Every replacement does still leave the displaced version pending until reboot, so batching changes
+into one build is worth doing regardless. **A self-hoster meets none of this** — they install once
+per release. A contributor touching `ios-netfilter` meets it the same afternoon, which is why it is
+here rather than only in an issue.
+
+tapflow does not distribute this yet; #647 is that decision and the install documentation behind it.
+Until then an agent without the extension reports the control unavailable rather than failing.

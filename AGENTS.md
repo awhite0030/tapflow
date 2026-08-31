@@ -46,6 +46,9 @@ For the product direction and philosophy behind these — Manual First, Flow Cap
 - **Stop before risky actions** — get user confirmation before any hard-to-reverse operation (`git push --force`, `git reset --hard`, sending messages to external systems, DB drops, etc.). Specifically:
   - Only create commits or PRs when the user explicitly requests it.
   - **Do not merge PRs.** Always leave merging to the user — even with `--admin`. Create the PR and stop.
+    Enforced by the PreToolUse hook `.claude/hooks/pr-merge-guard.sh`, which blocks `gh pr merge` and
+    `gh pr review` in command position. It does not cover the `gh api` and git plumbing equivalents:
+    same threat model, a cooperative agent rather than an adversary.
   - **Avoid breaking changes.** If unavoidable, report to the user and get approval before proceeding. Breaking change scope: public API / interface signature changes, DB schema changes, WebSocket message protocol changes, CLI command / flag changes.
 
 ---
@@ -59,6 +62,20 @@ For the product direction and philosophy behind these — Manual First, Flow Cap
 → [CONTRIBUTING.md](./CONTRIBUTING.md)
 
 Write GitHub PR and issue titles/bodies in **English**, and write new code comments in **English** too. (Conversation and docs follow the existing KO/EN rules.) Code comments default to English so contributors of any language can read and extend them — existing Korean comments stay until the line they sit on is changed.
+
+The PR and issue half is enforced by `.claude/hooks/gh-language-gate.sh`, which reads the title, the
+body, the contents of a `--body-file`, and the heredoc behind `--body-file -` — so the form
+CONTRIBUTING recommends is covered rather than only the text typed inline. **A line counts as Korean
+only when its Hangul outnumbers its Latin letters**, so an English sentence naming a Korean UI label
+passes; #660 shipped one. `gh pr comment` is deliberately out of scope, because a review comment is a
+conversation and the rule is about titles and bodies.
+
+**Docs prose is checked before the session ends.** Editing any Markdown under `docs/` — nested too,
+so `docs/ko/guide/agent.md` counts — and finishing without running
+`/ai-tells detect` is blocked by `.claude/hooks/docs-aitells-gate.sh`, with
+`docs-aitells-reminder.sh` nudging at the moment of the edit. The check is a **lint, not a
+laundry**: it flags AI-writing tells in prose a human wrote, and `rewrite` stays manual and
+docs-only. Stopping a second time passes, so the block is a prompt rather than a wall.
 
 When starting a **new** task that requires code changes (not when continuing work on an existing branch):
 1. `git checkout main && git pull origin main` — start from the latest main.
@@ -135,6 +152,34 @@ Splitting is still right when it is right — `#508`'s relay type drift genuinel
 The rule is that it must be a decision with a reason, and the reason may not be "it was in a
 different file".
 
+#### A reviewer's `later` is an input, not a verdict — and deferring has a budget
+
+The rule above was written for a session choosing its own deferrals. Once the findings arrive from
+review channels, the choosing is quietly delegated: a reviewer writes `later`, and it becomes an
+issue because that is what the column said.
+
+**Measured on one day of work on #607: nine issues, from three PRs.** That is not bad luck, it is
+arithmetic — two or three channels per PR, a cap of four or five findings each, and a `later` rate of
+about a third. Two of the nine were closed within the hour as things that should never have been
+filed, and one of them (`#673`, a missing `timeout`) was a few lines in a file the running lens was
+already reading, which the section above says is fixed in place.
+
+Three things keep it honest, and none of them is remembering harder:
+
+- **Re-grade every `later` yourself.** Severity was already being re-graded; disposition was not.
+  Hold each one against the same two questions: under ~10 lines, and judgable by the lens already
+  running? Then it is fixed here, whatever the column says.
+- **Give the reviewer a `later` budget** — at most two per channel, each justified against that rule.
+  A cap on findings with no cap on deferrals makes deferring free, and free is what it was.
+- **Every split-out issue names its parent**, on a line of its own: `Parent: #607`. Prose like "raised
+  by the review of #647" is not it — nothing can build a checklist from a mention, which is how the
+  nine above became unreachable from the issue they all came from. `.claude/hooks/issue-parent-gate.sh`
+  blocks an issue that carries neither a `Parent:` line nor an explicit
+  `<!-- standalone: reason -->`.
+
+And the parent keeps a checklist. Asked whether #607 was finished, nobody could answer — the feature's
+remaining surface existed only as unlinked rows in a tracker sorted by date.
+
 ### Design Principles (SOLID — priority subset)
 
 - **OCP**: New platforms and features are added without modifying existing code — platforms register via `AgentRegistry.register()` only; relay and dashboard code stay unchanged.
@@ -201,7 +246,7 @@ gates went on: `AgentRegistry.test.ts` declared `implements DeviceAgent` while m
 sites naming a type violated.
 
 ### Test Hygiene
-Tests run through `pnpm --filter <pkg> test`, never `npx vitest` — not even from inside the package directory, and not for a single file. npm rewrites the root `package.json` on its way through and collapses `pnpm.overrides` to `pnpm: {}`, leaving `pnpm-lock.yaml` rewritten beside it, and it reports none of that. Reviewing #474 cost exactly this: one `npx vitest` on one test file, and the entire override block was gone with only `git status` to say so. `git checkout HEAD -- package.json pnpm-lock.yaml` puts both back — check `git diff` on them first if you were editing either on purpose, since that discards everything uncommitted in both.
+Tests run through `pnpm --filter <pkg> test`; use `pnpm test:scripts` for the root scripts suite. Never use `npx vitest` — not even from inside the package directory, and not for a single file. npm rewrites the root `package.json` on its way through and collapses `pnpm.overrides` to `pnpm: {}`, leaving `pnpm-lock.yaml` rewritten beside it, and it reports none of that. Reviewing #474 cost exactly this: one `npx vitest` on one test file, and the entire override block was gone with only `git status` to say so. `git checkout HEAD -- package.json pnpm-lock.yaml` puts both back — check `git diff` on them first if you were editing either on purpose, since that discards everything uncommitted in both.
 
 After running tests (especially repeated or looped runs), always check for zombie vitest processes and kill them:
 ```bash

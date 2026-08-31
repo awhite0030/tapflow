@@ -47,5 +47,5 @@ cmd=$(printf '%s' "$cmd" | perl -0777 -pe 's/\\\r?\n//g') || exit 0
 
 printf '%s' "$cmd" | grep -qE '(^[[:space:]]*|(;|&&|\||\$\()[[:space:]]*|(^|[[:space:]])(then|do)[[:space:]]+)gh[[:space:]]+pr[[:space:]]+(merge|review)' || exit 0
 
-echo "Blocked: PR merge/approve는 직접 수행해주세요. Creating the PR is yours to do; merging and approving are the user's — leave them, even with --admin (AGENTS.md > Core Principles). If this command is not actually merging or approving (the text merely mentions the command), split that text into a separate command." >&2
+echo "Blocked: creating the PR is yours to do; merging and approving are the user's — leave them, even with --admin (AGENTS.md > Core Principles). If this command is not actually merging or approving (the text merely mentions the command), split that text into a separate command." >&2
 exit 2

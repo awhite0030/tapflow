@@ -45,6 +45,14 @@ docs/             ← documentation site (VitePress)
 playground/       ← local integration test environment
 ```
 
+## The two READMEs are one document
+
+`packages/cli/README.md` is what npm renders for the published CLI, and it is `README.md` with two URL
+prefixes absolutised — npm resolves neither repo-relative paths nor `blob/main` links. **Edit both, and
+write the cli copy's links absolute.** `scripts/__tests__/readmeSync.test.mjs` compares them and runs in
+CI; a block that genuinely has to differ goes between `<!-- readme-sync:exempt <reason> -->` markers in
+both files. Today one does: GitHub renders `<video>` and npm does not.
+
 ## Claiming an issue
 
 Issues are not assigned in advance. Open a draft PR or post your findings on the issue and it is yours — a comment reserving one does not hold it, so no issue sits blocked behind an intent that never lands.
@@ -126,6 +134,12 @@ All packages:
 
 ```sh
 pnpm test
+```
+
+Repository scripts suite (cross-package static checks):
+
+```sh
+pnpm test:scripts
 ```
 
 A specific package:

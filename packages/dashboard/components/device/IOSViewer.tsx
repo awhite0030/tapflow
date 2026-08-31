@@ -2,11 +2,13 @@
 
 import type { BrowserToRelay } from '@tapflowio/protocol'
 import { newRequestId } from '@/lib/requestId';
-import { useCallback, useEffect, useRef, useState, Fragment } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, Fragment } from 'react';
 import { useClientRecording } from '@/hooks/useClientRecording';
 import { Home, Keyboard, Loader2, Play } from 'lucide-react';
 import { useFps } from '@/hooks/useFps';
 import { SimulatorToolbar } from './shared/SimulatorToolbar';
+import { useNetworkControl } from '@/hooks/useNetworkControl';
+import type { NetworkMessageHandler } from '@/hooks/useNetworkControl';
 import { SimulatorInfoCard } from './shared/SimulatorInfoCard';
 import { DeepLinkDialog } from './DeepLinkDialog';
 import { Button } from '@/components/ui/button';
@@ -47,10 +49,17 @@ interface IOSViewerProps {
   binaryFrameHandlerRef: React.MutableRefObject<BinaryFrameHandler | undefined>;
   clipboardHandlerRef: React.MutableRefObject<ClipboardMessageHandler | undefined>;
   clipboardSupported: boolean;
+  networkHandlerRef: MutableRefObject<NetworkMessageHandler | undefined>;
+  networkSupported: boolean;
   onRecordingUploaded?: () => void;
   swKeyboardVisible: boolean;
   swKeyboardPending: boolean;
   onKbdToggle: () => void;
+  /** Restart control (#628). Owned by `DeviceViewer`, which sequences the shutdown and the boot. */
+  rebootPending: boolean;
+  onReboot: () => void;
+  /** Focused when the device comes back, so a restart does not end with focus on `document.body`. */
+  viewerRootRef: MutableRefObject<HTMLDivElement | null>;
   perfHookRef?: MutableRefObject<PerfHook>;
 }
 
@@ -58,8 +67,9 @@ export function IOSViewer({
   sessionId, buildId, send, openUrl, launchApp, connected, joined,
   deviceReady, installing, installed, installError, bootError,
   launching, chrome,
-  binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, onRecordingUploaded,
+  binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, networkHandlerRef, networkSupported, onRecordingUploaded,
   swKeyboardVisible, swKeyboardPending, onKbdToggle,
+  rebootPending, onReboot, viewerRootRef,
   perfHookRef,
 }: IOSViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -302,6 +312,11 @@ export function IOSViewer({
     handlerRef: clipboardHandlerRef, sendChord, onError: (m) => toast.error(m),
   })
 
+  const network = useNetworkControl({
+    sessionId, send, supported: networkSupported, deviceReady, handlerRef: networkHandlerRef,
+    onError: (m) => toast.error(m),
+  })
+
   // ── Keyboard forwarding ───────────────────────────────────────────────────
   useEffect(() => {
     const MODIFIER_CODES = new Set(['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'MetaLeft', 'MetaRight'])
@@ -534,11 +549,15 @@ export function IOSViewer({
   const screenPctH = (chrome.screenRect.height / chrome.compositeHeight) * 100;
   const cssCornerRadius = Math.round((chrome.screenCornerRadius / 2) * displayScale);
 
-  const platformSlot = (
+  // Home moves around the OS; the software keyboard leaves the device in a condition that stays up
+  // until somebody puts it away. Two groups, per `packages/dashboard/AGENTS.md` → "Where a new device
+  // button goes".
+  const navigationSlot = (
     <>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon" className="h-8 w-8"
+            aria-label="Home"
             onClick={() => send({ type: 'input:button', sessionId, requestId: newRequestId(), payload: { name: 'home' } })}
           >
             <Home className="h-4 w-4" />
@@ -546,11 +565,44 @@ export function IOSViewer({
         </TooltipTrigger>
         <TooltipContent side="left"><span className="flex items-center gap-3">Home <KbdGroup><Kbd>⌘</Kbd><Kbd>⇧</Kbd><Kbd>U</Kbd></KbdGroup></span></TooltipContent>
       </Tooltip>
+    </>
+  );
+
+  const kbdStatusId = useId();
+
+  const deviceSlot = (
+    <>
+      {/* **A live region, because a name change on a focused button is not re-announced.** Clicking
+          this leaves focus on it, and NVDA, JAWS and VoiceOver do not reliably re-read the accessible
+          name of the element already focused — so the branched name below tells a screen-reader user
+          nothing at the moment it changes, and nothing again when it finishes. The network control in
+          this same toolbar carries its state exactly this way and records the same reason.
+          **Mounted unconditionally with only the text toggled**: a live region inserted in the same
+          commit as its first sentence is routinely dropped, which would silence the one transition it
+          exists for. */}
+      <span id={kbdStatusId} role="status" className="sr-only">
+        {swKeyboardPending
+          ? 'Changing the software keyboard.'
+          : swKeyboardVisible ? 'The software keyboard is up.' : 'The software keyboard is down.'}
+      </span>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon" className="h-8 w-8"
-            disabled={swKeyboardPending}
-            onClick={onKbdToggle}
+            aria-label={swKeyboardPending ? 'Software keyboard — changing it' : 'Software keyboard'}
+            // `data-active` below is a CSS hook and nothing reads it out. The toolbar's other two
+            // toggles carry their state in `aria-pressed`; this was the one left outside ARIA.
+            aria-pressed={swKeyboardVisible}
+            aria-busy={swKeyboardPending}
+            // **`aria-disabled`, not `disabled`, and the name says why.** A `disabled` button leaves
+            // the focus order and stops receiving pointer events, so it announces "unavailable" with
+            // no reason *and* its tooltip — the only thing that could give one — can never open. The
+            // record button branches its name for this (#447, #624) and the network control chooses
+            // `aria-disabled` for it. Keeping the button reachable is only half of it: the first
+            // version of this kept an unconditional name and tooltip, so a screen-reader user heard
+            // an unavailable control and still no reason. Both branch now.
+            aria-disabled={swKeyboardPending}
+            aria-describedby={kbdStatusId}
+            onClick={() => { if (!swKeyboardPending) onKbdToggle() }}
             data-active={swKeyboardVisible}
           >
             {swKeyboardPending
@@ -558,7 +610,11 @@ export function IOSViewer({
               : <Keyboard className="h-4 w-4" />}
           </Button>
         </TooltipTrigger>
-        <TooltipContent side="left"><span className="flex items-center gap-3">Software keyboard <KbdGroup><Kbd>⌘</Kbd><Kbd>⇧</Kbd><Kbd>K</Kbd></KbdGroup></span></TooltipContent>
+        <TooltipContent side="left">
+          {swKeyboardPending
+            ? <span>Software keyboard — changing it</span>
+            : <span className="flex items-center gap-3">Software keyboard <KbdGroup><Kbd>⌘</Kbd><Kbd>⇧</Kbd><Kbd>K</Kbd></KbdGroup></span>}
+        </TooltipContent>
       </Tooltip>
     </>
   );
@@ -578,7 +634,18 @@ export function IOSViewer({
   ) : null;
 
   return (
-    <div className="flex items-start justify-center gap-16">
+    // **`focus-visible`, not `focus`** — a `tabIndex={-1}` element is out of the tab order but still
+    // takes focus from a *mouse*, and a click on anything unfocusable inside it lands here. So every
+    // tap on the simulator drew a ring around the whole viewer. `focus-visible` is the browser's own
+    // answer to that: it fires for keyboard and for a programmatic focus that follows one, which is
+    // exactly the restart hand-back this element exists for, and not for a pointer.
+    <div
+      ref={viewerRootRef}
+      tabIndex={-1}
+      role="region"
+      aria-label="Device screen"
+      className="flex items-start justify-center gap-16 outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-md"
+    >
       <canvas ref={recordCanvasRef} style={{ display: 'none' }} />
 
       <DeepLinkDialog open={deepLinkOpen} onOpenChange={setDeepLinkOpen} openUrl={openUrl} />
@@ -590,8 +657,11 @@ export function IOSViewer({
         onRecordToggle={handleRecordToggle}
         recordState={recordState}
         onRotate={handleRotate}
-        platformSlot={platformSlot}
+        navigationSlot={navigationSlot}
+        deviceSlot={deviceSlot}
         launchSlot={launchSlot}
+        network={networkSupported ? { position: network.position, steerable: network.steerable, reason: network.reason, pending: network.pending, onToggle: network.toggle } : undefined}
+        reboot={{ pending: rebootPending, onReboot }}
       />
 
       <div className="flex items-start gap-8">

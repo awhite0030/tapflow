@@ -33,12 +33,14 @@
   </p>
 </div>
 
+<!-- readme-sync:exempt npm-has-no-video -->
 <div align="center">
   <a href="https://github.com/user-attachments/assets/dbba8bde-74b6-4fb9-bdb6-3919bc4295c4" target="_blank" rel="noopener noreferrer">
     <img src="https://raw.githubusercontent.com/jo-duchan/tapflow/main/docs/public/demo-thumbnail.png" alt="tapflow demo — click to play" width="100%" />
   </a>
   <p><em>Click to play</em></p>
 </div>
+<!-- /readme-sync:exempt -->
 
 <p align="center"><em>Streams over H.264 with a zero-buffer decoder (no MSE) — <a href="https://github.com/jo-duchan/tapflow/blob/main/contributing/streaming-latency-log.md">latency measurements ↗</a></em></p>
 

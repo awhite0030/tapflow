@@ -2,6 +2,18 @@
 
 ## Agent connection issues
 
+### It says an agent is already running {#agent-already-running}
+
+`tapflow agent start` stopping with **AGENT ALREADY RUNNING** means a tapflow agent for that platform
+is already running on this Mac.
+
+One agent manages **every** simulator on its machine. Running several simulators and having several
+people each test on their own, at the same time, is what one agent does — and it still is. Starting a
+second agent is a different thing: it would compete with the first for the same device list and the
+same network filter, and the relay treats the two as one agent anyway.
+
+Stop the one that is running, or use the session it already serves.
+
 ### Agent cannot connect to the relay
 
 1. Verify the relay is running.
@@ -186,6 +198,90 @@ If the emulator is still slow when the Mac is unattended, check the following.
 |-------|----------------|
 | **Power adapter connected** | Battery mode lowers CPU performance — `caffeinate` does not override this scaling. |
 | **Laptop lid is open** | Closing the lid triggers clamshell sleep, which `caffeinate` cannot prevent. |
+
+## iOS: the network extension is not installed {#network-not-set-up}
+
+Network control on an iOS simulator needs the tapflow network extension installed on the agent Mac. **It comes with tapflow, so there is nothing to download.** One command installs the copy already in the package.
+
+### 1. Install it
+
+On a Mac you are setting up for the first time, the iOS setup covers the extension too.
+
+```sh
+tapflow setup ios
+```
+
+On a Mac that already ran setup, setup does not run again, so a machine configured before this feature existed needs its own command.
+
+```sh
+tapflow migrate net-filter
+```
+
+### 2. Approve it
+
+Requesting the install brings up a macOS approval prompt.
+
+Go to **System Settings → General → Login Items & Extensions → Network Extensions** and switch the tapflow entry on. (An administrator password is required.)
+
+Approval happens at the Mac. macOS offers no path a browser could click instead.
+
+### 3. When a restart is needed
+
+Replacing an already-installed extension finishes only after the Mac restarts. **Until then the previous version keeps running** — the file on disk is the new one while macOS is still running the old one, so the dashboard goes on saying the Mac is not set up.
+
+### Checking what the Mac has
+
+```sh
+tapflow doctor ios
+```
+
+It reports three things separately: whether it is **installed**, whether it is **approved**, and whether the extension currently running is the **same version this tapflow carries**. The last one is separate because the first two can both be right while the control still does not work — a replacement waiting for a restart is exactly that.
+
+If it reports a version mismatch, what to do depends on which side is behind. If this tapflow carries the newer filter, `tapflow migrate net-filter` installs it. If the Mac runs the newer one, upgrade this checkout instead — migrate refuses that direction, because replacing a newer filter breaks the agent that depends on it. If it asks for a restart, restart the Mac.
+
+### If it still does not work
+
+Installing ends with a distinct code per kind of failure.
+
+| Code | Meaning |
+|---|---|
+| 1 | Activation failed |
+| 2 | Could not read the configuration |
+| 3 | Could not save the configuration |
+| 4 | Not approved within 120 seconds. Approve it in System Settings and run it again |
+| 5 | The Mac has to restart for this to finish |
+| 6 | The system extension manager gave no answer within 45 seconds |
+| 7 | The running filter did not answer |
+
+What the extension can and cannot see is in [Network Control](/guide/network-control#what-you-are-trusting).
+
+## iOS: a device that was offline came back on the network by itself {#network-stopped}
+
+A notice saying the device went back on the network while you were checking means **the offline behaviour you have checked so far needs checking again.** Requests may have been succeeding between the moment traffic started passing and the moment the notice appeared.
+
+What stopped is the filter on the agent Mac that was blocking the traffic — either the extension was switched off in System Settings, or the filter process died and macOS is bringing it back. Bringing it back takes about six seconds, and nothing is blocked for any of them.
+
+**Check**
+
+```sh
+systemextensionsctl list
+```
+
+If `dev.tapflow.netfilter.ext` is not `[activated enabled]`, go back to [installing and approving it](#network-not-set-up).
+
+If it is enabled and this keeps happening, the filter process is dying repeatedly.
+
+```sh
+log show --last 10m --predicate 'subsystem == "dev.tapflow.netfilter"' --info --debug --style compact
+```
+
+**What to do**
+
+Take the device offline again and redo the check from the start. The button draws normally once the filter is back. If the same notice keeps appearing, offline checks on that Mac cannot be trusted until the cause is found, so use another agent Mac in the meantime.
+
+Logs are at `/tmp/tapflow-netfilter-host.log`.
+
+For the feature itself, see [Network Control](/guide/network-control).
 
 ## `tapflow doctor` failures
 

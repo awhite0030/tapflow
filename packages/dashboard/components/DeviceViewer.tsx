@@ -12,6 +12,8 @@ import type { FrameTiming, PerfHook } from './perf/types';
 import { parseEnvelopeHeader, HEADER_SIZE, CODEC_H264, CODEC_AUDIO, type BinaryFrameHandler } from '@/lib/envelope';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
 import type { ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
+import type { NetworkMessageHandler } from '@/hooks/useNetworkControl';
+import { useDeviceReboot, type RebootMessageHandler } from '@/hooks/useDeviceReboot';
 import { canDecodeH264 } from '@/lib/decoders/pickDecoder';
 import { resolveInputError } from '@/lib/inputErrorNotice';
 import { newRequestId } from '@/lib/requestId';
@@ -106,7 +108,12 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const appInstallIdsRef = useRef<Set<string>>(new Set());
   const appLaunchIdsRef = useRef<Set<string>>(new Set());
   const [swKeyboardVisible, setSwKeyboardVisible] = useState(false);
+  /** The same length `useNetworkControl` gives its own request, and for the same reason: an
+   *  uncorrelated request whose only answer may never come. */
+  const KEYBOARD_REQUEST_DEADLINE_MS = 8_000;
   const [swKeyboardPending, setSwKeyboardPending] = useState(false);
+  const kbdDeadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (kbdDeadlineRef.current) clearTimeout(kbdDeadlineRef.current); }, []);
 
   // Active viewer registers its binary frame decoder here.
   // SimulatorViewer routes incoming binary frames to whichever viewer is mounted.
@@ -115,6 +122,37 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   // The mounted viewer's clipboard bridge registers here; replies are correlated by
   // requestId on its side, so this only has to hand the message over.
   const clipboardHandlerRef = useRef<ClipboardMessageHandler | undefined>(undefined);
+  // Same shape, one message family over: the network control registers here and the routing below
+  // hands it `network:state` and `network:error` (#607).
+  const networkHandlerRef = useRef<NetworkMessageHandler | undefined>(undefined);
+  // And one over again: the reboot control registers here and the routing below hands it the two
+  // shutdown replies (#628). Kept apart from the network one because they answer different requests —
+  // routing both families through a single handler is what `inboundDisposition`'s check exists to stop.
+  const rebootHandlerRef = useRef<RebootMessageHandler | undefined>(undefined);
+
+  /**
+   * **The only place a `device:boot` is sent, and that is the point rather than tidying.**
+   *
+   * Three things have to happen together for a boot to be answerable: the id goes in `bootIdsRef` so
+   * its reply is recognised as this mount's, it goes in `latestBootIdRef` so a superseded boot's
+   * failure can be told from the current one's, and it goes on the wire. Two copies of that already
+   * existed — the join and the agent-restart rebind — and #628 would have made a third. Half-copying
+   * it fails quietly in the direction that looks healthy: `device:ready` still clears the spinner
+   * while the app is never installed, which is the failure the `device:booting` branch is annotated
+   * with at length.
+   *
+   * `resetMode` stays a parameter because it is the one thing the callers genuinely disagree on, and
+   * the disagreement is load-bearing: only the first boot of a mount may carry a reset (#439).
+   */
+  const sendBoot = useCallback((reset: 'app-only' | 'full-erase' | undefined) => {
+    const bootId = newRequestId();
+    bootIdsRef.current.add(bootId);
+    latestBootIdRef.current = bootId;
+    sendRef.current({
+      type: 'device:boot', sessionId, requestId: bootId,
+      payload: { deviceId, resetMode: reset, acceptH264: canDecodeH264(), secureContext: window.isSecureContext },
+    });
+  }, [sessionId, deviceId]);
 
   // Opt-in audio output (Android emulator first). Audio frames are codec-tagged and routed
   // straight to Web Audio — they never enter the video FIFO/decoder path. Always-on playback;
@@ -184,10 +222,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // Cleared with `rebindRef` just above and for the same reason: an earlier cycle's boot will
       // never be answered now, and keeping its id would let a straggler release this cycle's rebind.
       bootIdsRef.current.clear();
-      const bootId = newRequestId();
-      bootIdsRef.current.add(bootId);
-      latestBootIdRef.current = bootId;
-      sendRef.current({ type: 'device:boot', sessionId, requestId: bootId, payload: { deviceId, resetMode: reset, acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
+      sendBoot(reset);
     }
     if (msg.type === 'session:agent-away') {
       // Everything on screen describes an agent that is no longer there. Drop the frame so the
@@ -219,6 +254,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       setBootError(null);
       setLaunching(false);
       setSwKeyboardPending(false);
+      if (kbdDeadlineRef.current) clearTimeout(kbdDeadlineRef.current);
       setSwKeyboardVisible(false);
       envelopeQueueRef.current = [];
       setAgentCapabilities(msg.capabilities);
@@ -234,10 +270,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       // only because a rebind cannot precede a join on the same mount — and would silently become
       // a wipe the day that stops holding.
       resetSentRef.current = true;
-      const rebootId = newRequestId();
-      bootIdsRef.current.add(rebootId);
-      latestBootIdRef.current = rebootId;
-      sendRef.current({ type: 'device:boot', sessionId, requestId: rebootId, payload: { deviceId, resetMode: 'app-only', acceptH264: canDecodeH264(), secureContext: window.isSecureContext } });
+      sendBoot('app-only');
       // Only when the status card has not been saying it already — otherwise the toast lands at the
       // exact moment that message is replaced by the reconnect, saying the same thing twice.
       if (!wasAnnounced) toast.info('The agent restarted — reconnecting to the device.');
@@ -399,7 +432,21 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       const { visible } = msg.payload;
       setSwKeyboardVisible(visible);
       setSwKeyboardPending(false);
+      if (kbdDeadlineRef.current) clearTimeout(kbdDeadlineRef.current);
     }
+    if (msg.type === 'network:state' || msg.type === 'network:error') {
+      networkHandlerRef.current?.(msg);
+      return;
+    }
+    // **Handed over without comparing anything here**, unlike every other correlated pair in this
+    // handler. `useAgentSession` sends three uncorrelated `device:shutdown`s on the way out of a
+    // view and `SessionList` answers those, so the id comparison is what separates this viewer's
+    // reboot from somebody else's teardown — and it belongs beside the id, which lives in the hook.
+    if (msg.type === 'device:shutdown-done' || msg.type === 'device:shutdown-error') {
+      rebootHandlerRef.current?.(msg);
+      return;
+    }
+
     if (msg.type === 'clipboard:data' || msg.type === 'clipboard:write-done' || msg.type === 'clipboard:error') {
       clipboardHandlerRef.current?.(msg);
     }
@@ -437,7 +484,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
           return;
       }
     }
-  }, [sessionId, deviceId, buildId, onSessionEnded, resetMode, installed, agentAway]);
+  }, [sessionId, buildId, onSessionEnded, resetMode, installed, agentAway, sendBoot]);
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {
     const envelope = parseEnvelopeHeader(data);
@@ -472,8 +519,28 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const iosChrome = chrome !== null && 'framePng' in chrome ? chrome as ChromeData : null;
   const androidChrome = chrome !== null && !('framePng' in chrome) ? chrome as AndroidChrome : null;
 
+  /**
+   * **The toggle gets a budget, because two agent paths answer nothing at all.**
+   *
+   * `input:keyboard:toggle` is uncorrelated and `keyboard:toggled` is the only thing that clears the
+   * wait — but `IOSAgent` drops the message when it holds no state for the session, and its
+   * `simctl` call's `.catch` logs and returns. Neither needs the agent to die, so the rebind recovery
+   * does not cover them, and the wait then lasts for the life of the mount.
+   *
+   * That was survivable while the button only greyed itself out: it made no claim. It now says
+   * "changing it" in its name, in a live region and with a spinner, so an unanswered toggle states
+   * something false to a screen-reader user indefinitely. `useNetworkControl` reached the same shape
+   * first and this is its deadline, at the same length.
+   */
   const onKbdToggle = () => {
     setSwKeyboardPending(true);
+    if (kbdDeadlineRef.current) clearTimeout(kbdDeadlineRef.current);
+    kbdDeadlineRef.current = setTimeout(() => {
+      // Only the wait is cleared. Where the keyboard actually is, is unknown — and `swKeyboardVisible`
+      // already holds the last value the device confirmed, which is the honest answer.
+      setSwKeyboardPending(false);
+      toast.error('The device did not answer. The software keyboard is where it was, as far as tapflow can tell.');
+    }, KEYBOARD_REQUEST_DEADLINE_MS);
     send({ type: 'input:keyboard:toggle', sessionId });
   };
 
@@ -494,6 +561,68 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     sendRef.current({ type: 'app:launch', sessionId, requestId, buildId });
   }, [sessionId, buildId]);
 
+  // **Boots through the same helper the join and the rebind use**, which is what keeps a reboot's
+  // reply recognisable as this mount's. `app-only` is not a choice here: a reboot is not a request to
+  // erase (#439), and wiping stays on the selector screen where a session is being created.
+  const { pending: rebootPending, reboot } = useDeviceReboot({
+    sessionId, deviceId, deviceReady, send,
+    handlerRef: rebootHandlerRef,
+    onShutdownComplete: useCallback(() => { sendBoot('app-only'); }, [sendBoot]),
+    onError: useCallback((message: string) => { toast.error(message); }, []),
+  });
+
+  /**
+   * **Where focus goes when the toolbar unmounts itself.**
+   *
+   * The restart is the only control here that destroys the thing it was pressed from: its boot sends
+   * `device:booting`, which sets `chrome` to null, which unmounts the viewer and the toolbar inside
+   * it. Focus then falls to `document.body` and a keyboard user is dropped out of the interface they
+   * just acted from — with nothing named to tell them the device is coming back.
+   *
+   * **Only when a viewer was there and is now gone.** This branch also renders on the very first
+   * boot, where nobody has focused anything and taking focus would be the opposite defect: a page
+   * that grabs the caret on load. `document.activeElement === document.body` does not separate the
+   * two on its own — it is true on a fresh render as well — which is what the transition ref is for.
+   * Measured: with the body test alone, the first-boot case took focus.
+   */
+  const bootingRegionRef = useRef<HTMLDivElement | null>(null);
+  /** The mounted viewer's own root, so focus can be handed back when the device returns. */
+  const viewerRootRef = useRef<HTMLDivElement | null>(null);
+  const hadViewer = useRef(false);
+  /** Whether *this* component moved focus, which is the only case it may move it back. */
+  const parkedFocus = useRef(false);
+  useEffect(() => {
+    const hasViewer = Boolean(iosChrome ?? androidChrome);
+    const lostViewer = hadViewer.current && !hasViewer;
+    const regainedViewer = !hadViewer.current && hasViewer;
+    hadViewer.current = hasViewer;
+
+    // Still the body check as well, on both transitions: the tester may have clicked somewhere
+    // outside the viewer while it was going down, and moving focus off what they chose is its own
+    // way of losing their place.
+    if (lostViewer) {
+      const node = bootingRegionRef.current;
+      if (!node || document.activeElement !== document.body) return;
+      node.focus();
+      parkedFocus.current = true;
+      return;
+    }
+    // **The other half, and without it this only moves the drop later.** The region focus was parked
+    // in unmounts the moment the chrome arrives, so focus would fall to `document.body` at the end of
+    // the boot instead of the start of it — the same defect, one step further along.
+    if (regainedViewer && parkedFocus.current) {
+      // Cleared whether or not the focus moves: the parking is spent either way, and leaving it set
+      // would let a later, unrelated boot cycle claim focus on the strength of this restart.
+      parkedFocus.current = false;
+      // **The body check belongs on this side too**, which the comment above once claimed and the
+      // code did not do. A tester can Tab out of the booting region while the device comes back —
+      // to the status card, the header, anywhere — and pulling focus off what they chose is the
+      // defect this whole effect exists to avoid, aimed the other way.
+      if (document.activeElement !== document.body) return;
+      viewerRootRef.current?.focus();
+    }
+  }, [iosChrome, androidChrome]);
+
   const commonProps = {
     sessionId, buildId, send, openUrl, launchApp, connected, joined,
     deviceReady, installing, installed, installError, bootError,
@@ -501,23 +630,60 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     binaryFrameHandlerRef,
     clipboardHandlerRef,
     clipboardSupported: agentCapabilities.includes('clipboard'),
+    networkHandlerRef,
+    networkSupported: agentCapabilities.includes('network-control'),
     onRecordingUploaded,
     swKeyboardVisible, swKeyboardPending, onKbdToggle,
+    rebootPending, onReboot: reboot,
+    viewerRootRef,
   };
 
   // Before chrome arrives, show a phone skeleton + status card so the layout isn't empty
   if (!iosChrome && !androidChrome) {
+    // **`role="region"`, because a bare `div` is `generic` and ARIA prohibits naming that role** — the
+    // name focus is meant to announce would not be exposed. **"Device screen", not "Device"** — the
+    // toolbar's four group names (Navigation / Device / Capture / Environment) are a vocabulary the
+    // placement rule treats as a contract, and this region *contains* that group: one name over two
+    // very different scopes, and `getByLabelText('Device')` matching both. The name says what this
+    // *is* rather than
+    // what is happening: a fixed "starting up" keeps asserting a recovery after a boot that failed,
+    // while the card below carries the outcome.
+    //
+    // The ring is `focus-visible` rather than plain focus. "No suppression, because `tabIndex={-1}`
+    // means only a deliberate focus can reach it" was the earlier reasoning and it is **false**: such
+    // an element is out of the tab order but still takes focus from a mouse, and a click on anything
+    // unfocusable inside it lands here — so every tap drew a ring around the whole thing.
     return (
-      <div className="flex items-start justify-center gap-16">
-        {/* toolbar placeholder */}
-        <div className="flex flex-col items-center gap-0.5 rounded-2xl border bg-background/90 px-1.5 py-2.5 shrink-0 mt-3 opacity-40">
+      <div
+        ref={bootingRegionRef}
+        tabIndex={-1}
+        role="region"
+        aria-label="Device screen"
+        className="flex items-start justify-center gap-16 outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-md"
+      >
+        {/* **No `aria-busy` anywhere, and the two shapes below are hidden.** Three attempts put it in
+            three places and each was wrong in the same way. On this container it sat above
+            `SimulatorInfoCard`'s live region, where a busy subtree can hold back the sentence that
+            says what happened. Derived from `!deviceReady` it never cleared, because that flag does
+            not come back after `device:boot-error` — a failed boot announcing itself as running for
+            the rest of the session. Moved onto the placeholders it became a constant, which is the
+            same defect one element over.
+
+            The shapes are decorative: no text, no name, nothing for a screen reader to attach "busy"
+            to. So they are `aria-hidden` and the progress is said once, in the one place that has
+            words for it — and that sentence is the thing to keep out of any hidden or busy subtree.
+
+            What this does *not* fix is that the region carrying it is remounted by the transition, so
+            a restart is still not announced end to end. That is #683: it needs the render restructured
+            rather than another attribute. */}
+        <div aria-hidden="true" className="flex flex-col items-center gap-0.5 rounded-2xl border bg-background/90 px-1.5 py-2.5 shrink-0 mt-3 opacity-40">
           {Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="h-8 w-8 rounded-md bg-muted animate-pulse" />
           ))}
         </div>
         <div className="flex items-start gap-8">
           {/* phone body skeleton */}
-          <div style={{ background: '#1c1c1e', borderRadius: '34px', padding: '12px', flexShrink: 0 }}>
+          <div aria-hidden="true" style={{ background: '#1c1c1e', borderRadius: '34px', padding: '12px', flexShrink: 0 }}>
             <div className="animate-pulse bg-zinc-700" style={{ width: 324, height: 720, borderRadius: '22px' }} />
           </div>
           <SimulatorInfoCard

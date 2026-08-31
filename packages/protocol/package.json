@@ -1,6 +1,6 @@
 {
   "name": "@tapflowio/protocol",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "Wire protocol contract for tapflow — the WebSocket message types exchanged between browser, relay, and device agents",
   "keywords": [
     "tapflow",
@@ -59,6 +59,6 @@
   },
   "devDependencies": {
     "typescript": "^5.0.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }

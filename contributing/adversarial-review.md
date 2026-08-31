@@ -83,6 +83,25 @@ and waiting out sleeps.
   that *you* create, not one the reviewer has to discover it needs. This applies to a read-only
   reviewer too — it is reading files, so editing them mid-run means it may report on text you have
   already changed.
+- **And "you" is not only this session.** The rule above is written as discipline, which quietly
+  assumes the only other process is the one making the promise. It is not: another session of your own
+  — a second terminal reviewing somebody's PR, an editor task, anything holding the same clone — moves
+  the branch under a running review, and no amount of care on this side prevents it. Measured on
+  2026-08-28: two channels were reviewing a branch when a concurrent session checked out `pr-656` and
+  then a third branch. Neither had been told this could happen.
+
+  **So the reviewer prompt names the commit, and the reviewer checks.** Both channels noticed — one via
+  `git reflog` — and finished by reading blobs with `git show <sha>:<path>`, so both reports were
+  sound and their findings verified against the real files afterwards. That is the behaviour to ask
+  for rather than to be lucky about: give the reviewer the full HEAD hash you want reviewed, and say
+  that if the tree no longer holds it, it should read blobs at that hash instead and say so in its
+  report. A reviewer that silently trusts the tree reports on a change that is not there.
+
+  **"No longer holds it" is two questions, not one.** `git rev-parse HEAD` catches a branch that
+  moved; it says nothing about an uncommitted edit, which leaves the hash matching while the files
+  differ — and that is the case the paragraph above this one is about. So the reviewer checks
+  `git status --porcelain` as well, and treats either signal as reason to read blobs. Asking only for
+  the hash is a check that reads as covering both and covers one.
 
 ## The cleared list ages with the diff
 
@@ -179,8 +198,17 @@ What made the 4m30s pair cheap was structural, not stylistic. Each prompt carrie
 4. **The commands not to run**, by name.
 5. **A findings cap and a time budget.**
 6. **A required "checked and cleared" list**, so coverage is visible when nothing is found.
-7. **A now/later column on every finding — and for every `later`, the reason plus a one-line issue
-   title and body.** Without the column the split falls to whoever holds the diff, who is the person
+7. **A now/later column on every finding, a `later` budget of two per channel — and for every
+   `later`, the reason plus a one-line issue title and body.**
+
+   The budget is the part that was missing, and its absence is measured: capping findings while
+   leaving deferrals free produced nine issues from three PRs in a day. Ask the reviewer to justify
+   each `later` against the ten-line rule, and **re-grade every one of them yourself** — the column is
+   the reviewer's opinion about work it is not doing.
+
+   Every issue that does get filed names its parent on a line of its own (`Parent: #607`), which is
+   what lets the work it came from enumerate what it still owes.
+ Without the column the split falls to whoever holds the diff, who is the person
    least able to see what deferring costs, and the answer defaults to "later" because that is what
    keeps the diff small. Without the issue text, "later" costs a sentence while filing costs a task,
    and the cheaper one wins — which is how six deferrals came to live in a single conversation. The

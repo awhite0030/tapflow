@@ -12,7 +12,7 @@ vi.mock('@tapflowio/ios-agent', () => ({
   requestAudioPermission: vi.fn(),
 }))
 
-import { execSync, spawnSync } from 'node:child_process'
+import { execFileSync, execSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, appendFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -20,6 +20,11 @@ import { confirm, text } from '@clack/prompts'
 import { runSetupAndroid, runSetupIos } from '../../lib/setup.js'
 
 const mockExecSync = vi.mocked(execSync)
+const mockExecFileSync = vi.mocked(execFileSync)
+const NET_FILTER_VERSION = '1787675754'
+/** What `systemextensionsctl list` prints for an extension macOS is actually running. */
+const activatedListing = (version: string) =>
+  `1 extension(s)\n--- com.apple.system_extension.network_extension\nenabled\tactive\tteamID\tbundleID (version)\tname\t[state]\n*\t*\t6FBS3QP893\tdev.tapflow.netfilter.ext (1.0/${version})\tdev.tapflow.netfilter.ext\t[activated enabled]\n`
 const mockSpawnSync = vi.mocked(spawnSync)
 const mockExistsSync = vi.mocked(existsSync)
 const mockReadFileSync = vi.mocked(readFileSync)
@@ -493,8 +498,18 @@ describe('runSetupIos', () => {
     mockSpawnSync.mockReturnValue(okSpawn as never)
     mockConfirm.mockResolvedValue(true as never)
     mockText.mockResolvedValue('' as never)
-    // 기본: 완전히 구성된 macOS (brew·Xcode·활성화·Booted 시뮬)
-    mockExistsSync.mockImplementation((p) => p === XCODE_APP)
+    // 기본: 완전히 구성된 macOS (brew·Xcode·활성화·Booted 시뮬·넷필터 설치·활성)
+    //
+    // 넷필터는 경로 모양으로 매칭한다 — 패키지 안 앱의 절대 경로는 node가 패키지를 어디서 찾느냐에
+    // 달려 있어 테스트가 하드코딩할 값이 아니다.
+    mockExistsSync.mockImplementation((p) => p === XCODE_APP || String(p).includes('TapflowNetFilter.app'))
+    // `defaults read …/Info.plist` 와 `systemextensionsctl list`. 둘 다 읽기이므로 exec 계열이고,
+    // 그래서 아래 "부작용 없음"(spawnSync 미호출) 단언이 넷필터 때문에 깨지지 않는다.
+    mockExecFileSync.mockImplementation((cmd) => {
+      if (String(cmd).endsWith('/defaults')) return `${NET_FILTER_VERSION}\n` as never
+      if (String(cmd).endsWith('/systemextensionsctl')) return activatedListing(NET_FILTER_VERSION) as never
+      return '' as never
+    })
     mockExecSync.mockImplementation((cmd) => {
       const c = cmd as string
       if (c === 'which brew') return '/opt/homebrew/bin/brew\n'
@@ -624,7 +639,7 @@ describe('runSetupIos', () => {
 
   it('멱등 — 완전 구성 머신은 전부 ok, 부작용 없음', async () => {
     const results = await runSetupIos()
-    expect(results.every((r) => r.ok)).toBe(true)
+    expect(results.filter((r) => !r.ok).map((r) => [r.label, r.detail])).toEqual([])
     expect(mockSpawnSync).not.toHaveBeenCalled()
   })
 
