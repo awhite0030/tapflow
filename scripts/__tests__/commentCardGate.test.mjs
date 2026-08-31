@@ -146,22 +146,10 @@ describe('which commands post a comment', () => {
       expect(postsAComment('cat > n.md <<EOF\ngh api graphql -f query=mutation{addComment}\nEOF')).toBe(false)
     })
 
-    it('the prefilter lets the mutation reach the parser', () => {
-      // Both halves missed it: the path matcher looks for a `/comments` segment and the shell
-      // prefilter matches `*gh*comment*` in lowercase, while the mutation is spelled `addComment`.
-      // Node was never spawned, so neither half got a chance. Asserted through the hook because the
-      // prefilter is the half a unit test cannot see.
-      const r = spawnSync('bash', [HOOK], {
-        input: JSON.stringify({
-          tool_input: { command: "gh api graphql -f query='mutation{addComment(input:{}){id}}'" },
-          cwd: REPO,
-          transcript_path: path.join(REPO, 'no-such-transcript.jsonl'),
-        }),
-        encoding: 'utf8',
-        env: { ...process.env, CLAUDE_PROJECT_DIR: REPO },
-      })
-      expect(r.status).toBe(2)
-    })
+    // The prefilter half is asserted where the hook is spawned against a throwaway checkout — see
+    // `the hook itself, spawned`. It cannot be done from here: this repo's own card lives under
+    // gitignored `.work/`, so a test that spawns the hook against this checkout passes on the
+    // author's machine and allows the command in CI, where the card does not exist.
   })
 
   it('sees a body that arrives without a field flag', () => {
@@ -395,6 +383,23 @@ describe('the hook itself, spawned', () => {
 
   it('allows an unrelated command without paying for node', () => {
     expect(inRepo('git status --short').status).toBe(0)
+  })
+
+  it('the prefilter lets a GraphQL mutation reach the parser', () => {
+    // **Both halves missed it at once.** The path matcher looks for a `/comments` segment and the
+    // path here is `graphql`; the shell prefilter matches `*gh*comment*` in lowercase while the
+    // mutation is spelled `addComment`, so node was never spawned and the parser never got a chance.
+    // Asserted through the hook because the prefilter is the half a unit test cannot see.
+    //
+    // In a throwaway checkout, not this one: the card the gate needs lives under gitignored
+    // `.work/`, so spawning against this repo passes locally and allows the command in CI.
+    expect(inRepo("gh api graphql -f query='mutation{addComment(input:{}){id}}'").status).toBe(2)
+  })
+
+  it('the prefilter still ignores a command that is neither', () => {
+    // `*gh*api*graphql*` was added as one more literal arm rather than making the filter
+    // case-insensitive, because that would widen what pays for a node process on every Bash call.
+    expect(inRepo('gh api graphql -f query="query{viewer{login}}"').status).toBe(0)
   })
 
   it('fails open on a payload it cannot parse', () => {
