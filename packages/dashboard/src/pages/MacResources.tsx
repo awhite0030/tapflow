@@ -103,6 +103,7 @@ export function MacResources() {
 
   return (
     <div className="flex h-full min-h-0">
+      <h1 className="sr-only">Mac Resources</h1>
       {/* Macs sidebar. The title is a heading rather than a styled span for the same reason the chart
           titles are: with the charts now landmarked by `h2`, this list would be the one region of the page
           a screen-reader user could not jump to. */}
@@ -122,7 +123,7 @@ export function MacResources() {
               <button
                 key={name}
                 onClick={() => setSelectedAgent(name)}
-                aria-pressed={isSelected}
+                aria-current={isSelected ? 'true' : undefined}
                 className={[
                   'flex items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent transition-colors',
                   isSelected ? 'bg-accent font-medium' : '',
@@ -144,7 +145,6 @@ export function MacResources() {
 
       {/* Main content */}
       <div className="flex-1 min-w-0 overflow-auto">
-        <h1 className="sr-only">Mac Resources</h1>
         {!selectedAgent ? (
           <div className="flex h-full items-center justify-center gap-2 text-muted-foreground">
             <Monitor className="h-8 w-8" />

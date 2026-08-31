@@ -49,7 +49,7 @@ const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 type Props = { buildId: number }
 
 export function CommentPanel({ buildId }: Props) {
-   const fileErrorId = useId()
+  const fileErrorId = useId()
   const [comments, setComments] = useState<Comment[]>([])
   const [body, setBody] = useState('')
   const [file, setFile] = useState<File | null>(null)
