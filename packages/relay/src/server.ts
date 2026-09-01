@@ -3,6 +3,7 @@ import { initDb } from './db.js'
 import { RelayServer } from './RelayServer.js'
 import { config, loadedEnvPath } from './lib/config.js'
 import { buildCorsOrigins, proxyWithoutPublicUrlWarning } from './lib/proxyConfig.js'
+import { bootstrapAdminFromEnv } from './lib/adminBootstrap.js'
 import { createCertProvider, resolveRelayDisplayHost } from './lib/cert/index.js'
 import { startTlsBackgroundTasks } from './lib/tlsTasks.js'
 import { createLogger } from '@tapflowio/agent-core'
@@ -16,6 +17,10 @@ const dbPath = path.join(dataDir, 'tapflow.db')
 const uploadsDir = path.join(dataDir, 'uploads')
 
 initDb(dbPath)
+
+// After the schema exists and before anything is served: a container cannot reach the HTTP
+// bootstrap, because that one requires a local client and a container is always behind its bridge.
+bootstrapAdminFromEnv(process.env, logger)
 
 const corsOrigins = buildCorsOrigins(config, port)
 const proxyWarning = proxyWithoutPublicUrlWarning(config)
