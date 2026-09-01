@@ -1,4 +1,4 @@
-import type { UIElement } from '@tapflowio/agent-core'
+import { PlatformError, type UIElement } from '@tapflowio/agent-core'
 import type { Flow, Selector, Step, ScrollDirection } from './schema.js'
 import { TransientQueryError } from './errors.js'
 
@@ -245,6 +245,7 @@ export async function runFlow(flow: Flow, driver: FlowDriver, options: EngineOpt
       await executeStep(step, flow, driver, timeoutMs, pollIntervalMs)
       steps.push({ index, name, status: 'passed', durationMs: Date.now() - stepStart })
     } catch (e) {
+      if (e instanceof PlatformError) throw e
       const message = e instanceof Error ? e.message : String(e)
       failureMessage = `${name}: ${message}`
       steps.push({ index, name, status: 'failed', durationMs: Date.now() - stepStart, message })
