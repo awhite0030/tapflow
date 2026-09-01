@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import type { UIElement } from '@tapflowio/agent-core'
+import { PlatformError, type UIElement } from '@tapflowio/agent-core'
 import { runFlow, type FlowDriver } from '../engine.js'
 import { parseFlow } from '../schema.js'
 import { TransientQueryError } from '../errors.js'
@@ -265,6 +265,12 @@ steps:
     expect(result.steps[0]).toMatchObject({ name: 'launchApp', status: 'passed' })
     expect(result.steps[1].name).toBe('tapOn("OK")')
     expect(result.steps.every((s) => typeof s.durationMs === 'number')).toBe(true)
+  })
+
+  it('a PlatformError on a step throws to let the caller handle it (environmental error)', async () => {
+    const driver = fakeDriver([[]])
+    driver.openUrl = vi.fn(async () => { throw new PlatformError('agent offline') })
+    await expect(runFlow(flowOf('steps:\n  - openUrl: "app://x"\n'), driver, OPTS)).rejects.toThrow(PlatformError)
   })
 
   it('a driver error on a step fails the flow with that error', async () => {
