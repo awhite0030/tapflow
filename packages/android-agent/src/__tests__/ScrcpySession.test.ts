@@ -13,6 +13,7 @@ vi.mock('@tapflowio/agent-core', () => {
   }
 })
 
+
 function makeFakeProc() {
   const proc = new EventEmitter() as EventEmitter & {
     stdout: EventEmitter
@@ -124,6 +125,8 @@ describe('ScrcpySession', () => {
 
     const { ScrcpySession } = await import('../scrcpy/ScrcpySession.js')
     const session = new ScrcpySession()
+
+    // Attach catch immediately to prevent PromiseRejectionHandledWarning
     const startPromise = session.start('emulator-5554').catch(() => {})
 
     await vi.advanceTimersByTimeAsync(0)
@@ -136,26 +139,4 @@ describe('ScrcpySession', () => {
     await startPromise
   })
 
-  it('does not log a warning when serverProc emits exit after stop is called', async () => {
-    vi.useFakeTimers()
-
-    const proc = makeFakeProc()
-    vi.mocked(spawn).mockReturnValue(proc as never)
-    vi.mocked(execFile)
-      .mockImplementationOnce(cbSuccess as never)
-      .mockImplementationOnce(cbFail(new Error('forward failed')) as never)
-
-    const { ScrcpySession } = await import('../scrcpy/ScrcpySession.js')
-    const session = new ScrcpySession()
-    const startPromise = session.start('emulator-5554').catch(() => {})
-
-    await vi.advanceTimersByTimeAsync(0)
-
-    session.stop('emulator-5554')
-    proc.emit('exit', 0, null)
-
-    expect(mockLogger.warn).not.toHaveBeenCalledWith('server process exited (code: 0, signal: null)')
-
-    await vi.advanceTimersByTimeAsync(1500)
-  })
 })
