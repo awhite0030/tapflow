@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A Docker install can create its first account** ([#352](https://github.com/jo-duchan/tapflow/issues/352)). Until now it could not, at all: `POST /api/v1/auth/init` only answers a local client — the check that stops a stranger claiming a public instance before you set a password — and a container is always behind its bridge gateway, so `docker compose up` ended at a login screen nobody could get past. The error text points at `tapflow admin init`, but the image is relay-only by design and carries no CLI to run it. Set `TAPFLOW_ADMIN_EMAIL` and `TAPFLOW_ADMIN_PASSWORD` and the relay creates that first Admin while it boots. Like every other secret it reads, they can live in `<dataDir>/.env` instead of your compose file, which keeps the password out of your shell history and inside the volume you already mount. It does nothing when an owner already exists, so your account is never replaced and restarts do not repeat it; a password under 8 characters warns and lets the relay start anyway, because these values mean nothing to an install that already has an owner and a typo in them should not keep a running relay down. Nothing changes if you do not set them.
+
 ### Fixed
 
 - `MacResources` now has a stable page-level heading, exposes the selected Mac via `aria-current`, and announces each Mac's online/offline state through visually hidden status text; the comment composer's file-attachment errors are announced and tied to the attach button.
