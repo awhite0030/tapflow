@@ -48,6 +48,7 @@ export class ScrcpySession {
   private _video: ScrcpyVideo | null = null
   private _control: ScrcpyControl | null = null
   private port = 0
+  private stopped = false
 
   constructor() {
     const buf = randomBytes(4)
@@ -113,6 +114,9 @@ export class ScrcpySession {
     // Without a handler, an unhandled 'error' event (e.g. spawn() failing with ENOENT/EACCES,
     // or EPERM from kill()) throws and crashes the whole agent — taking down every device it manages.
     serverProc.on('error', (e) => logger.error(`server process: ${e.message}`))
+    serverProc.on('exit', (code, signal) => {
+      if (!this.stopped) logger.warn(`server process exited (code: ${code}, signal: ${signal})`)
+    })
     serverProc.unref()
 
     try {
@@ -140,6 +144,7 @@ export class ScrcpySession {
   }
 
   stop(serial: string): void {
+    this.stopped = true
     this.serverProc?.kill()
     this.serverProc = null
     this.videoSocket?.destroy()
