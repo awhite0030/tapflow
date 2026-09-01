@@ -34,6 +34,12 @@ export function verifyPassword(password: string, stored: string): boolean {
  * Does this install have an owner yet?
  *
  * Shared so the two bootstrap paths cannot disagree about what "already initialized" means.
+ *
+ * They are not identical in every respect: the boot path trims `TAPFLOW_ADMIN_EMAIL` and the HTTP
+ * one stores `body.email` as sent, so the same address with surrounding whitespace produces two
+ * different rows and the HTTP one never matches `handleLogin`'s `WHERE email = ?`. Normalising
+ * inside this function would change what a shipped endpoint stores, so it is a decision rather than
+ * a fix here — tracked separately.
  */
 export function isInitialized(): boolean {
   const { n } = getDb().prepare('SELECT COUNT(*) as n FROM users').get() as { n: number }

@@ -113,9 +113,17 @@ export async function handleInit(req: http.IncomingMessage, res: http.ServerResp
   if (isInitialized()) return json(res, 403, { error: 'Already initialized' })
 
   const body = await readJson<{ email: string; password: string }>(req)
-  switch (createAdminAccount(body.email, body.password)) {
+  const result = createAdminAccount(body.email, body.password)
+  switch (result) {
     case 'missing-fields': return json(res, 400, { error: 'email and password required' })
     case 'password-too-short': return json(res, 400, { error: 'Password must be at least 8 characters' })
     case 'ok': return json(res, 201, { ok: true })
+    // `noImplicitReturns` is off here, so a new member of `CreateAdminResult` would compile and fall
+    // through — leaving the request with no response at all, hanging until the caller's own timeout.
+    // `never` makes that a type error instead. The boot path guards the same way.
+    default: {
+      const unreachable: never = result
+      return json(res, 500, { error: `Unhandled result: ${String(unreachable)}` })
+    }
   }
 }
