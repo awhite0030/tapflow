@@ -103,6 +103,7 @@ export function MacResources() {
 
   return (
     <div className="flex h-full min-h-0">
+      <h1 className="sr-only">Mac Resources</h1>
       {/* Macs sidebar. The title is a heading rather than a styled span for the same reason the chart
           titles are: with the charts now landmarked by `h2`, this list would be the one region of the page
           a screen-reader user could not jump to. */}
@@ -122,13 +123,20 @@ export function MacResources() {
               <button
                 key={name}
                 onClick={() => setSelectedAgent(name)}
+                aria-current={isSelected ? 'true' : undefined}
                 className={[
                   'flex items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent transition-colors',
                   isSelected ? 'bg-accent font-medium' : '',
                 ].join(' ')}
               >
-                <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-muted-foreground/40'}`} />
+                <span
+                  className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                    isOnline ? 'bg-emerald-400' : 'bg-muted-foreground/40'
+                  }`}
+                  aria-hidden="true"
+                />
                 <span className="truncate min-w-0">{name}</span>
+                <span className="sr-only">{isOnline ? 'Online' : 'Offline'}</span>
               </button>
             )
           })
@@ -145,7 +153,7 @@ export function MacResources() {
         ) : (
           <div className="flex flex-col gap-6 p-6">
             <div className="flex items-center justify-between">
-              <h1 className="text-base font-semibold">{selectedAgent}</h1>
+              <h2 className="text-base font-semibold">{selectedAgent}</h2>
               <Tabs value={range} onValueChange={(v) => setRange(v as Range)}>
                 <TabsList>
                   {(Object.keys(RANGE_LABELS) as Range[]).map((r) => (

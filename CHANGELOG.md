@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `MacResources` now has a stable page-level heading, exposes the selected Mac via `aria-current`, and announces each Mac's online/offline state through visually hidden status text; the comment composer's file-attachment errors are announced and tied to the attach button.
+
 - **TLS startup instructions now use the certificate-resolved hostname for remote agent connections** ([#627](https://github.com/jo-duchan/tapflow/issues/627)). HTTP and local fallback paths intentionally retain the host placeholder because an agent running on another Mac must not be directed to `localhost`.
 
 ## [0.20.0] - 2026-08-28
