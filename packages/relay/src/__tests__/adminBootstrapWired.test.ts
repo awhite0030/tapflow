@@ -16,7 +16,10 @@ const lineOf = (needle: string) => source.split('\n').findIndex((l) => l.include
 
 describe('server.ts wires the admin bootstrap', () => {
   it('calls it, with the process environment', () => {
-    expect(source).toContain("import { bootstrapAdminFromEnv } from './lib/adminBootstrap.js'")
+    // Matched loosely on purpose. The first version pinned the whole import line and broke the
+    // moment a second symbol was imported alongside it — an inspection test that fails on a
+    // rearrangement it does not care about trains people to edit the test rather than read it.
+    expect(source).toMatch(/import \{[^}]*\bbootstrapAdminFromEnv\b[^}]*\} from '\.\/lib\/adminBootstrap\.js'/)
     expect(source).toMatch(/bootstrapAdminFromEnv\(process\.env,\s*logger\)/)
   })
 
