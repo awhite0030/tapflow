@@ -8,3 +8,10 @@ export class TransientQueryError extends Error {
     this.name = 'TransientQueryError'
   }
 }
+
+export class SessionReboundError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'SessionReboundError'
+  }
+}

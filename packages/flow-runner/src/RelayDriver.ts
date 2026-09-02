@@ -9,7 +9,15 @@ export class RelayDriver implements FlowDriver {
     private readonly client: RelayClient,
     private readonly sessionId: string,
     private readonly buildId?: number,
+    private readonly deviceId?: string,
   ) {}
+
+  async boot(): Promise<void> {
+    if (this.deviceId === undefined) {
+      throw new Error('boot needs a device id — update your RelayDriver instantiation')
+    }
+    await this.client.bootDevice(this.sessionId, this.deviceId)
+  }
 
   queryUITree(signal?: AbortSignal) { return this.client.queryUITree(this.sessionId, signal) }
 

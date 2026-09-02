@@ -1,6 +1,6 @@
 import type { UIElement } from '@tapflowio/agent-core'
 import type { Flow, Selector, Step, ScrollDirection } from './schema.js'
-import { TransientQueryError } from './errors.js'
+import { SessionReboundError, TransientQueryError } from './errors.js'
 
 // Transport-agnostic device surface the engine drives (DIP): the relay-backed
 // implementation lives in RelayDriver, tests use fakes, and mcp-server adapts
@@ -16,6 +16,7 @@ export interface FlowDriver {
   launchApp(): Promise<void>
   clearState(appId: string): Promise<void>
   screenshot(): Promise<Buffer>
+  boot?(): Promise<void>
 }
 
 export interface EngineOptions {
@@ -123,6 +124,10 @@ async function queryOrRetry(driver: FlowDriver, deadline: number): Promise<{ tre
     return { tree: await driver.queryUITree(AbortSignal.timeout(Math.max(1, deadline - Date.now()))) }
   } catch (e) {
     if (e instanceof TransientQueryError) return { transient: e.message }
+    if (e instanceof SessionReboundError) {
+      if (driver.boot) await driver.boot()
+      return { transient: e.message }
+    }
     throw e
   }
 }

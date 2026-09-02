@@ -59,7 +59,7 @@ const root = join(import.meta.dirname, '../..')
  * what said so.
  */
 const SELF_DESCRIBING = new Set([
-  'SessionEndedError', 'SessionLeftError', 'SessionJoinError', 'TransientQueryError', 'RelayHttpError',
+  'SessionEndedError', 'SessionLeftError', 'SessionJoinError', 'TransientQueryError', 'RelayHttpError', 'SessionReboundError',
 ])
 
 /** What counts as reaching the cause. `failed()` appends the note; the other two *are* the record. */

@@ -1057,6 +1057,7 @@ describe('RelayClient.queryUITree — the session record decides retryability (#
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(504, { error: 'ui-tree query timed out' }))
     const err = await c.queryUITree('s1').catch((e: unknown) => e) as Error
     expect(err).not.toBeInstanceOf(TransientQueryError)
+    expect(err.name).toBe('SessionReboundError')
     expect(err.message).toMatch(/needs booting again/)
   })
 
@@ -1090,6 +1091,7 @@ describe('RelayClient.queryUITree — the session record decides retryability (#
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(502, { error: 'Agent offline' }))
     const err = await c.queryUITree('s1').catch((e: unknown) => e) as Error
     expect(err).not.toBeInstanceOf(TransientQueryError)
+    expect(err.name).toBe('SessionReboundError')
     expect(err.message).toMatch(/needs booting again/)
     expect(err.message).not.toMatch(/went away/)
   })
