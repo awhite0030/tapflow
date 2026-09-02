@@ -122,21 +122,26 @@ function buildNetFilterChecks(): DoctorCheck[] {
     }]
   }
 
-  const running: DoctorCheck = { label: 'Network filter', ok: true }
-  if (s.activated === s.shipped) {
-    // **Installed, approved, and switched on are three things, and the third has no version.**
-    // `systemextensionsctl` describes the system extension; `NEFilterManager.isEnabled` is a separate
-    // preference, so a filter switched off leaves every version here correct and every check green
-    // over a control that does not work. That state is reachable from this repo's own code: the
-    // replace disables the filter before swapping the extension, and an interrupted run leaves it off.
-    if (!isFilterEnforcing()) {
-      return [{
+  // **Installed, approved and switched on are three things, and the third has no version.**
+  // `systemextensionsctl` describes the system extension; `NEFilterManager.isEnabled` is a separate
+  // preference, so a filter switched off leaves every version here correct and this check green over
+  // a control that does not work. That state is reachable from this repo's own code: the replace
+  // disables the filter before swapping the extension, and an interrupted run leaves it off.
+  //
+  // **It is decided here rather than inside the matching-version branch**, which is where it first
+  // went and was wrong: every branch below reports this same `running` object, so a Mac that was both
+  // waiting for a restart *and* switched off said "Network filter ok" and named only the restart —
+  // and restarting does not turn a filter back on. The version half stays separate and still true,
+  // because sending someone to an upgrade would send them somewhere that cannot help.
+  const running: DoctorCheck = isFilterEnforcing()
+    ? { label: 'Network filter', ok: true }
+    : {
         label: 'Network filter',
         ok: false,
         warn: true,
         detail: 'Installed and approved, but switched off — nothing is filtering, so iOS network control does not work. Run: tapflow migrate net-filter',
-      }, { label: 'Network filter version', ok: true }]
-    }
+      }
+  if (s.activated === s.shipped) {
     return [running, { label: 'Network filter version', ok: true }]
   }
   // Running something, but not this. Three ways that happens and they want different sentences.

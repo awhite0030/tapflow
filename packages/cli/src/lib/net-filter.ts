@@ -329,6 +329,11 @@ const EXIT_NEEDS_REBOOT = 5
  *  on a wedged run, not a budget. */
 const OFF_TIMEOUT_MS = 15_000
 
+/** How long the copy gets. `ditto` moves a few megabytes off local disk, so this bounds a wedged run
+ *  rather than a slow one — and after the disable above, a copy that never returns is what leaves the
+ *  filter off with nothing said. */
+const COPY_TIMEOUT_MS = 60_000
+
 /** How long `--install` gets. Generous because it can be waiting on a macOS approval dialog — the
  *  host has its own approval and stall deadlines (exit 4 and 6) and this is only the backstop for a
  *  run that reaches neither. Without it the CLI waits forever on a completion handler that never
@@ -420,7 +425,9 @@ export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
     }
   }
 
-  const copy = spawnSync('/usr/bin/ditto', [shipped, NET_FILTER_APP], { encoding: 'utf8' })
+  const copy = spawnSync('/usr/bin/ditto', [shipped, NET_FILTER_APP], {
+    encoding: 'utf8', timeout: COPY_TIMEOUT_MS,
+  })
   if (!copy || copy.status !== 0) {
     return {
       status: 'failed',

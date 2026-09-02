@@ -369,6 +369,21 @@ describe('net filter — installing', () => {
     expect(installNetFilter()).toEqual({ status: 'needs-approval', filterLeftDisabled: true })
   })
 
+  it('gives every process it starts a deadline', () => {
+    // **The lock-in this routine can create is what makes this load-bearing.** It switches the filter
+    // off first, so a spawn that never returns leaves the Mac with no filter, no message, and — until
+    // the currency check learned to read the heartbeat — nothing that would repair it on a later run.
+    // `--install` can legitimately sit on a macOS approval dialog; none of the three may sit forever.
+    machine({ installed: OLDER, activated: OLDER })
+    expect(installNetFilter()).toMatchObject({ status: 'installed' })
+    expect(spawnOrder()).toEqual(['--off', 'ditto', '--install'])
+    for (const [cmd, args, opts] of mockSpawnSync.mock.calls) {
+      const what = String((args as string[] | undefined)?.[0] ?? cmd)
+      expect((opts as { timeout?: number } | undefined)?.timeout, `${what} can hang forever`)
+        .toBeGreaterThan(0)
+    }
+  })
+
   // ── a filter that was switched off and never turned back on ─────────────────────────────────
 
   it('reinstalls when the versions all match but nothing is enforcing', () => {
@@ -519,6 +534,20 @@ describe('doctor — what it says about the filter', () => {
       { label: 'Network filter', ok: true },
       { label: 'Network filter version', ok: true },
     ])
+  })
+
+  it('still says the filter is off when a version is behind as well', async () => {
+    // The version branches all report the same `Network filter` check, so deciding "switched on"
+    // inside the matching-version branch left every other branch claiming a healthy filter. A Mac
+    // waiting for a restart *and* switched off was told only about the restart — and restarting does
+    // not turn a filter back on, so the advice sends the user round a loop that cannot end.
+    machine({ installed: SHIPPED, activated: OLDER, filterRunning: false })
+    const [check, version] = await netFilterChecks()
+    expect(check.ok, 'a version mismatch hid the switched-off filter').toBe(false)
+    expect(check.detail).toMatch(/switched off/)
+    // Both are true at once, and they want different actions. Neither replaces the other.
+    expect(version.ok).toBe(false)
+    expect(version.detail).toMatch(/Restart the Mac/)
   })
 
   it('warns when every version matches and nothing is enforcing', async () => {
