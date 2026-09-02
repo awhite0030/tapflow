@@ -116,7 +116,7 @@ export async function cmdFlowRun(files: string[], opts: FlowRunOptions): Promise
       await client.installApp(sessionId, opts.build)
     }
 
-    const driver = new RelayDriver(client, sessionId, opts.build)
+    const driver = new RelayDriver(client, sessionId, opts.build, device.id)
     const engineOpts = opts.timeout !== undefined ? { defaultTimeoutMs: opts.timeout * 1000 } : {}
     const results: FlowResult[] = []
 

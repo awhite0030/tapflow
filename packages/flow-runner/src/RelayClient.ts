@@ -5,7 +5,7 @@ import type {
 import { WebSocket } from 'ws'
 import type { UIElement } from '@tapflowio/agent-core'
 import { PlatformError } from '@tapflowio/agent-core'
-import { TransientQueryError } from './errors.js'
+import { SessionReboundError, TransientQueryError } from './errors.js'
 
 // Carries the HTTP status so ui-tree queries can tell a transient failure (retry) from a permanent one.
 // status 0 marks a network-level failure (fetch rejected before a response).
@@ -849,6 +849,10 @@ export class RelayClient {
         // act the away-ness is what is current. Here the caller cannot act — the step is being failed — so
         // taking that precedence would report a permanent failure in the sentence for a transient one, and
         // never mention the binding. That is #573's mis-blame, one layer up.
+        if (s.needsReboot) {
+          throw new SessionReboundError('the agent reconnected and cleared its device binding, so this session needs booting again', { cause: e })
+        }
+
         const why = s.terminated
           ? `the relay ended this session (${s.terminated})`
           : 'the agent reconnected and cleared its device binding, so this session needs booting again ' +
