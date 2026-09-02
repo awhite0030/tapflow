@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The flow runner now recovers from mid-flow agent reconnects.** A rebound session loses its device binding, and because the runner had no way to re-boot the device mid-run, every remaining step would exhaust its timeout and fail with a "no element matched" error — incorrectly blaming the selector for a binding failure. The runner now detects this state and issues a boot request before retrying the step, rather than giving up on a flow that could have been saved. ([#573](https://github.com/jo-duchan/tapflow/issues/573))
+
 - `MacResources` now has a stable page-level heading, exposes the selected Mac via `aria-current`, and announces each Mac's online/offline state through visually hidden status text; the comment composer's file-attachment errors are announced and tied to the attach button.
 
 - **TLS startup instructions now use the certificate-resolved hostname for remote agent connections** ([#627](https://github.com/jo-duchan/tapflow/issues/627)). HTTP and local fallback paths intentionally retain the host placeholder because an agent running on another Mac must not be directed to `localhost`.
