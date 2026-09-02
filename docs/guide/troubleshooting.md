@@ -255,6 +255,31 @@ Installing ends with a distinct code per kind of failure.
 
 What the extension can and cannot see is in [Network Control](/guide/network-control#what-you-are-trusting).
 
+## iOS: the Mac lost its network while the filter was being replaced {#network-lost-on-replace}
+
+The filter is a content filter, so **every new connection on the Mac waits for it to decide**, not
+only the simulator's. Replacing the extension stops the process that decides while the configuration
+is still switched on, and new connections then wait for an answer nobody will give. Connections
+already open keep working, which is why some things carry on while a browser stops.
+
+`tapflow migrate net-filter` switches the filter off before it replaces anything, so this should not
+happen. It can still happen on a Mac carrying a hand-built filter older than any tapflow release,
+because that build may not understand the request to switch off. The command says when it skipped
+that step.
+
+**Getting the network back does not need a restart.**
+
+```sh
+/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --off
+```
+
+That takes the filter out of the path and traffic returns. iOS network control stays unavailable
+until the filter is on again, which is what running the migration again does.
+
+```sh
+tapflow migrate net-filter
+```
+
 ## iOS: a device that was offline came back on the network by itself {#network-stopped}
 
 A notice saying the device went back on the network while you were checking means **the offline behaviour you have checked so far needs checking again.** Requests may have been succeeding between the moment traffic started passing and the moment the notice appeared.

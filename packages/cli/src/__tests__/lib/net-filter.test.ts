@@ -8,7 +8,7 @@ vi.mock('@clack/prompts', () => ({ confirm: vi.fn(), text: vi.fn(), isCancel: vi
 vi.mock('@tapflowio/ios-agent', () => ({ isAudioSupported: vi.fn(() => false), requestAudioPermission: vi.fn() }))
 
 import { execFileSync, execSync, spawnSync } from 'node:child_process'
-import { accessSync, chmodSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { accessSync, chmodSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { confirm } from '@clack/prompts'
 import { join } from 'node:path'
@@ -22,6 +22,7 @@ const mockExistsSync = vi.mocked(existsSync)
 const mockChmodSync = vi.mocked(chmodSync)
 const mockReaddirSync = vi.mocked(readdirSync)
 const mockStatSync = vi.mocked(statSync)
+const mockReadFileSync = vi.mocked(readFileSync)
 const mockAccessSync = vi.mocked(accessSync)
 const mockConfirm = vi.mocked(confirm)
 
@@ -66,9 +67,18 @@ const netFilterChecks = async () => {
   return (r.ios ?? []).filter((c) => c.label.startsWith('Network filter'))
 }
 
-const SHIPPED = '1787675754'
-const OLDER = '1787500000'
+// **All three sit above `FIRST_SHIPPED_HOST_VERSION` (1787677954) on purpose.** Every released build
+// is above that line, so a fixture below it would put every test on the path taken by a hand build
+// and leave the disable-before-replace step — the reason this module changed — unexercised. The one
+// test that wants the other side names its own version.
+const SHIPPED = '1787800000'
+const OLDER = '1787700000'
 const NEWER = '1787999999'
+/** Older than any tapflow ever shipped, so `--off` cannot be assumed. */
+const PRE_SHIPPED = '1787600000'
+/** Where the provider publishes its heartbeat. Its freshness is how `installNetFilter` tells a filter
+ *  that is running from one that was switched off and never turned back on. */
+const FILTER_STATE_FILE = '/Library/Application Support/tapflow/tapflow-netfilter-state.json'
 /** Deliberately shorter. Same-length numeric strings compare identically as strings and as numbers,
  *  so a fixture set that is all the same width cannot tell `Number(a) > Number(b)` from `a > b`. */
 const SHORT_BUT_NEWER = '9999999999'
@@ -97,10 +107,30 @@ const listing = (version: string | null, state = '[activated enabled]') =>
  * A Mac in a named state. `shipped` is the version the package carries; pass `null` for "the package
  * has no app at all".
  */
-function machine(opts: { shipped?: string | null; installed?: string | null; activated?: string | null; activatedState?: string }) {
-  const { shipped = SHIPPED, installed = SHIPPED, activated = SHIPPED, activatedState } = opts
+function machine(opts: {
+  shipped?: string | null; installed?: string | null; activated?: string | null; activatedState?: string
+  /** Is a provider pulsing? Defaults to yes — a Mac whose versions all match is normally enforcing,
+   *  and the interesting case is the one that is not. */
+  filterRunning?: boolean
+  /** Simulators `simctl` reports as `Booted`. */
+  booted?: string[]
+  /** Something holding :4000. */
+  relayUp?: boolean
+}) {
+  const {
+    shipped = SHIPPED, installed = SHIPPED, activated = SHIPPED, activatedState,
+    filterRunning = true, booted = [], relayUp = false,
+  } = opts
+  mockReadFileSync.mockImplementation((p) => {
+    if (String(p) === FILTER_STATE_FILE) {
+      return JSON.stringify({ at: Math.floor(Date.now() / 1000), pulseSeconds: 5, rule: [] }) as never
+    }
+    // `hostLogTail` reads a log that need not exist.
+    return '' as never
+  })
   mockExistsSync.mockImplementation((p) => {
     const s = String(p)
+    if (s === FILTER_STATE_FILE) return filterRunning
     if (s.startsWith(NET_FILTER_APP)) return installed !== null
     if (s.includes('TapflowNetFilter.app')) return shipped !== null
     // Xcode present, so the doctor's **normal** path runs. Without it every doctor assertion below
@@ -110,6 +140,14 @@ function machine(opts: { shipped?: string | null; installed?: string | null; act
   })
   mockExecFileSync.mockImplementation((cmd, args) => {
     if (String(cmd).endsWith('/systemextensionsctl')) return listing(activated, activatedState) as never
+    if (String(cmd) === '/usr/bin/xcrun') {
+      return JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-0': booted.map((name) => ({ name, state: 'Booted' })) } }) as never
+    }
+    if (String(cmd) === '/usr/sbin/lsof') {
+      // `lsof` exits non-zero when nothing holds the port, and `execFileSync` turns that into a throw.
+      if (!relayUp) throw new Error('lsof: no process')
+      return '4321\n' as never
+    }
     if (String(cmd).endsWith('/defaults')) {
       const path = String((args as string[])[1] ?? '')
       const v = path.startsWith(NET_FILTER_APP) ? installed : shipped
@@ -122,14 +160,22 @@ function machine(opts: { shipped?: string | null; installed?: string | null; act
 
 /** The host binary answering `--install`. */
 const hostExits = (code: number) => {
-  mockSpawnSync.mockImplementation((cmd) => {
+  mockSpawnSync.mockImplementation((cmd, args) => {
     if (String(cmd) === '/usr/bin/ditto') return { status: 0, stdout: '', stderr: '' } as never
+    // The disable succeeds unless a test says otherwise. `code` is what `--install` answers, and
+    // letting it answer for `--off` too would turn every exit-code case into a disable failure.
+    if ((args as string[] | undefined)?.includes('--off')) return { status: 0, stdout: '', stderr: '' } as never
     return { status: code, stdout: '', stderr: '' } as never
   })
 }
 
 const dittoCalls = () =>
   mockSpawnSync.mock.calls.filter((c) => String(c[0]) === '/usr/bin/ditto')
+const hostCalls = (flag: string) =>
+  mockSpawnSync.mock.calls.filter((c) => (c[1] as string[] | undefined)?.includes(flag))
+/** Index into the spawn log, so ordering can be asserted rather than assumed. */
+const spawnOrder = () =>
+  mockSpawnSync.mock.calls.map((c) => (String(c[0]) === '/usr/bin/ditto' ? 'ditto' : String((c[1] as string[] | undefined)?.[0])))
 
 describe('net filter — reading what the Mac has', () => {
   onMac()
@@ -206,7 +252,8 @@ describe('net filter — installing', () => {
 
   it('copies and activates when nothing is installed', () => {
     machine({ installed: null, activated: null })
-    expect(installNetFilter()).toEqual({ status: 'installed' })
+    // `disabledFirst` is false because nothing was installed to switch off.
+    expect(installNetFilter()).toEqual({ status: 'installed', disabledFirst: false })
     // The positive control the "does not touch /Applications" assertions below need: this is what the
     // same spy sees when the work does happen.
     expect(dittoCalls()).toHaveLength(1)
@@ -223,7 +270,7 @@ describe('net filter — installing', () => {
     // The reboot-pending Mac. Files agree, so a file comparison would skip the work; the kernel is
     // still running the old provider and the dashboard still says the Mac is not set up.
     machine({ installed: SHIPPED, activated: OLDER })
-    expect(installNetFilter()).toEqual({ status: 'installed' })
+    expect(installNetFilter()).toEqual({ status: 'installed', disabledFirst: true })
     expect(dittoCalls()).toHaveLength(1)
   })
 
@@ -260,12 +307,130 @@ describe('net filter — installing', () => {
     expect(dittoCalls()).toHaveLength(0)
   })
 
+  // ── taking the filter out of the flow path before replacing it ──────────────────────────────
+  //
+  // A content filter is `filterSockets`: every new flow on the Mac waits for a verdict from the
+  // provider. Replacing the extension kills that provider while the configuration stays enabled, and
+  // measured on 2026-09-02 the Mac's own traffic then timed out until a restart. Disabling first
+  // means that state never exists.
+
+  it('switches the filter off before it copies anything', () => {
+    machine({ installed: OLDER, activated: OLDER })
+    expect(installNetFilter()).toEqual({ status: 'installed', disabledFirst: true })
+    // **Order, not presence.** A disable that lands after the copy protects nothing, and both
+    // spawns exist either way — so counting them cannot tell the working sequence from the broken one.
+    expect(spawnOrder()).toEqual(['--off', 'ditto', '--install'])
+  })
+
+  it('skips the disable when the installed build predates the flag, and says so', () => {
+    // Every unrecognised argument used to fall through to `.configure`, which writes
+    // `isEnabled = true` — so asking a build older than `--off` to switch the filter off switches it
+    // ON, and answers 0. Nothing in the exit status can tell the caller that happened.
+    machine({ installed: PRE_SHIPPED, activated: PRE_SHIPPED })
+    expect(installNetFilter()).toEqual({ status: 'installed', disabledFirst: false })
+    expect(hostCalls('--off'), 'it asked a build that may not understand the flag').toHaveLength(0)
+    expect(dittoCalls()).toHaveLength(1)
+  })
+
+  it('stops before the copy when the disable did not take', () => {
+    machine({ installed: OLDER, activated: OLDER })
+    mockSpawnSync.mockImplementation((cmd, args) => {
+      if ((args as string[] | undefined)?.includes('--off')) return { status: 3, stdout: '', stderr: 'save failed' } as never
+      return { status: 0, stdout: '', stderr: '' } as never
+    })
+    // Nothing has changed on the Mac at this point, so stopping costs an upgrade. Continuing costs
+    // the Mac's network — the replace would meet exactly the enabled filter it must not meet.
+    expect(installNetFilter()).toMatchObject({ status: 'failed', filterLeftDisabled: false })
+    expect(dittoCalls()).toHaveLength(0)
+    expect(hostCalls('--install')).toHaveLength(0)
+  })
+
+  it('reports the filter left off when the install fails after a disable', () => {
+    machine({ installed: OLDER, activated: OLDER })
+    hostExits(2)
+    // The state matters more than the failure: a filter left off is a working Mac with no iOS
+    // network control, and every version on it still reads as correct.
+    expect(installNetFilter()).toMatchObject({ status: 'failed', code: 2, filterLeftDisabled: true })
+  })
+
+  it('does not claim the filter is off after the reboot path, which turns it back on', () => {
+    // `willCompleteAfterReboot` still runs `configureFilter` — deliberately, since the host is the
+    // only way a device is put back online — so the filter is on and the old provider enforces it
+    // until the restart. Approval is the opposite: it dies before `configureFilter`.
+    machine({ installed: OLDER, activated: OLDER })
+    hostExits(5)
+    expect(installNetFilter()).toEqual({ status: 'needs-reboot' })
+
+    vi.resetAllMocks()
+    machine({ installed: OLDER, activated: OLDER })
+    hostExits(4)
+    expect(installNetFilter()).toEqual({ status: 'needs-approval', filterLeftDisabled: true })
+  })
+
+  // ── a filter that was switched off and never turned back on ─────────────────────────────────
+
+  it('reinstalls when the versions all match but nothing is enforcing', () => {
+    // The state the sequence above creates when it is interrupted between `--off` and `--install`:
+    // right app, right activated extension, no filter. `systemextensionsctl` still says
+    // `[activated enabled]` — that is the system extension, not `NEFilterManager.isEnabled` — so a
+    // version-only check calls this Mac current and the condition becomes permanent.
+    machine({ filterRunning: false })
+    expect(installNetFilter()).toEqual({ status: 'installed', disabledFirst: true })
+    expect(dittoCalls(), 'it declined to restore a filter that was switched off').toHaveLength(1)
+  })
+
+  it('treats a heartbeat older than three pulses as stopped', () => {
+    machine({})
+    mockReadFileSync.mockImplementation((p) => (String(p) === FILTER_STATE_FILE
+      ? JSON.stringify({ at: Math.floor(Date.now() / 1000) - 16, pulseSeconds: 5 }) as never
+      : '' as never))
+    // A provider that died leaves its last file behind; only the clock says so.
+    expect(installNetFilter()).toMatchObject({ status: 'installed' })
+  })
+
+  // ── devices in use ──────────────────────────────────────────────────────────────────────────
+
+  it('refuses while a simulator is booted, and touches nothing', () => {
+    machine({ installed: OLDER, activated: OLDER, booted: ['iPhone 17'] })
+    expect(installNetFilter()).toEqual({ status: 'refused-devices-busy', busy: ['simulator iPhone 17'] })
+    // **Before the disable, not only before the copy.** A refusal that has already switched the
+    // filter off has interrupted the thing it refused in order to avoid.
+    expect(mockSpawnSync).not.toHaveBeenCalled()
+  })
+
+  it('counts a relay on :4000 as in use, because no device list can show a browser', () => {
+    machine({ installed: OLDER, activated: OLDER, relayUp: true })
+    expect(installNetFilter()).toEqual({ status: 'refused-devices-busy', busy: ['a relay serving on :4000'] })
+  })
+
+  it('replaces anyway when the caller says to', () => {
+    machine({ installed: OLDER, activated: OLDER, booted: ['iPhone 17'], relayUp: true })
+    expect(installNetFilter({ ignoreRunningDevices: true })).toEqual({ status: 'installed', disabledFirst: true })
+    expect(spawnOrder()).toEqual(['--off', 'ditto', '--install'])
+  })
+
+  it('does not refuse for a device that is present but not booted', () => {
+    machine({ installed: OLDER, activated: OLDER })
+    mockExecFileSync.mockImplementation((cmd, args) => {
+      if (String(cmd) === '/usr/bin/xcrun') {
+        return JSON.stringify({ devices: { r: [{ name: 'iPhone 17', state: 'Shutdown' }] } }) as never
+      }
+      if (String(cmd) === '/usr/sbin/lsof') throw new Error('lsof: no process')
+      if (String(cmd).endsWith('/systemextensionsctl')) return listing(OLDER) as never
+      if (String(cmd).endsWith('/defaults')) {
+        return `${String((args as string[])[1] ?? '').startsWith(NET_FILTER_APP) ? OLDER : SHIPPED}\n` as never
+      }
+      return '' as never
+    })
+    expect(installNetFilter()).toMatchObject({ status: 'installed' })
+  })
+
   it('separates approval and reboot from failure', () => {
     for (const [code, status] of [[4, 'needs-approval'], [5, 'needs-reboot']] as const) {
       vi.resetAllMocks()
       machine({ installed: null, activated: null })
       hostExits(code)
-      expect(installNetFilter(), `exit ${code}`).toEqual({ status })
+      expect(installNetFilter(), `exit ${code}`).toMatchObject({ status })
     }
   })
 
