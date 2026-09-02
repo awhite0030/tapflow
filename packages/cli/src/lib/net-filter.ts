@@ -208,7 +208,12 @@ export function isFilterEnforcing(now = Date.now()): boolean {
       const raw = JSON.parse(readFileSync(path, 'utf8')) as { at?: unknown; pulseSeconds?: unknown }
       if (typeof raw.at !== 'number') continue
       const pulse = typeof raw.pulseSeconds === 'number' ? raw.pulseSeconds : 5
-      return Math.floor(now / 1000) - raw.at <= 3 * Math.max(pulse, 1)
+      // **A stale file is a reason to keep looking, not an answer.** The second path is where the
+      // provider writes when it cannot write the first, so a Mac that failed over leaves an old file
+      // at the first one and a live heartbeat at the second. Returning here read that Mac as stopped
+      // and made every run pay the disable/enable cycle this module exists to make rare.
+      if (Math.floor(now / 1000) - raw.at <= 3 * Math.max(pulse, 1)) return true
+      continue
     } catch {
       // Unreadable is not "enforcing". Keep looking; the second path is the fallback the provider
       // uses when it cannot write the first.

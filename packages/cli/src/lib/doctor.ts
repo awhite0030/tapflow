@@ -3,7 +3,7 @@ import { accessSync, constants, existsSync, readdirSync, readFileSync } from 'no
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { isNewer, readNetFilterState, shippedHookPath } from './net-filter.js'
+import { isFilterEnforcing, isNewer, readNetFilterState, shippedHookPath } from './net-filter.js'
 
 /**
  * How long any one probe may take before `doctor` treats it as unanswerable.
@@ -124,6 +124,19 @@ function buildNetFilterChecks(): DoctorCheck[] {
 
   const running: DoctorCheck = { label: 'Network filter', ok: true }
   if (s.activated === s.shipped) {
+    // **Installed, approved, and switched on are three things, and the third has no version.**
+    // `systemextensionsctl` describes the system extension; `NEFilterManager.isEnabled` is a separate
+    // preference, so a filter switched off leaves every version here correct and every check green
+    // over a control that does not work. That state is reachable from this repo's own code: the
+    // replace disables the filter before swapping the extension, and an interrupted run leaves it off.
+    if (!isFilterEnforcing()) {
+      return [{
+        label: 'Network filter',
+        ok: false,
+        warn: true,
+        detail: 'Installed and approved, but switched off — nothing is filtering, so iOS network control does not work. Run: tapflow migrate net-filter',
+      }, { label: 'Network filter version', ok: true }]
+    }
     return [running, { label: 'Network filter version', ok: true }]
   }
   // Running something, but not this. Three ways that happens and they want different sentences.

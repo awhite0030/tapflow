@@ -1,5 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process'
-import { installNetFilter, isNetFilterCurrent, readNetFilterState } from './net-filter.js'
+import { installNetFilter, isFilterEnforcing, isNetFilterCurrent, readNetFilterState } from './net-filter.js'
 import { existsSync, readFileSync, appendFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -167,8 +167,15 @@ export async function runSetupIos(): Promise<SetupStepResult[]> {
  */
 async function setUpNetFilter(): Promise<SetupStepResult> {
   // Asking about an install that would do nothing is noise, so the no-op case answers before the
-  // prompt. `isNetFilterCurrent` is the installer's own comparison, not a second copy of it.
-  if (process.platform === 'darwin' && isNetFilterCurrent(readNetFilterState())) {
+  // prompt.
+  //
+  // **Both halves of the installer's condition, not just the version one.** This used to call
+  // `isNetFilterCurrent` alone and describe itself as "the installer's own comparison, not a second
+  // copy of it" — true when written, and false the moment `installNetFilter` started requiring the
+  // filter to be running as well. A Mac left with a disabled filter matches on every version, so the
+  // half that was missing is exactly the half that would have sent it to the install that repairs it.
+  if (process.platform === 'darwin'
+      && isNetFilterCurrent(readNetFilterState()) && isFilterEnforcing()) {
     return { label: 'Network filter', ok: true, state: 'found' }
   }
   if (process.platform === 'darwin') {

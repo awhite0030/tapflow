@@ -11,8 +11,10 @@ Already-open connections kept working, so the visible symptom was a dead browser
 carried on.
 
 The replace now switches the filter off first and `--install` turns it back on. The window that
-remains was measured across ~300 probes: about four seconds of raised latency, no failures, because
-the kernel passes traffic for a provider that has not applied its settings yet. On a Mac carrying a
+remains was measured across ~300 probes on a same-version disable/enable cycle: about four seconds of
+raised latency, no failures, because the kernel passes traffic for a provider that has not applied
+its settings yet. That cycle did not swap the provider process, so a real replacement is **expected**
+to behave the same way over a longer window rather than measured to. On a Mac carrying a
 hand-built filter older than any release the disable is skipped rather than attempted — a build
 predating the flag does not refuse it, it falls through to writing `isEnabled = true` — and the
 command says so.
@@ -27,4 +29,6 @@ install routine, so `tapflow setup ios` is covered too.
 describes the system extension, not `NEFilterManager.isEnabled`, so a Mac interrupted between the
 disable and the install had the right app, the right activated extension, no filter, and `doctor ios`
 all green — with the only thing that would restore it being the run that had just declined to do
-anything. Being current now means enforcing as well as matching.
+anything. Being current now means enforcing as well as matching, in all three places that ask:
+`doctor ios` says the filter is switched off and names the command that turns it back on, and neither
+`migrate net-filter` nor `setup ios` reports a stopped filter as nothing to do.

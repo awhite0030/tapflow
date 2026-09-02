@@ -79,6 +79,8 @@ const PRE_SHIPPED = '1787600000'
 /** Where the provider publishes its heartbeat. Its freshness is how `installNetFilter` tells a filter
  *  that is running from one that was switched off and never turned back on. */
 const FILTER_STATE_FILE = '/Library/Application Support/tapflow/tapflow-netfilter-state.json'
+/** Where it writes instead when the first directory cannot be written. */
+const FILTER_STATE_FALLBACK = '/tmp/tapflow-netfilter-state.json'
 /** Deliberately shorter. Same-length numeric strings compare identically as strings and as numbers,
  *  so a fixture set that is all the same width cannot tell `Number(a) > Number(b)` from `a > b`. */
 const SHORT_BUT_NEWER = '9999999999'
@@ -379,6 +381,28 @@ describe('net filter — installing', () => {
     expect(dittoCalls(), 'it declined to restore a filter that was switched off').toHaveLength(1)
   })
 
+  it('finds the heartbeat at the fallback path when the first one is stale', () => {
+    // The provider writes to `/tmp` when it cannot write `/Library`, which leaves an old file at the
+    // first path and a live one at the second. Answering from the first alone read that Mac as
+    // stopped and made every run pay the disable/enable cycle.
+    machine({})
+    mockExistsSync.mockImplementation((p) => {
+      const q = String(p)
+      if (q === FILTER_STATE_FILE || q === FILTER_STATE_FALLBACK) return true
+      if (q.startsWith(NET_FILTER_APP)) return true
+      if (q.includes('TapflowNetFilter.app')) return true
+      return q === '/Applications/Xcode.app'
+    })
+    mockReadFileSync.mockImplementation((p) => {
+      const now = Math.floor(Date.now() / 1000)
+      if (String(p) === FILTER_STATE_FILE) return JSON.stringify({ at: now - 3600, pulseSeconds: 5 }) as never
+      if (String(p) === FILTER_STATE_FALLBACK) return JSON.stringify({ at: now, pulseSeconds: 5 }) as never
+      return '' as never
+    })
+    expect(installNetFilter()).toEqual({ status: 'already-current' })
+    expect(dittoCalls(), 'a live filter was replaced because the first state file was old').toHaveLength(0)
+  })
+
   it('treats a heartbeat older than three pulses as stopped', () => {
     machine({})
     mockReadFileSync.mockImplementation((p) => (String(p) === FILTER_STATE_FILE
@@ -495,6 +519,22 @@ describe('doctor — what it says about the filter', () => {
       { label: 'Network filter', ok: true },
       { label: 'Network filter version', ok: true },
     ])
+  })
+
+  it('warns when every version matches and nothing is enforcing', async () => {
+    // **Installed, approved and switched on are three things, and only two of them have a version.**
+    // `systemextensionsctl` describes the system extension, so a filter switched off leaves this
+    // whole section green over a control that does not work — and the replace sequence creates
+    // exactly that state when it is interrupted between the disable and the install.
+    machine({ filterRunning: false })
+    const [check, version] = await netFilterChecks()
+    expect(check.ok, 'doctor called a switched-off filter healthy').toBe(false)
+    expect(check.warn).toBe(true)
+    expect(check.detail).toMatch(/switched off/)
+    expect(check.detail, 'it did not say how to fix it').toMatch(/tapflow migrate net-filter/)
+    // The version half is still true and says so: this is not a version problem, and telling someone
+    // to upgrade would send them somewhere that cannot help.
+    expect(version).toEqual({ label: 'Network filter version', ok: true })
   })
 })
 

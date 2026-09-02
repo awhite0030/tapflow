@@ -41,8 +41,10 @@ Checks (a device/AVD only needs to *exist* — booting is on-demand via the rela
 - **Android**: Android SDK, adb, AVD
 
 The network filter is reported as two checks, because they fail for different reasons: whether it is
-**installed and approved**, and whether macOS is *running* the version of the extension this tapflow
-carries. The second is not implied by the first — replacing an extension only finishes when the Mac
+**installed, approved and switched on**, and whether macOS is *running* the version of the extension
+this tapflow carries. Switched on is a third thing with no version of its own — the extension stays
+listed as activated when the filter is turned off, so that state has every version correct and
+nothing filtering. The second is not implied by the first — replacing an extension only finishes when the Mac
 restarts, so the app on disk can be current while the old one is still doing the filtering. Both are
 warnings rather than failures: a session works without the filter, and only iOS network control does
 not. See [Network Control](/guide/network-control).
