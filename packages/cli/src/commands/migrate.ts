@@ -56,13 +56,6 @@ export function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {
       banner('success', 'NETWORK FILTER INSTALLED', [
         `Installed to ${NET_FILTER_APP} and activated.`,
         'iOS network control is available now: tapflow doctor ios',
-        // Only when it was skipped. Saying "the network was not interrupted" on every successful run
-        // would train people to skip the one line that is about them.
-        ...(outcome.disabledFirst ? [] : [
-          'The filter was replaced without switching it off first, because the build already on this'
-          + ' Mac is older than any tapflow shipped and may not understand the request. New'
-          + ' connections may have stalled while it happened.',
-        ]),
       ])
       return
     case 'already-current':
@@ -78,6 +71,7 @@ export function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {
           + ' control stays unavailable.',
         ] : []),
       ])
+
       return
     case 'needs-reboot':
       banner('success', 'RESTART TO FINISH', [

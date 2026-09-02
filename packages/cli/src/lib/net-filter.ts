@@ -224,27 +224,6 @@ export function isFilterEnforcing(now = Date.now()): boolean {
 }
 
 /**
- * The oldest host build known to understand `--off`.
- *
- * `--off` arrived on 2026-08-24 (`07a32ff0`) and the first app ever committed is `1787677954`, which
- * is later — so every released build has it, and **what sits below this line is a hand build**.
- *
- * The line matters because a build predating the flag does not refuse it. Every unrecognised argument
- * used to fall through to `.configure`, which writes `isEnabled = true`. So asking such a binary to
- * turn the filter *off* turns it *on*, and exits 0 — and the caller then replaces the extension
- * believing the filter is detached, which is the outage this whole sequence exists to prevent.
- */
-const FIRST_SHIPPED_HOST_VERSION = 1787677954
-
-/** Does the build in `/Applications` understand `--off`? Unreadable answers no: the cost of assuming
- *  yes is the outage, and the cost of assuming no is a slower upgrade that says so. */
-function understandsOff(installedVersion: string | null): boolean {
-  if (installedVersion === null) return false
-  const v = Number(installedVersion)
-  return Number.isFinite(v) && v >= FIRST_SHIPPED_HOST_VERSION
-}
-
-/**
  * What would be interrupted by a replace, in words a person can act on. Empty means nothing would.
  *
  * **All three, because the filter is host-wide.** It is `filterSockets`, so every new flow on the Mac
@@ -310,7 +289,7 @@ export interface InstallOptions {
 }
 
 export type InstallOutcome =
-  | { status: 'installed'; disabledFirst: boolean }
+  | { status: 'installed' }
   | { status: 'already-current' }
   | { status: 'needs-approval'; filterLeftDisabled: boolean }
   | { status: 'needs-reboot' }
@@ -392,39 +371,6 @@ export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
   const busy = opts.ignoreRunningDevices ? [] : busyDevices()
   if (busy.length > 0) return { status: 'refused-devices-busy', busy }
 
-  // **Take the filter out of the flow path before replacing what enforces it.**
-  //
-  // A content filter is `filterSockets`, so every new flow on the Mac waits for a verdict from the
-  // provider. Replacing the extension kills that provider while the configuration stays enabled, and
-  // new connections then wait for a verdict nobody will give: measured 2026-09-02, the Mac's own
-  // traffic timed out and only a restart brought it back.
-  //
-  // Disabling first means the dangerous state — an established filter whose provider is gone — never
-  // exists. What is left is the window while the filter comes back up, and that one was measured on
-  // the same day across ~300 probes: about four seconds of raised latency (10-30ms to 200-400ms) and
-  // **no failures**, because the kernel passes traffic a provider has not applied settings for yet.
-  //
-  // `--install` turns it back on by itself: with no `--add`/`--remove` it takes `clearAll`, and
-  // `configureFilter` ends with `isEnabled = true`. So there is no re-enable step to forget.
-  const disabledFirst = understandsOff(installedVersion)
-  if (disabledFirst) {
-    const off = spawnSync(join(NET_FILTER_APP, 'Contents', 'MacOS', 'TapflowNetFilter'), ['--off'], {
-      encoding: 'utf8', timeout: OFF_TIMEOUT_MS,
-    })
-    // **Stop rather than continue.** A disable that did not take leaves the filter enabled, which is
-    // exactly the state the replace must not meet. Nothing has been changed yet at this point, so
-    // stopping costs an upgrade and continuing costs the Mac's network.
-    if (!off || off.status !== 0) {
-      return {
-        status: 'failed',
-        code: off?.status ?? -1,
-        detail: hostLogTail() || (off?.stderr || '').trim()
-          || 'could not switch the filter off before replacing it',
-        filterLeftDisabled: false,
-      }
-    }
-  }
-
   const copy = spawnSync('/usr/bin/ditto', [shipped, NET_FILTER_APP], {
     encoding: 'utf8', timeout: COPY_TIMEOUT_MS,
   })
@@ -433,32 +379,74 @@ export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
       status: 'failed',
       code: copy?.status ?? -1,
       detail: (copy?.stderr || 'ditto failed').trim(),
-      filterLeftDisabled: disabledFirst,
+      filterLeftDisabled: false,
     }
   }
 
   restoreExecutableBits(NET_FILTER_APP)
 
+  // **Take the filter out of the flow path before activating, and do it with the binary just copied
+  // in.**
+  //
+  // A content filter is `filterSockets`, so every new flow on the Mac waits for a verdict from the
+  // provider. Activating a replacement kills that provider while the configuration stays enabled, and
+  // new connections then wait for a verdict nobody will give: measured 2026-09-02, the Mac's own
+  // traffic timed out and only a restart brought it back. Disabling first means that state never
+  // exists. What is left is the window while the filter comes back up, measured the same day across
+  // ~300 probes: about four seconds of raised latency (10-30ms to 200-400ms) and **no failures**,
+  // because the kernel passes traffic a provider has not applied settings for yet.
+  //
+  // **After the copy, not before it, and that ordering is the whole of two separate defects.**
+  // `ditto` writes `/Applications`; the running provider executes out of `/Library/SystemExtensions`,
+  // which is why macOS goes on filtering for an app someone deleted (`doctor` has a check for exactly
+  // that state). So the copy cannot disturb anything, and only the activation can.
+  //
+  // Disabling first instead meant asking whatever binary happened to be installed. That is wrong in
+  // both directions. A build older than the flag does not refuse it — every unrecognised argument fell
+  // through to `.configure`, which writes `isEnabled = true` — so the request to switch the filter off
+  // switched it on and answered 0. And when the app had been deleted there was no binary to ask at
+  // all, while the extension it belonged to was still activated and enforcing, so the replace went
+  // ahead with the filter up. Asking the binary this package shipped removes both: it is the one that
+  // understands the flag, and it is there because the line above put it there.
+  //
+  // `--install` turns it back on by itself: with no `--add`/`--remove` it takes `clearAll`, and
+  // `configureFilter` ends with `isEnabled = true`. So there is no re-enable step to forget.
+  const off = spawnSync(join(NET_FILTER_APP, 'Contents', 'MacOS', 'TapflowNetFilter'), ['--off'], {
+    encoding: 'utf8', timeout: OFF_TIMEOUT_MS,
+  })
+  // **Stop rather than continue.** A disable that did not take leaves the filter enabled, which is
+  // exactly the state the activation must not meet. The copy has landed but nothing is activated yet,
+  // so stopping costs an upgrade and continuing costs the Mac's network.
+  if (!off || off.status !== 0) {
+    return {
+      status: 'failed',
+      code: off?.status ?? -1,
+      detail: hostLogTail() || (off?.stderr || '').trim()
+        || 'could not switch the filter off before replacing it',
+      filterLeftDisabled: false,
+    }
+  }
+
   const run = spawnSync(join(NET_FILTER_APP, 'Contents', 'MacOS', 'TapflowNetFilter'), ['--install'], {
     encoding: 'utf8', timeout: INSTALL_TIMEOUT_MS,
   })
   if (!run) {
-    return { status: 'failed', code: -1, detail: 'the filter host did not run', filterLeftDisabled: disabledFirst }
+    return { status: 'failed', code: -1, detail: 'the filter host did not run', filterLeftDisabled: true }
   }
   switch (run.status) {
-    case 0: return { status: 'installed', disabledFirst }
+    case 0: return { status: 'installed' }
     // **Approval and reboot differ in whether the filter came back**, which is why only one of them
     // carries the flag. The approval path dies before `configureFilter` runs, so the filter is still
     // off; the reboot path runs it — deliberately, since this binary is the only way a device is put
     // back online — so the filter is on and the *old* provider is enforcing until the restart.
-    case EXIT_APPROVAL_TIMEOUT: return { status: 'needs-approval', filterLeftDisabled: disabledFirst }
+    case EXIT_APPROVAL_TIMEOUT: return { status: 'needs-approval', filterLeftDisabled: true }
     case EXIT_NEEDS_REBOOT: return { status: 'needs-reboot' }
     default:
       return {
         status: 'failed',
         code: run.status ?? -1,
         detail: hostLogTail() || (run.stderr || '').trim() || `exit ${run.status}`,
-        filterLeftDisabled: disabledFirst,
+        filterLeftDisabled: true,
       }
   }
 }

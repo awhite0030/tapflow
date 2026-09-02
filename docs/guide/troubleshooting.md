@@ -262,10 +262,9 @@ only the simulator's. Replacing the extension stops the process that decides whi
 is still switched on, and new connections then wait for an answer nobody will give. Connections
 already open keep working, which is why some things carry on while a browser stops.
 
-`tapflow migrate net-filter` switches the filter off before it replaces anything, so this should not
-happen. It can still happen on a Mac carrying a hand-built filter older than any tapflow release,
-because that build may not understand the request to switch off. The command says when it skipped
-that step.
+`tapflow migrate net-filter` switches the filter off before it activates the replacement, so this
+should not happen. If it does, the command says the filter is switched off rather than leaving you to
+work it out — your network is fine in that state and only iOS network control is missing.
 
 **Getting the network back does not need a restart.**
 

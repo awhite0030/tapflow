@@ -14,10 +14,15 @@ The replace now switches the filter off first and `--install` turns it back on. 
 remains was measured across ~300 probes on a same-version disable/enable cycle: about four seconds of
 raised latency, no failures, because the kernel passes traffic for a provider that has not applied
 its settings yet. That cycle did not swap the provider process, so a real replacement is **expected**
-to behave the same way over a longer window rather than measured to. On a Mac carrying a
-hand-built filter older than any release the disable is skipped rather than attempted — a build
-predating the flag does not refuse it, it falls through to writing `isEnabled = true` — and the
-command says so.
+to behave the same way over a longer window rather than measured to.
+
+The disable runs after the copy and before the activation, which is what makes it reliable. The copy
+into `/Applications` disturbs nothing — macOS runs the extension from its own directory, which is why
+it keeps filtering for an app you deleted — so only the activation is dangerous, and by then the
+binary being asked to switch the filter off is the one this package shipped. Asking whatever was
+already installed would have been wrong twice over: a build older than the flag does not refuse it, it
+falls through to writing `isEnabled = true`, and a Mac whose app had been deleted had nothing to ask
+while its extension was still activated and filtering.
 
 **It also refuses while devices are in use.** Booted simulators, attached emulators and a relay
 serving on `:4000` all count, because the filter is host-wide and the person affected is not
