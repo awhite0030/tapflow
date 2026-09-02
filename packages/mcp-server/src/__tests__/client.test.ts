@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
 import { WebSocketServer, WebSocket } from 'ws'
 import { TapflowClient, REASON_ADVICE, SessionEndedError, SessionLeftError, reasonAdvice } from '../client.js'
 
@@ -93,7 +94,24 @@ async function settle(relay: ReturnType<typeof createMockRelay>, client: Tapflow
   await listing
 }
 
+
+function create() {
+  const relay = createMockRelay()
+  const c = new TapflowClient(`ws://127.0.0.1:${relay.port}`, 'token')
+  return { relay, client: () => c }
+}
+
 describe('TapflowClient', () => {
+
+
+
+
+
+
+
+
+
+
   let relay: ReturnType<typeof createMockRelay>
   let client: TapflowClient
 
@@ -1435,5 +1453,51 @@ describe('disconnect_device settles what was waiting on the session (#514)', () 
     // them — a leave that never left would otherwise take the waiters of a session it never left.
     expect(() => client.disconnectDevice('sess-1')).toThrow(/not connected/i)
     expect(await boot).toBe('rejected')
+  })
+
+  describe('queryUITree', () => {
+    let origFetch: typeof globalThis.fetch
+    beforeEach(() => {
+      origFetch = globalThis.fetch
+    })
+    afterEach(() => {
+      globalThis.fetch = origFetch
+    })
+
+    it('uses AbortSignal and wraps transient errors', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 502 }))
+      globalThis.fetch = fetchMock
+      const { client } = create()
+      const c = client()
+
+      const abort = new AbortController()
+      const req = c.queryUITree('sess-1', abort.signal)
+      await expect(req).rejects.toThrow('UI tree query failed: 502')
+      await expect(req).rejects.toHaveProperty('name', 'TransientQueryError')
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/v1/sessions/sess-1/ui-tree'),
+        expect.objectContaining({ signal: abort.signal })
+      )
+    })
+
+    it('throws immediately for permanent HTTP errors', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response('{"error": "Session missing"}', { status: 404 }))
+      globalThis.fetch = fetchMock
+      const { client } = create()
+      const c = client()
+
+      await expect(c.queryUITree('sess-1')).rejects.toThrow('Session missing')
+    })
+
+    it('throws if the session has been left', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 502 }))
+      globalThis.fetch = fetchMock
+      const { client } = create()
+      const c = client()
+      c['lifecycle'].set('sess-1', { away: false, needsReboot: false, terminated: null, left: true })
+
+      await expect(c.queryUITree('sess-1')).rejects.toThrow('this client left the session')
+    })
   })
 })
