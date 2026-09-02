@@ -41,8 +41,10 @@ Checks (a device/AVD only needs to *exist* — booting is on-demand via the rela
 - **Android**: Android SDK, adb, AVD
 
 The network filter is reported as two checks, because they fail for different reasons: whether it is
-**installed and approved**, and whether macOS is *running* the version of the extension this tapflow
-carries. The second is not implied by the first — replacing an extension only finishes when the Mac
+**installed, approved and switched on**, and whether macOS is *running* the version of the extension
+this tapflow carries. Switched on is a third thing with no version of its own — the extension stays
+listed as activated when the filter is turned off, so that state has every version correct and
+nothing filtering. The second is not implied by the first — replacing an extension only finishes when the Mac
 restarts, so the app on disk can be current while the old one is still doing the filtering. Both are
 warnings rather than failures: a session works without the filter, and only iOS network control does
 not. See [Network Control](/guide/network-control).
@@ -367,5 +369,27 @@ command tells you when it is waiting on you.
 It **refuses to replace a filter newer than the one it carries**. `/Applications` holds one copy for
 the whole Mac while each install judges it by its own dependencies, so an older checkout would
 otherwise downgrade the filter a newer agent depends on.
+
+It **refuses while devices are in use.** Replacing the filter interrupts new connections on the Mac
+while it happens, and the people affected are not necessarily the person at the keyboard. Booted
+simulators, attached emulators and a relay serving on `:4000` all count. The command names what it
+found and stops.
+
+```sh
+tapflow migrate net-filter --ignore-running-devices
+```
+
+That replaces it anyway. The flag belongs to `net-filter`; `tapflow migrate data-dir` rejects it
+rather than ignoring it.
+
+**The replace switches the filter off before activating, then back on.** A content filter sits in
+front of every new connection on the Mac, not only the simulator's, so replacing the process that
+answers for them while the configuration is still switched on leaves those connections waiting for an
+answer nobody will give. Taking the filter out of the path first means that state never happens. The
+copy into `/Applications` happens before that and disturbs nothing — macOS runs the extension from
+its own directory, which is why it goes on filtering for an app you deleted.
+
+If the command fails partway it says whether the filter was left off. The Mac's network works in that
+state and iOS network control does not; running the command again turns it back on.
 
 Run `tapflow doctor ios` afterwards to confirm what the Mac ended up with.

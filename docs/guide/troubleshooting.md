@@ -235,7 +235,7 @@ Replacing an already-installed extension finishes only after the Mac restarts. *
 tapflow doctor ios
 ```
 
-It reports three things separately: whether it is **installed**, whether it is **approved**, and whether the extension currently running is the **same version this tapflow carries**. The last one is separate because the first two can both be right while the control still does not work — a replacement waiting for a restart is exactly that.
+It reports four things separately: whether it is **installed**, whether it is **approved**, whether it is **switched on**, and whether the extension currently running is the **same version this tapflow carries**. The last two are separate because the ones before them can all be right while the control still does not work — a replacement waiting for a restart is one such state, and a filter switched off is another. Switched off has no version of its own: the extension stays listed as activated, so every version reads correctly while nothing is being filtered.
 
 If it reports a version mismatch, what to do depends on which side is behind. If this tapflow carries the newer filter, `tapflow migrate net-filter` installs it. If the Mac runs the newer one, upgrade this checkout instead — migrate refuses that direction, because replacing a newer filter breaks the agent that depends on it. If it asks for a restart, restart the Mac.
 
@@ -254,6 +254,30 @@ Installing ends with a distinct code per kind of failure.
 | 7 | The running filter did not answer |
 
 What the extension can and cannot see is in [Network Control](/guide/network-control#what-you-are-trusting).
+
+## iOS: the Mac lost its network while the filter was being replaced {#network-lost-on-replace}
+
+The filter is a content filter, so **every new connection on the Mac waits for it to decide**, not
+only the simulator's. Replacing the extension stops the process that decides while the configuration
+is still switched on, and new connections then wait for an answer nobody will give. Connections
+already open keep working, which is why some things carry on while a browser stops.
+
+`tapflow migrate net-filter` switches the filter off before it activates the replacement, so this
+should not happen. If it does, the command says the filter is switched off rather than leaving you to
+work it out — your network is fine in that state and only iOS network control is missing.
+
+**Getting the network back does not need a restart.**
+
+```sh
+/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --off
+```
+
+That takes the filter out of the path and traffic returns. iOS network control stays unavailable
+until the filter is on again, which is what running the migration again does.
+
+```sh
+tapflow migrate net-filter
+```
 
 ## iOS: a device that was offline came back on the network by itself {#network-stopped}
 

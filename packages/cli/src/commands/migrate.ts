@@ -49,8 +49,8 @@ export function cmdMigrateDataDir(): void {
  * The install itself is `installNetFilter`, shared with setup — one routine, because two would
  * eventually answer the same question differently.
  */
-export function cmdMigrateNetFilter(): void {
-  const outcome = installNetFilter()
+export function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {}): void {
+  const outcome = installNetFilter(opts)
   switch (outcome.status) {
     case 'installed':
       banner('success', 'NETWORK FILTER INSTALLED', [
@@ -66,7 +66,12 @@ export function cmdMigrateNetFilter(): void {
         `Installed to ${NET_FILTER_APP}, and macOS is waiting for you to allow it.`,
         'System Settings → General → Login Items & Extensions → Network Extensions, and switch tapflow on.',
         'Then check it took: tapflow doctor ios',
+        ...(outcome.filterLeftDisabled ? [
+          'The filter is switched off until you do — your network is unaffected, and iOS network'
+          + ' control stays unavailable.',
+        ] : []),
       ])
+
       return
     case 'needs-reboot':
       banner('success', 'RESTART TO FINISH', [
@@ -84,6 +89,19 @@ export function cmdMigrateNetFilter(): void {
       ])
       process.exit(1)
       break
+    case 'refused-devices-busy':
+      // Not an error the way a failed install is: nothing is broken, the moment is wrong. Naming what
+      // is running is the point — the person at the keyboard may not be the person testing.
+      banner('error', 'DEVICES ARE IN USE', [
+        'Replacing the network filter interrupts every new connection on this Mac while it happens,',
+        'so it is not done while something is running:',
+        ...outcome.busy.map((b) => `  · ${b}`),
+        '',
+        'Stop them and run this again, or replace it anyway:',
+        '  tapflow migrate net-filter --ignore-running-devices',
+      ])
+      process.exit(1)
+      break
     case 'refused-downgrade':
       banner('error', 'MIGRATION REFUSED', [
         `This Mac runs filter ${outcome.installed} and this tapflow carries ${outcome.shipped}.`,
@@ -97,6 +115,14 @@ export function cmdMigrateNetFilter(): void {
         `The filter could not be installed (exit ${outcome.code}).`,
         outcome.detail,
         'packages/ios-agent/ios-netfilter/README.md has what each exit code means.',
+        // **The state matters more than the failure.** A filter left off is a working Mac with no iOS
+        // network control, and it stays that way silently — `doctor ios` reports versions, and every
+        // version here is correct.
+        ...(outcome.filterLeftDisabled ? [
+          '',
+          'The filter is switched OFF. Your network works; iOS network control does not.',
+          'Run this again to turn it back on.',
+        ] : []),
       ])
       process.exit(1)
       break

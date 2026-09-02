@@ -173,20 +173,151 @@ export function readNetFilterState(): NetFilterState {
   }
 }
 
+/**
+ * Where the provider publishes what it is enforcing, most likely first.
+ *
+ * Read rather than asked. Asking means running the host binary, and a stale one turns a flag it does
+ * not know into a rule write — measured on 2026-09-02, `--confirm` against an older build erased the
+ * rule and answered 0. A file read cannot change the Mac.
+ */
+const FILTER_STATE_FILES = [
+  '/Library/Application Support/tapflow/tapflow-netfilter-state.json',
+  '/tmp/tapflow-netfilter-state.json',
+]
+
+/**
+ * Is a provider actually enforcing right now?
+ *
+ * **Not the question `activatedVersion()` answers, and conflating them is what this exists to stop.**
+ * `systemextensionsctl` reports the *system extension*; `NEFilterManager.isEnabled` is a separate
+ * preference, and a filter switched off leaves the extension listed `[activated enabled]` exactly as
+ * before. So a Mac whose filter was disabled and never turned back on reads as fully current, and
+ * `installNetFilter` returned `already-current` without running the step that would restore it —
+ * network control dead, `doctor ios` all green, and nothing anywhere saying why.
+ *
+ * That state is not hypothetical: the disable-before-replace sequence below creates it whenever it is
+ * interrupted after `--off` and before `--install`.
+ *
+ * Stale counts as stopped, on the agent's own rule — three missed pulses, with `pulseSeconds` taken
+ * from the file rather than assumed, because the provider slows its pulse while nothing is offline.
+ */
+export function isFilterEnforcing(now = Date.now()): boolean {
+  for (const path of FILTER_STATE_FILES) {
+    if (!existsSync(path)) continue
+    try {
+      const raw = JSON.parse(readFileSync(path, 'utf8')) as { at?: unknown; pulseSeconds?: unknown }
+      if (typeof raw.at !== 'number') continue
+      const pulse = typeof raw.pulseSeconds === 'number' ? raw.pulseSeconds : 5
+      // **A stale file is a reason to keep looking, not an answer.** The second path is where the
+      // provider writes when it cannot write the first, so a Mac that failed over leaves an old file
+      // at the first one and a live heartbeat at the second. Returning here read that Mac as stopped
+      // and made every run pay the disable/enable cycle this module exists to make rare.
+      if (Math.floor(now / 1000) - raw.at <= 3 * Math.max(pulse, 1)) return true
+      continue
+    } catch {
+      // Unreadable is not "enforcing". Keep looking; the second path is the fallback the provider
+      // uses when it cannot write the first.
+      continue
+    }
+  }
+  return false
+}
+
+/**
+ * What would be interrupted by a replace, in words a person can act on. Empty means nothing would.
+ *
+ * **All three, because the filter is host-wide.** It is `filterSockets`, so every new flow on the Mac
+ * goes through the provider — an Android emulator's traffic included, even though nothing here can
+ * take one offline. And a relay serving on :4000 means somebody may be testing through a browser from
+ * another machine, which no device list can show.
+ *
+ * Best-effort by construction: a probe that cannot run reports nothing rather than blocking the
+ * install. A missed device costs the interruption this refusal exists to avoid; a probe that throws
+ * and stops the upgrade costs an upgrade nobody can perform.
+ */
+export function busyDevices(): string[] {
+  const busy: string[] = []
+  for (const name of bootedSimulators()) busy.push(`simulator ${name}`)
+  for (const serial of attachedEmulators()) busy.push(`emulator ${serial}`)
+  if (relayIsServing()) busy.push('a relay serving on :4000')
+  return busy
+}
+
+function bootedSimulators(): string[] {
+  try {
+    const raw = execFileSync('/usr/bin/xcrun', ['simctl', 'list', 'devices', '--json'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT_MS,
+    })
+    const data = JSON.parse(raw) as { devices: Record<string, Array<{ name: string; state: string }>> }
+    return Object.values(data.devices).flat().filter((d) => d.state === 'Booted').map((d) => d.name)
+  } catch {
+    return []
+  }
+}
+
+function attachedEmulators(): string[] {
+  try {
+    // From `PATH`, unlike the absolute paths above: `adb` ships with the Android SDK and has no fixed
+    // location. Absent is the common case on an iOS-only Mac and lands in the `catch`.
+    const raw = execFileSync('adb', ['devices'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT_MS,
+    })
+    return raw.split('\n').slice(1)
+      .map((l) => l.trim()).filter((l) => l.endsWith('device'))
+      .map((l) => l.split(/\s+/)[0]).filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+function relayIsServing(): boolean {
+  try {
+    const out = execFileSync('/usr/sbin/lsof', ['-nP', '-iTCP:4000', '-sTCP:LISTEN', '-t'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT_MS,
+    })
+    return out.trim().length > 0
+  } catch {
+    // `lsof` exits non-zero when nothing holds the port, which is the common case and not an error.
+    return false
+  }
+}
+
+export interface InstallOptions {
+  /** Replace even though devices are in use. The refusal exists because a replace interrupts every
+   *  new connection on the Mac; this is the caller saying they know and want it anyway. */
+  ignoreRunningDevices?: boolean
+}
+
 export type InstallOutcome =
   | { status: 'installed' }
   | { status: 'already-current' }
-  | { status: 'needs-approval' }
+  | { status: 'needs-approval'; filterLeftDisabled: boolean }
   | { status: 'needs-reboot' }
   | { status: 'not-macos' }
   | { status: 'no-artifact' }
   | { status: 'refused-downgrade'; installed: string; shipped: string }
-  | { status: 'failed'; code: number; detail: string }
+  | { status: 'refused-devices-busy'; busy: string[] }
+  | { status: 'failed'; code: number; detail: string; filterLeftDisabled: boolean }
 
 /** What the host binary's exit codes mean. The table lives in `ios-netfilter/README.md`; these are the
  *  three that are not failures. */
 const EXIT_APPROVAL_TIMEOUT = 4
 const EXIT_NEEDS_REBOOT = 5
+
+/** How long `--off` gets. It is one `NEFilterManager` save and was measured at 31ms; this is a bound
+ *  on a wedged run, not a budget. */
+const OFF_TIMEOUT_MS = 15_000
+
+/** How long the copy gets. `ditto` moves a few megabytes off local disk, so this bounds a wedged run
+ *  rather than a slow one — and after the disable above, a copy that never returns is what leaves the
+ *  filter off with nothing said. */
+const COPY_TIMEOUT_MS = 60_000
+
+/** How long `--install` gets. Generous because it can be waiting on a macOS approval dialog — the
+ *  host has its own approval and stall deadlines (exit 4 and 6) and this is only the backstop for a
+ *  run that reaches neither. Without it the CLI waits forever on a completion handler that never
+ *  fires, which is how an interrupted sequence leaves the filter off. */
+const INSTALL_TIMEOUT_MS = 180_000
 
 /**
  * Put the shipped app in `/Applications` and activate it. **The one routine both `setup ios` and
@@ -196,7 +327,7 @@ const EXIT_NEEDS_REBOOT = 5
  * No `sudo`: `/Applications` is writable by an admin user, and `ditto` preserves the signature, which
  * a plain copy does not. Measured.
  */
-export function installNetFilter(): InstallOutcome {
+export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
   if (process.platform !== 'darwin') return { status: 'not-macos' }
   const shipped = shippedAppPath()
   if (!shipped) return { status: 'no-artifact' }
@@ -208,7 +339,13 @@ export function installNetFilter(): InstallOutcome {
   // skipped whenever the shipped app would not say what it was, so the one artifact no comparison can
   // judge was the one that installed unconditionally — over a newer filter that was working.
   if (!shippedVersion) return { status: 'no-artifact' }
-  if (isNetFilterCurrent({ shipped: shippedVersion, installed: installedVersion, activated })) {
+  // **Current *and* running.** The version check alone answers a different question than the one the
+  // caller is asking, and the gap between them is a state this function creates: interrupt the
+  // sequence below between `--off` and `--install` and the Mac has the right app, the right activated
+  // extension, and no filter. Returning `already-current` there makes the condition permanent, because
+  // the only thing that would turn it back on is the run that just declined to do anything.
+  if (isNetFilterCurrent({ shipped: shippedVersion, installed: installedVersion, activated })
+      && isFilterEnforcing()) {
     return { status: 'already-current' }
   }
   // **A downgrade is refused rather than performed.** `/Applications` holds one copy for the whole
@@ -224,26 +361,92 @@ export function installNetFilter(): InstallOutcome {
     return { status: 'refused-downgrade', installed: current, shipped: shippedVersion }
   }
 
-  const copy = spawnSync('/usr/bin/ditto', [shipped, NET_FILTER_APP], { encoding: 'utf8' })
+  // **Refused rather than forced, and it belongs here rather than in either command.** Both `setup
+  // ios` and `migrate net-filter` reach this function, so a gate on one of them protects half the
+  // callers — and the destructive part is here, not there.
+  //
+  // Refusing rather than shutting the devices down is the other half of the decision. `/Applications`
+  // holds one filter for the whole Mac, which is already this module's reason for the downgrade
+  // guard: the people affected by a replace are not necessarily the person running the command.
+  const busy = opts.ignoreRunningDevices ? [] : busyDevices()
+  if (busy.length > 0) return { status: 'refused-devices-busy', busy }
+
+  const copy = spawnSync('/usr/bin/ditto', [shipped, NET_FILTER_APP], {
+    encoding: 'utf8', timeout: COPY_TIMEOUT_MS,
+  })
   if (!copy || copy.status !== 0) {
-    return { status: 'failed', code: copy?.status ?? -1, detail: (copy?.stderr || 'ditto failed').trim() }
+    return {
+      status: 'failed',
+      code: copy?.status ?? -1,
+      detail: (copy?.stderr || 'ditto failed').trim(),
+      filterLeftDisabled: false,
+    }
   }
 
   restoreExecutableBits(NET_FILTER_APP)
 
-  const run = spawnSync(join(NET_FILTER_APP, 'Contents', 'MacOS', 'TapflowNetFilter'), ['--install'], {
-    encoding: 'utf8',
+  // **Take the filter out of the flow path before activating, and do it with the binary just copied
+  // in.**
+  //
+  // A content filter is `filterSockets`, so every new flow on the Mac waits for a verdict from the
+  // provider. Activating a replacement kills that provider while the configuration stays enabled, and
+  // new connections then wait for a verdict nobody will give: measured 2026-09-02, the Mac's own
+  // traffic timed out and only a restart brought it back. Disabling first means that state never
+  // exists. What is left is the window while the filter comes back up, measured the same day across
+  // ~300 probes: about four seconds of raised latency (10-30ms to 200-400ms) and **no failures**,
+  // because the kernel passes traffic a provider has not applied settings for yet.
+  //
+  // **After the copy, not before it, and that ordering is the whole of two separate defects.**
+  // `ditto` writes `/Applications`; the running provider executes out of `/Library/SystemExtensions`,
+  // which is why macOS goes on filtering for an app someone deleted (`doctor` has a check for exactly
+  // that state). So the copy cannot disturb anything, and only the activation can.
+  //
+  // Disabling first instead meant asking whatever binary happened to be installed. That is wrong in
+  // both directions. A build older than the flag does not refuse it — every unrecognised argument fell
+  // through to `.configure`, which writes `isEnabled = true` — so the request to switch the filter off
+  // switched it on and answered 0. And when the app had been deleted there was no binary to ask at
+  // all, while the extension it belonged to was still activated and enforcing, so the replace went
+  // ahead with the filter up. Asking the binary this package shipped removes both: it is the one that
+  // understands the flag, and it is there because the line above put it there.
+  //
+  // `--install` turns it back on by itself: with no `--add`/`--remove` it takes `clearAll`, and
+  // `configureFilter` ends with `isEnabled = true`. So there is no re-enable step to forget.
+  const off = spawnSync(join(NET_FILTER_APP, 'Contents', 'MacOS', 'TapflowNetFilter'), ['--off'], {
+    encoding: 'utf8', timeout: OFF_TIMEOUT_MS,
   })
-  if (!run) return { status: 'failed', code: -1, detail: 'the filter host did not run' }
+  // **Stop rather than continue.** A disable that did not take leaves the filter enabled, which is
+  // exactly the state the activation must not meet. The copy has landed but nothing is activated yet,
+  // so stopping costs an upgrade and continuing costs the Mac's network.
+  if (!off || off.status !== 0) {
+    return {
+      status: 'failed',
+      code: off?.status ?? -1,
+      detail: hostLogTail() || (off?.stderr || '').trim()
+        || 'could not switch the filter off before replacing it',
+      filterLeftDisabled: false,
+    }
+  }
+
+  const run = spawnSync(join(NET_FILTER_APP, 'Contents', 'MacOS', 'TapflowNetFilter'), ['--install'], {
+    encoding: 'utf8', timeout: INSTALL_TIMEOUT_MS,
+  })
+  if (!run) {
+    return { status: 'failed', code: -1, detail: 'the filter host did not run', filterLeftDisabled: true }
+  }
   switch (run.status) {
     case 0: return { status: 'installed' }
-    case EXIT_APPROVAL_TIMEOUT: return { status: 'needs-approval' }
+    // **Approval and reboot differ in whether the filter came back**, which is why only one of them
+    // carries the flag. The approval path dies before `configureFilter` runs, so the filter is still
+    // off; the reboot path runs it — deliberately, since this binary is the only way a device is put
+    // back online — so the filter is on and the *old* provider is enforcing until the restart.
+    case EXIT_APPROVAL_TIMEOUT: return { status: 'needs-approval', filterLeftDisabled: true }
     case EXIT_NEEDS_REBOOT: return { status: 'needs-reboot' }
     default:
       return {
         status: 'failed',
         code: run.status ?? -1,
         detail: hostLogTail() || (run.stderr || '').trim() || `exit ${run.status}`,
+        filterLeftDisabled: true,
       }
   }
 }
