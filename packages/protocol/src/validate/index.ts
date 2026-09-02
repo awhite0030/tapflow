@@ -327,6 +327,7 @@ const INBOUND = { ...BROWSER_INBOUND, ...AGENT_INBOUND, ...STREAM_INBOUND } as c
 // from the protocol and holds all three lists to it.
 const ANSWERABLE = {
   'device:boot': envC('device:boot'),
+  'device:shutdown': envCo('device:shutdown'),
   'app:install': envC('app:install'),
   'app:launch': envC('app:launch'),
   'app:clear-state': envC('app:clear-state'),
@@ -365,7 +366,8 @@ export type ParseFailure =
   | { ok: false; reason: 'unknown-type'; type: string }
   | { ok: false; reason: 'bad-shape'; type: InboundType; detail: string }
   /** The payload is wrong but the envelope is not, so the caller can be told. */
-  | { ok: false; reason: 'bad-payload'; type: AnswerableType; sessionId: string; requestId: string; detail: string }
+  | { ok: false; reason: 'bad-payload'; type: Exclude<AnswerableType, 'device:shutdown'>; sessionId: string; requestId: string; detail: string }
+  | { ok: false; reason: 'bad-payload'; type: 'device:shutdown'; sessionId: string; requestId?: string; detail: string }
 
 export type ParseResult =
   | {
@@ -445,7 +447,7 @@ export function parseInbound(raw: unknown): ParseResult {
       const envelope = ANSWERABLE[answerable].safeParse(frame)
       if (envelope.success) {
         const { sessionId: s, requestId: r } = envelope.data
-        return { ok: false, reason: 'bad-payload', type: answerable, sessionId: s, requestId: r, detail }
+        return { ok: false, reason: 'bad-payload', type: answerable, sessionId: s, requestId: r, detail } as ParseFailure
       }
     }
     return { ok: false, reason: 'bad-shape', type: known, detail }
