@@ -8,6 +8,7 @@ import type {
 // package's public name for it.
 export type { DeviceSummary as DeviceInfo }
 import { WebSocket } from 'ws'
+import { TransientQueryError } from '@tapflowio/flow-runner'
 
 export interface AgentSession {
   agentName?: string
@@ -161,6 +162,8 @@ interface SessionLifecycle {
   needsReboot: boolean
   /** `session:terminated`'s reason, or `null` while the session is alive. Terminal: ids are not reused. */
   terminated: SessionTerminatedReason | 'unknown' | null
+  /** The caller called disconnectDevice. Like terminated, it means no further replies will match this session. */
+  left?: boolean
 }
 
 /** How long to wait for a boot before giving up on it.
@@ -630,6 +633,8 @@ export class TapflowClient {
    */
   disconnectDevice(sessionId: string): void {
     this.send({ type: 'session:leave', sessionId })
+    const s = this.lifecycle.get(sessionId)
+    if (s) s.left = true
     this.settleSessionWaiters(sessionId, () => new SessionLeftError(
       `This client left session ${sessionId} while the request was in flight. Whether it reached the ` +
       'device is unknown, so check device state rather than assuming it did nothing, and do not repeat ' +
@@ -963,9 +968,11 @@ export class TapflowClient {
     const httpBase = this.relayUrl.replace(/^wss?/, (p) => (p === 'wss' ? 'https' : 'http'))
     const url = new URL(`/api/v1/sessions/${sessionId}/screenshot`, httpBase)
     if (format === 'jpeg') url.searchParams.set('format', 'jpeg')
-    const res = await fetch(url.toString(), {
+    const options: RequestInit = {
       headers: { Authorization: `Bearer ${this.token}` },
-    })
+    }
+
+    const res = await fetch(url.toString(), options)
     if (!res.ok) {
       // Read text first — res.json() consumes the body, so a later res.text()
       // fallback can never run after a failed JSON parse.
@@ -980,12 +987,14 @@ export class TapflowClient {
     return Buffer.from(await res.arrayBuffer())
   }
 
-  async queryUITree(sessionId: string): Promise<UIElement[]> {
+  async queryUITree(sessionId: string, signal?: AbortSignal): Promise<UIElement[]> {
     const httpBase = this.relayUrl.replace(/^wss?/, (p) => (p === 'wss' ? 'https' : 'http'))
     const url = new URL(`/api/v1/sessions/${sessionId}/ui-tree`, httpBase)
-    const res = await fetch(url.toString(), {
+    const options: RequestInit = {
       headers: { Authorization: `Bearer ${this.token}` },
-    })
+    }
+    if (signal) options.signal = signal
+    const res = await fetch(url.toString(), options)
     if (!res.ok) {
       // Read text first — res.json() consumes the body, so a later res.text()
       // fallback can never run after a failed JSON parse.
@@ -995,8 +1004,24 @@ export class TapflowClient {
         const body = JSON.parse(text) as { error?: string }
         if (body.error) message = body.error
       } catch { /* keep the raw text */ }
-      // The note only. Whether a ui-tree failure is retryable is #572 — this path has no poll loop of its
-      // own, and classifying it means deciding where `TransientQueryError` lives.
+
+      const s = this.lifecycle.get(sessionId)
+      if (s && (s.terminated || s.needsReboot || s.left)) {
+        const why = s.left
+          ? 'this client left the session'
+          : s.terminated
+            ? `the relay ended this session (${s.terminated})`
+            : 'the agent reconnected and cleared its device binding, so this session needs booting again ' +
+              'and nothing in a flow can (the app itself is still running)'
+        throw this.failed(sessionId, `${message} — ${why}`)
+      }
+
+      const PERMANENT_QUERY_STATUSES = new Set([400, 401, 403, 404, 409])
+
+      if (!PERMANENT_QUERY_STATUSES.has(res.status)) {
+        throw new TransientQueryError(message)
+      }
+
       throw this.failed(sessionId, message)
     }
     const body = (await res.json()) as { elements?: UIElement[] }
