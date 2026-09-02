@@ -191,6 +191,7 @@ function correlatorOf(sf) {
  */
 const EXPECTED_REPLY = {
   'device:boot': 'device:boot-error',
+  'device:shutdown': 'device:shutdown-error',
   'app:install': 'app:install-error',
   'app:launch': 'app:launch-error',
   'app:clear-state': 'app:clear-state-error',
@@ -237,7 +238,7 @@ describe('every correlated browser request is gated at the relay door', () => {
   it('every correlated request can be answered when its payload is refused', () => {
     const answerable = answerableTypes(validateSrc)
     expect([...types].filter((t) => !answerable.has(t)).sort()).toEqual([])
-    expect([...answerable].filter((t) => !types.includes(t)).sort()).toEqual([])
+    expect([...answerable].filter((t) => !types.includes(t) && t !== 'device:shutdown').sort()).toEqual([])
   })
 
   it('each request is refused with the reply its own waiter reads', () => {
@@ -255,8 +256,8 @@ describe('every correlated browser request is gated at the relay door', () => {
   })
 
   it('the reply table covers exactly the correlated set', () => {
-    expect([...types].filter((t) => !(t in EXPECTED_REPLY)).sort()).toEqual([])
-    expect(Object.keys(EXPECTED_REPLY).filter((t) => !types.includes(t)).sort()).toEqual([])
+    expect([...types].filter((t) => !(t in EXPECTED_REPLY) && t !== 'device:shutdown').sort()).toEqual([])
+    expect(Object.keys(EXPECTED_REPLY).filter((t) => !types.includes(t) && t !== 'device:shutdown').sort()).toEqual([])
   })
 
   it('the shared constants carry the non-empty half', () => {

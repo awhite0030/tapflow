@@ -1887,26 +1887,34 @@ export class RelayServer {
    */
   private refuseMalformed(ws: WebSocket, f: Extract<ParseFailure, { reason: 'bad-payload' }>): void {
     if (ws.readyState !== WebSocket.OPEN) return
-    const { sessionId, requestId } = f
+    const sessionId = f.sessionId
     const message = `malformed ${f.type} payload`
     switch (f.type) {
-      case 'device:boot':     this.sendTo(ws, { type: 'device:boot-error', sessionId, requestId, message }); break
-      case 'app:install':     this.sendTo(ws, { type: 'app:install-error', sessionId, requestId, message }); break
-      case 'app:launch':      this.sendTo(ws, { type: 'app:launch-error', sessionId, requestId, message }); break
-      case 'app:clear-state': this.sendTo(ws, { type: 'app:clear-state-error', sessionId, requestId, message }); break
-      case 'open-url':        this.sendTo(ws, { type: 'open-url:error', sessionId, requestId, message }); break
+      case 'device:boot':     this.sendTo(ws, { type: 'device:boot-error', sessionId, requestId: f.requestId, message }); break
+      case 'device:shutdown':
+        this.sendTo(ws, {
+          type: 'device:shutdown-error',
+          sessionId,
+          ...(f.requestId === undefined ? {} : { requestId: f.requestId }),
+          message,
+        })
+        break
+      case 'app:install':     this.sendTo(ws, { type: 'app:install-error', sessionId, requestId: f.requestId, message }); break
+      case 'app:launch':      this.sendTo(ws, { type: 'app:launch-error', sessionId, requestId: f.requestId, message }); break
+      case 'app:clear-state': this.sendTo(ws, { type: 'app:clear-state-error', sessionId, requestId: f.requestId, message }); break
+      case 'open-url':        this.sendTo(ws, { type: 'open-url:error', sessionId, requestId: f.requestId, message }); break
       // Its waiters key on the `input:type-*` pair and ignore an `input:error` entirely — the same
       // reason `refuseInput` below splits these two.
       case 'input:type':
-        this.sendTo(ws, { type: 'input:type-error', sessionId, requestId, message, reason: 'malformed' }); break
+        this.sendTo(ws, { type: 'input:type-error', sessionId, requestId: f.requestId, message, reason: 'malformed' }); break
       case 'clipboard:read':
-      case 'clipboard:write': this.sendTo(ws, { type: 'clipboard:error', sessionId, requestId, message }); break
-      case 'network:set':     this.sendTo(ws, { type: 'network:error', sessionId, requestId, message }); break
+      case 'clipboard:write': this.sendTo(ws, { type: 'clipboard:error', sessionId, requestId: f.requestId, message }); break
+      case 'network:set':     this.sendTo(ws, { type: 'network:error', sessionId, requestId: f.requestId, message }); break
       // The four remaining acked inputs. A `default` rather than four labels because the union is
       // closed and exhaustive: adding a fourteenth answerable request without a case here would land
       // it on `input:error`, which `answerableRequestsAnswered` is what stops.
       default:
-        this.sendTo(ws, { type: 'input:error', sessionId, requestId, message, reason: 'malformed' })
+        this.sendTo(ws, { type: 'input:error', sessionId, requestId: f.requestId, message, reason: 'malformed' })
     }
   }
 
