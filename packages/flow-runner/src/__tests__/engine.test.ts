@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { UIElement } from '@tapflowio/agent-core'
 import { runFlow, type FlowDriver } from '../engine.js'
 import { parseFlow } from '../schema.js'
-import { TransientQueryError } from '../errors.js'
+import { TransientQueryError, SessionReboundError } from '../errors.js'
 
 const el = (over: Partial<UIElement>): UIElement => ({
   role: 'button',
@@ -265,6 +265,19 @@ steps:
     expect(result.steps[0]).toMatchObject({ name: 'launchApp', status: 'passed' })
     expect(result.steps[1].name).toBe('tapOn("OK")')
     expect(result.steps.every((s) => typeof s.durationMs === 'number')).toBe(true)
+  })
+
+
+  it('detects a session rebound and boots the device before retrying', async () => {
+    const d = fakeDriver([[], [el({ identifier: 't1' })]])
+    // First query fails with a rebound error, second succeeds
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(d.queryUITree as any).mockRejectedValueOnce?.(new SessionReboundError('rebound'))
+    d.boot = vi.fn().mockResolvedValue(undefined)
+
+    await runFlow({ name: 'test', steps: [{ type: 'tapOn', selector: { id: 't1' } }] }, d)
+    expect(d.boot).toHaveBeenCalled()
+    expect(d.calls).toEqual([['tap', 0.5, 0.55]])
   })
 
   it('a driver error on a step fails the flow with that error', async () => {
