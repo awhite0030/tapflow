@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { TransientQueryError } from '@tapflowio/flow-runner'
 
 import { WebSocketServer, WebSocket } from 'ws'
 import { TapflowClient, REASON_ADVICE, SessionEndedError, SessionLeftError, reasonAdvice } from '../client.js'
@@ -1473,7 +1474,7 @@ describe('disconnect_device settles what was waiting on the session (#514)', () 
       const abort = new AbortController()
       const req = c.queryUITree('sess-1', abort.signal)
       await expect(req).rejects.toThrow('UI tree query failed: 502')
-      await expect(req).rejects.toHaveProperty('name', 'TransientQueryError')
+      await expect(req).rejects.toThrow(TransientQueryError)
 
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringContaining('/api/v1/sessions/sess-1/ui-tree'),
