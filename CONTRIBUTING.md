@@ -1,6 +1,6 @@
 # Contributing to tapflow
 
-> Common rules: [AGENTS.md](./AGENTS.md) | Full index: [INDEX.md](./INDEX.md)
+> Common rules: [AGENTS.md](./AGENTS.md) | Full index: [INDEX.md](./INDEX.md) | Community standards: [Code of Conduct](./CODE_OF_CONDUCT.md)
 
 ## Development setup
 
@@ -76,7 +76,9 @@ If you are publishing a fork of tapflow to a custom Docker registry namespace, y
 - `DOCKERHUB_USERNAME` — your Docker Hub username.
 - `DOCKERHUB_TOKEN` — your Docker Hub personal access token (Read & Write permissions).
 
-The `.github/workflows/docker-publish.yml` workflow will automatically detect these secrets and publish multi-platform images (`linux/amd64`, `linux/arm64`) to `your-username/tapflow` on every push to `main` and on version tags. Without these secrets, the CI will only build and smoke-test the image for validation, without attempting to publish it.
+The `.github/workflows/docker-publish.yml` workflow detects these secrets and publishes multi-platform images (`linux/amd64`, `linux/arm64`) on every push to `main` and on version tags. Without these secrets, CI only builds and smoke-tests the image for validation, without attempting to publish it.
+
+**The secrets alone are not enough.** That workflow hardcodes `IMAGE: tapflow/tapflow`, so a fork that sets only the two secrets pushes at *this* project's namespace and fails on permissions. Change `IMAGE` to your own namespace in the workflow as well.
 
 ### Versioning (Semver)
 
@@ -169,6 +171,8 @@ Run the tests for any changed packages before opening a PR. New behavior must be
 **No flaky tests.** Use `vi.useFakeTimers()` instead of `setTimeout` waits. Fix `Date.now()` with `vi.setSystemTime()`. Clean up global state in `beforeEach`/`afterEach`. Never depend on real network ports or file paths.
 
 **Mock only at system boundaries** — real network, OS calls, external processes. Internal module interactions run against real code.
+
+**Name the mutation.** For every test, know the production change that would make it fail. For a test asserting that something does *not* happen, make that change and watch it fail before you commit — an absence assertion passes when nothing happens at all, so a green run on its own is not evidence it holds anything. [test-and-guard-coverage.md](./contributing/test-and-guard-coverage.md) collects the cases where that went wrong, including a guard bypassed four ways with the whole suite green.
 
 ## Technical internals
 
