@@ -867,12 +867,44 @@ describe('TapflowClient', () => {
       }
     })
 
+    it('throws RelayHttpError with status 0 for a queryUITree network failure', async () => {
+      const origFetch = globalThis.fetch
+      const fetchError = new TypeError('fetch failed')
+      globalThis.fetch = async () => { throw fetchError }
+      try {
+        const promise = client.queryUITree('sess-1')
+        await expect(promise).rejects.toThrow('UI tree query failed: fetch failed')
+        const err = await promise.catch(e => e)
+        expect(err.name).toBe('RelayHttpError')
+        expect(err.status).toBe(0)
+        expect(err.cause).toBe(fetchError)
+      } finally {
+        globalThis.fetch = origFetch
+      }
+    })
+
     it('falls back to the response text when the error body is not JSON', async () => {
       const origFetch = globalThis.fetch
       globalThis.fetch = async () =>
         new Response('Bad Gateway', { status: 502, headers: { 'Content-Type': 'text/plain' } })
       try {
         await expect(client.screenshot('sess-1')).rejects.toThrow('Bad Gateway')
+      } finally {
+        globalThis.fetch = origFetch
+      }
+    })
+
+    it('throws RelayHttpError with status 0 for a screenshot network failure', async () => {
+      const origFetch = globalThis.fetch
+      const fetchError = new TypeError('fetch failed')
+      globalThis.fetch = async () => { throw fetchError }
+      try {
+        const promise = client.screenshot('sess-1')
+        await expect(promise).rejects.toThrow('Screenshot failed: fetch failed')
+        const err = await promise.catch(e => e)
+        expect(err.name).toBe('RelayHttpError')
+        expect(err.status).toBe(0)
+        expect(err.cause).toBe(fetchError)
       } finally {
         globalThis.fetch = origFetch
       }
