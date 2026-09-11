@@ -121,15 +121,6 @@ export class SessionEndedError extends Error {
   }
 }
 
-// Carries the HTTP status for a REST failure. status 0 marks a network-level failure
-// (fetch rejected before a response).
-export class RelayHttpError extends Error {
-  constructor(message: string, readonly status: number, options?: ErrorOptions) {
-    super(message, options)
-    this.name = 'RelayHttpError'
-  }
-}
-
 /**
  * A waiter that reached its deadline, and one that lost the socket.
  *
@@ -972,16 +963,9 @@ export class TapflowClient {
     const httpBase = this.relayUrl.replace(/^wss?/, (p) => (p === 'wss' ? 'https' : 'http'))
     const url = new URL(`/api/v1/sessions/${sessionId}/screenshot`, httpBase)
     if (format === 'jpeg') url.searchParams.set('format', 'jpeg')
-
-    let res: Response
-    try {
-      res = await fetch(url.toString(), {
-        headers: { Authorization: `Bearer ${this.token}` },
-      })
-    } catch (e) {
-      throw new RelayHttpError(`Screenshot failed: ${(e as Error).message}`, 0, { cause: e })
-    }
-
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${this.token}` },
+    })
     if (!res.ok) {
       // Read text first — res.json() consumes the body, so a later res.text()
       // fallback can never run after a failed JSON parse.
@@ -999,16 +983,9 @@ export class TapflowClient {
   async queryUITree(sessionId: string): Promise<UIElement[]> {
     const httpBase = this.relayUrl.replace(/^wss?/, (p) => (p === 'wss' ? 'https' : 'http'))
     const url = new URL(`/api/v1/sessions/${sessionId}/ui-tree`, httpBase)
-
-    let res: Response
-    try {
-      res = await fetch(url.toString(), {
-        headers: { Authorization: `Bearer ${this.token}` },
-      })
-    } catch (e) {
-      throw new RelayHttpError(`UI tree query failed: ${(e as Error).message}`, 0, { cause: e })
-    }
-
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${this.token}` },
+    })
     if (!res.ok) {
       // Read text first — res.json() consumes the body, so a later res.text()
       // fallback can never run after a failed JSON parse.
