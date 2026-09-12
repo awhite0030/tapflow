@@ -653,7 +653,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
 
   private async startVideoStream(state: DeviceState, streamWs: WebSocket): Promise<void> {
     const serial = this.adb.getSerial(state.deviceId)
-    if (!serial) return
+    if (!serial) throw new PlatformError('Device vanished before video could start')
 
     // Emulator: capture via gRPC streamScreenshot + Mac VideoToolbox (bypasses the guest SW H.264
     // encoder). On any failure (e.g. an externally-booted emulator without `-grpc`), fall back to

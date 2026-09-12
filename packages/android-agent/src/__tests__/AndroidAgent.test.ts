@@ -986,6 +986,25 @@ describe('AndroidAgent', () => {
         agent.disconnect(); browser.close()
       })
 
+      it('fails the boot if the device serial vanishes before video starts', async () => {
+        const adb = mockAdb(true)
+        const agent = new AndroidAgent({}, adb)
+        await agent.connect(`ws://localhost:${port}`)
+
+        const getSerialSpy = vi.spyOn(agent['adb'], 'getSerial')
+
+        // First call: startVideoStream checks if serial is available.
+        // Returning undefined triggers our fix.
+        getSerialSpy.mockReturnValue(undefined)
+
+        const browser = await boot(agent)
+        const err = await waitForType(browser, 'device:boot-error')
+
+        expect(String(err['message'])).toContain('Device vanished before video could start')
+
+        agent.disconnect(); browser.close()
+      })
+
       // Relaunching before the old qemu process is gone races the AVD's lock file. Nothing in
       // `emu kill` waits — it returns as soon as the console accepts it.
       it('waits for the old process to exit before relaunching, naming the AVD not the device id', async () => {
@@ -1698,6 +1717,12 @@ describe('AndroidAgent', () => {
     })
 
     describe('restartVideoStream', () => {
+      it('throws PlatformError in startVideoStream when serial is missing', async () => {
+        vi.spyOn(internals(agent).adb, 'getSerial').mockReturnValue(undefined)
+        const state = getState()
+        await expect(internals(agent)['startVideoStream'](state, {} as WebSocket)).rejects.toThrow('Device vanished before video could start')
+      })
+
       beforeEach(async () => {
         browser.send(JSON.stringify({
           type: 'device:boot',
