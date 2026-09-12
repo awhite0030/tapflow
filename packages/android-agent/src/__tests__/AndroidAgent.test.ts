@@ -1224,7 +1224,7 @@ describe('AndroidAgent', () => {
       const agent = new AndroidAgent({}, adb)
 
       const sent: string[] = []
-      ;(agent as any).ws = { readyState: WebSocket.OPEN, send: (d: string) => sent.push(d) }
+        ;(agent as unknown as { ws: { readyState: number, send: (d: string) => void }, sessionId: string, deviceStates: Map<string, unknown>, bumpBootSeq: (state: unknown, reason: string) => void }).ws = { readyState: WebSocket.OPEN, send: (d: string) => sent.push(d) }
       Object.defineProperty(agent, "sessionId", { value: "test-session", writable: true })
 
       const state = {
@@ -1233,11 +1233,11 @@ describe('AndroidAgent', () => {
         bootSeq: 1,
         bootsInFlight: new Map([[1, 'test-req']]),
         bootAbandon: new Map()
-      } as any
+      } as unknown as { sessionId: string, bootsInFlight: Map<number, string | undefined>, bootSeq: number, bootAbandon: Map<number, string> }
 
-      agent['deviceStates'].set('test-session', state)
+      agent["deviceStates"].set("test-session", state as unknown as never)
 
-      agent['bumpBootSeq'](state, 'relay-lost')
+      agent["bumpBootSeq"](state as unknown as never, "relay-lost")
 
       expect(sent).toHaveLength(1)
       const parsed = JSON.parse(sent[0]!)
