@@ -1219,6 +1219,36 @@ describe('AndroidAgent', () => {
       browser.close()
     })
 
+    it('answers an in-flight boot eagerly on a relay-lost bump if the socket is open', async () => {
+      const adb = mockAdb(false)
+      const agent = new AndroidAgent({}, adb)
+
+      const sent: string[] = []
+        ;(agent as unknown as { ws: { readyState: number, send: (d: string) => void }, sessionId: string, deviceStates: Map<string, unknown>, bumpBootSeq: (state: unknown, reason: string) => void }).ws = { readyState: WebSocket.OPEN, send: (d: string) => sent.push(d) }
+      Object.defineProperty(agent, "sessionId", { value: "test-session", writable: true })
+
+      const state = {
+        sessionId: 'test-session',
+        deviceId: 'dev-1',
+        bootSeq: 1,
+        bootsInFlight: new Map([[1, 'test-req']]),
+        bootAbandon: new Map()
+      } as unknown as { sessionId: string, bootsInFlight: Map<number, string | undefined>, bootSeq: number, bootAbandon: Map<number, string> }
+
+      agent["deviceStates"].set("test-session", state as unknown as never)
+
+      agent["bumpBootSeq"](state as unknown as never, "relay-lost")
+
+      expect(sent).toHaveLength(1)
+      const parsed = JSON.parse(sent[0]!)
+      expect(parsed).toMatchObject({
+        type: 'device:boot-error',
+        sessionId: 'test-session',
+        requestId: 'test-req'
+      })
+      expect(parsed.message).toContain('relay')
+    })
+
     it('sends no device info to a socket that is closing', async () => {
       // The mid-boot twin of the `sendMsg` guard below: this one gated on the socket being *present*, so a
       // boot that lost it mid-wait pushed its payload into a buffer nobody flushes while `device:ready` was

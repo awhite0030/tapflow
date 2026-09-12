@@ -125,7 +125,7 @@ interface DeviceState {
    *  connected. `bootsInFlight` is that guard, and each boot clears its own key on the way out. */
   bootAbandon: Map<number, BootAbandonReason>
   /** Seqs held by a `handleDeviceBoot` that has not returned yet. */
-  bootsInFlight: Set<number>
+  bootsInFlight: Map<number, string | undefined>
   deviceId: string
   touchHelper: TouchHelper | null
   // Device-booted flag for truthful input acks — set on device:boot, cleared on shutdown; false after a reconnect until the ack path re-verifies once via simctl.
@@ -398,7 +398,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
         captureStreamer: null,
         bootSeq: 0,
         bootAbandon: new Map(),
-        bootsInFlight: new Set(),
+        bootsInFlight: new Map(),
         orientation: 'portrait',
         loadedChrome: null,
         softKeyboardVisible: false,
@@ -640,7 +640,15 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
    *  (`cleanupDeviceState`'s callers) and is easy to miss when reading `handleDeviceBoot` alone. Spreading
    *  the reason across three `state.bootSeq++` lines makes forgetting one silent; here it is a parameter. */
   private bumpBootSeq(state: DeviceState, reason: BootAbandonReason): number {
-    if (state.bootsInFlight.has(state.bootSeq)) state.bootAbandon.set(state.bootSeq, reason)
+    if (state.bootsInFlight.has(state.bootSeq)) {
+      state.bootAbandon.set(state.bootSeq, reason)
+      if (reason === 'relay-lost') {
+        const requestId = state.bootsInFlight.get(state.bootSeq)
+        if (requestId && this.ws?.readyState === WebSocket.OPEN) {
+          this.sendMsg({ type: 'device:boot-error', sessionId: state.sessionId, requestId, message: bootAbandonMessage(reason) })
+        }
+      }
+    }
     return ++state.bootSeq
   }
 
@@ -689,7 +697,7 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
     state.acceptH264 = acceptH264
     if (tier) { state.secureContext = tier.secureContext; state.external = tier.external }
     const seq = this.bumpBootSeq(state, 'superseded')
-    state.bootsInFlight.add(seq)
+    state.bootsInFlight.set(seq, requestId)
 
     // **The teardown runs inside the try, and that is a fix rather than tidying.** It ran before it, so a
     // throw there rejected this handler into the bare `.catch(logger.error)` at its dispatch site: no
