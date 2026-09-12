@@ -1471,8 +1471,8 @@ describe('IOSAgent', () => {
       const agent = new IOSAgent({ intervalMs: 50 }, simctl)
 
       const sent: string[] = []
-      agent.ws = { readyState: WebSocket.OPEN, send: (d: string) => sent.push(d) } as any
-      agent['_sessionId'] = 'test-session'
+      ;(agent as any).ws = { readyState: WebSocket.OPEN, send: (d: string) => sent.push(d) }
+      Object.defineProperty(agent, "sessionId", { value: "test-session", writable: true })
 
       const state = {
         sessionId: 'test-session',
