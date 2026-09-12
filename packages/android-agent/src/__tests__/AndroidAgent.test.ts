@@ -1219,6 +1219,36 @@ describe('AndroidAgent', () => {
       browser.close()
     })
 
+    it('answers an in-flight boot eagerly on a relay-lost bump if the socket is open', async () => {
+      const adb = mockAdb(false)
+      const agent = new AndroidAgent({}, adb)
+
+      const sent: string[] = []
+      agent.ws = { readyState: WebSocket.OPEN, send: (d: string) => sent.push(d) } as any
+      agent['_sessionId'] = 'test-session'
+
+      const state = {
+        sessionId: 'test-session',
+        deviceId: 'dev-1',
+        bootSeq: 1,
+        bootsInFlight: new Map([[1, 'test-req']]),
+        bootAbandon: new Map()
+      } as any
+
+      agent['deviceStates'].set('test-session', state)
+
+      agent['bumpBootSeq'](state, 'relay-lost')
+
+      expect(sent).toHaveLength(1)
+      const parsed = JSON.parse(sent[0]!)
+      expect(parsed).toMatchObject({
+        type: 'device:boot-error',
+        sessionId: 'test-session',
+        requestId: 'test-req'
+      })
+      expect(parsed.message).toContain('relay')
+    })
+
     it('sends no device info to a socket that is closing', async () => {
       // The mid-boot twin of the `sendMsg` guard below: this one gated on the socket being *present*, so a
       // boot that lost it mid-wait pushed its payload into a buffer nobody flushes while `device:ready` was

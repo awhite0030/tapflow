@@ -1358,8 +1358,8 @@ describe('IOSAgent', () => {
       }
       const sent: string[] = []
       reach.ws = { readyState: WebSocket.OPEN, send: (d: string) => sent.push(d) }
-      const dropped = { bootAbandon: new Map([[1, 'relay-lost']]), bootsInFlight: new Set([1]) }
-      const held = { bootAbandon: new Map([[1, 'superseded']]), bootsInFlight: new Set([1]) }
+      const dropped = { bootAbandon: new Map([[1, 'relay-lost']]), bootsInFlight: new Map([[1, "rq-1"]]) }
+      const held = { bootAbandon: new Map([[1, 'superseded']]), bootsInFlight: new Map([[1, "rq-1"]]) }
 
       reach.abandonBoot(dropped, 1, 's-dropped', 'rq-1')
       expect(sent, 'answered a session the agent no longer holds').toEqual([])
@@ -1464,6 +1464,36 @@ describe('IOSAgent', () => {
 
       agent.disconnect()
       browser.close()
+    })
+
+    it('answers an in-flight boot eagerly on a relay-lost bump if the socket is open', async () => {
+      const simctl = mockSimctl(false)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+
+      const sent: string[] = []
+      agent.ws = { readyState: WebSocket.OPEN, send: (d: string) => sent.push(d) } as any
+      agent['_sessionId'] = 'test-session'
+
+      const state = {
+        sessionId: 'test-session',
+        deviceId: 'dev-1',
+        bootSeq: 1,
+        bootsInFlight: new Map([[1, 'test-req']]),
+        bootAbandon: new Map()
+      } as any
+
+      agent['deviceStates'].set('test-session', state)
+
+      agent['bumpBootSeq'](state, 'relay-lost')
+
+      expect(sent).toHaveLength(1)
+      const parsed = JSON.parse(sent[0]!)
+      expect(parsed).toMatchObject({
+        type: 'device:boot-error',
+        sessionId: 'test-session',
+        requestId: 'test-req'
+      })
+      expect(parsed.message).toContain('relay')
     })
 
     it('drops a reply to a socket that is closing, rather than buffering it in silence', async () => {

@@ -159,7 +159,7 @@ interface DeviceState {
    *  connected. `bootsInFlight` is that guard, and each boot clears its own key on the way out. */
   bootAbandon: Map<number, BootAbandonReason>
   /** Seqs held by a `handleDeviceBoot` that has not returned yet. */
-  bootsInFlight: Set<number>
+  bootsInFlight: Map<number, string | undefined>
   deviceId: string
   touchHelper: AndroidTouchHelper | null
   // Device-booted flag for truthful input acks — set on device:ready, cleared on shutdown; false after a reconnect until the ack path re-verifies once via adb.
@@ -466,7 +466,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         lastTouchPx: { x: 0, y: 0 },
         bootSeq: 0,
         bootAbandon: new Map(),
-        bootsInFlight: new Set(),
+        bootsInFlight: new Map(),
         restarting: false,
       })
     })
@@ -935,7 +935,15 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
    *  Deliberately **not** folded into `cleanupDeviceState` the way iOS's bump once was: this agent calls
    *  that cleanup from inside `handleDeviceBoot`, so a bump there would make every boot supersede itself. */
   private bumpBootSeq(state: DeviceState, reason: BootAbandonReason): number {
-    if (state.bootsInFlight.has(state.bootSeq)) state.bootAbandon.set(state.bootSeq, reason)
+    if (state.bootsInFlight.has(state.bootSeq)) {
+      state.bootAbandon.set(state.bootSeq, reason)
+      if (reason === 'relay-lost') {
+        const requestId = state.bootsInFlight.get(state.bootSeq)
+        if (requestId && this.ws?.readyState === WebSocket.OPEN) {
+          this.sendMsg({ type: 'device:boot-error', sessionId: state.sessionId, requestId, message: bootAbandonMessage(reason) })
+        }
+      }
+    }
     return ++state.bootSeq
   }
 
@@ -982,7 +990,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     }
 
     const seq = this.bumpBootSeq(state, 'superseded')
-    state.bootsInFlight.add(seq)
+    state.bootsInFlight.set(seq, requestId)
 
     // **The teardown runs inside the try, and that is a fix rather than tidying.** It ran before it, and here it is the
     // heaviest thing in the handler — stopping a scrcpy session, closing a gRPC client, `pkill`ing the
