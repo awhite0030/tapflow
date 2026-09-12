@@ -166,6 +166,7 @@ interface AndroidAgentInternals {
   _reconnectTimer: ReturnType<typeof setTimeout> | null
   _reconnectAttempt: number
   _scheduleReconnect(): void
+  startVideoStream(state: TestState, ws: unknown): Promise<void>
   restartVideoStream(state: TestState): Promise<void>
   cleanupDeviceState(state: TestState): void
   handleRelayMessage(msg: unknown): void
