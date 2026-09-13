@@ -40,7 +40,17 @@ export async function cmdStart(opts: StartOptions): Promise<void> {
     requestAudioPermission(false)
   }
 
-  // ── 1. Relay (always local) ───────────────────────────────────────────────
+  // ── 1. Tunnel (optional — publishes a public URL for teammates) ────────────
+  let tunnel: TunnelPlugin | null = null
+  let publicUrl: string | null = null
+  if (config.tunnel) {
+    const started = await startConfiguredTunnel(config.tunnel, RELAY_PORT)
+    tunnel = started.tunnel
+    publicUrl = started.publicUrl
+    if (publicUrl) config.tunnel.publicUrl = publicUrl
+  }
+
+  // ── 2. Relay (always local) ───────────────────────────────────────────────
   if (!fs.existsSync(path.join(process.cwd(), 'tapflow.config.json'))) {
     warn('tapflow.config.json not found — using defaults. Run tapflow init to configure.')
   }
@@ -68,15 +78,6 @@ export async function cmdStart(opts: StartOptions): Promise<void> {
   await server.start()
   const stopTls = certProvider ? startTlsBackgroundTasks(certProvider, server, config.tls) : null
   step(`Relay started on ${httpScheme}://${displayHost}:${RELAY_PORT}`)
-
-  // ── 2. Tunnel (optional — publishes a public URL for teammates) ────────────
-  let tunnel: TunnelPlugin | null = null
-  let publicUrl: string | null = null
-  if (config.tunnel) {
-    const started = await startConfiguredTunnel(config.tunnel, RELAY_PORT)
-    tunnel = started.tunnel
-    publicUrl = started.publicUrl
-  }
 
   // ── 3. Agent availability check ───────────────────────────────────────────
   if (platformsToRun.length === 0) {

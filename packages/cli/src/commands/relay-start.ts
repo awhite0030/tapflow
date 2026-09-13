@@ -43,13 +43,6 @@ export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
   const wsScheme = tls ? 'wss' : 'ws'
   const agentConnectHost = tls && displayHost.toLowerCase() !== 'localhost' ? displayHost : '<host>'
 
-  const proxyWarning = proxyWithoutPublicUrlWarning(config)
-  if (proxyWarning) warn(proxyWarning)
-  const server = new RelayServer({ port, uploadsDir: path.join(config.local.dataDir, 'uploads'), wsBackpressureBytes: config.local.wsBackpressureBytes, trustedProxies: config.local.trustedProxies, corsOrigins: buildCorsOrigins(config, port), tls })
-  await server.start()
-  step(`Relay started on ${httpScheme}://${displayHost}:${port}`)
-  const stopTls = certProvider ? startTlsBackgroundTasks(certProvider, server, config.tls) : null
-
   const SUPPORTED_PROVIDERS = ['rathole', 'tailscale']
   if (opts.tunnel && !SUPPORTED_PROVIDERS.includes(opts.tunnel)) {
     banner('error', 'TUNNEL CONFIG ERROR', [`Unsupported tunnel provider: "${opts.tunnel}". Supported: ${SUPPORTED_PROVIDERS.join(', ')}`])
@@ -68,7 +61,19 @@ export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
     const started = await startConfiguredTunnel(tunnelCfg, port)
     tunnel = started.tunnel
     publicUrl = started.publicUrl
+    if (publicUrl && config.tunnel) {
+      config.tunnel.publicUrl = publicUrl
+    }
   }
+
+  const proxyWarning = proxyWithoutPublicUrlWarning(config)
+  if (proxyWarning) warn(proxyWarning)
+  const server = new RelayServer({ port, uploadsDir: path.join(config.local.dataDir, 'uploads'), wsBackpressureBytes: config.local.wsBackpressureBytes, trustedProxies: config.local.trustedProxies, corsOrigins: buildCorsOrigins(config, port), tls })
+  await server.start()
+  step(`Relay started on ${httpScheme}://${displayHost}:${port}`)
+  const stopTls = certProvider ? startTlsBackgroundTasks(certProvider, server, config.tls) : null
+
+
 
   banner('success', 'TAPFLOW RELAY READY', [
     `Relay  : ${httpScheme}://${displayHost}:${port}`,
