@@ -276,7 +276,7 @@ describe('cmdStart', () => {
 
       await cmdStart({})
 
-      expect(startConfiguredTunnel).toHaveBeenCalledWith({ provider: 'tailscale' }, 4000)
+      expect(startConfiguredTunnel).toHaveBeenCalledWith(expect.objectContaining({ provider: 'tailscale' }), 4000)
       expect(output.join('\n')).toContain('my-mac.tailnet.ts.net')
     })
 
@@ -292,6 +292,14 @@ describe('cmdStart', () => {
       handler()
       expect(iosDisconnectSpy).toHaveBeenCalled()
       expect(mockTunnel.stop).toHaveBeenCalled()
+    })
+
+    it('config.tunnel 있으면 터널 기동 후 발견된 publicUrl을 RelayServer에 전달', async () => {
+      vi.mocked(config).tunnel = { provider: 'tailscale' }
+      vi.mocked(startConfiguredTunnel).mockResolvedValue({ tunnel: mockTunnel as never, publicUrl: 'http://my-mac.tailnet.ts.net:4000' })
+      await cmdStart({})
+      expect(startConfiguredTunnel).toHaveBeenCalledWith(expect.objectContaining({ provider: 'tailscale' }), 4000)
+      expect(config.tunnel!.publicUrl).toBe('http://my-mac.tailnet.ts.net:4000')
     })
 
     it('터널 기동 실패(publicUrl null)면 localhost 배너 유지', async () => {
