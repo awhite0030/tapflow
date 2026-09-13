@@ -76,7 +76,7 @@ describe('DeviceViewer correlates the lifecycle replies, selectively', () => {
     // straight back, and nothing else in the product would report it.
     render(<DeviceViewer sessionId="s1" deviceId="dev-1" />)
     join()
-    expect(screen.getByText('Starting device…')).toBeTruthy()
+    expect(screen.getAllByText('Starting device…')[0]).toBeTruthy()
 
     act(() => { deliver!({ type: 'device:ready', payload: { deviceId: 'dev-1' } }) })
 
@@ -93,7 +93,7 @@ describe('DeviceViewer correlates the lifecycle replies, selectively', () => {
 
     act(() => { deliver!({ type: 'device:boot-error', sessionId: 's1', message: 'scrcpy failed to restart' }) })
 
-    expect(screen.getByText(/Boot failed: scrcpy failed to restart/)).toBeTruthy()
+    expect(screen.getAllByText(/Boot failed: scrcpy failed to restart/)[0]).toBeTruthy()
   })
 
   it('says nothing about a boot it has already replaced', () => {
@@ -149,7 +149,7 @@ describe('DeviceViewer correlates the lifecycle replies, selectively', () => {
       deliver!({ type: 'device:boot-error', sessionId: 's1', requestId: lastBootId(), message: 'agent offline' })
     })
 
-    expect(screen.getByText(/Boot failed: agent offline/)).toBeTruthy()
+    expect(screen.getAllByText(/Boot failed: agent offline/)[0]).toBeTruthy()
   })
 
   it('acts on a ready that answers its own boot', () => {

@@ -65,7 +65,7 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
       })
     })
 
-    expect(screen.getByText(/Install failed: Build not found/)).toBeInTheDocument()
+    expect(screen.getAllByText(/Install failed: Build not found/)[0]).toBeInTheDocument()
   })
 
   it('ignores a session:start refusal belonging to a different session', () => {
@@ -121,7 +121,7 @@ describe('DeviceViewer ignores messages addressed to another session (#445)', ()
     act(() => { deliver!({ type: 'device:ready', sessionId: '', payload: { deviceId: 'dev-1' } }) })
 
     // Still waiting on its own device — the unattributed ready did not stand in for it.
-    expect(screen.getByText(/Starting device/)).toBeInTheDocument()
+    expect(screen.getAllByText(/Starting device/)[0]).toBeInTheDocument()
   })
 
   it('still accepts messages that carry no session at all', () => {

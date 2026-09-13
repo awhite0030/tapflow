@@ -446,7 +446,7 @@ export function SimulatorToolbar({
               </TooltipTrigger>
               <TooltipContent side="left">{rebootLabel}</TooltipContent>
             </Tooltip>
-            <span id={rebootStatusId} role="status" className="sr-only">
+            <span id={rebootStatusId} className="sr-only">
               {reboot.pending ? 'Restarting the device.' : ''}
             </span>
           </>

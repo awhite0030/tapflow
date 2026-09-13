@@ -85,6 +85,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const [installError, setInstallError] = useState<string | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
+  const [decoderUnsupported, setDecoderUnsupported] = useState(false);
   // What the agent on the other end implements. Absent ⇒ an agent predating the capability,
   // so the viewer degrades on purpose rather than inferring anything from a timeout.
   const [agentCapabilities, setAgentCapabilities] = useState<string[]>([]);
@@ -654,79 +655,66 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
     onRecordingUploaded,
     swKeyboardVisible, swKeyboardPending, onKbdToggle,
     rebootPending, onReboot: reboot,
+    onDecoderUnsupported: () => setDecoderUnsupported(true),
     restartButtonRef,
   };
 
-  // Before chrome arrives, show a phone skeleton + status card so the layout isn't empty
-  if (!iosChrome && !androidChrome) {
-    // **`role="region"`, because a bare `div` is `generic` and ARIA prohibits naming that role** — the
-    // name would not be exposed at all. **"Device screen", not "Device"** — the toolbar's four group
-    // names (Navigation / Device / Capture / Environment) are a vocabulary the placement rule treats as
-    // a contract, and this region *contains* that group: one name over two very different scopes, and
-    // `getByLabelText('Device')` matching both. The name says what this *is* rather than what is
-    // happening: a fixed "starting up" keeps asserting a recovery after a boot that failed, while the
-    // card below carries the outcome.
-    //
-    // **It is a landmark, not a focus target.** It held `tabIndex={-1}` so that a restart could park
-    // focus here, and a `tabIndex={-1}` element still takes focus from a mouse — so every tap on the
-    // skeleton drew a ring around the whole thing, and the ring came back on every boot once the
-    // parking worked. Nothing was gained for it: this region has no keyboard behaviour to offer, and
-    // focus after a restart now returns to the button that started it.
-    return (
-      <div
-        role="region"
-        aria-label="Device screen"
-        className="flex items-start justify-center gap-16"
-      >
-        {/* **No `aria-busy` anywhere, and the two shapes below are hidden.** Three attempts put it in
-            three places and each was wrong in the same way. On this container it sat above
-            `SimulatorInfoCard`'s live region, where a busy subtree can hold back the sentence that
-            says what happened. Derived from `!deviceReady` it never cleared, because that flag does
-            not come back after `device:boot-error` — a failed boot announcing itself as running for
-            the rest of the session. Moved onto the placeholders it became a constant, which is the
-            same defect one element over.
-
-            The shapes are decorative: no text, no name, nothing for a screen reader to attach "busy"
-            to. So they are `aria-hidden` and the progress is said once, in the one place that has
-            words for it — and that sentence is the thing to keep out of any hidden or busy subtree.
-
-            What this does *not* fix is that the region carrying it is remounted by the transition, so
-            a restart is still not announced end to end. That is #683: it needs the render restructured
-            rather than another attribute. */}
-        <div aria-hidden="true" className="flex flex-col items-center gap-0.5 rounded-2xl border bg-background/90 px-1.5 py-2.5 shrink-0 mt-3 opacity-40">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="h-8 w-8 rounded-md bg-muted animate-pulse" />
-          ))}
-        </div>
-        <div className="flex items-start gap-8">
-          {/* phone body skeleton */}
-          <div aria-hidden="true" style={{ background: '#1c1c1e', borderRadius: '34px', padding: '12px', flexShrink: 0 }}>
-            <div className="animate-pulse bg-zinc-700" style={{ width: 324, height: 720, borderRadius: '22px' }} />
-          </div>
-          <SimulatorInfoCard
-            joined={joined} fps={0} connected={connected}
-            deviceReady={deviceReady} bootError={bootError}
-            installing={installing} installError={installError}
-            decoderUnsupported={false}
-            keyboardActive={false} agentAway={agentAway}
-          />
-        </div>
-      </div>
-    );
-  }
-
   const devPerfHookRef = import.meta.env.DEV ? perfHookRef : undefined;
 
+  let statusText = '';
+  if (!connected) statusText = 'Connecting…';
+  else if (!joined) statusText = 'Joining session…';
+  else if (agentAway) statusText = 'The agent went away — waiting for it to come back…';
+  else if (rebootPending) statusText = 'Restarting the device.';
+  else if (bootError) statusText = `Boot failed: ${bootError.length > 40 ? bootError.slice(0, 40) + '…' : bootError}`;
+  else if (!deviceReady) statusText = 'Starting device…';
+  else if (installing) statusText = 'Installing app…';
+  else if (installError) statusText = `Install failed: ${installError}`;
+  else if (decoderUnsupported) statusText = 'Streaming is not supported in this environment.';
+  else statusText = '';
+
   return (
-    <>
-      {iosChrome && <IOSViewer {...commonProps} chrome={iosChrome} perfHookRef={devPerfHookRef} />}
-      {androidChrome && <AndroidViewer {...commonProps} androidButtons={androidChrome.buttons} screenWidth={androidChrome.screenWidth} screenHeight={androidChrome.screenHeight} cornerRadius={androidChrome.cornerRadius} perfHookRef={devPerfHookRef} />}
-      {import.meta.env.DEV && perfMode && perfVisible && (
+    <div
+      role="region"
+      aria-label="Device screen"
+      className="flex items-start justify-center gap-16"
+    >
+      <div role="status" className="sr-only">
+        {statusText}
+      </div>
+
+      {!iosChrome && !androidChrome ? (
         <>
-          <StatsOverlay perfHookRef={statsRef} />
-          <MetricsPanel pushRef={perfMetricsPushRef} />
+          <div aria-hidden="true" className="flex flex-col items-center gap-0.5 rounded-2xl border bg-background/90 px-1.5 py-2.5 shrink-0 mt-3 opacity-40">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="h-8 w-8 rounded-md bg-muted animate-pulse" />
+            ))}
+          </div>
+          <div className="flex items-start gap-8">
+            <div aria-hidden="true" style={{ background: '#1c1c1e', borderRadius: '34px', padding: '12px', flexShrink: 0 }}>
+              <div className="animate-pulse bg-zinc-700" style={{ width: 324, height: 720, borderRadius: '22px' }} />
+            </div>
+            <SimulatorInfoCard
+              joined={joined} fps={0} connected={connected}
+              deviceReady={deviceReady} bootError={bootError}
+              installing={installing} installError={installError}
+              decoderUnsupported={false}
+              keyboardActive={false} agentAway={agentAway}
+            />
+          </div>
+        </>
+      ) : (
+        <>
+          {iosChrome && <IOSViewer {...commonProps} chrome={iosChrome} perfHookRef={devPerfHookRef} />}
+          {androidChrome && <AndroidViewer {...commonProps} androidButtons={androidChrome.buttons} screenWidth={androidChrome.screenWidth} screenHeight={androidChrome.screenHeight} cornerRadius={androidChrome.cornerRadius} perfHookRef={devPerfHookRef} />}
+          {import.meta.env.DEV && perfMode && perfVisible && (
+            <>
+              <StatsOverlay perfHookRef={statsRef} />
+              <MetricsPanel pushRef={perfMetricsPushRef} />
+            </>
+          )}
         </>
       )}
-    </>
+    </div>
   );
 }

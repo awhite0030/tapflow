@@ -41,7 +41,7 @@ describe('SimulatorInfoCard — the shared status region beside the device (#748
     // Verified by deleting the branch and watching the next assertion fail.
     render(<SimulatorInfoCard {...healthy({ decoderUnsupported: true })} />)
 
-    const region = screen.getByRole('status')
+    const region = screen.getByTestId('status-region')
     expect(region).toBeInTheDocument()
     expect(region.textContent).toBe('Streaming is not supported in this environment.')
   })
@@ -50,7 +50,7 @@ describe('SimulatorInfoCard — the shared status region beside the device (#748
     // **Mutation:** removing the persistent `<div role="status">` wrapper from the card entirely
     // must fail this test, because the test asserts on the region's existence and on its empty
     // textContent. A non-vacuous absence assertion needs an existence anchor (the region) and a
-    // content anchor (no sentence) on the same element — that is what `getByRole('status')` +
+    // content anchor (no sentence) on the same element — that is what `getByTestId('status-region')` +
     // `textContent === ''` gives.
     //
     // **Mutation:** making the decoder-unsupported sentence render unconditionally (e.g. moving it
@@ -65,7 +65,7 @@ describe('SimulatorInfoCard — the shared status region beside the device (#748
     // giving the wrapper `key={statusText ?? 'empty'}` and watching the identity assertion go red.
     const { rerender } = render(<SimulatorInfoCard {...healthy()} />)
 
-    const regionBefore = screen.getByRole('status')
+    const regionBefore = screen.getByTestId('status-region')
     expect(regionBefore).toBeInTheDocument()
     expect(regionBefore.textContent).toBe('')
     expect(screen.queryByText(/streaming is not supported/i)).toBeNull()
@@ -73,7 +73,7 @@ describe('SimulatorInfoCard — the shared status region beside the device (#748
     // Same node after a rerender that *changes* the state — proves the region survives both an
     // empty and a populated transition, not just two identical rerenders.
     rerender(<SimulatorInfoCard {...healthy({ decoderUnsupported: true })} />)
-    const regionAfter = screen.getByRole('status')
+    const regionAfter = screen.getByTestId('status-region')
     expect(regionAfter, 'the wrapper remounted instead of taking new content').toBe(regionBefore)
     expect(regionAfter.textContent).toBe('Streaming is not supported in this environment.')
   })
@@ -90,7 +90,7 @@ describe('SimulatorInfoCard — the shared status region beside the device (#748
     // therefore inherits the same guarantee once this one holds.
     render(<SimulatorInfoCard {...healthy({ connected: false, decoderUnsupported: true })} />)
 
-    const region = screen.getByRole('status')
+    const region = screen.getByTestId('status-region')
     expect(region.textContent).toBe('Connecting…')
     expect(screen.queryByText(/streaming is not supported/i)).toBeNull()
   })

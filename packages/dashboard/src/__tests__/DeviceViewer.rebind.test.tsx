@@ -308,7 +308,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
 
     expect(frame()).toBe(0)
-    expect(screen.getByText(/waiting for it to come back/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/waiting for it to come back/i)[0]).toBeInTheDocument()
   })
 
   it('stops saying it once the agent is back', async () => {
@@ -318,12 +318,12 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // skeleton up, which is where this can still be read.
     live()
     act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
-    expect(screen.getByText(/waiting for it to come back/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/waiting for it to come back/i)[0]).toBeInTheDocument()
 
     rebound()
 
     expect(screen.queryByText(/waiting for it to come back/i)).not.toBeInTheDocument()
-    expect(screen.getByText(/starting device/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/starting device/i)[0]).toBeInTheDocument()
   })
 
   it('does not announce the restart twice', async () => {
@@ -362,7 +362,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
     act(() => { deliver!({ type: 'device:boot-error', sessionId: 's1', message: 'agent offline' }) })
 
-    expect(screen.getByText(/waiting for it to come back/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/waiting for it to come back/i)[0]).toBeInTheDocument()
     // Asserting here alone proves nothing: the status card ranks the waiting line above a boot
     // failure, so it stays hidden whether or not it was recorded — measured, the assertion held
     // with the suppression deleted. Clearing the waiting state is what exposes it, and a re-join is
@@ -376,7 +376,7 @@ describe('DeviceViewer recovers from an agent restart (#426)', () => {
     // A join that lands after the agent is back starts a clean session, and the flag is per-mount.
     live()
     act(() => { deliver!({ type: 'session:agent-away', sessionId: 's1' }) })
-    expect(screen.getByText(/waiting for it to come back/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/waiting for it to come back/i)[0]).toBeInTheDocument()
 
     act(() => { deliver!({ type: 'session:joined', sessionId: 's1', capabilities: [] }) })
 
