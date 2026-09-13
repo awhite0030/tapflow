@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a discrepancy where creating an admin account via Docker environment variables trimmed whitespace and capitalization from the email, but doing so via the dashboard did not. Both methods now correctly trim and lowercase the email address.
+
 ## [0.21.0] - 2026-09-12
 
 ### Added

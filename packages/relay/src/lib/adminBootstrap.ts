@@ -1,4 +1,4 @@
-import { isInitialized, createAdminAccount } from './adminAccount.js'
+import { isInitialized, createAdminAccount, normalizeEmail } from './adminAccount.js'
 
 /**
  * Create the first Admin from the environment, once, at boot.
@@ -49,7 +49,7 @@ export class AdminBootstrapError extends Error {}
  * Neither the password nor its length is ever written to the log.
  */
 export function bootstrapAdminFromEnv(env: BootstrapEnv, logger: BootstrapLogger): void {
-  const email = env.TAPFLOW_ADMIN_EMAIL?.trim()
+  const email = env.TAPFLOW_ADMIN_EMAIL ? normalizeEmail(env.TAPFLOW_ADMIN_EMAIL) : undefined
   const password = env.TAPFLOW_ADMIN_PASSWORD
 
   // Neither set is the ordinary case — every install that is not a fresh container.

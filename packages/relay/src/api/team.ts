@@ -6,6 +6,7 @@ import { json, readJson } from '../router.js'
 import { sendMail } from '../lib/mailer.js'
 import { config } from '../lib/config.js'
 import { buildInviteBaseUrl } from '../lib/publicUrl.js'
+import { normalizeEmail } from '../lib/adminAccount.js'
 
 export function handleListMembers(req: http.IncomingMessage, res: http.ServerResponse): void {
   const auth = requireRole(req, res, ['Admin'])
@@ -30,18 +31,20 @@ export async function handleInvite(req: http.IncomingMessage, res: http.ServerRe
   const token = crypto.randomBytes(32).toString('hex')
   const expiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString()
 
+  const email = body.email ? normalizeEmail(body.email) : null
+
   const db = getDb()
   db.prepare('INSERT INTO invitations (token, email, role, expires_at) VALUES (?, ?, ?, ?)')
-    .run(token, body.email ?? null, role, expiresAt)
+    .run(token, email, role, expiresAt)
 
   let emailSent = false
-  if (body.email) {
+  if (email) {
     // Host 헤더는 조작 가능하므로 신뢰 base URL(설정값)에서 링크를 만든다 (#6 Host 인젝션 차단).
     const inviteUrl = `${buildInviteBaseUrl(config)}/invite?token=${token}`
     const html = `<p>You've been invited to join tapflow as <strong>${role}</strong>.</p>
 <p><a href="${inviteUrl}">Accept invitation</a></p>
 <p>This link expires in 7 days.</p>`
-    emailSent = await sendMail(body.email, 'You have been invited to tapflow', html)
+    emailSent = await sendMail(email, 'You have been invited to tapflow', html)
   }
 
   json(res, 201, { token, emailSent })

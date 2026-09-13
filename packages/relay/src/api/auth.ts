@@ -23,6 +23,7 @@ const loginLimiter = createRateLimiter()
 // needs them too and a `lib/` module must not import this layer. Re-exported here so the callers
 // that already reach for them through this module keep their import path.
 export { makePasswordHash, verifyPassword, isInitialized, createAdminAccount } from '../lib/adminAccount.js'
+import { normalizeEmail } from '../lib/adminAccount.js'
 export type { CreateAdminResult } from '../lib/adminAccount.js'
 
 export async function handleLogin(
@@ -34,7 +35,8 @@ export async function handleLogin(
   const body = await readJson<{ email: string; password: string }>(req)
   if (!body.email || !body.password) return json(res, 400, { error: 'email and password required' })
 
-  const key = `${resolveClient(req, trustedProxies).addr}|${body.email.toLowerCase()}`
+  const email = normalizeEmail(body.email)
+  const key = `${resolveClient(req, trustedProxies).addr}|${email}`
   const gate = limiter.check(key)
   if (!gate.allowed) {
     res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': String(Math.ceil(gate.retryAfterMs / 1000)) })
@@ -45,7 +47,7 @@ export async function handleLogin(
   const db = getDb()
   const user = db.prepare(
     'SELECT id, email, role, password_hash FROM users WHERE email = ?'
-  ).get(body.email) as { id: number; email: string; role: string; password_hash: string | null } | undefined
+  ).get(email) as { id: number; email: string; role: string; password_hash: string | null } | undefined
 
   if (!user || !user.password_hash || !verifyPassword(body.password, user.password_hash)) {
     limiter.recordFailure(key)
