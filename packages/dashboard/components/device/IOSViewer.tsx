@@ -77,6 +77,7 @@ interface IOSViewerProps {
   /** The toolbar's restart button, so `DeviceViewer` can put focus back on it after a restart. */
   restartButtonRef: MutableRefObject<HTMLButtonElement | null>;
   perfHookRef?: MutableRefObject<PerfHook>;
+  onDecoderUnsupported?: () => void;
 }
 
 export function IOSViewer({
@@ -86,7 +87,7 @@ export function IOSViewer({
   binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, networkHandlerRef, networkSupported, onRecordingUploaded,
   swKeyboardVisible, swKeyboardPending, onKbdToggle,
   rebootPending, onReboot, restartButtonRef,
-  perfHookRef,
+  perfHookRef, onDecoderUnsupported,
 }: IOSViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -139,7 +140,10 @@ export function IOSViewer({
     binaryFrameHandlerRef,
     perfHookRef,
     frameCount,
-    onUnsupported: () => setDecoderUnsupported(true),
+    onUnsupported: () => {
+      setDecoderUnsupported(true)
+      onDecoderUnsupported?.()
+    },
     onResize: (size) => {
       const canvas = canvasRef.current
       if (canvas && (canvas.width !== size.width || canvas.height !== size.height)) {
@@ -660,11 +664,7 @@ export function IOSViewer({
     // keystrokes reach the device through `keyboardActive`, which only `handlePointerDown` sets. Focus
     // here granted nothing, so the indicator drawn for it advertised nothing. Whether the device screen
     // should be operable from the keyboard is a real question and a separate one — #747.
-    <div
-      role="region"
-      aria-label="Device screen"
-      className="flex items-start justify-center gap-16"
-    >
+    <>
       <canvas ref={recordCanvasRef} style={{ display: 'none' }} />
 
       <DeepLinkDialog open={deepLinkOpen} onOpenChange={setDeepLinkOpen} openUrl={openUrl} />
@@ -827,6 +827,6 @@ export function IOSViewer({
           keyboardActive={keyboardActive}
         />
       </div>
-    </div>
+    </>
   );
 }

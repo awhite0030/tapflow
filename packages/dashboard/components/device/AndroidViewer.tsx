@@ -63,6 +63,7 @@ interface AndroidViewerProps {
    *  the framebuffer as black; we clip them so they don't show inside the screen bezel. 0 = square. */
   cornerRadius?: number;
   perfHookRef?: MutableRefObject<PerfHook>;
+  onDecoderUnsupported?: () => void;
 }
 
 export function AndroidViewer({
@@ -72,7 +73,7 @@ export function AndroidViewer({
   binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, networkHandlerRef, networkSupported, onRecordingUploaded,
   rebootPending, onReboot, restartButtonRef,
   screenWidth, screenHeight, cornerRadius,
-  perfHookRef,
+  perfHookRef, onDecoderUnsupported,
 }: AndroidViewerProps) {
   const surfaceHostRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -115,7 +116,10 @@ export function AndroidViewer({
     binaryFrameHandlerRef,
     perfHookRef,
     frameCount,
-    onUnsupported: () => setDecoderUnsupported(true),
+    onUnsupported: () => {
+      setDecoderUnsupported(true)
+      onDecoderUnsupported?.()
+    },
     onResize: (size) => {
       setCanvasReady(true)
       const prev = videoSizeRef.current
@@ -555,11 +559,7 @@ export function AndroidViewer({
     // keystrokes reach the device through `keyboardActive`, which only `handlePointerDown` sets. Focus
     // here granted nothing, so the indicator drawn for it advertised nothing. Whether the device screen
     // should be operable from the keyboard is a real question and a separate one — #747.
-    <div
-      role="region"
-      aria-label="Device screen"
-      className="flex items-start justify-center gap-16"
-    >
+    <>
       <canvas ref={recordCanvasRef} style={{ display: 'none' }} />
       <DeepLinkDialog open={deepLinkOpen} onOpenChange={setDeepLinkOpen} openUrl={openUrl} />
 
@@ -641,6 +641,6 @@ export function AndroidViewer({
           keyboardActive={keyboardActive}
         />
       </div>
-    </div>
+    </>
   );
 }

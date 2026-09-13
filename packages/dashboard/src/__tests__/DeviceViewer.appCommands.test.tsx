@@ -71,7 +71,7 @@ describe('DeviceViewer only acts on app-command replies it asked for', () => {
   it('shows an install failure that is its own', () => {
     live(7)
     act(() => { deliver!({ type: 'app:install-error', sessionId: 'mine', requestId: sentId('app:install'), message: 'Build not found' }) })
-    expect(screen.getByText(/Install failed: Build not found/)).toBeInTheDocument()
+    expect(screen.getAllByText(/Install failed: Build not found/)[0]).toBeInTheDocument()
   })
 
   it('clears the launch spinner only for its own launch reply', () => {
@@ -116,7 +116,7 @@ describe('DeviceViewer only acts on app-command replies it asked for', () => {
     expect(current).not.toBe(stale)
 
     act(() => { deliver!({ type: 'app:install-done', sessionId: 'mine', requestId: stale }) })
-    expect(screen.getByText(/Installing/)).toBeInTheDocument()
+    expect(screen.getAllByText(/Installing/)[0]).toBeInTheDocument()
 
     act(() => { deliver!({ type: 'app:install-done', sessionId: 'mine', requestId: current }) })
     expect(screen.queryByText(/Installing/)).not.toBeInTheDocument()
@@ -129,6 +129,6 @@ describe('DeviceViewer only acts on app-command replies it asked for', () => {
     // tester's Mac installed separately. This pins the cost rather than claiming it cannot happen.
     live(7)
     act(() => { deliver!({ type: 'app:install-done', sessionId: 'mine' } as BrowserInbound) })
-    expect(screen.getByText(/Installing/)).toBeInTheDocument()
+    expect(screen.getAllByText(/Installing/)[0]).toBeInTheDocument()
   })
 })

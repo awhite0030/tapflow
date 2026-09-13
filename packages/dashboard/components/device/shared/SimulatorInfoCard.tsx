@@ -145,7 +145,7 @@ export function SimulatorInfoCard(props: SimulatorInfoCardProps) {
           (connected, joined, ready, installed), and that is where a permanently mounted 0-height child
           would still have added 12px. The node is the same one either way, which is the whole point of
           mounting it early. */}
-      <div role="status" className={statusText ? undefined : 'sr-only'}>
+      <div data-testid="status-region" className={statusText ? undefined : 'sr-only'}>
       {statusText && (
         <p className="text-[12px] text-muted-foreground leading-relaxed break-words">{statusText}</p>
       )}
