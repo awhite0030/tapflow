@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`tapflow setup` no longer hangs when stdin is not a terminal** ([#807](https://github.com/jo-duchan/tapflow/issues/807)). The interactive prompts now require both `stdout` and `stdin` to be terminals, preventing the setup process from stalling without settling on non-interactive inputs.
+
 - **Removing the network extension is described in steps that work** ([#799](https://github.com/jo-duchan/tapflow/issues/799)). `tapflow doctor ios`, `tapflow setup ios`, `tapflow migrate net-filter` and the network control and troubleshooting guides all said to run `systemextensionsctl uninstall`, which macOS refuses whenever System Integrity Protection is on, as it is on almost every Mac. They now say to switch the filter off first, then remove the extension in System Settings → General → Login Items & Extensions → Network Extensions, then restart the Mac to finish. The guide also says to stop tapflow on that Mac first, since a running iOS agent switches the filter back on. When the app is already gone from `/Applications`, the commands print the exact switch-off command, which uses the binary inside the package.
 
 ## [0.22.0] - 2026-09-16
