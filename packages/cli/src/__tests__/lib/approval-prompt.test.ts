@@ -8,7 +8,7 @@ vi.mock('@clack/prompts', () => ({
 }))
 
 import { confirm } from '@clack/prompts'
-import { terminalApprovalDeps } from '../../lib/approval-prompt.js'
+import { terminalApprovalDeps, isInteractive } from '../../lib/approval-prompt.js'
 
 const mockConfirm = vi.mocked(confirm)
 
@@ -31,10 +31,13 @@ describe('terminalApprovalDeps', () => {
     // the prompt and node exits 0 with the promise never settled: measured under a pty. The command then
     // ends with no banner. The mutations are dropping either half, or answering `true` outright.
     terminal(true, true)
+    expect(isInteractive()).toBe(true)
     expect(terminalApprovalDeps().interactive).toBe(true)
     terminal(true, undefined)
+    expect(isInteractive(), 'asked with stdin at EOF').toBe(false)
     expect(terminalApprovalDeps().interactive, 'asked with stdin at EOF').toBe(false)
     terminal(undefined, true)
+    expect(isInteractive(), 'asked with nobody reading the output').toBe(false)
     expect(terminalApprovalDeps().interactive, 'asked with nobody reading the output').toBe(false)
   })
 
