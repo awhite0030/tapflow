@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Empty stdin in `tapflow setup` no longer exits early without output** ([#807](https://github.com/jo-duchan/tapflow/issues/807)). `tapflow setup` decides whether it may prompt by checking if the session is interactive. Previously it only checked `process.stdout.isTTY`, causing prompts to hang and the command to exit silently with code 0 when `stdin` was empty (`</dev/null`). It now correctly checks both `stdout` and `stdin`.
+
 ### Changed
 
 - **The network filter install says what it is waiting on** ([#799](https://github.com/jo-duchan/tapflow/issues/799)). `tapflow setup ios` and `tapflow migrate net-filter` printed nothing while the install ran — up to three minutes on a new Mac, which reads as a hang rather than as work. Each step now names itself as it starts: checking what the Mac already has, taking the current filter out of the path, copying, activating, and confirming a filter came back up. The activation step warns about the macOS approval prompt before it appears, since the host binary reports that only by exiting 120 seconds later. `setup ios` reports the first check on the path where it goes on to *skip* the install as well — the common case on a Mac that is already set up, and the half of the silence nothing inside the installer could reach.
