@@ -1,5 +1,5 @@
 ---
-"@tapflowio/cli": patch
+"tapflow": patch
 ---
 
 fix(cli): allow `setup` to proceed non-interactively when stdin is not a terminal
