@@ -2,4 +2,4 @@
 "tapflow": patch
 ---
 
-Fix silent exit on non-interactive stdin during setup
+<!-- changelog: internal — fix silent setup exit on non-interactive stdin -->
