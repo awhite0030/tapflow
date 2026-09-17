@@ -87,7 +87,7 @@ export function judgeKey({ key, replacement }, affected, resolvedLine, siblings 
   const upper = range.match(/<=?\s*([\d.]+)/)?.[1]
   const replLower = replacement.match(/(?:>=|\^|~)\s*([\d.]+)/)?.[1]
   const replUpper = replacement.match(/<\s*([\d.]+)/)?.[1]
-  const keyLine = line(lower ?? upper ?? '0')
+  const _keyLine = line(lower ?? upper ?? '0')
 
   // A key with no lower bound intersects every major below it — pnpm matches by range
   // intersection, not containment — so the replacement would force a cross-major jump on a
