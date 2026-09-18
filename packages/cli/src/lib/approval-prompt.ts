@@ -2,6 +2,11 @@ import { confirm, isCancel } from '@clack/prompts'
 import type { ApprovalDeps } from './net-filter.js'
 import { step } from './print.js'
 
+export function isInteractive(): boolean {
+  return process.stdout.isTTY === true && process.stdin.isTTY === true
+}
+
+
 /**
  * The terminal's half of `followThroughApproval`, in one place because two commands use it.
  *
@@ -20,7 +25,7 @@ export function terminalApprovalDeps(): ApprovalDeps {
     // provisioning script — clack draws the prompt, the promise never settles, and node exits 0 with
     // nothing after it. Measured with clack 1.7 under a pty: exit 0, never settled. The command would end
     // without a banner, which is worse than not asking.
-    interactive: process.stdout.isTTY === true && process.stdin.isTTY === true,
+    interactive: isInteractive(),
     confirm: async (message) => {
       const answer = await confirm({ message })
       if (isCancel(answer)) return 'cancelled'
