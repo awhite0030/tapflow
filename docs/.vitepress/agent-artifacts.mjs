@@ -37,8 +37,13 @@ export const isTranslation = (page) => page.startsWith(TRANSLATION_PREFIX)
  * `---` lines against 27 sections, so an agent splitting the bundle on `---` got an orphan chunk
  * holding `guide/introduction.md`'s `description:` and no URL header. The `.md` copies keep it: they
  * are the source, and frontmatter is part of it.
+ *
+ * The body is optional. VitePress accepts an empty block, and a first version of this pattern
+ * required at least one line between the fences — so `---\n---` survived the strip and put back
+ * the two separators this exists to remove. An empty block is what an editor leaves behind after
+ * the last key is deleted, which is exactly when nobody looks at the bundle.
  */
-const FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/
+const FRONTMATTER = /^---\r?\n(?:[\s\S]*?\r?\n)?---(?:\r?\n|$)/
 
 /**
  * `true` for a VitePress `layout: home` page.

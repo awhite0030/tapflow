@@ -76,6 +76,9 @@ const FIXTURE = {
   'index.md': '---\nlayout: home\n\nhero:\n  name: tapflow\n  text: LANDING-HERO-TEXT\n---\n',
   'guide/one.md': '# One\n\nENGLISH-BODY-ONE\n',
   'guide/two.md': '---\ndescription: d\n---\n\n# Two\n\nENGLISH-BODY-TWO\n',
+  // An empty frontmatter block — valid in VitePress, and what is left when the last key is
+  // deleted. The first strip pattern required a body and left both fences in the bundle.
+  'guide/three.md': '---\n---\n\n# Three\n\nENGLISH-BODY-THREE\n',
   'ko/index.md': '---\nlayout: home\n\nhero:\n  name: tapflow\n---\n',
   'ko/guide/one.md': '# 하나\n\nKOREAN-BODY-ONE\n',
   'AGENTS.md': '# contributor rules\n\nEXCLUDED-BODY\n',
@@ -159,9 +162,10 @@ describe('the build hook ships the source markdown', () => {
 describe('llms-full.txt carries the English prose and nothing else', () => {
   it('bundles exactly the English non-landing pages', async () => {
     const r = await run()
-    expect(r.bundled).toEqual(['guide/one.md', 'guide/two.md'])
+    expect(r.bundled).toEqual(['guide/one.md', 'guide/three.md', 'guide/two.md'])
     expect(r.full).toContain('ENGLISH-BODY-ONE')
     expect(r.full).toContain('ENGLISH-BODY-TWO')
+    expect(r.full).toContain('ENGLISH-BODY-THREE')
   })
 
   it('leaves the translations out — and would include them if they were not translations', async () => {
@@ -201,6 +205,9 @@ describe('llms-full.txt carries the English prose and nothing else', () => {
     // URL header. The body survives the strip — that is the pair for the absence below.
     expect(r.full).toContain('ENGLISH-BODY-TWO')
     expect(r.full).not.toContain('description: d')
+    // `guide/three.md`'s block is empty. It has no body to look for, so the separator count below
+    // is what catches it: two surviving fences would make the total exceed one per section.
+    expect(r.full).toContain('ENGLISH-BODY-THREE')
     // Every `---` in the bundle is a separator, so the count is one per section boundary.
     const separators = r.full.split('\n').filter((l) => l === '---').length
     expect(separators).toBe(r.bundled.length)
