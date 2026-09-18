@@ -2,6 +2,16 @@ import { defineConfig } from 'vitepress'
 import { withMermaid } from 'vitepress-plugin-mermaid'
 import tapflowLight from './theme/tapflow-light.json'
 import tapflowDark from './theme/tapflow-dark.json'
+import { emitAgentArtifacts } from './agent-artifacts.mjs'
+
+// The canonical origin, written once.
+//
+// `tapflow.dev` answers 307 to `www.tapflow.dev` — that is the Vercel domain setting, and the
+// user-facing docs (both READMEs, the Docker Hub overview, the dashboard's sidebar) already link
+// to `www`. This file used to spell the apex in five places, which put a redirect in front of
+// every one of the sitemap's 47 URLs and every link in `llms.txt`. Repeating the string is what
+// let the two drift, so it is a constant now.
+const SITE = 'https://www.tapflow.dev'
 
 // VitePress(mdit-vue) 기본 slugify는 NFKD 정규화라 한글 음절을 자모 분리(NFD) 형태의 헤딩 id로 만든다.
 // 브라우저 URL hash는 NFC라 바이트가 어긋나 비ASCII 헤딩으로 스크롤이 안 된다.
@@ -161,8 +171,31 @@ export default withMermaid(defineConfig({
   description: 'Self-hosted iOS/Android simulator streaming for the whole team',
   cleanUrls: true,
 
+  // `docs/AGENTS.md` and `docs/CLAUDE.md` are contributor rules for working on this VitePress site.
+  // Without this they built into the public site and took the first two rows of the sitemap, so a
+  // crawler or an agent surveying tapflow's documentation met our internal writing conventions
+  // before it met the product. The files stay where they are — INDEX.md links them.
+  //
+  // `**/` because a bare `AGENTS.md` matches the srcDir root only, so a second one added under a
+  // locale would publish itself.
+  srcExclude: ['**/AGENTS.md', '**/CLAUDE.md'],
+
+  // Ship the source markdown beside the HTML, and the English prose as one file. See
+  // `agent-artifacts.mjs` for what an agent gets without it.
+  async buildEnd(siteConfig) {
+    const { copied, bundled } = await emitAgentArtifacts({
+      srcDir: siteConfig.srcDir,
+      outDir: siteConfig.outDir,
+      pages: siteConfig.pages,
+      hostname: SITE,
+    })
+    siteConfig.logger.info(
+      `agent artifacts: ${copied.length} .md copied, ${bundled.length} pages in llms-full.txt`,
+    )
+  },
+
   sitemap: {
-    hostname: 'https://tapflow.dev',
+    hostname: SITE,
   },
 
   locales: {
@@ -215,7 +248,7 @@ export default withMermaid(defineConfig({
         operatingSystem: 'macOS, Linux',
         description:
           'Open-source, self-hosted alternative to Appetize and BrowserStack App Live. Run iOS simulators and Android emulators in the browser for your whole team — app binaries never leave your network.',
-        url: 'https://tapflow.dev',
+        url: SITE,
         license: 'https://opensource.org/licenses/MIT',
         isAccessibleForFree: true,
         offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
@@ -223,7 +256,7 @@ export default withMermaid(defineConfig({
       }),
     ],
     ['meta', { property: 'og:type', content: 'website' }],
-    ['meta', { property: 'og:url', content: 'https://tapflow.dev' }],
+    ['meta', { property: 'og:url', content: SITE }],
     ['meta', { property: 'og:title', content: 'tapflow — Self-hosted simulator streaming for your whole team' }],
     [
       'meta',
@@ -233,7 +266,7 @@ export default withMermaid(defineConfig({
           'Open-source, self-hosted alternative to Appetize and BrowserStack App Live. Run iOS & Android simulators in the browser — no data leaving your network.',
       },
     ],
-    ['meta', { property: 'og:image', content: 'https://tapflow.dev/demo-thumbnail.png' }],
+    ['meta', { property: 'og:image', content: `${SITE}/demo-thumbnail.png` }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
     ['meta', { name: 'twitter:title', content: 'tapflow — Self-hosted simulator streaming for your whole team' }],
     [
@@ -244,7 +277,7 @@ export default withMermaid(defineConfig({
           'Open-source, self-hosted alternative to Appetize and BrowserStack App Live. Run iOS & Android simulators in the browser — no data leaving your network.',
       },
     ],
-    ['meta', { name: 'twitter:image', content: 'https://tapflow.dev/demo-thumbnail.png' }],
+    ['meta', { name: 'twitter:image', content: `${SITE}/demo-thumbnail.png` }],
   ],
 
   markdown: {
