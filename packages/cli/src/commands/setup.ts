@@ -1,3 +1,4 @@
+import { isInteractive } from '../lib/interactive.js'
 import { confirm, isCancel } from '@clack/prompts'
 import { runSetupAndroid, runSetupIos, type SetupStepResult } from '../lib/setup.js'
 import { resolveAdb } from '../lib/doctor.js'
@@ -15,7 +16,7 @@ async function detectPlatforms(): Promise<string[]> {
   if (process.platform === 'darwin') platforms.push('ios')
   if (resolveAdb() !== null) {
     platforms.push('android')
-  } else if (process.platform === 'darwin' && process.stdout.isTTY) {
+  } else if (process.platform === 'darwin' && isInteractive()) {
     const also = await confirm({ message: 'Also set up Android? (adb not found)' })
     if (!isCancel(also) && also) platforms.push('android')
   }
