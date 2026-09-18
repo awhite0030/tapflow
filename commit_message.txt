@@ -1,7 +1,0 @@
-fix(cli): treat session as interactive only when both stdin and stdout are terminals
-
-Root cause: `tapflow setup` decided whether to prompt by checking `process.stdout.isTTY` alone, which caused the process to hang on an unanswered prompt when stdout was a terminal but stdin was not (e.g., `</dev/null`).
-Fix: Introduced a shared `isInteractive` helper in `approval-prompt.ts` that requires both `stdout` and `stdin` to be TTYs, and updated all guards in `setup.ts` and `commands/setup.ts` to use it.
-Validation: Ran `pnpm lint`, `pnpm typecheck`, `pnpm build`, and `pnpm test`. All modified test suites pass, correctly simulating both `stdout` and `stdin` in their TTY mocks.
-
-Fixes https://github.com/jo-duchan/tapflow/issues/807
