@@ -100,6 +100,7 @@ Named imperatively from `AGENTS.md` — these describe a gate you are about to h
 |------|------|--------|
 | [android-sdk-bootstrap.md](./android-sdk-bootstrap.md) | rationale | android, setup, sdk |
 | [android-rotation.md](./android-rotation.md) | rationale | android, rotation, scrcpy |
+| [android-foldable-touch-coordinates.md](./android-foldable-touch-coordinates.md) | diagnosis | android, foldable, touch, emulator, grpc |
 | [android-video-streaming-diagnosis.md](./android-video-streaming-diagnosis.md) | diagnosis | android, video, streaming |
 
 ### The relay and its data

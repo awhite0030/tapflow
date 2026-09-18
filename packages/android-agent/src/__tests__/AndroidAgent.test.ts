@@ -86,10 +86,14 @@ let grpcClipboardError: Error | null = null
 // on the main looper, so "resolved" != "applied").
 let grpcClipboardApplyDelayMs = 0
 
+let grpcDisplaySize: { width: number; height: number } | null = { width: 1080, height: 2400 }
 vi.mock('../emulator/EmulatorGrpcClient', () => ({
   EmulatorGrpcClient: vi.fn(function () { return ({
     isReady: vi.fn(() => true),
     close: vi.fn(),
+    // The divisor for injected touch pixels. `grpcDisplaySize` lets a test say the emulator and
+    // the guest disagree, which is the whole foldable case.
+    getDisplaySize: vi.fn(async () => grpcDisplaySize),
     touchDown: vi.fn(), touchMove: vi.fn(), touchUp: vi.fn(),
     pinchStart: vi.fn(), pinchMove: vi.fn(), pinchEnd: vi.fn(),
     streamAudio: vi.fn(() => ({ frames: () => new ReadableStream({ start() {} }), cancel: vi.fn() })), // AudioStream shape: { frames, cancel }
@@ -166,6 +170,13 @@ interface TestState {
   landscape: boolean
   booted: boolean
   bootSeq: number
+  deviceId: string
+  /** The skin orientation the last frame reported. */
+  skin: SkinRotation | null
+  /** The grid injected touches land in; null falls back to the panel size. */
+  touchRange: { width: number; height: number } | null
+  /** The panel's corner radius in device pixels. */
+  cornerRadiusPx: number
 }
 
 // Test-only view of AndroidAgent internals (device state + reconnect fields are private).
@@ -182,6 +193,8 @@ interface AndroidAgentInternals {
   handleRelayMessage(msg: unknown): void
   reconcileScreen(state: TestState, serial: string, frameW: number, frameH: number, skin: SkinRotation | null): Promise<boolean>
   toDevicePx(state: TestState, x: number, y: number): { px: number; py: number }
+  normaliseOnBoot(state: TestState, serial: string): Promise<void>
+  watchScreen(state: TestState, serial: string, skin: SkinRotation): void
 }
 const internals = (agent: AndroidAgent): AndroidAgentInternals =>
   agent as unknown as AndroidAgentInternals
@@ -2568,6 +2581,7 @@ describe('AndroidAgent', () => {
       grpcStartError = null
       grpcFramesController = null
       scrcpyStreamController = null
+      grpcDisplaySize = { width: 1080, height: 2400 }
 
       adb = mockAdb(true)
       vi.spyOn(adb, 'getScreenSize').mockResolvedValue({ width: 1080, height: 2400 })
@@ -2586,6 +2600,50 @@ describe('AndroidAgent', () => {
       scrcpyStreamController = null
       if (pinned === undefined) delete process.env.TAPFLOW_ANDROID_BACKEND
       else process.env.TAPFLOW_ANDROID_BACKEND = pinned
+    })
+
+    it('boots into a known state rather than inheriting the last session\'s', async () => {
+      // The wiring, not the arithmetic. `normaliseOnBoot` has its own suite; what this holds is
+      // that the boot path calls it — the gap that let two sessions describe "the same" screen
+      // and mean different things, and made every rotation reading unattributable.
+      const setRotation = vi.spyOn(adb, 'setRotation').mockResolvedValue(undefined)
+      const setPosture = vi.spyOn(adb, 'setPosture').mockResolvedValue(undefined)
+      vi.spyOn(adb, 'printDeviceStates').mockResolvedValue(
+        `DeviceState{identifier=0, name='CLOSED'}\nDeviceState{identifier=1, name='HALF_OPENED'}`)
+      // Folded, the way the previous session left it.
+      vi.spyOn(adb, 'deviceState').mockResolvedValue(`Committed state: DeviceState{identifier=0, name='CLOSED'}`)
+
+      await bootDevice()
+
+      expect(setPosture).toHaveBeenCalledWith('emulator-5554', '2')
+      expect(setRotation).toHaveBeenCalledWith('emulator-5554', 0)
+
+      // **And before the stream, which is the half that took a second attempt.** Unfolding a
+      // running stream makes the session's first act a resolution change, and this capture sends
+      // nothing while the screen is static — so the viewer sat on "Waiting for stream…" until a
+      // manual rotation produced a frame. Ordering is the fix, so ordering is what is held.
+      expect(setPosture.mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(EmulatorVideo).mock.invocationCallOrder[0]!)
+      expect(setRotation.mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(EmulatorVideo).mock.invocationCallOrder[0]!)
+    })
+
+    it('takes the input divisor from the emulator before the stream opens', async () => {
+      // The emulator and the guest disagree exactly when a foldable is folded, and a tap that
+      // arrives before this is read is a tap divided by the wrong number. Reading it beside the
+      // client, not lazily on first touch, is what makes that unreachable.
+      grpcDisplaySize = { width: 2076, height: 2152 }
+      await bootDevice()
+      expect(getState().touchRange).toEqual({ width: 2076, height: 2152 })
+      expect(vi.mocked(EmulatorVideo).mock.invocationCallOrder[0]).toBeGreaterThan(0)
+    })
+
+    it('leaves the divisor unset when the emulator does not answer', async () => {
+      grpcDisplaySize = null
+      await bootDevice()
+      // Not a boot failure: `toDevicePx` falls back to the panel, which is what it always used.
+      expect(getState().touchRange).toBeNull()
+      expect(getState().emulatorVideo).not.toBeNull()
     })
 
     it('routes an emulator serial through the gRPC video path (no scrcpy session)', async () => {
@@ -3305,9 +3363,12 @@ describe('connect — error paths', () => {
 })
 
 describe('reconcileScreen (the wiring, not the arithmetic)', () => {
+  /** **Carries no posture.** Which panel is lit shows up in the metrics alone — an earlier
+   *  version passed a posture id here to feed a per-posture offset, and the posture-exception
+   *  test below is what holds that the correction never reads one. */
   const stateFor = () => ({
     videoWidth: 0, videoHeight: 0, displayWidth: 0, displayHeight: 0, rotation: null, streamRotation: 0,
-    reconciling: false, screenWatch: null,
+    reconciling: false, screenWatch: null, skin: null,
   }) as unknown as TestState
 
   /** `dumpsys window displays` as the device prints it. */
@@ -3325,20 +3386,20 @@ describe('reconcileScreen (the wiring, not the arithmetic)', () => {
   it('separates the touch space from what the viewer frames', async () => {
     // Pixel 9 Pro Fold unfolded: the panel is portrait, Android draws it landscape.
     const agent = agentWith(metrics('2076x2152', '2152x2076', 270))
-    const state = stateFor()
+    const state = stateFor()  // unfolded
 
     expect(await internals(agent).reconcileScreen(state, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')).toBe(true)
     // gRPC input takes natural pixels (measured); the viewer frames what Android draws.
     expect([state.videoWidth, state.videoHeight]).toEqual([2076, 2152])
     expect([state.displayWidth, state.displayHeight]).toEqual([2152, 2076])
     expect(state.rotation).toBe(270)
-    // Skin and screen agree here, so the viewer has nothing to undo.
+    // 270 − 270 = 0: Android has already turned the content to meet the skin, so nothing is left.
     expect(state.streamRotation).toBe(0)
   })
 
   it('follows a fold, where Android rotates back to 0 on a different panel', async () => {
     const agent = agentWith(metrics('1080x2424', '1080x2424', 0))
-    const state = stateFor()
+    const state = stateFor()  // folded
 
     // The frame still arrives 2424x1080 — the emulator's physical orientation — and must not be
     // what decides this, which is why the frame size is passed only as a fallback.
@@ -3346,7 +3407,8 @@ describe('reconcileScreen (the wiring, not the arithmetic)', () => {
     expect([state.videoWidth, state.videoHeight]).toEqual([1080, 2424])
     expect([state.displayWidth, state.displayHeight]).toEqual([1080, 2424])
     expect(state.rotation).toBe(0)
-    // The skin stayed put while Android rotated back to 0, so the frame is a quarter turn out.
+    // 270 − 0 = 270. The skin stayed put while Android rotated back to 0, so the whole skin
+    // offset is left to undo.
     expect(state.streamRotation).toBe(270)
   })
 
@@ -3365,7 +3427,7 @@ describe('reconcileScreen (the wiring, not the arithmetic)', () => {
 
     // A pass that lands entirely inside the lag: every reading agrees, and all of them are early.
     await internals(agent).reconcileScreen(state, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')
-    expect(state.streamRotation).toBe(270)   // the quarter turn the user would see
+    expect(state.streamRotation).toBe(270)  // the early reading's answer, a quarter turn out
 
     // The device finishes rotating; the next pass reports the change so the viewer is told.
     reads.mockResolvedValue(settled)
@@ -3391,7 +3453,8 @@ describe('reconcileScreen (the wiring, not the arithmetic)', () => {
 
     await internals(agent).reconcileScreen(state, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')
 
-    // A pair would have stopped at the second reading and applied a quarter turn.
+    // A pair would have stopped at the second reading — rotation 0, correction 270 — and left the
+    // picture a quarter turn from where it belongs.
     expect(state.rotation).toBe(270)
     expect(state.streamRotation).toBe(0)
   })
@@ -3415,7 +3478,7 @@ describe('reconcileScreen (the wiring, not the arithmetic)', () => {
     // Three reads: the mid-fold one, then two that agree.
     expect(reads.mock.calls.length).toBeGreaterThanOrEqual(3)
     expect(state.rotation).toBe(270)
-    // The value the mid-fold reading would have produced, and the quarter turn the user saw.
+    // Settled: 270 − 270 = 0. The mid-fold reading (rot 0) would have given 270.
     expect(state.streamRotation).toBe(0)
   })
 
@@ -3432,17 +3495,56 @@ describe('reconcileScreen (the wiring, not the arithmetic)', () => {
     expect(state.streamRotation).toBe(0)
   })
 
-  it('corrects a quarter turn in either direction', async () => {
+  it('undoes the screen\'s turn, because the capture does not follow it', async () => {
+    // **The rotation subtracts**, and this sign has been flipped twice, so here is what decides it
+    // rather than which way round it reads. The emulator captures the panel in its own fixed
+    // physical orientation: the skin. A turn Android applies *inside* that panel therefore arrives
+    // already in the frame, and what is left to correct is the part the capture did not follow.
+    //
+    // Adding was tried on the theory that the picture should turn with the screen. It produced a
+    // half-turned picture at rotation 270 in both postures, measured on an app screen.
     const agent = agentWith(metrics('1080x2424', '2424x1080', 90))
     const state = stateFor()
-    // Skin upright, Android rotated 90: the frame is a quarter turn behind, the other way.
     await internals(agent).reconcileScreen(state, 'emulator-5554', 1080, 2424, 'PORTRAIT')
-    expect(state.streamRotation).toBe(270)
+    expect(state.streamRotation).toBe(270)   // 0 − 90
 
     const other = stateFor()
     const agent2 = agentWith(metrics('1080x2424', '2424x1080', 270))
     await internals(agent2).reconcileScreen(other, 'emulator-5554', 1080, 2424, 'PORTRAIT')
-    expect(other.streamRotation).toBe(90)
+    expect(other.streamRotation).toBe(90)    // 0 − 270
+  })
+
+  it('needs no posture-specific exception — one rule covers every measurement', async () => {
+    // The three readings the rule comes from. An earlier version fitted a per-posture offset to
+    // these because its baseline was wrong (it took the boot rotation for 270; it is 0), and that
+    // offset made folding turn the picture all by itself.
+    const folded0 = agentWith(metrics('1080x2424', '1080x2424', 0))
+    const a = stateFor()
+    await internals(folded0).reconcileScreen(a, 'emulator-5554', 2424, 1080, 'REVERSE_LANDSCAPE')
+    expect(a.streamRotation).toBe(270)   // 270 − 0
+
+    const folded270 = agentWith(metrics('1080x2424', '2424x1080', 270))
+    const b = stateFor()
+    await internals(folded270).reconcileScreen(b, 'emulator-5554', 2424, 1080, 'REVERSE_LANDSCAPE')
+    expect(b.streamRotation).toBe(0)     // 270 − 270
+
+    const open0 = agentWith(metrics('2076x2152', '2076x2152', 0))
+    const c = stateFor()
+    await internals(open0).reconcileScreen(c, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')
+    expect(c.streamRotation).toBe(270)   // 270 − 0 — the same as folded at 0, which is the point
+  })
+
+  it('does not turn the picture just because the posture changed', async () => {
+    // What the offset broke: at a fixed rotation, folding must leave the correction alone.
+    const folded = agentWith(metrics('1080x2424', '1080x2424', 0))
+    const f = stateFor()
+    await internals(folded).reconcileScreen(f, 'emulator-5554', 2424, 1080, 'REVERSE_LANDSCAPE')
+
+    const open = agentWith(metrics('2076x2152', '2076x2152', 0))
+    const o = stateFor()
+    await internals(open).reconcileScreen(o, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')
+
+    expect(o.streamRotation).toBe(f.streamRotation)
   })
 
   it('reports no change when nothing moved', async () => {
@@ -3463,6 +3565,289 @@ describe('reconcileScreen (the wiring, not the arithmetic)', () => {
     expect(await internals(agent).reconcileScreen(state, 'emulator-5554', 1080, 2424, 'REVERSE_LANDSCAPE')).toBe(true)
     expect([state.videoWidth, state.videoHeight]).toEqual([1080, 2424])
     expect(state.rotation).toBe(0)
+  })
+})
+
+describe('what a rotation does on each backend', () => {
+  const stateOn = (backend: 'grpc' | 'scrcpy') => ({
+    deviceId: 'avd:Pixel_8_API_34', sessionId: 's1', landscape: false, booted: true,
+    videoWidth: 1080, videoHeight: 2400, displayWidth: 1080, displayHeight: 2400,
+    rotation: null, streamRotation: 0, skin: null, reconciling: false, screenWatch: null,
+    grpcClient: backend === 'grpc' ? {} : null,
+    scrcpySession: backend === 'scrcpy' ? { control: {} } : null,
+  }) as unknown as TestState
+
+  const rotate = async (backend: 'grpc' | 'scrcpy') => {
+    const adb = mockAdb(true)
+    vi.spyOn(adb, 'setRotation').mockResolvedValue(undefined)
+    const metrics = vi.spyOn(adb, 'getDisplayMetrics').mockResolvedValue({
+      natural: { width: 1080, height: 2400 },
+      current: { width: 2400, height: 1080 },
+      rotation: 270,
+    })
+    const agent = new AndroidAgent({}, adb)
+    const state = stateOn(backend)
+    internals(agent).deviceStates.set('s1', state)
+    internals(agent).handleRelayMessage({ type: 'input:rotate', sessionId: 's1' })
+    // The gRPC path samples `dumpsys` until it settles (3 reads, `TAPFLOW_METRICS_GAP_MS=1`
+    // in this suite), so a microtask drain is not enough — wait real time for both branches.
+    await new Promise((r) => setTimeout(r, 60))
+    return { metrics, state }
+  }
+
+  it('does not re-describe the screen on scrcpy, which would blank the viewer', async () => {
+    // **The regression this guard exists for.** scrcpy captures with `capture_orientation=@0`, so
+    // its frame never changes shape. Reporting the rotated `cur=` as the screen makes the viewer
+    // see landscape content, switch its CSS quarter off — the only thing that rotates this
+    // backend — and then find the frame no longer matches the screen it was told about. The
+    // picture goes blank with no way back but pressing rotate again.
+    const { metrics, state } = await rotate('scrcpy')
+    expect(metrics).not.toHaveBeenCalled()
+    // And `toDevicePx` says this backend must never carry a rotation: its frames are natural
+    // already, so applying one double-maps every tap.
+    expect(state.rotation).toBeNull()
+    expect(state.displayWidth).toBe(1080)
+  })
+
+  it('does re-describe it on gRPC, which is what makes the button feel immediate', async () => {
+    // The pair that stops the test above passing because nothing ran.
+    const { metrics, state } = await rotate('grpc')
+    expect(metrics).toHaveBeenCalled()
+    expect(state.rotation).toBe(270)
+    expect(state.displayWidth).toBe(2400)
+  })
+})
+
+describe('clearGrpcState — every teardown that can come back on scrcpy', () => {
+  const grpcLeftovers = () => ({
+    deviceId: 'avd:Pixel_8_API_34', screenWatch: null, scrcpySession: null,
+    emulatorVideo: null, emulatorAudio: null, grpcClient: null, touchHelper: null,
+    streamWs: null, booted: true, restarting: true,
+    cornerRadiusPx: 115, rotation: 270, streamRotation: 180,
+    skin: 'REVERSE_LANDSCAPE', touchRange: { width: 2076, height: 2152 },
+  }) as unknown as TestState
+  const cleared = (state: TestState) => {
+    expect(state.rotation).toBeNull()
+    expect(state.skin).toBeNull()
+    expect(state.touchRange).toBeNull()
+    expect(state.streamRotation).toBe(0)
+    expect(state.cornerRadiusPx).toBe(0)
+  }
+
+  it('clears them on the auto-restart, which is a whole separate path', async () => {
+    // The teardown a dying stream takes. It reaches `startVideoStream` again, which may pick
+    // scrcpy — and a first version of this fix only covered session cleanup, so this path kept
+    // handing the emulator's map to the backend that must not have it.
+    const agent = new AndroidAgent({}, mockAdb(true))
+    const state = grpcLeftovers()
+    // No open stream socket, so the teardown runs and the restart stops right after it.
+    await internals(agent).restartVideoStream(state)
+    cleared(state)
+  })
+
+  it('leaves nothing behind for a scrcpy fallback to inherit', () => {
+    // A stream that dies and comes back on scrcpy — an emulator booted externally, a moved port —
+    // otherwise keeps the emulator's coordinate map: a non-null `rotation` double-maps every tap,
+    // a stale `skin` computes a correction for a capture that does not turn, and `touchRange`
+    // divides by a grid this backend does not inject into.
+    const agent = new AndroidAgent({}, mockAdb(true))
+    const state = grpcLeftovers()
+
+    internals(agent).cleanupDeviceState(state)
+
+    cleared(state)
+  })
+})
+
+describe('the screen watch is cheap while nothing moves', () => {
+  const settled = { natural: { width: 1080, height: 2424 }, current: { width: 1080, height: 2424 }, rotation: 0 as const }
+  const watching = (metricsImpl: () => Promise<typeof settled>) => {
+    const adb = mockAdb(true)
+    const metrics = vi.spyOn(adb, 'getDisplayMetrics').mockImplementation(metricsImpl)
+    const agent = new AndroidAgent({}, adb)
+    const state = {
+      deviceId: 'avd:Pixel_8_API_34', sessionId: 's1', booted: true, reconciling: false,
+      screenWatch: null, skin: 'PORTRAIT',
+      videoWidth: 1080, videoHeight: 2424, displayWidth: 1080, displayHeight: 2424, rotation: 0,
+      streamRotation: 0, cornerRadiusPx: 0,
+    } as unknown as TestState
+    internals(agent).watchScreen(state, 'emulator-5554', 'PORTRAIT')
+    return { metrics, state }
+  }
+
+  afterEach(() => { vi.useRealTimers() })
+
+  it('reads once per tick on a device that has not changed', async () => {
+    // **The waste this replaced.** The tick used to run the settling pass unconditionally, which
+    // samples until three readings agree — measured at ~700ms of waiting, every two seconds, for
+    // the life of the session, on a display nobody had touched. The read itself is 20ms.
+    vi.useFakeTimers()
+    const { metrics, state } = watching(async () => settled)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(metrics).toHaveBeenCalledTimes(1)
+    // And the tick released its guard, so the next one is not skipped.
+    expect(state.reconciling).toBe(false)
+  })
+
+  it('still settles when the display did move, which is the whole point of the poll', async () => {
+    // A single reading taken mid-fold describes the posture being left, so a change has to be
+    // confirmed rather than believed. Paired with the test above so "reads once" cannot pass by
+    // the watch doing nothing at all.
+    vi.useFakeTimers()
+    const folded = { natural: { width: 2076, height: 2152 }, current: { width: 2076, height: 2152 }, rotation: 0 as const }
+    const { metrics } = watching(async () => folded)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(metrics.mock.calls.length).toBeGreaterThan(1)
+  })
+})
+
+describe('the corner radius on the wire', () => {
+  // The bug three screenshots showed: portrait right, landscape 2.24x too round, and the landscape
+  // *lock screen* right again — because a lock screen refuses to rotate, so `shown` stayed
+  // portrait there. One panel, one physical corner, three different answers.
+  const chromeRadius = (agent: AndroidAgent, state: TestState) => {
+    const sent: Record<string, unknown>[] = []
+    ;(agent as unknown as { ws: { readyState: number; send(d: string): void } | null }).ws = {
+      readyState: 1,
+      send: (d: string) => sent.push(JSON.parse(d) as Record<string, unknown>),
+    }
+    ;(agent as unknown as { sendChrome(s: TestState): void }).sendChrome(state)
+    const chrome = sent.find((m) => m['type'] === 'session:chrome')
+    return (chrome?.['payload'] as Record<string, unknown> | undefined)?.['cornerRadius']
+  }
+  const folded = (displayWidth: number, displayHeight: number) => ({
+    sessionId: 's1', cornerRadiusPx: 115, displayWidth, displayHeight,
+    streamRotation: 0, videoWidth: 1080, videoHeight: 2424,
+  }) as unknown as TestState
+
+  it('is a fraction of the width the viewer lays out, so it survives a rotation', () => {
+    const agent = new AndroidAgent({}, mockAdb())
+    // The cover panel's 115px, portrait and then turned. The same physical curve both times.
+    expect(chromeRadius(agent, folded(1080, 2424))).toBeCloseTo(115 / 1080, 10)
+    expect(chromeRadius(agent, folded(2424, 1080))).toBeCloseTo(115 / 2424, 10)
+  })
+
+  it('scales to the same pixels on screen in both orientations', () => {
+    const agent = new AndroidAgent({}, mockAdb())
+    // What the viewer computes: `cornerRadius * androidDisplayW`, where that width is the shown
+    // width times a layout scale. Equal here means equal on screen, which is the whole property.
+    const portrait = (chromeRadius(agent, folded(1080, 2424)) as number) * 1080
+    const landscape = (chromeRadius(agent, folded(2424, 1080)) as number) * 2424
+    expect(portrait).toBeCloseTo(landscape, 10)
+  })
+
+  it('answers 0 rather than dividing by a width it does not have yet', () => {
+    const agent = new AndroidAgent({}, mockAdb())
+    expect(chromeRadius(agent, folded(0, 0))).toBe(0)
+  })
+})
+
+describe('normaliseOnBoot', () => {
+  const states = (name: string) =>
+    `DeviceState{identifier=0, name='CLOSED', app_requestable=true}\n`
+    + `DeviceState{identifier=1, name='HALF_OPENED', app_requestable=true}\n`
+    + `Committed state: DeviceState{identifier=1, name='${name}', app_requestable=true}`
+
+  /** A device that reports both postures and is sitting in `name`. */
+  function agentIn(name: string) {
+    const adb = mockAdb(true)
+    vi.spyOn(adb, 'printDeviceStates').mockResolvedValue(states(name))
+    vi.spyOn(adb, 'deviceState').mockResolvedValue(`Committed state: DeviceState{identifier=1, name='${name}'}`)
+    vi.spyOn(adb, 'getDisplayMetrics').mockResolvedValue({
+      natural: { width: 1080, height: 2424 }, current: { width: 1080, height: 2424 }, rotation: 0,
+    })
+    return { adb, agent: new AndroidAgent({}, adb) }
+  }
+
+  it('unfolds a device the last session left folded', async () => {
+    const { adb, agent } = agentIn('CLOSED')
+    const setPosture = vi.spyOn(adb, 'setPosture').mockResolvedValue(undefined)
+    const state = { deviceId: 'avd:Pixel_8_API_34', landscape: true } as unknown as TestState
+
+    await internals(agent).normaliseOnBoot(state, 'emulator-5554')
+
+    // '2' is the emulator id for HALF_OPENED, which is the posture labelled Unfolded.
+    expect(setPosture).toHaveBeenCalledWith('emulator-5554', '2')
+  })
+
+  it('leaves an already unfolded device alone', async () => {
+    const { adb, agent } = agentIn('HALF_OPENED')
+    const setPosture = vi.spyOn(adb, 'setPosture').mockResolvedValue(undefined)
+    const state = { deviceId: 'avd:Pixel_8_API_34', landscape: false } as unknown as TestState
+
+    await internals(agent).normaliseOnBoot(state, 'emulator-5554')
+
+    // Not merely tidy: the unfold is followed by a settling read of ~300ms per sample, and paying
+    // it on every boot is what once left the viewer on "Waiting for stream…".
+    expect(setPosture).not.toHaveBeenCalled()
+  })
+
+  it('stands the device upright, and says so in the state the rotate toggle reads', async () => {
+    const { adb, agent } = agentIn('HALF_OPENED')
+    const setRotation = vi.spyOn(adb, 'setRotation').mockResolvedValue(undefined)
+    // A session that left the device in landscape: both the device and the toggle must come back.
+    const state = { deviceId: 'avd:Pixel_8_API_34', landscape: true } as unknown as TestState
+
+    await internals(agent).normaliseOnBoot(state, 'emulator-5554')
+
+    expect(setRotation).toHaveBeenCalledWith('emulator-5554', 0)
+    // Without this the first press of the rotate button would toggle *back* to landscape on a
+    // device already standing upright, and do nothing visible.
+    expect(state.landscape).toBe(false)
+  })
+
+  it('settles between the two writes, because a lock written mid-swap is discarded', async () => {
+    const { adb, agent } = agentIn('CLOSED')
+    const order: string[] = []
+    vi.spyOn(adb, 'setPosture').mockImplementation(async () => { order.push('posture') })
+    vi.spyOn(adb, 'getDisplayMetrics').mockImplementation(async () => {
+      order.push('read')
+      return { natural: { width: 1080, height: 2424 }, current: { width: 1080, height: 2424 }, rotation: 0 }
+    })
+    vi.spyOn(adb, 'setRotation').mockImplementation(async () => { order.push('rotation') })
+    const state = { deviceId: 'avd:Pixel_8_API_34', landscape: false } as unknown as TestState
+
+    await internals(agent).normaliseOnBoot(state, 'emulator-5554')
+
+    // The panels swap during a posture change and the incoming one brings its own rotation, so a
+    // lock written before the swap finishes is overwritten — `setPosture` carries the same note.
+    const posture = order.indexOf('posture')
+    const rotation = order.indexOf('rotation')
+    expect(posture).toBeGreaterThanOrEqual(0)
+    expect(order.slice(posture, rotation).filter((o) => o === 'read').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('leaves a device that does not fold exactly as it found it', async () => {
+    // **The rotation write is for foldables only.** Standing the device upright exists so a
+    // posture change starts from a state both sides can name; a phone has no posture to change.
+    // And `wm user-rotation lock` is persistent device state that nothing here frees, so writing
+    // it on every emulator would leave a plain AVD unable to auto-rotate — in this session, in
+    // later ones, and outside tapflow.
+    const adb = mockAdb(true)
+    vi.spyOn(adb, 'printDeviceStates').mockRejectedValue(new Error('unknown command'))
+    vi.spyOn(adb, 'deviceState').mockRejectedValue(new Error('unknown command'))
+    const setRotation = vi.spyOn(adb, 'setRotation').mockResolvedValue(undefined)
+    const setPosture = vi.spyOn(adb, 'setPosture').mockResolvedValue(undefined)
+    const agent = new AndroidAgent({}, adb)
+    const state = { deviceId: 'avd:Pixel_8_API_34', landscape: true } as unknown as TestState
+
+    await internals(agent).normaliseOnBoot(state, 'emulator-5554')
+
+    expect(setRotation).not.toHaveBeenCalled()
+    expect(setPosture).not.toHaveBeenCalled()
+    // Paired with the foldable case above, which asserts both writes DO happen — so this is a
+    // decision about postures, not a test that passes because nothing ran.
+    expect(state.landscape).toBe(true)
+  })
+
+  it('does not fail the boot when the device refuses either write', async () => {
+    const { adb, agent } = agentIn('CLOSED')
+    vi.spyOn(adb, 'setPosture').mockRejectedValue(new Error('KO: unknown command'))
+    vi.spyOn(adb, 'setRotation').mockRejectedValue(new Error('device offline'))
+    const state = { deviceId: 'avd:Pixel_8_API_34', landscape: true } as unknown as TestState
+
+    // A device tapflow cannot steer is still a device somebody is waiting to look at.
+    await expect(internals(agent).normaliseOnBoot(state, 'emulator-5554')).resolves.toBeUndefined()
   })
 })
 
@@ -3518,6 +3903,49 @@ describe('toDevicePx (the input wiring)', () => {
     expect(internals(agent).toDevicePx(stateFor(270), 0.25, 0.75))
       .not.toEqual(internals(agent).toDevicePx(stateFor(null), 0.25, 0.75))
   })
+
+  // The folded Pixel 9 Pro Fold. The panel is 1080x2424 and the emulator still has display 0 at
+  // 2076x2152 — the unfolded size, which is also `hw.lcd`. Both axes disagree, and the reason the
+  // bug hid for so long is that unfolded they agree exactly.
+  const folded = (over: Partial<Record<string, unknown>> = {}) => ({
+    videoWidth: 1080, videoHeight: 2424, rotation: 270,
+    touchRange: { width: 2076, height: 2152 }, grpcClient: {}, ...over,
+  }) as unknown as TestState
+
+  it('scales by the emulator\'s display, not the guest\'s panel, on the gRPC backend', () => {
+    const agent = new AndroidAgent({}, mockAdb())
+    // The measured tap: viewer 0.3785,0.7113 → natural 0.7113,0.6215. Divided by the panel that
+    // is px 768,1507, and a tap on Camera opened the app one row above it.
+    expect(internals(agent).toDevicePx(folded(), 0.3785, 0.7113))
+      .toEqual({ px: Math.round(0.7113 * 2076), py: Math.round(0.6215 * 2152) })
+  })
+
+  it('keeps the panel size for scrcpy, which injects into the frame instead', () => {
+    const agent = new AndroidAgent({}, mockAdb())
+    // Same state, no gRPC client. scrcpy's control channel takes the frame's own pixels, so
+    // applying the emulator's display size there would break the backend that works.
+    expect(internals(agent).toDevicePx(folded({ grpcClient: null }), 0.3785, 0.7113))
+      .toEqual({ px: Math.round(0.7113 * 1080), py: Math.round(0.6215 * 2424) })
+  })
+
+  it('falls back to the panel when the emulator would not say', () => {
+    const agent = new AndroidAgent({}, mockAdb())
+    // A device that does not answer is still a device somebody is tapping on, and the panel size
+    // is what this did before — wrong on a folded foldable, right everywhere else.
+    expect(internals(agent).toDevicePx(folded({ touchRange: null }), 0.3785, 0.7113))
+      .toEqual({ px: Math.round(0.7113 * 1080), py: Math.round(0.6215 * 2424) })
+  })
+
+  it('is the identity when the two agree, which is every phone and every unfolded foldable', () => {
+    const agent = new AndroidAgent({}, mockAdb())
+    const same = {
+      videoWidth: 2076, videoHeight: 2152, rotation: 0,
+      touchRange: { width: 2076, height: 2152 }, grpcClient: {},
+    } as unknown as TestState
+    const panel = { ...same, touchRange: null } as unknown as TestState
+    expect(internals(agent).toDevicePx(same, 0.25, 0.75))
+      .toEqual(internals(agent).toDevicePx(panel, 0.25, 0.75))
+  })
 })
 
 describe('PosturableAgent (the wiring)', () => {
@@ -3533,6 +3961,7 @@ describe('PosturableAgent (the wiring)', () => {
     vi.spyOn(adb, 'deviceState').mockResolvedValue(
       `Committed state: DeviceState{identifier=0, name='${current}'}`)
     vi.spyOn(adb, 'setPosture').mockResolvedValue(undefined)
+    vi.spyOn(adb, 'setRotation').mockResolvedValue(undefined)
     return adb
   }
 
@@ -3547,6 +3976,38 @@ describe('PosturableAgent (the wiring)', () => {
     expect(await agent.getPosture('avd:Pixel_8_API_34')).toEqual({ id: '1', label: 'Folded' })
     const open = new AndroidAgent({}, posturableAdb('HALF_OPENED'))
     expect(await open.getPosture('avd:Pixel_8_API_34')).toEqual({ id: '2', label: 'Unfolded' })
+  })
+
+  it('carries the orientation across the change', async () => {
+    // Each panel remembers its own rotation, so folding a device held sideways and unfolding it
+    // used to hand back the inner panel's last rotation rather than the one on screen.
+    const adb = posturableAdb()
+    const dm = await import('../displayMetrics')
+    const before = dm.parseDisplayMetrics(
+      '    init=2076x2152 cur=2152x2076\n mRotation=ROTATION_270')
+    const after = dm.parseDisplayMetrics(
+      '    init=1080x2424 cur=1080x2424\n mRotation=ROTATION_0')
+    vi.spyOn(adb, 'getDisplayMetrics').mockResolvedValueOnce(before).mockResolvedValue(after)
+    const agent = new AndroidAgent({}, adb)
+
+    await agent.setPosture('avd:Pixel_8_API_34', '1')
+
+    // 270° before, 0° after — so the rotation is put back, as quarter turns (3 = 270).
+    expect(adb.setRotation).toHaveBeenCalledWith('emulator-5554', 3)
+  })
+
+  it('leaves the rotation alone when the change did not disturb it', async () => {
+    // The pair: without it, "puts the rotation back" is satisfied by code that always writes one,
+    // which would fight a device that rotated for its own reasons.
+    const adb = posturableAdb()
+    const dm = await import('../displayMetrics')
+    const same = dm.parseDisplayMetrics('    init=2076x2152 cur=2152x2076\n mRotation=ROTATION_270')
+    vi.spyOn(adb, 'getDisplayMetrics').mockResolvedValue(same)
+    const agent = new AndroidAgent({}, adb)
+
+    await agent.setPosture('avd:Pixel_8_API_34', '1')
+
+    expect(adb.setRotation).not.toHaveBeenCalled()
   })
 
   it('sends the chosen identifier to the device', async () => {

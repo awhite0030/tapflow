@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parsePostures, parseCurrentPosture } from '../postures'
+import { parsePostures, parseCurrentPosture, bootPostureId } from '../postures'
 
 // Verbatim from a Pixel 9 Pro Fold (API 36) on 2026-09-18 — `adb shell cmd device_state
 // print-states`. Kept whole rather than trimmed to the fields the parser reads: the trailing
@@ -74,5 +74,28 @@ describe('parseCurrentPosture', () => {
   it('returns null when the device reports none', () => {
     expect(parseCurrentPosture('Committed state: (none)')).toBeNull()
     expect(parseCurrentPosture('')).toBeNull()
+  })
+})
+
+describe('bootPostureId', () => {
+  const PAIR = [{ id: '1', label: 'Folded' }, { id: '2', label: 'Unfolded' }]
+
+  it('names the posture a session starts in, rather than taking the last entry', () => {
+    expect(bootPostureId(PAIR)).toBe('2')
+  })
+
+  it('still names it when a more open posture is appended after it', () => {
+    // The failure this function exists to stop. `REAR_DISPLAY_MODE` is an open hinge lighting the
+    // *cover* panel and the guest orders it last, so a table edit that appended it in guest order
+    // would silently boot every session into rear display — with the rule living in another file
+    // and no test able to say the table was wrong.
+    expect(bootPostureId([...PAIR, { id: '3', label: 'Rear display' }])).toBe('2')
+  })
+
+  it('answers null for a device that does not offer it', () => {
+    // A phone, or a foldable whose emulator cannot reach the unfolded posture. The caller then
+    // leaves the device alone rather than folding it somewhere arbitrary.
+    expect(bootPostureId([])).toBeNull()
+    expect(bootPostureId([{ id: '1', label: 'Folded' }])).toBeNull()
   })
 })

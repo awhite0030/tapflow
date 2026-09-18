@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseDisplayMetrics } from '../displayMetrics'
+import { parseDisplayMetrics, parseCornerRadius } from '../displayMetrics'
 
 // Verbatim from a Pixel 9 Pro Fold (API 36), 2026-09-18. The two postures are the whole point: the
 // panel changes, and so does whether Android is rotating it.
@@ -44,5 +44,45 @@ describe('parseDisplayMetrics', () => {
   it('returns null when the dump has no display line', () => {
     expect(parseDisplayMetrics('')).toBeNull()
     expect(parseDisplayMetrics('WINDOW MANAGER DISPLAY CONTENTS (dumpsys window displays)')).toBeNull()
+  })
+})
+
+describe('parseCornerRadius', () => {
+  /** `dumpsys display` as a Pixel 9 Pro Fold prints it: both panels, whichever one is lit. */
+  const DISPLAYS = `
+  DisplayDeviceInfo{"Built-in Screen": uniqueId="local:4619827259835644672", 2076 x 2152, modeId 1,
+    RoundedCorner{position=TopLeft, radius=85}, RoundedCorner{position=TopRight, radius=85}
+  DisplayDeviceInfo{"Built-in Screen": uniqueId="local:4619827259835644673", 1080 x 2424, modeId 2,
+    RoundedCorner{position=TopLeft, radius=115}, RoundedCorner{position=TopRight, radius=115}
+`
+
+  it('answers device pixels, which is the basis the caller normalises from', () => {
+    // **Not a fraction.** It divided by the natural width, and the viewer multiplies by the
+    // *shown* width — the same number in portrait and a different one the moment the display
+    // rotates. Folded and turned, 115/1080 scaled against 2424 came out 2.24x too round.
+    expect(parseCornerRadius(DISPLAYS, 1080, 2424)).toBe(115)
+  })
+
+  it('picks the panel by its size, because a foldable lists both whether lit or not', () => {
+    expect(parseCornerRadius(DISPLAYS, 2076, 2152)).toBe(85)
+  })
+
+  it('answers null for a panel it does not have, leaving the caller\'s value alone', () => {
+    // Null rather than 0: flattening a device's corners to square on an unrecognised reading is a
+    // visible change made on no evidence.
+    expect(parseCornerRadius(DISPLAYS, 1440, 3120)).toBeNull()
+    expect(parseCornerRadius('', 1080, 2424)).toBeNull()
+  })
+
+  it('answers null for a matching panel that reports no corner', () => {
+    expect(parseCornerRadius(`
+  DisplayDeviceInfo{"Built-in Screen": uniqueId="local:1", 1080 x 2424, modeId 1, density 440
+`, 1080, 2424)).toBeNull()
+  })
+
+  it('does not take a neighbouring panel\'s corner when the sizes are transposed', () => {
+    // The natural size identifies the panel, and 2424 x 1080 is that panel rotated — not a panel
+    // `dumpsys` lists. Matching it loosely would hand the cover's curve to the inner display.
+    expect(parseCornerRadius(DISPLAYS, 2424, 1080)).toBeNull()
   })
 })

@@ -31,10 +31,23 @@ import type { DevicePosture } from '@tapflowio/protocol'
  * `REAR_DISPLAY_MODE` in a UI, and a viewer that had to map them would need a case per platform,
  * which is what `AgentRegistry` exists to avoid.
  */
-const KNOWN: ReadonlyArray<{ name: string; emuId: string; label: string }> = [
+const KNOWN: ReadonlyArray<{ name: string; emuId: string; label: string; boot?: true }> = [
   { name: 'CLOSED', emuId: '1', label: 'Folded' },
-  { name: 'HALF_OPENED', emuId: '2', label: 'Unfolded' },
+  { name: 'HALF_OPENED', emuId: '2', label: 'Unfolded', boot: true },
 ]
+
+/**
+ * The posture a session starts in, named here rather than derived from the list's order.
+ *
+ * `postures[length - 1]` gives the same answer today and stops doing so the moment a third entry
+ * is added: `REAR_DISPLAY_MODE` is an open hinge lighting the *cover* panel and the guest orders
+ * it last, so appending it in guest order would silently boot every session into rear display —
+ * from a one-line edit to the table above, with the rule living in another file.
+ */
+export function bootPostureId(available: ReadonlyArray<DevicePosture>): string | null {
+  const boot = KNOWN.find((k) => k.boot)
+  return boot && available.some((p) => p.id === boot.emuId) ? boot.emuId : null
+}
 
 export function parsePostures(output: string): DevicePosture[] {
   const names = new Set<string>()

@@ -156,3 +156,36 @@ describe('frame/screen agreement', () => {
     expect(agrees({ width: 1212, height: 540 }, { width: 1080, height: 2424 }, 270)).toBe(true)
   })
 })
+
+
+describe('SimulatorToolbar posture icon', () => {
+  // lucide names the svg's class after the icon, which is the only handle the DOM gives for it.
+  const icon = (c: HTMLElement) => c.querySelector('.lucide-fold-horizontal') ? 'fold'
+    : c.querySelector('.lucide-unfold-horizontal') ? 'unfold'
+    : c.querySelector('.animate-spin') ? 'spinner' : null
+
+  it('offers to unfold a folded device, and to fold an unfolded one', () => {
+    // The icon is the action, which is this toolbar's convention — rotate, screenshot and the
+    // recording's stop square all show what the press does rather than the state it is in.
+    expect(icon(toolbar({ postures: PAIR, currentId: '1', onSelect: () => {} }).container)).toBe('unfold')
+    expect(icon(toolbar({ postures: PAIR, currentId: '2', onSelect: () => {} }).container)).toBe('fold')
+  })
+
+  it('shows the same two on a device with a menu', () => {
+    // At the most closed posture the only move is to open; anywhere else, folding is available.
+    expect(icon(toolbar({ postures: FOLD, currentId: '1', onSelect: () => {} }).container)).toBe('unfold')
+    expect(icon(toolbar({ postures: FOLD, currentId: '4', onSelect: () => {} }).container)).toBe('fold')
+  })
+
+  it('does not offer to unfold a device whose posture is unknown', () => {
+    // `currentId` is null when the device reports a posture tapflow cannot reach. The pair's
+    // destination is then `postures[0]` — the most closed — so Unfold would name the wrong move.
+    expect(icon(toolbar({ postures: PAIR, currentId: null, onSelect: () => {} }).container)).toBe('fold')
+    expect(icon(toolbar({ postures: FOLD, currentId: null, onSelect: () => {} }).container)).toBe('fold')
+  })
+
+  it('shows neither while a change is in flight', () => {
+    expect(icon(toolbar({ postures: PAIR, currentId: '1', pending: true, onSelect: () => {} }).container))
+      .toBe('spinner')
+  })
+})

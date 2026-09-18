@@ -35,10 +35,43 @@ function makeRaw(overrides: Partial<RawEmulatorController> = {}): RawEmulatorCon
     sendWheel: vi.fn((_e, cb) => cb(null)),
     getClipboard: vi.fn((_e, _o, cb) => cb(null, { text: '' })),
     setClipboard: vi.fn((_c, _o, cb) => cb(null)),
+    getDisplayConfigurations: vi.fn((_e, _o, cb) => cb(null, { displays: [{ width: 1080, height: 2400, display: 0 }] })),
     close: vi.fn(),
   }
   return { ...base, ...overrides }
 }
+
+describe('getDisplaySize — the divisor for injected touch pixels', () => {
+  const call = (res: unknown, err: Error | null = null) => new EmulatorGrpcClient('x', makeRaw({
+    getDisplayConfigurations: vi.fn((_e, _o, cb) => cb(err, res as never)),
+  }))
+
+  it('answers display 0, which is what the emulator divides by', async () => {
+    // Deliberately not `displays[0]`: the array's order is not part of the contract, and the id
+    // is — "the primary (default) display has the display ID of 0".
+    await expect(call({ displays: [
+      { width: 1920, height: 1080, display: 2 },
+      { width: 2076, height: 2152, display: 0 },
+    ] }).getDisplaySize()).resolves.toEqual({ width: 2076, height: 2152 })
+  })
+
+  it('takes the only display when none is numbered 0', async () => {
+    await expect(call({ displays: [{ width: 1080, height: 2400 }] }).getDisplaySize())
+      .resolves.toEqual({ width: 1080, height: 2400 })
+  })
+
+  it('answers null rather than a zero that would send every tap to the corner', async () => {
+    await expect(call({ displays: [{ width: 0, height: 2152, display: 0 }] }).getDisplaySize()).resolves.toBeNull()
+    await expect(call({ displays: [] }).getDisplaySize()).resolves.toBeNull()
+    await expect(call(undefined).getDisplaySize()).resolves.toBeNull()
+  })
+
+  it('answers null on an RPC error instead of rejecting into the boot path', async () => {
+    // An emulator too old to know this call must still boot; the panel size is the fallback and
+    // it is what every release before this one used.
+    await expect(call(null, new Error('12 UNIMPLEMENTED')).getDisplaySize()).resolves.toBeNull()
+  })
+})
 
 describe('EmulatorGrpcClient', () => {
   it('loads the vendored proto and builds a real client without a live server', () => {

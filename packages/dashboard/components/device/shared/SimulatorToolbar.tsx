@@ -1,6 +1,6 @@
 'use client';
 
-import { Camera, Link2, Loader2, Radio, RadioOff, RefreshCw, RotateCw, Square, Video, TabletSmartphone } from 'lucide-react';
+import { Camera, FoldHorizontal, Link2, Loader2, Radio, RadioOff, RefreshCw, RotateCw, Square, UnfoldHorizontal, Video } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -349,6 +349,7 @@ export function SimulatorToolbar({
   // toolbar at a time and cannot see that.
   const descId = useId();
   const rebootStatusId = useId();
+  const postureStatusId = useId();
   const recordStatusId = useId();
   // Controlled rather than an `AlertDialogTrigger`, because the button it would wrap is already
   // wrapped by a `TooltipTrigger asChild` — two libraries cloning the same child and both wanting to
@@ -420,6 +421,17 @@ export function SimulatorToolbar({
           <TooltipContent side="left"><ShortcutTooltip label="Rotate" keys={['⌘', '⇧', 'O']} /></TooltipContent>
         </Tooltip>
 
+        {/* The outcome of a fold is otherwise conveyed only by pixels — the spinner swapping back
+            and the picture returning — so it is announced, as reboot, recording and network already
+            are. `polite` because a posture change is something the user asked for and is waiting on,
+            not an interruption. */}
+        {posture && posture.postures.length > 1 && (
+          <span id={postureStatusId} role="status" aria-live="polite" className="sr-only">
+            {posture.pending
+              ? 'Changing posture'
+              : (posture.postures.find((p) => p.id === posture.currentId)?.label ?? '')}
+          </span>
+        )}
         {posture && posture.postures.length > 1 && (() => {
           // **A menu, not a cycle.** Cycling looked right while a foldable had two postures and
           // stopped as soon as it had three: `HALF_OPENED` and `OPENED` present the same screen on a
@@ -434,17 +446,26 @@ export function SimulatorToolbar({
           const label = pair
             ? (current ? `Fold: ${current.label} to ${other.label}` : `Fold: ${other.label}`)
             : (current ? `Posture: ${current.label}` : 'Posture');
+          // **The icon says what pressing does, like every other button in this toolbar.** The
+          // list runs most closed → most open, so a destination further along it opens the device
+          // and one before it closes it. A menu has no single destination, so it asks the weaker
+          // question the same way round: from the most closed posture the only move is to open.
+          // An unknown current posture falls to Fold, which is where the pair's destination
+          // (`postures[0]`, the most closed) actually points.
+          const opening = at === -1 ? false : pair ? posture.postures.indexOf(other) > at : at === 0;
+          const PostureIcon = opening ? UnfoldHorizontal : FoldHorizontal;
           const trigger = (onClick?: () => void) => (
             <Button
               variant="ghost" size="icon" className="h-8 w-8"
               aria-label={posture.pending ? `${label} — changing` : label}
               aria-busy={posture.pending}
               disabled={posture.pending}
+              aria-describedby={postureStatusId}
               onClick={onClick}
             >
               {posture.pending
                 ? <Loader2 className="h-4 w-4 animate-spin" />
-                : <TabletSmartphone className="h-4 w-4" />}
+                : <PostureIcon className="h-4 w-4" />}
             </Button>
           );
           // While a change is in flight the button is rendered without the menu attached at all.

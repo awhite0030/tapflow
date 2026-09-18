@@ -359,6 +359,11 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       setInstalled(false);
       setInstallError(null);
       setBootError(null);
+      // The postures belong to the cycle that reported them. A restart can land the device in a
+      // different one, and the control's accessible name is built from `currentId` — so keeping it
+      // would have assistive technology naming a posture the device may not be in until a fresh
+      // `device:postures` happens to arrive. Cleared, the control hides instead.
+      setPostures({ postures: [], currentId: null });
       // A boot cycle invalidates the installs of the previous one, and this handler is where everything
       // else a new cycle invalidates is already cleared. Without it the record outlives the cycle that
       // made it: cycle 1's `app:install-done` can arrive while cycle 2's install is still in flight, and

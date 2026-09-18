@@ -50,6 +50,13 @@ export function parseDisplayMetrics(output: string): DisplayMetrics | null {
  * on the 2076-wide inner display and 115px on the 1080-wide cover, so 4.1% becomes 10.6%. The size
  * is what picks between them, because `dumpsys display` lists every panel whether it is on or not.
  *
+ * **Returns device pixels, not a fraction.** It used to divide by the panel's natural width, which
+ * is the wrong basis the moment the display is rotated: the corner is a physical property of the
+ * panel and does not move, but the width the viewer scales it against is the *shown* width, which
+ * swaps. Folded and turned to landscape, a cover panel's 115px over 1080 came out 2.24x too round.
+ * Matching a panel still uses the natural size, because that is how `dumpsys` lists them — keeping
+ * the match and the normalisation on one basis is what produced the bug.
+ *
  * Returns null when no panel matches, which leaves the caller's existing value alone rather than
  * flattening the corners to square.
  */
@@ -61,7 +68,7 @@ export function parseCornerRadius(output: string, width: number, height: number)
     if (!size || Number(size[1]) !== width || Number(size[2]) !== height) continue
     const radius = block.match(/RoundedCorner\{position=TopLeft, radius=(\d+)/)
     if (!radius) return null
-    return Number(radius[1]) / width
+    return Number(radius[1])
   }
   return null
 }

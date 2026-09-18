@@ -59,6 +59,7 @@ Committed *why* behind non-obvious decisions. Read the relevant one **before** c
 | [runtime-platform-registration.md](./contributing/runtime-platform-registration.md) | rationale | Why platforms self-register at runtime (`AgentRegistry.register`) instead of a literal `Platform` union — the OCP payoff |
 | [codec-negotiation.md](./contributing/codec-negotiation.md) | rationale | Why the browser negotiates H.264 capability before the agent streams — the ~95%/5% floor, black-screen prevention |
 | [android-rotation.md](./contributing/android-rotation.md) | rationale | Why rotation uses `wm user-rotation` + pinned scrcpy 3.3 — legacy command ignored on API 35+ |
+| [android-foldable-touch-coordinates.md](./contributing/android-foldable-touch-coordinates.md) | diagnosis | Why a folded foldable's taps miss — the divisor is the emulator's display, not the guest's panel |
 | [ios-device-recovery.md](./contributing/ios-device-recovery.md) | rationale | Why `tapflow start` does not pre-boot iOS, and where zombie-simulator recovery lives |
 | [agent-keep-awake.md](./contributing/agent-keep-awake.md) | rationale | Why the agent holds a `caffeinate` assertion during a session — idle throttle drops the emulator to ~4-5 fps |
 | [relay-heartbeat.md](./contributing/relay-heartbeat.md) | rationale | Why the relay runs a ping/pong heartbeat — dead sockets otherwise linger to the TCP timeout |

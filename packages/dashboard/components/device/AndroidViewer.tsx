@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { AndroidButton, PosturesPayload } from '@/lib/types'
 import type { BinaryFrameHandler } from '@/lib/envelope'
-import { androidToNorm as toNormPure, toPinchFingers as makePinchFingers } from '@/lib/coordinate-transform';
+import { androidToNorm as toNormPure, toPinchFingers as makePinchFingers, placeTurnedFrame, turnedSize, surfaceBox, composeTurn, overlaySpace, showsPicture, type Turn } from '@/lib/coordinate-transform';
 import type { MutableRefObject } from 'react';
 import type { PerfHook } from '@/components/perf/types';
 import { useClipboardBridge, isBridgedChord, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
@@ -97,6 +97,10 @@ export function AndroidViewer({
   const [decoderUnsupported, setDecoderUnsupported] = useState(false);
   const videoSizeRef = useRef<{ width: number; height: number } | null>(null);
   const [videoSize, setVideoSize] = useState<{ width: number; height: number } | null>(null);
+  /** Which of the frame and the agent's description changed most recently. The aspect gate reads
+   *  it to tell the flash — which ends on its own — from a description with no frame behind it,
+   *  which does not. See `showsPicture`. */
+  const [frameIsAhead, setFrameIsAhead] = useState(false);
   // Rotation intent is owned locally (iOS IOSViewer pattern). It only drives CSS shell
   // rotation for portrait-locked apps; rotation-capable apps follow the actual stream.
   const [userWantsLandscape, setUserWantsLandscape] = useState(false);
@@ -133,6 +137,7 @@ export function AndroidViewer({
       if (!prev || prev.width !== size.width || prev.height !== size.height) {
         videoSizeRef.current = size
         setVideoSize(size)
+        setFrameIsAhead(true)
       }
     },
     onDecoderReady: (decoder) => {
@@ -154,25 +159,42 @@ export function AndroidViewer({
     const ctx = rc.getContext('2d')
     if (!ctx) return
 
-    // rc was sized to the displayed orientation at record start (handleRecordToggle; MediaRecorder
-    // fixed the dimensions then). If rc's orientation differs from the frame's, the shell was
-    // CSS-rotated — bake the same rotation so the recording is landscape too; otherwise draw 1:1.
+    // rc was sized to the picture at record start (handleRecordToggle; MediaRecorder fixed the
+    // dimensions then). The turn is read per frame rather than inferred from rc's aspect: an
+    // aspect comparison cannot tell 90 from 270 and cannot see 180 at all.
     const fw = size.width; const fh = size.height
-    const css = (rc.width > rc.height) !== (fw > fh)
+    const turn = totalTurnRef.current
+    const { picW, picH, scale, left, top } = placeTurnedFrame(rc.width, rc.height, fw, fh, turn)
 
+    ctx.clearRect(0, 0, rc.width, rc.height)
     ctx.save()
-    if (css) { ctx.translate(rc.width, 0); ctx.rotate(Math.PI / 2) } // CSS rotate(90deg) = clockwise
-    ctx.drawImage(fc, 0, 0, fw, fh)
+    // Into the picture's box, then turn about its centre so the frame lands square inside it.
+    ctx.translate(left + (picW * scale) / 2, top + (picH * scale) / 2)
+    ctx.scale(scale, scale)
+    ctx.rotate((turn * Math.PI) / 180)
+    ctx.drawImage(fc, -fw / 2, -fh / 2, fw, fh)
+    ctx.restore()
 
-    // Overlays in normalized × frame space; radii scaled CSS-px → native-px to match the live view.
-    const longSide = Math.max(fw, fh)
+    // **Overlays in the device's space, which is where the pointer was measured.**
+    // `androidToNorm` undoes the user's CSS quarter, so a stored point is a fraction of the screen
+    // Android is drawing — not of the picture in the shell, and not of the frame. Two bases have
+    // been wrong here: against the frame it missed by the stream's correction on a foldable, and
+    // against the picture it missed by the user's quarter on every backend, scrcpy included.
+    // So: turn the canvas by that quarter alone, and draw in the shown screen's dimensions.
+    const shown = overlaySpace(fw, fh, turn, streamRotationRef.current)
+    ctx.save()
+    ctx.translate(left + (picW * scale) / 2, top + (picH * scale) / 2)
+    ctx.scale(scale, scale)
+    ctx.rotate((shown.turn * Math.PI) / 180)
+    ctx.translate(-shown.width / 2, -shown.height / 2)
+    const longSide = Math.max(shown.width, shown.height)
     const s = longSide > MAX_ANDROID_LONG ? longSide / MAX_ANDROID_LONG : 1
     const ringR = CURSOR_RING_R * s; const dotR = CURSOR_DOT_R * s
 
     const ph = pinchHintRef.current
     if (ph) {
       for (const f of [ph.f0, ph.f1]) {
-        const cx = f.x * fw; const cy = f.y * fh
+        const cx = f.x * shown.width; const cy = f.y * shown.height
         if (isPinchMode.current) {
           ctx.beginPath(); ctx.arc(cx, cy, dotR, 0, Math.PI * 2)
           ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.fill()
@@ -188,7 +210,7 @@ export function AndroidViewer({
 
     const cp = cursorPosRef.current
     if (cp) {
-      const cx = cp.x * fw; const cy = cp.y * fh
+      const cx = cp.x * shown.width; const cy = cp.y * shown.height
       const state = cursorStateRef.current; const ra = releaseAnimRef.current
       if (state === 'down') {
         ctx.beginPath(); ctx.arc(cx, cy, dotR, 0, Math.PI * 2)
@@ -213,7 +235,14 @@ export function AndroidViewer({
     const src = decoderRef.current?.surface; const size = videoSizeRef.current
     if (!src || !size) return
     const c = document.createElement('canvas'); const ctx = c.getContext('2d'); if (!ctx) return
-    c.width = size.width; c.height = size.height; ctx.drawImage(src, 0, 0, size.width, size.height)
+    // The picture, not the frame — same reason as `placeFrame`. Sized to the turned frame, so the
+    // fit is exact and the scale is 1.
+    const turn = totalTurnRef.current
+    const shot = turnedSize(size.width, size.height, turn)
+    c.width = shot.width; c.height = shot.height
+    ctx.translate(c.width / 2, c.height / 2)
+    ctx.rotate((turn * Math.PI) / 180)
+    ctx.drawImage(src, -size.width / 2, -size.height / 2, size.width, size.height)
     c.toBlob((blob) => {
       if (!blob) return
       const url = URL.createObjectURL(blob)
@@ -225,12 +254,11 @@ export function AndroidViewer({
   const handleRecordToggle = useCallback(() => {
     if (recordState === 'idle') {
       const rc = recordCanvasRef.current; if (!rc) return
-      // Size the record canvas to the displayed orientation (frame-native, swapped when the
-      // shell is CSS-rotated) so the recording keeps aspect AND matches what's on screen (#179).
+      // Size the record canvas to the picture (frame-native, swapped by a quarter turn) so the
+      // recording keeps aspect AND matches what's on screen (#179).
       const size = videoSizeRef.current; if (!size) return
-      const css = needsCSSRotationRef.current
-      rc.width = css ? size.height : size.width
-      rc.height = css ? size.width : size.height
+      const shot = turnedSize(size.width, size.height, totalTurnRef.current)
+      rc.width = shot.width; rc.height = shot.height
       startClientRecording(composeFrame)
     } else if (recordState === 'recording') {
       stopClientRecording()
@@ -266,7 +294,39 @@ export function AndroidViewer({
     return () => clearTimeout(t)
   }, [pendingPosture, postures])
 
+  // **A rotation is held the same way a fold is, and for a reason the fold does not have.** Folding
+  // changes the frame's dimensions, so the frame/screen comparison below notices it on its own. A
+  // rotation does not — the capture follows the skin, which does not move — so the only thing that
+  // changes is the correction angle, and applying a new angle to the frame that was drawn under the
+  // old one turns the picture. On an idle screen no further frame arrives to correct it, so it
+  // stays turned.
+  const [rotatePending, setRotatePending] = useState(false)
+  // **Two ways out, and they have to be separate effects.** The description landing is the real
+  // release; the timer is only the stop for a device that ignored the request, where a
+  // portrait-locked app rotates in CSS alone and no new chrome ever follows.
+  //
+  // They were one effect, with the chrome in its dependency list. That did the opposite of what
+  // its comment claimed: an arriving description re-ran the effect, cleared the pending timer and
+  // armed a fresh one, so a fast agent produced a *longer* blank than a slow one — and on the
+  // gRPC path, where the chrome waits on `stableDisplayMetrics` (3 samples, 300ms apart), the
+  // release the comment described could not happen at all.
+  useEffect(() => {
+    if (!rotatePending) return
+    const t = setTimeout(() => setRotatePending(false), 400)
+    return () => clearTimeout(t)
+  }, [rotatePending])
+  // Skips the first run, so a description that was already on screen does not count as an answer.
+  const rotateAnswered = useRef(false)
+  useEffect(() => {
+    if (!rotateAnswered.current) { rotateAnswered.current = true; return }
+    setRotatePending(false)
+  }, [streamRotation, screenWidth, screenHeight])
+  // The description has caught up, so the frame is no longer the newer of the two — and if it
+  // never arrives, the gate above shows the last one rather than waiting on it.
+  useEffect(() => { setFrameIsAhead(false) }, [streamRotation, screenWidth, screenHeight])
+
   const handleRotate = useCallback(() => {
+    setRotatePending(true)
     send({ type: 'input:rotate', sessionId })
     setUserWantsLandscape((prev) => !prev)
   }, [send, sessionId])
@@ -346,6 +406,13 @@ export function AndroidViewer({
 
   // ── Pointer interaction ───────────────────────────────────────────────────
   const needsCSSRotationRef = useRef(false)
+  /** The whole turn between the frame and what the viewer shows — `streamRotation` plus the CSS
+   *  quarter. Capture and recording read it so they produce the picture on screen rather than the
+   *  frame behind it; see `composeFrame`. */
+  const totalTurnRef = useRef<Turn>(0)
+  /** The stream's own correction, without the user's quarter. Capture needs both: the total says
+   *  how far to turn the video, and this one says which space the pointer overlay lives in. */
+  const streamRotationRef = useRef<Turn>(0)
 
   const toNorm = useCallback((e: { clientX: number; clientY: number }) => {
     const host = surfaceHostRef.current
@@ -508,19 +575,30 @@ export function AndroidViewer({
   // different messages, and during a fold they disagree for a few frames, which is long enough to
   // flip the picture and flip it back.
   //
-  // **`needsCSSRotation` wins.** The two corrections answer different questions — one turns the
-  // shell because the user asked for landscape and the app refused, the other turns the video
-  // because the capture is not the orientation Android is drawing — and they need different
-  // container dimensions, so they cannot both be applied to one canvas. A first version branched on
-  // the stream correction first, which made the rotate button do nothing on any device that had one.
-  const quarterTurn = !needsCSSRotation && (streamRotation === 90 || streamRotation === 270);
-  // react-hooks/immutability false positive: needsCSSRotationRef is only *read*, inside callbacks
-  // (lines 204 and 293), is never passed to a hook or listed in a deps array, and is not exposed via
-  // forwardRef — so writing it from an effect is the standard pattern the rule exists to allow. The
-  // rule counts a closure capture as an argument. Restructuring would touch the rotation path below,
-  // whose display behaviour no test covers, for no correctness gain.
-  // eslint-disable-next-line react-hooks/immutability
+  // **They add up.** The two corrections answer different questions — one turns the video because
+  // the capture is not the orientation Android is drawing, the other turns it again because the
+  // user asked for landscape and the app refused — and a device can need both at once. Measured on
+  // a folded foldable at the lock screen: Android keeps `rotation 0` (the lock screen is portrait
+  // only) so the stream still needs its 270, and the rotate button wants a further 90 on top. Two
+  // earlier versions each picked one and dropped the other, which is a half turn either way.
+  //
+  // What differs between them is the *shell*: only the user's request changes the frame's shape,
+  // because the device's screen has not actually rotated.
+  const totalTurn = composeTurn(streamRotation, needsCSSRotation);
+  // Both are mirrored into refs so the pointer and capture callbacks read the current value
+  // without being rebuilt on every turn — the standard pattern, and each is only ever *read* from
+  // a callback, never passed to a hook, listed in a deps array or exposed via forwardRef.
+  //
+  // `react-hooks/immutability` counts a closure capture as an argument, so which of these three
+  // it objects to depends on which ref the capture callbacks happen to read — it has moved three
+  // times while this file was being written. An unused directive is itself a warning, so they are
+  // placed by what lint reports rather than on all three defensively; expect to move one if a
+  // callback starts or stops reading a ref.
   useLayoutEffect(() => { needsCSSRotationRef.current = needsCSSRotation }, [needsCSSRotation])
+  // eslint-disable-next-line react-hooks/immutability
+  useLayoutEffect(() => { totalTurnRef.current = totalTurn }, [totalTurn])
+  // eslint-disable-next-line react-hooks/immutability
+  useLayoutEffect(() => { streamRotationRef.current = streamRotation }, [streamRotation])
   // Container uses landscape dims; canvas inside rotated 90° to show portrait content in landscape shell
   const containerW = needsCSSRotation ? androidDisplayH : androidDisplayW;
   const containerH = needsCSSRotation ? androidDisplayW : androidDisplayH;
@@ -529,8 +607,6 @@ export function AndroidViewer({
   // content rounds at the same radius → no dark corner). Falls back to the design default 22px.
   // `cornerRadius == null` = unknown → design default; an explicit 0 (square screen) must stay 0.
   const screenRadius = cornerRadius != null ? Math.round(cornerRadius * androidDisplayW) : 22;
-  // The video is a quarter turn out: give the canvas the container's swapped dimensions, centre it,
-  // and turn it back. The container keeps the screen's shape throughout, so the bezel never moves.
   // **The picture is shown when the frame and the screen agree, and hidden while they do not.**
   //
   // The two arrive on different paths: the stream changes shape the moment the emulator does, and
@@ -553,31 +629,20 @@ export function AndroidViewer({
     const frameH = quarter ? videoSize.width : videoSize.height
     return Math.abs(frameW / frameH - shownSize.width / shownSize.height) < 0.05
   })()
-  const pictureVisible = canvasReady && frameMatchesScreen;
+  const pictureVisible = showsPicture({
+    ready: canvasReady, aspectAgrees: frameMatchesScreen, frameIsAhead, rotating: rotatePending,
+  });
 
-  const streamTurnStyle: React.CSSProperties = quarterTurn ? {
+  // The canvas carries the whole turn. When that is a quarter, it takes the container's dimensions
+  // swapped and is centred, so rotating it lands exactly on the container — which is what keeps the
+  // bezel still and the pointer maths honest, since the canvas's bounding box then matches the
+  // screen the viewer is showing.
+  const box = surfaceBox(totalTurn, containerW, containerH);
+  const canvasStyle: React.CSSProperties = {
     position: 'absolute',
-    width: androidDisplayH,
-    height: androidDisplayW,
-    top: (androidDisplayH - androidDisplayW) / 2,
-    left: (androidDisplayW - androidDisplayH) / 2,
-    transform: `rotate(${streamRotation}deg)`,
+    ...box,
+    transform: `rotate(${totalTurn}deg)`,
     transformOrigin: 'center center',
-    visibility: pictureVisible ? 'visible' : 'hidden',
-    cursor: 'none',
-  } : {};
-
-  const rotatedCanvasStyle: React.CSSProperties = needsCSSRotation ? {
-    position: 'absolute',
-    width: androidDisplayW,
-    height: androidDisplayH,
-    top: (androidDisplayW - androidDisplayH) / 2,
-    left: (androidDisplayH - androidDisplayW) / 2,
-    transform: 'rotate(90deg)',
-    transformOrigin: 'center center',
-    visibility: pictureVisible ? 'visible' : 'hidden',
-    cursor: 'none',
-  } : {
     visibility: pictureVisible ? 'visible' : 'hidden',
     cursor: 'none',
   };
@@ -692,8 +757,7 @@ export function AndroidViewer({
             <>
               <div
                 ref={surfaceHostRef}
-                className={needsCSSRotation ? undefined : 'block w-full h-full'}
-                style={needsCSSRotation ? rotatedCanvasStyle : (quarterTurn ? streamTurnStyle : rotatedCanvasStyle)}
+                style={canvasStyle}
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}

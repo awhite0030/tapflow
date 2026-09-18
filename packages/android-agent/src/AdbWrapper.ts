@@ -117,6 +117,7 @@ export class AdbWrapper {
 
   /** The rounded-corner radius of the panel with these natural dimensions, as a fraction of width.
    *  See `parseCornerRadius` for why this is read rather than measured off the frame. */
+  /** The panel's corner radius in device pixels; `width`/`height` pick the panel. */
   async getCornerRadius(serial: string, width: number, height: number): Promise<number | null> {
     const out = await this.runner.exec('-s', serial, 'shell', 'dumpsys', 'display')
     return parseCornerRadius(out, width, height)
