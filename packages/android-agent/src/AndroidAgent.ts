@@ -7,7 +7,7 @@ import type {
 } from '@tapflowio/agent-core'
 import type {
   AgentControlOutbound, ClipboardReplyBody, OpenUrlReplyBody,
-  AppInstallReplyBody, AppLaunchReplyBody, AppClearStateReplyBody,
+  AppInstallReplyBody, AppLaunchReplyBody, AppClearStateReplyBody, DevicePosture,
 } from '@tapflowio/protocol'
 import fs from 'fs'
 import path from 'path'
@@ -50,6 +50,9 @@ import { ScrcpySession } from './scrcpy/ScrcpySession.js'
 import type { ScrcpyFrame } from './scrcpy/ScrcpyVideo.js'
 import { EmulatorGrpcClient, type AudioStream } from './emulator/EmulatorGrpcClient.js'
 import { discoverGrpcPort, isTcpPortFree } from './emulator/discovery.js'
+import type { SkinRotation } from './emulator/EmulatorGrpcClient.js'
+import type { DisplayMetrics } from './displayMetrics.js'
+import { parseCurrentPosture, parsePostures } from './postures.js'
 import { EmulatorVideo } from './emulator/EmulatorVideo.js'
 
 const logger = createLogger('android-agent')
@@ -67,6 +70,83 @@ const AGENT_CAPABILITIES: AgentCapability[] = ['clipboard', 'full-reset', 'netwo
 // scrcpy sends a new SPS (inside an IDR keyframe) whenever the capture size changes —
 // e.g. portrait→landscape for landscape-aware apps. This lets the agent track the
 // actual video dimensions and keep ScrcpyControl.screenSize in sync without guessing.
+/**
+ * A normalised point on the **displayed** screen, mapped to the display's **natural** space.
+ *
+ * The emulator's gRPC `sendTouch` takes pixels in the natural orientation — measured, not assumed:
+ * sending x=2100 to a Pixel 9 Pro Fold produced `ABS_MT_POSITION_X = 33145` against a 32767 axis
+ * maximum, and `2100 × 32767 / 33145 = 2076`, the natural width, while the live display was 2152
+ * wide. The viewer normalises against what Android is drawing. Without this map the axes are
+ * swapped, which is a tap landing 90° from the finger.
+ *
+ * **Keyed on Android's display rotation, not the emulator's frame rotation.** The gRPC frame
+ * carries a rotation field and it is the device's physical orientation: folded, it still reports
+ * `REVERSE_LANDSCAPE` while Android has rotated the screen back to 0. Keying on it was right
+ * unfolded and wrong folded.
+ *
+ * Rotation 0 is the identity, which is why an ordinary phone never needed this.
+ */
+/**
+ * The emulator's per-frame rotation, in degrees clockwise.
+ *
+ * This is the **skin's** orientation — the proto says it is "derived from the sensor state of the
+ * emulator" — and the capture follows it rather than the display. Measured on a Pixel 9 Pro Fold:
+ * natural 2076x2152 arrived as 2152x2076 unfolded and natural 1080x2424 arrived as 2424x1080
+ * folded, the same turn in both postures, while Android's own rotation went from 270 to 0.
+ *
+ * **Read per frame, not assumed.** A first version hard-coded 270 from this AVD, which is a value
+ * that AVD's startup orientation produced — a device created in portrait would have made it wrong,
+ * silently, on a machine nobody was testing on.
+ */
+/** How often a live session re-reads the display while it is being watched.
+ *
+ *  **The screen is polled because no single reading can be trusted to be final.** Android rotates a
+ *  few hundred milliseconds after the panel changes, and nothing in `dumpsys` marks the gap: sampled
+ *  150ms into an unfold, `init`, `cur`, `app` and `mRotation` are all consistent with each other and
+ *  all describe the posture being left. So "has it settled?" is not a question the device answers —
+ *  it is only answerable in hindsight, by the value changing.
+ *
+ *  Polling turns that from a race into a delay. A reading taken too early is corrected on the next
+ *  pass instead of persisting, which is what made the error look like it accumulated: every other
+ *  fold landed inside the gap and stayed wrong until the one after it happened to land outside.
+ *
+ *  It also covers the case folding merely exposed. `mRotation` changes without any fold — the
+ *  toolbar's rotate button, an app asking for a different orientation — and nothing here was
+ *  watching for that either. */
+const SCREEN_WATCH_INTERVAL_MS = 2_000
+
+/** How `stableDisplayMetrics` decides the display has settled.
+ *
+ *  **Two equal readings was not enough, and the reason is worth keeping.** The rotation lags the
+ *  panel by ~300ms on this machine; with a 250ms gap, the first two samples both land inside that
+ *  window, agree with each other, and describe the posture the device is leaving. Measured across
+ *  seven folds: six correct and one — an unfold — reading `rot 0` where it should have read 270,
+ *  which is a visible quarter turn.
+ *
+ *  So the run has to be longer than the lag: three readings 300ms apart span 600ms, past the point
+ *  where both values had caught up in every sample taken. The ceiling is generous because the cost
+ *  of waiting is a spinner the viewer is already showing, while the cost of being early is a
+ *  picture rotated the wrong way. */
+const METRICS_STABLE_RUN = 3
+const METRICS_SAMPLES = 12
+const METRICS_SAMPLE_GAP_MS = 300
+
+const SKIN_DEGREES: Record<SkinRotation, 0 | 90 | 180 | 270> = {
+  PORTRAIT: 0,
+  LANDSCAPE: 90,
+  REVERSE_PORTRAIT: 180,
+  REVERSE_LANDSCAPE: 270,
+}
+
+export function toNaturalPoint(rotation: 0 | 90 | 180 | 270, x: number, y: number): { x: number; y: number } {
+  switch (rotation) {
+    case 0: return { x, y }
+    case 90: return { x: 1 - y, y: x }
+    case 180: return { x: 1 - x, y: 1 - y }
+    case 270: return { x: y, y: 1 - x }
+  }
+}
+
 export function parseSpsFromNal(nal: Buffer): { width: number; height: number } | null {
   // Locate NAL header byte after Annex B start code
   let offset = 0
@@ -195,6 +275,16 @@ interface DeviceState {
   external: boolean
   displayWidth: number
   displayHeight: number
+  /** Quarter turns from the panel's natural orientation to what Android is drawing, or null on the
+   *  scrcpy backend (which captures natural, so input needs no map). */
+  rotation: 0 | 90 | 180 | 270 | null
+  /** Quarter turns clockwise the viewer must apply to the video to match the screen. See
+   *  `AndroidChrome.streamRotation`. */
+  streamRotation: 0 | 90 | 180 | 270
+  /** Polls the display while the session is live. See `SCREEN_WATCH_INTERVAL_MS`. */
+  screenWatch: ReturnType<typeof setInterval> | null
+  /** A reconcile is in flight; the fold's own and the watcher's must not overlap. */
+  reconciling: boolean
   videoWidth: number   // actual scrcpy video frame dimensions — used for touch coordinates
   videoHeight: number
   landscape: boolean   // rotation intent toggle — only to request device rotation on input:rotate
@@ -461,6 +551,10 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         cornerRadius: 0,
         secureContext: false,
         external: false,
+        rotation: null,
+        streamRotation: 0,
+        screenWatch: null,
+        reconciling: false,
         displayWidth: 0,
         displayHeight: 0,
         videoWidth: 0,
@@ -544,6 +638,8 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
   }
 
   private cleanupDeviceState(state: DeviceState): void {
+    if (state.screenWatch) clearInterval(state.screenWatch)
+    state.screenWatch = null
     const serial = this.adb.getSerial(state.deviceId)
     if (serial && state.scrcpySession) state.scrcpySession.stop(serial)
     state.scrcpySession = null
@@ -560,6 +656,205 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     state.booted = false
     state.streamWs?.close()
     state.streamWs = null
+  }
+
+  /** Send `session:chrome` for this device's current screen.
+   *
+   *  Called at boot and again whenever the screen changes under the session — a foldable swaps which
+   *  physical display is on, so the size it carries is not settled once per boot the way it was when
+   *  this payload only ever described a phone. The relay re-caches it (`setChromeData`) and the
+   *  viewer replaces its copy, so re-sending is the whole update path. */
+  /** A normalised viewer point in device pixels, applying the display rotation when one is known.
+   *
+   *  Only the gRPC backend sets `state.rotation`. scrcpy captures with `capture_orientation=@0`, so
+   *  its frames are already in the natural orientation and a rotation here would double-apply. */
+  private toDevicePx(state: DeviceState, x: number, y: number): { px: number; py: number } {
+    const p = state.rotation ? toNaturalPoint(state.rotation, x, y) : { x, y }
+    return { px: Math.round(p.x * state.videoWidth), py: Math.round(p.y * state.videoHeight) }
+  }
+
+  // ── PosturableAgent ────────────────────────────────────────────────────────
+  // Android exposes postures through `cmd device_state`. Ordering and labelling live in
+  // `postures.ts`; this half is only the adb round trip.
+
+  /** Cached per device: which postures exist is a property of the hardware, not of its current
+   *  state, and an uncached read put three adb round trips into every fold — enough for the control
+   *  to feel like it had not registered the press. */
+  private readonly postureCache = new Map<string, DevicePosture[]>()
+
+  /** Injectable so the suite does not pay the real settling delay on every boot test. */
+  private readonly metricsGapMs: number = Number(process.env.TAPFLOW_METRICS_GAP_MS) || METRICS_SAMPLE_GAP_MS
+
+  async listPostures(deviceId: string): Promise<DevicePosture[]> {
+    const cached = this.postureCache.get(deviceId)
+    if (cached) return cached
+    const serial = this.adb.getSerial(deviceId)
+    if (!serial) return []
+    // A device with no postures still answers, with a list that parses to nothing — which is the
+    // empty list the capability contract asks for, so there is nothing to special-case.
+    const postures = await this.adb.printDeviceStates(serial).then(parsePostures).catch(() => [])
+    this.postureCache.set(deviceId, postures)
+    return postures
+  }
+
+  async getPosture(deviceId: string): Promise<DevicePosture | null> {
+    const serial = this.adb.getSerial(deviceId)
+    if (!serial) return null
+    const [postures, current] = await Promise.all([
+      this.listPostures(deviceId),
+      this.adb.deviceState(serial).then(parseCurrentPosture).catch(() => null),
+    ])
+    return postures.find((p) => p.id === current) ?? null
+  }
+
+  async setPosture(deviceId: string, postureId: string): Promise<void> {
+    const serial = this.adb.getSerial(deviceId)
+    if (!serial) throw new PlatformError(`No device for ${deviceId}`)
+    // Checked against the list rather than passed through. The list is what the *guest* says it
+    // supports, filtered to what the emulator console can actually reach — so an id outside it is
+    // either unknown or a posture tapflow cannot move the device into, and both would read as a
+    // change that silently did nothing.
+    const postures = await this.listPostures(deviceId)
+    if (!postures.some((p) => p.id === postureId)) {
+      throw new PlatformError(`Unknown posture "${postureId}" for ${deviceId}`)
+    }
+    await this.adb.setPosture(serial, postureId)
+  }
+
+  /** Tell the viewer which postures exist and which one the device is in. Sent at boot and after a
+   *  change, so a viewer that joined late is not left without the control. */
+  private async sendPostures(state: DeviceState): Promise<void> {
+    const [postures, current] = await Promise.all([
+      this.listPostures(state.deviceId),
+      this.getPosture(state.deviceId),
+    ])
+    this.sendMsg({
+      type: 'device:postures',
+      sessionId: state.sessionId,
+      payload: { postures, currentId: current?.id ?? null },
+    })
+  }
+
+  private sendChrome(state: DeviceState): void {
+    this.sendMsg({
+      type: 'session:chrome',
+      sessionId: state.sessionId,
+      payload: {
+        buttons: ANDROID_BUTTONS,
+        streamType: 'h264',
+        screenWidth: state.displayWidth,
+        screenHeight: state.displayHeight,
+        cornerRadius: state.cornerRadius,
+        streamRotation: state.streamRotation,
+      },
+    })
+  }
+
+  /**
+   * `getDisplayMetrics`, sampled until two consecutive reads agree.
+   *
+   * **A fold changes the panel before Android rotates onto it.** Measured on a Pixel 9 Pro Fold:
+   * 300ms after unfolding, `init` was already the inner panel while `cur` and `mRotation` still
+   * described the cover; by 600ms both had caught up. Reading inside that window returns the new
+   * size with the old rotation, and since the viewer turns the picture by the difference between
+   * the two, the error is a visible quarter turn — and it alternates, because the next fold reads
+   * cleanly and the one after does not.
+   *
+   * Sampling rather than a fixed sleep: the lag is a few hundred milliseconds on this machine and
+   * nothing says it is that everywhere. **A run of equal reads, not a pair** — a pair taken inside
+   * the lag agrees with itself about the posture being left, which is how one unfold in seven came
+   * out a quarter turn wrong. See `METRICS_STABLE_RUN`.
+   */
+  private async stableDisplayMetrics(serial: string): Promise<DisplayMetrics | null> {
+    const same = (a: DisplayMetrics, b: DisplayMetrics) =>
+      a.natural.width === b.natural.width && a.natural.height === b.natural.height
+      && a.current.width === b.current.width && a.current.height === b.current.height
+      && a.rotation === b.rotation
+    let previous: DisplayMetrics | null = null
+    let run = 1
+    for (let attempt = 0; attempt < METRICS_SAMPLES; attempt++) {
+      const next = await this.adb.getDisplayMetrics(serial).catch(() => null)
+      run = next && previous && same(previous, next) ? run + 1 : 1
+      if (next && run >= METRICS_STABLE_RUN) return next
+      previous = next
+      await new Promise((resolve) => setTimeout(resolve, this.metricsGapMs))
+    }
+    // Ran out of attempts: the last reading is still better than the frame's own dimensions, which
+    // are the emulator's orientation rather than Android's.
+    return previous
+  }
+
+  /** Re-read the display on a timer for as long as the session lives, and tell the viewer when it
+   *  moved. See `SCREEN_WATCH_INTERVAL_MS` for why this is a poll rather than a one-shot read. */
+  private watchScreen(state: DeviceState, serial: string, skin: SkinRotation): void {
+    if (state.screenWatch) clearInterval(state.screenWatch)
+    state.screenWatch = setInterval(() => {
+      // A reconcile may still be running from a fold; skipping a tick is free, since the next one
+      // is two seconds away and the fold's own reconcile is doing the same work.
+      if (state.reconciling) return
+      state.reconciling = true
+      void this.reconcileScreen(state, serial, state.videoWidth, state.videoHeight, skin)
+        .then((changed) => { if (changed && state.booted) this.sendChrome(state) })
+        .catch((e: unknown) => logger.debug(`screen watch: ${(e as Error).message}`))
+        .finally(() => { state.reconciling = false })
+    }, SCREEN_WATCH_INTERVAL_MS)
+    // Never hold the process open for a poll.
+    state.screenWatch.unref?.()
+  }
+
+  /** Bring the device's coordinate spaces in step with what Android is drawing.
+   *
+   *  Three facts, read together because no two of them determine the third:
+   *  - **natural** (`videoWidth/Height`) is the panel unrotated, and what the emulator's gRPC input
+   *    takes.
+   *  - **current** (`displayWidth/Height`) is what Android draws, so it is what a viewer frames and
+   *    what a person points at.
+   *  - **rotation** bridges them at input time.
+   *
+   *  Folding changes all three — the cover panel is a different display, and Android rotates back to
+   *  0 on it — so they are re-read rather than derived from the frame. Returns true when anything
+   *  changed. */
+  private async reconcileScreen(
+    state: DeviceState, serial: string, frameW: number, frameH: number, skin: SkinRotation | null,
+    settle = true,
+  ): Promise<boolean> {
+    // The frame is the fallback, not the source: it arrives in the emulator's physical orientation,
+    // which folded is 90° from what Android is drawing.
+    // **Boot does not wait.** Settling can take a few seconds, and boot has a deadline it has to
+    // answer inside — spending that budget here left the session with no stream at all, which is a
+    // far worse failure than a screen that is briefly a quarter turn out. The watcher corrects it
+    // within its interval, which is the whole point of polling.
+    const m = settle
+      ? await this.stableDisplayMetrics(serial)
+      : await this.adb.getDisplayMetrics(serial).catch(() => null)
+    const natural = m?.natural ?? { width: frameW, height: frameH }
+    const current = m?.current ?? { width: frameW, height: frameH }
+    const rotation = m?.rotation ?? 0
+    // The capture sits at the skin's rotation and the screen at Android's, so what the viewer has to
+    // undo is whatever is left between them. scrcpy has no skin and captures natural, so it gets 0.
+    const streamRotation = skin === null
+      ? 0
+      : ((((SKIN_DEGREES[skin] - rotation) % 360) + 360) % 360) as 0 | 90 | 180 | 270
+    const same = natural.width === state.videoWidth && natural.height === state.videoHeight
+      && current.width === state.displayWidth && current.height === state.displayHeight
+      && rotation === state.rotation && streamRotation === state.streamRotation
+    if (same) return false
+    state.videoWidth = natural.width
+    state.videoHeight = natural.height
+    state.displayWidth = current.width
+    state.displayHeight = current.height
+    state.rotation = rotation
+    // The emulator's capture is the panel in its fixed physical orientation — measured as a
+    // constant quarter turn from natural on this backend — so the correction is whatever is left
+    // between that and the rotation Android is applying. scrcpy captures natural itself and gets 0,
+    // which is also the value a device that never rotates ends up with.
+    // The panel changed, so its curve may have too. Read from Android rather than kept from the
+    // frame measurement, which cannot survive the capture being a quarter turn from the screen.
+    const radius = await this.adb.getCornerRadius(serial, natural.width, natural.height).catch(() => null)
+    if (radius !== null) state.cornerRadius = radius
+    state.streamRotation = streamRotation
+    logger.info(`screen → touch ${natural.width}×${natural.height}, shown ${current.width}×${current.height}, rot ${rotation}, correct ${state.streamRotation}`)
+    return true
   }
 
   private sendDeviceInfo(state: DeviceState, device: Device): void {
@@ -586,7 +881,8 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
   }
 
   // The active low-latency pointer backend (gRPC preferred), or null when only the ADB fallback
-  // (AndroidTouchHelper) is available. Coordinates go in state.videoWidth/Height px.
+  // (AndroidTouchHelper) is available. Coordinates go in state.videoWidth/Height px — the device's
+  // natural space, which is what the emulator's gRPC input takes.
   private pointerControl(state: DeviceState): PointerControl | null {
     if (state.grpcClient) return state.grpcClient
     if (state.scrcpySession) return state.scrcpySession.control
@@ -787,21 +1083,33 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     state.touchHelper = touchHelper
 
     const client = new EmulatorGrpcClient(`127.0.0.1:${port}`)
-    const video = new EmulatorVideo(client, { fps, ...(maxSize ? { maxWidth: maxSize, maxHeight: maxSize } : {}) })
+    const video = new EmulatorVideo(client, {
+      fps,
+      ...(maxSize ? { maxWidth: maxSize, maxHeight: maxSize } : {}),
+      // The screen can change under a live session — a foldable swaps which physical display is on.
+      // `reconcileScreen` is async and this callback is not, so a change that arrives while the
+      // previous one is still resolving is dropped rather than queued; the next frame at the new
+      // size re-reports, and sizes do not change faster than a person can fold a phone.
+      onSizeChange: (w, h, skin) => {
+        if (state.emulatorVideo !== video || state.reconciling) return
+        state.reconciling = true
+        void this.reconcileScreen(state, serial, w, h, skin)
+          .then((changed) => { if (changed && state.booted) this.sendChrome(state) })
+          .catch((e: unknown) => logger.warn(`screen reconcile failed: ${(e as Error).message}`))
+          .finally(() => { state.reconciling = false })
+      },
+    })
     // Assign before start() so the caller's fallback cleanup can tear these down on failure.
     state.grpcClient = client
     state.emulatorVideo = video
     const info = await video.start()
-    // gRPC sendTouch coordinates are in the device's native display resolution — not the (possibly
-    // downscaled) video size — so query it for correct normalized→px touch mapping. The aspect
-    // ratio matches the downscaled video, so native dims also drive the dashboard chrome.
-    const native = await this.adb.getScreenSize(serial).catch(() => ({ width: info.width, height: info.height }))
     state.landscape = false
-    state.displayWidth = native.width
-    state.displayHeight = native.height
-    state.videoWidth = native.width
-    state.videoHeight = native.height
     state.cornerRadius = info.cornerRadius
+    // Orientation from the frame, magnitude from `wm size` — see `reconcileScreen` for why neither
+    // alone is right. The first frame has already fired `onSizeChange`, but that ran before
+    // `state.booted`, so nothing was sent; this settles the values the boot `session:chrome` carries.
+    await this.reconcileScreen(state, serial, info.width, info.height, info.rotation, false)
+    this.watchScreen(state, serial, info.rotation)
 
     const reader = video.frames().getReader()
     // If the gRPC video ends unexpectedly (emulator crash / disconnect), restart the stream so the
@@ -1090,17 +1398,8 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
 
       await this.startVideoStream(state, streamWs)
       if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
-      this.sendMsg({
-        type: 'session:chrome',
-        sessionId: state.sessionId,
-        payload: {
-          buttons: ANDROID_BUTTONS,
-          streamType: 'h264',
-          screenWidth: state.displayWidth,
-          screenHeight: state.displayHeight,
-          cornerRadius: state.cornerRadius,
-        },
-      })
+      this.sendChrome(state)
+      void this.sendPostures(state)
       state.booted = true
       this.sendMsg({ type: 'device:ready', sessionId, requestId, payload: { deviceId: avdId } })
       // Clear a network condition the last session left behind, then report (#607).
@@ -1580,8 +1879,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         const { x, y } = msg.payload as { x: number; y: number }
         const pc = this.pointerControl(state)
         if (pc && state.videoWidth > 0) {
-          const px = Math.round(x * state.videoWidth)
-          const py = Math.round(y * state.videoHeight)
+          const { px, py } = this.toDevicePx(state, x, y)
           state.lastTouchPx = { x: px, y: py }
           this.fire(pc.touchDown(0, px, py))
         } else {
@@ -1595,8 +1893,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         const { x, y } = msg.payload as { x: number; y: number }
         const pc = this.pointerControl(state)
         if (pc && state.videoWidth > 0) {
-          const px = Math.round(x * state.videoWidth)
-          const py = Math.round(y * state.videoHeight)
+          const { px, py } = this.toDevicePx(state, x, y)
           state.lastTouchPx = { x: px, y: py }
           this.fire(pc.touchMove(0, px, py))
         } else {
@@ -1627,8 +1924,8 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         const { f0, f1 } = msg.payload as { f0: { x: number; y: number }; f1: { x: number; y: number } }
         const pc = this.pointerControl(state)
         if (pc && state.videoWidth > 0) {
-          const px1 = Math.round(f0.x * state.videoWidth), py1 = Math.round(f0.y * state.videoHeight)
-          const px2 = Math.round(f1.x * state.videoWidth), py2 = Math.round(f1.y * state.videoHeight)
+          const { px: px1, py: py1 } = this.toDevicePx(state, f0.x, f0.y)
+          const { px: px2, py: py2 } = this.toDevicePx(state, f1.x, f1.y)
           this.fire(pc.pinchStart(px1, py1, px2, py2))
         } else {
           state.touchHelper?.pinchStart(f0.x, f0.y, f1.x, f1.y)
@@ -1641,8 +1938,8 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         const { f0, f1 } = msg.payload as { f0: { x: number; y: number }; f1: { x: number; y: number } }
         const pc = this.pointerControl(state)
         if (pc && state.videoWidth > 0) {
-          const px1 = Math.round(f0.x * state.videoWidth), py1 = Math.round(f0.y * state.videoHeight)
-          const px2 = Math.round(f1.x * state.videoWidth), py2 = Math.round(f1.y * state.videoHeight)
+          const { px: px1, py: py1 } = this.toDevicePx(state, f0.x, f0.y)
+          const { px: px2, py: py2 } = this.toDevicePx(state, f1.x, f1.y)
           this.fire(pc.pinchMove(px1, py1, px2, py2))
         } else {
           state.touchHelper?.pinchMove(f0.x, f0.y, f1.x, f1.y)
@@ -1677,6 +1974,17 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         const next = !state.landscape
         state.landscape = next
         this.adb.setRotation(serial, next ? 3 : 0).catch(() => { state.landscape = !next })
+        break
+      }
+      case 'input:posture': {
+        const state = this.deviceStates.get(msg.sessionId)
+        if (!state) break
+        const { postureId } = msg.payload as { postureId: string }
+        // No ack by declaration (same as `input:rotate`), so a failure is reported by the posture
+        // list that follows saying the device did not move, rather than by an error nobody awaits.
+        void this.setPosture(state.deviceId, postureId)
+          .catch((e: unknown) => logger.warn(`setPosture(${postureId}): ${(e as Error).message}`))
+          .finally(() => { void this.sendPostures(state) })
         break
       }
       case 'input:button': {

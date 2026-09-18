@@ -103,7 +103,7 @@ describe('EmulatorVideo', () => {
       spawnEncoder: () => fe.enc,
     })
     const info = await video.start()
-    expect(info).toEqual({ width: 8, height: 16, cornerRadius: 0 })
+    expect(info).toEqual({ width: 8, height: 16, rotation: 'PORTRAIT', cornerRadius: 0 })
     // The first frame is written: [0x00][w][h][len] header + RGBA payload.
     expect(fe.stdinWrites.length).toBeGreaterThanOrEqual(2)
     expect(fe.stdinWrites[0][0]).toBe(0x00)
@@ -167,6 +167,54 @@ describe('EmulatorVideo', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // A foldable swaps which physical display is on, so the frame size changes mid-stream — and the
+  // agent de-normalises touches with `state.videoWidth/Height`, which on the gRPC path came from
+  // `adb wm size` once at boot. Measured on a Pixel 9 Pro Fold: `wm size` reports the natural
+  // 2076x2152 while the live display is 2152x2076, so touches landed rotated 90° counter-clockwise
+  // before anyone folded anything. This callback is how the size reaches the agent.
+  it('reports a mid-stream size change to its caller', async () => {
+    vi.useFakeTimers()
+    try {
+      const fe = fakeEncoder()
+      const seen: Array<[number, number]> = []
+      const client = fakeClient([
+        { image: rgba(8, 16), width: 8, height: 16 },
+        { image: rgba(16, 8), width: 16, height: 8 },  // the aspect flips, as folding does
+      ])
+      const video = new EmulatorVideo(client, {
+        fps: 30, spawnEncoder: () => fe.enc, onSizeChange: (w, h) => seen.push([w, h]),
+      })
+      await video.start()
+      await vi.advanceTimersByTimeAsync(40)
+      expect(seen).toContainEqual([16, 8])
+      video.stop()
+    } finally { vi.useRealTimers() }
+  })
+
+  // The pair for the absence below: without it, "not called again" also describes a callback that
+  // was never wired up at all.
+  it('does not report a size that did not change', async () => {
+    vi.useFakeTimers()
+    try {
+      const fe = fakeEncoder()
+      const seen: Array<[number, number]> = []
+      const client = fakeClient([
+        { image: rgba(8, 16), width: 8, height: 16 },
+        { image: rgba(8, 16), width: 8, height: 16 },
+        { image: rgba(8, 16), width: 8, height: 16 },
+      ])
+      const video = new EmulatorVideo(client, {
+        fps: 30, spawnEncoder: () => fe.enc, onSizeChange: (w, h) => seen.push([w, h]),
+      })
+      await video.start()
+      await vi.advanceTimersByTimeAsync(40)
+      // Exactly one report — the first frame, which fixes the size. The two that follow are the
+      // same size and must be silent.
+      expect(seen).toEqual([[8, 16]])
+      video.stop()
+    } finally { vi.useRealTimers() }
   })
 
   it('rejects start() when the capture errors before the first frame (→ scrcpy fallback)', async () => {

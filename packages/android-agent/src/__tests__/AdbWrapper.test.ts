@@ -392,4 +392,24 @@ describe('AdbWrapper', () => {
       await expect(wrapper.dumpUiHierarchy('emulator-5554')).rejects.toThrow(PlatformError)
     })
   })
+
+  describe('setPosture', () => {
+    it('sends the posture to the emulator console', async () => {
+      const runner = { exec: vi.fn().mockResolvedValue('OK'), execBinary: vi.fn(), listAvds: vi.fn() }
+      await new AdbWrapper(runner as never).setPosture('emulator-5554', '1')
+      // `emu`, not `shell cmd device_state`: the guest command moves the framework and leaves the
+      // emulator rendering the screen it had, so the capture keeps streaming the unfolded panel.
+      expect(runner.exec).toHaveBeenCalledWith('-s', 'emulator-5554', 'emu', 'posture', '1')
+    })
+
+    it('throws on a KO answer, which the console gives with a zero exit code', async () => {
+      const runner = {
+        exec: vi.fn().mockResolvedValue('KO: Usage: "posture <posture_id>"'),
+        execBinary: vi.fn(), listAvds: vi.fn(),
+      }
+      // Without reading the text this refusal is invisible: adb exits 0 and the device does not move.
+      await expect(new AdbWrapper(runner as never).setPosture('emulator-5554', '9'))
+        .rejects.toThrow(/refused/)
+    })
+  })
 })

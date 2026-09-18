@@ -81,6 +81,10 @@ export const INBOUND_DISPOSITION = {
     ignored: 'Nothing here sends `input:keyboard:toggle`. `inputText` drives a paste handshake and does not '
       + 'depend on the on-screen keyboard\'s visibility.',
   },
+  'device:postures': {
+    ignored: 'Which postures a foldable offers, and which it is in. A replay engine does not fold '
+      + 'the device: a flow that needs a posture would have to say so as a step, and none does.',
+  },
   'session:chrome': {
     ignored: 'Bezel geometry and device model, for drawing a device frame around a video stream. A replay '
       + 'engine renders nothing, and selectors are resolved from the UI tree in normalized coordinates.',

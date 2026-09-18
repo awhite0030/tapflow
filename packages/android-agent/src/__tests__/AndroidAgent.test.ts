@@ -125,7 +125,9 @@ vi.mock('../emulator/EmulatorVideo', () => ({
 import { WebSocket, WebSocketServer } from 'ws'
 import { RelayServer, initDb, closeDb } from '@tapflowio/relay'
 import { hasEnvelope, readEnvelopeFlags, CODEC_H264, CODEC_JPEG } from '@tapflowio/agent-core/utils'
-import { AndroidAgent, pickAndroidBackend, parseSpsFromNal } from '../AndroidAgent'
+import { AndroidAgent, pickAndroidBackend, parseSpsFromNal, toNaturalPoint } from '../AndroidAgent'
+import { isPosturable } from '@tapflowio/agent-core'
+import type { SkinRotation } from '../emulator/EmulatorGrpcClient'
 import { AdbWrapper } from '../AdbWrapper'
 import { ScrcpySession } from '../scrcpy/ScrcpySession'
 import { EmulatorVideo } from '../emulator/EmulatorVideo'
@@ -152,6 +154,15 @@ interface TestState {
   } | null
   videoWidth: number
   videoHeight: number
+  /** What `session:chrome` carries — the rotated size the viewer shows. */
+  displayWidth: number
+  displayHeight: number
+  /** Quarter turns from natural to what Android draws; null on the scrcpy backend. */
+  rotation: 0 | 90 | 180 | 270 | null
+  /** Quarter turns the viewer applies to the video to match the screen. */
+  streamRotation: 0 | 90 | 180 | 270
+  reconciling: boolean
+  screenWatch: ReturnType<typeof setInterval> | null
   landscape: boolean
   booted: boolean
   bootSeq: number
@@ -169,6 +180,8 @@ interface AndroidAgentInternals {
   restartVideoStream(state: TestState): Promise<void>
   cleanupDeviceState(state: TestState): void
   handleRelayMessage(msg: unknown): void
+  reconcileScreen(state: TestState, serial: string, frameW: number, frameH: number, skin: SkinRotation | null): Promise<boolean>
+  toDevicePx(state: TestState, x: number, y: number): { px: number; py: number }
 }
 const internals = (agent: AndroidAgent): AndroidAgentInternals =>
   agent as unknown as AndroidAgentInternals
@@ -196,6 +209,10 @@ function mockAdb(booted = false): AdbWrapper {
   return adb
 }
 
+
+// The agent samples `dumpsys` until the display settles — a real ~300ms wait per fold. The suite
+// drives the sampling directly in the test below and does not need the delay anywhere else.
+process.env.TAPFLOW_METRICS_GAP_MS = '1'
 
 describe('AndroidAgent', () => {
   let relay: RelayServer
@@ -3284,5 +3301,280 @@ describe('connect — error paths', () => {
         },
       )
     })
+  })
+})
+
+describe('reconcileScreen (the wiring, not the arithmetic)', () => {
+  const stateFor = () => ({
+    videoWidth: 0, videoHeight: 0, displayWidth: 0, displayHeight: 0, rotation: null, streamRotation: 0,
+    reconciling: false, screenWatch: null,
+  }) as unknown as TestState
+
+  /** `dumpsys window displays` as the device prints it. */
+  const metrics = (nat: string, cur: string, rot: number) =>
+    `    init=${nat} 390dpi mMinSizeOfResizeableTaskDp=220 cur=${cur} app=${cur} rng=x\n`
+    + `  overrideConfig={winConfig={ mRotation=ROTATION_${rot}} }`
+
+  function agentWith(dump: string) {
+    const adb = mockAdb()
+    vi.spyOn(adb, 'getDisplayMetrics').mockImplementation(async () =>
+      (await import('../displayMetrics')).parseDisplayMetrics(dump))
+    return new AndroidAgent({}, adb)
+  }
+
+  it('separates the touch space from what the viewer frames', async () => {
+    // Pixel 9 Pro Fold unfolded: the panel is portrait, Android draws it landscape.
+    const agent = agentWith(metrics('2076x2152', '2152x2076', 270))
+    const state = stateFor()
+
+    expect(await internals(agent).reconcileScreen(state, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')).toBe(true)
+    // gRPC input takes natural pixels (measured); the viewer frames what Android draws.
+    expect([state.videoWidth, state.videoHeight]).toEqual([2076, 2152])
+    expect([state.displayWidth, state.displayHeight]).toEqual([2152, 2076])
+    expect(state.rotation).toBe(270)
+    // Skin and screen agree here, so the viewer has nothing to undo.
+    expect(state.streamRotation).toBe(0)
+  })
+
+  it('follows a fold, where Android rotates back to 0 on a different panel', async () => {
+    const agent = agentWith(metrics('1080x2424', '1080x2424', 0))
+    const state = stateFor()
+
+    // The frame still arrives 2424x1080 — the emulator's physical orientation — and must not be
+    // what decides this, which is why the frame size is passed only as a fallback.
+    expect(await internals(agent).reconcileScreen(state, 'emulator-5554', 2424, 1080, 'REVERSE_LANDSCAPE')).toBe(true)
+    expect([state.videoWidth, state.videoHeight]).toEqual([1080, 2424])
+    expect([state.displayWidth, state.displayHeight]).toEqual([1080, 2424])
+    expect(state.rotation).toBe(0)
+    // The skin stayed put while Android rotated back to 0, so the frame is a quarter turn out.
+    expect(state.streamRotation).toBe(270)
+  })
+
+  it('corrects itself on a later pass rather than staying wrong', async () => {
+    // The property that makes this sound rather than lucky. No single reading can be trusted — 150ms
+    // into an unfold every field in `dumpsys` is self-consistent and describes the posture being
+    // left — so the guarantee is not "reads correctly" but "does not stay wrong": a session polls,
+    // and a reading taken too early is replaced by the next one.
+    const adb = mockAdb()
+    const dm = await import('../displayMetrics')
+    const early = dm.parseDisplayMetrics(metrics('2076x2152', '2076x2152', 0))
+    const settled = dm.parseDisplayMetrics(metrics('2076x2152', '2152x2076', 270))
+    const reads = vi.spyOn(adb, 'getDisplayMetrics').mockResolvedValue(early)
+    const agent = new AndroidAgent({}, adb)
+    const state = stateFor()
+
+    // A pass that lands entirely inside the lag: every reading agrees, and all of them are early.
+    await internals(agent).reconcileScreen(state, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')
+    expect(state.streamRotation).toBe(270)   // the quarter turn the user would see
+
+    // The device finishes rotating; the next pass reports the change so the viewer is told.
+    reads.mockResolvedValue(settled)
+    expect(await internals(agent).reconcileScreen(state, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')).toBe(true)
+    expect(state.streamRotation).toBe(0)
+  })
+
+  it('is not fooled by two readings that agree inside the lag', async () => {
+    // The failure this run length exists for. The rotation lags the panel by ~300ms; two samples
+    // taken inside that window agree with each other and describe the posture being *left*.
+    // Measured across seven folds with a pair as the test: six right, one unfold reading `rot 0`
+    // where it should have read 270 — a visible quarter turn, and only on some folds.
+    const adb = mockAdb()
+    const dm = await import('../displayMetrics')
+    const mid = dm.parseDisplayMetrics(metrics('2076x2152', '2076x2152', 0))
+    const settled = dm.parseDisplayMetrics(metrics('2076x2152', '2152x2076', 270))
+    vi.spyOn(adb, 'getDisplayMetrics')
+      .mockResolvedValueOnce(mid)        // inside the lag
+      .mockResolvedValueOnce(mid)        // still inside it, and agreeing with itself
+      .mockResolvedValue(settled)
+    const agent = new AndroidAgent({}, adb)
+    const state = stateFor()
+
+    await internals(agent).reconcileScreen(state, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')
+
+    // A pair would have stopped at the second reading and applied a quarter turn.
+    expect(state.rotation).toBe(270)
+    expect(state.streamRotation).toBe(0)
+  })
+
+  it('waits for the display to settle rather than reading mid-fold', async () => {
+    // Measured on a Pixel 9 Pro Fold: 300ms after unfolding, `init` was already the inner panel
+    // while `cur` and `mRotation` still described the cover; both had caught up by 600ms. Reading
+    // in that window yields the new size with the old rotation, and the viewer turns the picture by
+    // the difference — which is why the error alternated with every other fold.
+    const adb = mockAdb()
+    const mid = (await import('../displayMetrics')).parseDisplayMetrics(metrics('2076x2152', '2076x2152', 0))
+    const settled = (await import('../displayMetrics')).parseDisplayMetrics(metrics('2076x2152', '2152x2076', 270))
+    const reads = vi.spyOn(adb, 'getDisplayMetrics')
+      .mockResolvedValueOnce(mid)      // panel changed, rotation has not
+      .mockResolvedValue(settled)      // caught up, and stays put
+    const agent = new AndroidAgent({}, adb)
+    const state = stateFor()
+
+    await internals(agent).reconcileScreen(state, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')
+
+    // Three reads: the mid-fold one, then two that agree.
+    expect(reads.mock.calls.length).toBeGreaterThanOrEqual(3)
+    expect(state.rotation).toBe(270)
+    // The value the mid-fold reading would have produced, and the quarter turn the user saw.
+    expect(state.streamRotation).toBe(0)
+  })
+
+  it('follows the skin the emulator reports rather than assuming one', async () => {
+    // The skin's orientation comes from the AVD's startup orientation, so it is not a constant. A
+    // first version hard-coded 270 — the value this foldable happens to produce — which would have
+    // been silently wrong on a device created in portrait, on a machine nobody was testing on.
+    const agent = agentWith(metrics('1080x2424', '1080x2424', 0))
+    const state = stateFor()
+
+    await internals(agent).reconcileScreen(state, 'emulator-5554', 1080, 2424, 'PORTRAIT')
+
+    // Skin upright, screen upright: nothing to undo, and the frame arrives the same way round.
+    expect(state.streamRotation).toBe(0)
+  })
+
+  it('corrects a quarter turn in either direction', async () => {
+    const agent = agentWith(metrics('1080x2424', '2424x1080', 90))
+    const state = stateFor()
+    // Skin upright, Android rotated 90: the frame is a quarter turn behind, the other way.
+    await internals(agent).reconcileScreen(state, 'emulator-5554', 1080, 2424, 'PORTRAIT')
+    expect(state.streamRotation).toBe(270)
+
+    const other = stateFor()
+    const agent2 = agentWith(metrics('1080x2424', '2424x1080', 270))
+    await internals(agent2).reconcileScreen(other, 'emulator-5554', 1080, 2424, 'PORTRAIT')
+    expect(other.streamRotation).toBe(90)
+  })
+
+  it('reports no change when nothing moved', async () => {
+    const agent = agentWith(metrics('2076x2152', '2152x2076', 270))
+    const state = stateFor()
+    // Paired with its own mutation: the first call must return true, so the false below is a
+    // settled state rather than a call that did nothing.
+    expect(await internals(agent).reconcileScreen(state, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')).toBe(true)
+    expect(await internals(agent).reconcileScreen(state, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')).toBe(false)
+  })
+
+  it('falls back to the frame size when the metrics cannot be read', async () => {
+    const adb = mockAdb()
+    vi.spyOn(adb, 'getDisplayMetrics').mockRejectedValue(new Error('device offline'))
+    const agent = new AndroidAgent({}, adb)
+    const state = stateFor()
+
+    expect(await internals(agent).reconcileScreen(state, 'emulator-5554', 1080, 2424, 'REVERSE_LANDSCAPE')).toBe(true)
+    expect([state.videoWidth, state.videoHeight]).toEqual([1080, 2424])
+    expect(state.rotation).toBe(0)
+  })
+})
+
+// The map that was missing, and the reason a tap landed 90° from the finger.
+describe('toNaturalPoint', () => {
+  it('is the identity at rotation 0 — why an ordinary phone never needed it', () => {
+    expect(toNaturalPoint(0, 0.25, 0.75)).toEqual({ x: 0.25, y: 0.75 })
+  })
+
+  it('maps 270, the unfolded foldable', () => {
+    expect(toNaturalPoint(270, 0, 0)).toEqual({ x: 0, y: 1 })
+    expect(toNaturalPoint(270, 0.25, 0.75)).toEqual({ x: 0.75, y: 0.75 })
+  })
+
+  it('maps 90 as the mirror of 270', () => {
+    expect(toNaturalPoint(90, 0, 0)).toEqual({ x: 1, y: 0 })
+    expect(toNaturalPoint(90, 0.25, 0.75)).toEqual({ x: 0.25, y: 0.25 })
+  })
+
+  it('maps 180 as a half turn', () => {
+    expect(toNaturalPoint(180, 0.25, 0.75)).toEqual({ x: 0.75, y: 0.25 })
+  })
+
+  it('round-trips through four quarter turns back to itself', () => {
+    let p = { x: 0.3, y: 0.8 }
+    for (let i = 0; i < 4; i++) p = toNaturalPoint(90, p.x, p.y)
+    expect(p.x).toBeCloseTo(0.3)
+    expect(p.y).toBeCloseTo(0.8)
+  })
+})
+
+// `toNaturalPoint` being correct proves nothing about the input path using it. Measured twice on
+// this branch: deleting the call left every test green.
+describe('toDevicePx (the input wiring)', () => {
+  const stateFor = (rotation: 0 | 90 | 180 | 270 | null) => ({
+    videoWidth: 2076, videoHeight: 2152, rotation,
+  }) as unknown as TestState
+
+  it('maps through the display rotation', () => {
+    const agent = new AndroidAgent({}, mockAdb())
+    expect(internals(agent).toDevicePx(stateFor(270), 0, 0)).toEqual({ px: 0, py: 2152 })
+  })
+
+  it('is a plain scale at rotation 0, and on the scrcpy backend where it is null', () => {
+    const agent = new AndroidAgent({}, mockAdb())
+    const plain = { px: Math.round(0.25 * 2076), py: Math.round(0.75 * 2152) }
+    expect(internals(agent).toDevicePx(stateFor(0), 0.25, 0.75)).toEqual(plain)
+    expect(internals(agent).toDevicePx(stateFor(null), 0.25, 0.75)).toEqual(plain)
+  })
+
+  it('differs from the unrotated scale — the pair that makes the test above mean something', () => {
+    const agent = new AndroidAgent({}, mockAdb())
+    expect(internals(agent).toDevicePx(stateFor(270), 0.25, 0.75))
+      .not.toEqual(internals(agent).toDevicePx(stateFor(null), 0.25, 0.75))
+  })
+})
+
+describe('PosturableAgent (the wiring)', () => {
+  const STATES = `Supported states: [
+  DeviceState{identifier=0, name='CLOSED', app_accessible=true},
+  DeviceState{identifier=1, name='HALF_OPENED', app_accessible=true},
+  DeviceState{identifier=2, name='OPENED', app_accessible=true},
+]`
+
+  function posturableAdb(current = 'OPENED') {
+    const adb = mockAdb(true)
+    vi.spyOn(adb, 'printDeviceStates').mockResolvedValue(STATES)
+    vi.spyOn(adb, 'deviceState').mockResolvedValue(
+      `Committed state: DeviceState{identifier=0, name='${current}'}`)
+    vi.spyOn(adb, 'setPosture').mockResolvedValue(undefined)
+    return adb
+  }
+
+  it('lists the device\'s postures in contract order', async () => {
+    const agent = new AndroidAgent({}, posturableAdb())
+    expect((await agent.listPostures('avd:Pixel_8_API_34')).map((p) => p.label))
+      .toEqual(['Folded', 'Unfolded'])
+  })
+
+  it('reports the posture the device is actually in', async () => {
+    const agent = new AndroidAgent({}, posturableAdb('CLOSED'))
+    expect(await agent.getPosture('avd:Pixel_8_API_34')).toEqual({ id: '1', label: 'Folded' })
+    const open = new AndroidAgent({}, posturableAdb('HALF_OPENED'))
+    expect(await open.getPosture('avd:Pixel_8_API_34')).toEqual({ id: '2', label: 'Unfolded' })
+  })
+
+  it('sends the chosen identifier to the device', async () => {
+    const adb = posturableAdb()
+    const agent = new AndroidAgent({}, adb)
+    await agent.setPosture('avd:Pixel_8_API_34', '1')
+    expect(adb.setPosture).toHaveBeenCalledWith('emulator-5554', '1')
+  })
+
+  it('refuses an id the device does not offer, and sends nothing', async () => {
+    const adb = posturableAdb()
+    const agent = new AndroidAgent({}, adb)
+    // `cmd device_state` accepts an unknown identifier without adb surfacing the failure, so an
+    // unchecked id would read as a posture change that silently did nothing.
+    await expect(agent.setPosture('avd:Pixel_8_API_34', '99')).rejects.toThrow(/Unknown posture/)
+    expect(adb.setPosture).not.toHaveBeenCalled()
+  })
+
+  it('answers [] for a device that has no postures', async () => {
+    const adb = mockAdb(true)
+    vi.spyOn(adb, 'printDeviceStates').mockResolvedValue('Supported states: [\n]')
+    const agent = new AndroidAgent({}, adb)
+    expect(await agent.listPostures('avd:Pixel_8_API_34')).toEqual([])
+    expect(await agent.getPosture('avd:Pixel_8_API_34')).toBeNull()
+  })
+
+  it('is posturable by feature detection, whatever the device turns out to be', () => {
+    // The capability is the agent's, not the device's — one AndroidAgent hosts both kinds.
+    expect(isPosturable(new AndroidAgent({}, mockAdb()))).toBe(true)
   })
 })

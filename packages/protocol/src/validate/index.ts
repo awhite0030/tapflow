@@ -59,7 +59,7 @@ import type {
   NetworkError, NetworkSet, NetworkState,
   ClipboardWriteDone, DeviceBoot, DeviceBootError, DeviceBooting, DeviceReady, DeviceShutdown,
   DeviceShutdownDone, InputButton, InputDone, InputError, InputKey, InputKeyboardToggle,
-  InputPinchEnd, InputPinchMove, InputPinchStart, InputRotate, InputTouchEnd, InputTouchMove,
+  InputPinchEnd, InputPinchMove, InputPinchStart, InputPosture, InputRotate, InputTouchEnd, InputTouchMove,
   InputTouchStart, InputType, InputTypeDone, InputTypeError, KeyboardToggled, OpenUrl, OpenUrlDone,
   OpenUrlError, ScreenshotDone, ScreenshotError, SessionChrome, SessionDeviceInfo, SessionEnd,
   SessionLeave, SessionStart, StreamRegister, UiTreeError, UiTreeResponse,
@@ -167,6 +167,10 @@ const BROWSER_INBOUND = {
     payload: z.object({ name: z.string(), phase: z.enum(['down', 'up']).optional() }),
   }),
   'input:rotate': z.object({ type: z.literal('input:rotate'), sessionId }),
+  'input:posture': z.object({
+    type: z.literal('input:posture'), sessionId,
+    payload: z.object({ postureId: z.string() }),
+  }),
   'input:keyboard:toggle': z.object({ type: z.literal('input:keyboard:toggle'), sessionId }),
   'clipboard:read': z.object({
     type: z.literal('clipboard:read'), sessionId, requestId,
@@ -262,6 +266,7 @@ const AGENT_CONSUMED = {
 const AGENT_FORWARDED = {
   'session:chrome': env('session:chrome'),
   'session:deviceInfo': env('session:deviceInfo'),
+  'device:postures': env('device:postures'),
   // The only member whose `sessionId` is optional, and it is a documented deferral rather than an
   // oversight — stamping it would make a replayed ready satisfy an in-flight boot. See `DeviceReady`.
   'device:ready': z.object({
@@ -522,6 +527,7 @@ type _InputKey = Assert<V<'input:key', InputKey>>
 type _InputType = Assert<V<'input:type', InputType>>
 type _InputButton = Assert<V<'input:button', InputButton>>
 type _InputRotate = Assert<V<'input:rotate', InputRotate>>
+type _InputPosture = Assert<V<'input:posture', InputPosture>>
 type _InputKeyboardToggle = Assert<V<'input:keyboard:toggle', InputKeyboardToggle>>
 type _ClipboardRead = Assert<V<'clipboard:read', ClipboardRead>>
 type _ClipboardWrite = Assert<V<'clipboard:write', ClipboardWrite>>

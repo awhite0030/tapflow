@@ -29,6 +29,8 @@ export {
 export type { AudioFormat, AudioFrame, AudioSampleFormat, AudioChannels } from './types.js'
 export type { DeviceAgent, DeviceAgentConstructor } from './DeviceAgent.js'
 export { hasNetworkControl } from './NetworkControlCapability.js'
+export { isPosturable } from './PosturableCapability.js'
+export type { DevicePosture, PosturableAgent } from './PosturableCapability.js'
 export type {
   NetworkControlCapability,
   NetworkStatePayload,

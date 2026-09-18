@@ -15,7 +15,7 @@ import { SimulatorInfoCard } from './shared/SimulatorInfoCard';
 import { DeepLinkDialog } from './DeepLinkDialog';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import type { AndroidButton } from '@/lib/types'
+import type { AndroidButton, PosturesPayload } from '@/lib/types'
 import type { BinaryFrameHandler } from '@/lib/envelope'
 import { androidToNorm as toNormPure, toPinchFingers as makePinchFingers } from '@/lib/coordinate-transform';
 import type { MutableRefObject } from 'react';
@@ -59,6 +59,11 @@ interface AndroidViewerProps {
   restartButtonRef: MutableRefObject<HTMLButtonElement | null>;
   screenWidth?: number;
   screenHeight?: number;
+  /** Foldable postures from `device:postures`, already in most-closed→most-open order. */
+  postures?: PosturesPayload;
+  /** Quarter turns clockwise to apply to the video so it matches `screenWidth/Height`. The agent
+   *  computes it; see `AndroidChrome.streamRotation`. */
+  streamRotation?: 0 | 90 | 180 | 270;
   /** Rounded-corner radius as a fraction of width — the emulator bakes the device's corners into
    *  the framebuffer as black; we clip them so they don't show inside the screen bezel. 0 = square. */
   cornerRadius?: number;
@@ -71,7 +76,7 @@ export function AndroidViewer({
   launching, androidButtons,
   binaryFrameHandlerRef, clipboardHandlerRef, clipboardSupported, networkHandlerRef, networkSupported, onRecordingUploaded,
   rebootPending, onReboot, restartButtonRef,
-  screenWidth, screenHeight, cornerRadius,
+  screenWidth, screenHeight, cornerRadius, postures, streamRotation = 0,
   perfHookRef,
 }: AndroidViewerProps) {
   const surfaceHostRef = useRef<HTMLDivElement>(null);
@@ -83,6 +88,12 @@ export function AndroidViewer({
 
   const [deepLinkOpen, setDeepLinkOpen] = useState(false);
   const [canvasReady, setCanvasReady] = useState(false);
+  // **Hide the picture while the screen is changing under it.** `session:chrome` arrives before the
+  // stream has caught up — a fold changes the bezel's shape, its corner radius and the correction
+  // angle in one message, while the decoder is still emitting frames of the previous screen — so for
+  // a moment the old picture is drawn into the new frame, stretched and turned. That is the flash.
+  // The canvas comes back on the first frame that arrives at the new size, which `onResize` reports.
+
   const [decoderUnsupported, setDecoderUnsupported] = useState(false);
   const videoSizeRef = useRef<{ width: number; height: number } | null>(null);
   const [videoSize, setVideoSize] = useState<{ width: number; height: number } | null>(null);
@@ -225,6 +236,35 @@ export function AndroidViewer({
       stopClientRecording()
     }
   }, [recordState, startClientRecording, stopClientRecording, composeFrame, recordCanvasRef])
+
+  // A fold takes a moment — the emulator changes panel and the stream renegotiates — and without a
+  // sign of it the button reads as not having registered the press.
+  // The posture we asked for, or null when nothing is in flight. Holding the *target* rather than
+  // a boolean is what lets the release wait for the device to actually arrive there — a plain flag
+  // could only be released on a timer, and a timer that starts at the request expires long before
+  // the fold finishes.
+  const [pendingPosture, setPendingPosture] = useState<string | null>(null)
+  const posturePending = pendingPosture !== null
+  const handlePosture = useCallback((postureId: string) => {
+    setPendingPosture(postureId)
+    send({ type: 'input:posture', sessionId, payload: { postureId } })
+  }, [send, sessionId])
+  // **Released a beat after the device answers, not the instant it does.** `device:postures` and
+  // `session:chrome` are separate messages on separate paths, and the posture one usually wins —
+  // so releasing on it alone brings the picture back while the viewer still holds the previous
+  // screen's dimensions, which is the flash again. The beat lets the chrome land.
+  //
+  // The timer also runs when no answer arrives, so a posture change that fails silently ends with
+  // a visible screen rather than a permanent placeholder.
+  useEffect(() => {
+    if (pendingPosture === null) return
+    // Only the toolbar's spinner depends on this now — the picture is gated on the frame and the
+    // screen agreeing, which is a fact rather than a duration. Released as soon as the device
+    // reports the posture that was asked for, with a long stop for a change that never lands.
+    const arrived = postures?.currentId === pendingPosture
+    const t = setTimeout(() => setPendingPosture(null), arrived ? 0 : 8_000)
+    return () => clearTimeout(t)
+  }, [pendingPosture, postures])
 
   const handleRotate = useCallback(() => {
     send({ type: 'input:rotate', sessionId })
@@ -437,7 +477,12 @@ export function AndroidViewer({
 
   // ── Layout ────────────────────────────────────────────────────────────────
   // Scale by longest side so portrait and landscape stay the same physical size on screen
-  const effectiveSize = videoSize ?? (screenWidth && screenHeight ? { width: screenWidth, height: screenHeight } : null);
+  // **What Android draws, not what the stream carries.** `session:chrome` reports the display's
+  // current size; the emulator's gRPC capture arrives in the device's *physical* orientation, and on
+  // a folded foldable those differ — measured: Android draws 1080x2424 while the frame is 2424x1080.
+  // Framing the stream's dimensions is what laid the folded screen on its side.
+  const shownSize = screenWidth && screenHeight ? { width: screenWidth, height: screenHeight } : null;
+  const effectiveSize = shownSize ?? videoSize;
   const androidScale = effectiveSize
     ? Math.min(1, MAX_ANDROID_LONG / Math.max(effectiveSize.width, effectiveSize.height))
     : 0.3;
@@ -446,10 +491,29 @@ export function AndroidViewer({
 
   // CSS rotation: applied when the user requested landscape but the video content is still
   // portrait (portrait-locked app). Matches native Android emulator — the shell rotates even
-  // when app content stays portrait. Rotation-capable apps make the stream landscape, so they
-  // display naturally (any landscape direction stays upright — scrcpy mirrors the real display).
+  // when app content stays portrait.
+  //
+  // **Whether a rotation-capable app makes the stream landscape depends on the backend**, and an
+  // earlier version of this comment claimed it always does. scrcpy captures with
+  // `capture_orientation=@0`, so its frames stay in the device's natural orientation whatever the
+  // app does, and this CSS path is the only thing that rotates them. The emulator's gRPC backend
+  // captures the display as it actually is — measured on a Pixel 9 Pro Fold: 2152x2076 while
+  // `wm size` reported the natural 2076x2152 — so there the frame is already landscape and
+  // `isLandscapeContent` turns this off by itself.
   const isLandscapeContent = effectiveSize ? effectiveSize.width > effectiveSize.height : false;
   const needsCSSRotation = userWantsLandscape && !isLandscapeContent;
+  // **The device frame is never rotated — the video inside it is.** A foldable's frame follows the
+  // screen Android draws, and turning the whole shell was what put the bezel on its side. The
+  // quarter turn comes from the agent rather than from comparing the two sizes here: they update on
+  // different messages, and during a fold they disagree for a few frames, which is long enough to
+  // flip the picture and flip it back.
+  //
+  // **`needsCSSRotation` wins.** The two corrections answer different questions — one turns the
+  // shell because the user asked for landscape and the app refused, the other turns the video
+  // because the capture is not the orientation Android is drawing — and they need different
+  // container dimensions, so they cannot both be applied to one canvas. A first version branched on
+  // the stream correction first, which made the rotate button do nothing on any device that had one.
+  const quarterTurn = !needsCSSRotation && (streamRotation === 90 || streamRotation === 270);
   // react-hooks/immutability false positive: needsCSSRotationRef is only *read*, inside callbacks
   // (lines 204 and 293), is never passed to a hook or listed in a deps array, and is not exposed via
   // forwardRef — so writing it from an effect is the standard pattern the rule exists to allow. The
@@ -465,6 +529,44 @@ export function AndroidViewer({
   // content rounds at the same radius → no dark corner). Falls back to the design default 22px.
   // `cornerRadius == null` = unknown → design default; an explicit 0 (square screen) must stay 0.
   const screenRadius = cornerRadius != null ? Math.round(cornerRadius * androidDisplayW) : 22;
+  // The video is a quarter turn out: give the canvas the container's swapped dimensions, centre it,
+  // and turn it back. The container keeps the screen's shape throughout, so the bezel never moves.
+  // **The picture is shown when the frame and the screen agree, and hidden while they do not.**
+  //
+  // The two arrive on different paths: the stream changes shape the moment the emulator does, and
+  // `session:chrome` only once the agent has read the settled display. In the window between them
+  // the new frame is drawn into the old frame's dimensions — stretched and a quarter turn out —
+  // which is the flash.
+  //
+  // **Compared, not timed.** Earlier versions hid on the chrome arriving (too late — the flash had
+  // already happened) and then for a fixed beat after the device answered (a guess, and the fold
+  // outlasts it). The condition is not "how long does a fold take", it is "do these two describe
+  // the same screen", and both values are already here to be asked.
+  //
+  // Aspect rather than size, because the stream may be downscaled by the server-side resize; a
+  // downscale preserves the ratio. The tolerance covers the encoder's 16-pixel alignment — a
+  // 2076-wide panel is encoded 2080 wide.
+  const frameMatchesScreen = (() => {
+    if (!videoSize || !shownSize) return true
+    const quarter = streamRotation === 90 || streamRotation === 270
+    const frameW = quarter ? videoSize.height : videoSize.width
+    const frameH = quarter ? videoSize.width : videoSize.height
+    return Math.abs(frameW / frameH - shownSize.width / shownSize.height) < 0.05
+  })()
+  const pictureVisible = canvasReady && frameMatchesScreen;
+
+  const streamTurnStyle: React.CSSProperties = quarterTurn ? {
+    position: 'absolute',
+    width: androidDisplayH,
+    height: androidDisplayW,
+    top: (androidDisplayH - androidDisplayW) / 2,
+    left: (androidDisplayW - androidDisplayH) / 2,
+    transform: `rotate(${streamRotation}deg)`,
+    transformOrigin: 'center center',
+    visibility: pictureVisible ? 'visible' : 'hidden',
+    cursor: 'none',
+  } : {};
+
   const rotatedCanvasStyle: React.CSSProperties = needsCSSRotation ? {
     position: 'absolute',
     width: androidDisplayW,
@@ -473,10 +575,10 @@ export function AndroidViewer({
     left: (androidDisplayH - androidDisplayW) / 2,
     transform: 'rotate(90deg)',
     transformOrigin: 'center center',
-    visibility: canvasReady ? 'visible' : 'hidden',
+    visibility: pictureVisible ? 'visible' : 'hidden',
     cursor: 'none',
   } : {
-    visibility: canvasReady ? 'visible' : 'hidden',
+    visibility: pictureVisible ? 'visible' : 'hidden',
     cursor: 'none',
   };
 
@@ -570,6 +672,7 @@ export function AndroidViewer({
         onRecordToggle={handleRecordToggle}
         recordState={recordState}
         onRotate={handleRotate}
+        posture={postures && postures.postures.length > 1 ? { postures: postures.postures, currentId: postures.currentId, pending: posturePending, onSelect: handlePosture } : undefined}
         navigationSlot={navigationSlot}
         deviceSlot={deviceSlot}
         launchSlot={launchSlot}
@@ -590,19 +693,21 @@ export function AndroidViewer({
               <div
                 ref={surfaceHostRef}
                 className={needsCSSRotation ? undefined : 'block w-full h-full'}
-                style={rotatedCanvasStyle}
+                style={needsCSSRotation ? rotatedCanvasStyle : (quarterTurn ? streamTurnStyle : rotatedCanvasStyle)}
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
                 onPointerCancel={handlePointerCancel}
                 onPointerLeave={handlePointerLeave}
               />
-              {!canvasReady && (
+              {!pictureVisible && (
                 <div className="absolute inset-0 animate-pulse bg-zinc-700" />
               )}
-              {!canvasReady && deviceReady && (
+              {!pictureVisible && deviceReady && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.875rem' }}>Waiting for stream…</span>
+                  <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.875rem' }}>
+                    {posturePending || !frameMatchesScreen ? 'Changing posture…' : 'Waiting for stream…'}
+                  </span>
                 </div>
               )}
               <div

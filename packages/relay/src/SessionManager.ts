@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import { WebSocket } from 'ws'
 import type { DeviceStatus } from '@tapflowio/agent-core'
 import type { AgentResources, SessionInfo } from './types.js'
-import type { ChromePayload, DeviceDetails, DeviceReport } from '@tapflowio/protocol'
+import type { ChromePayload, DeviceDetails, DeviceReport, PosturesPayload } from '@tapflowio/protocol'
 
 export interface Session {
   id: string
@@ -46,6 +46,8 @@ export interface Session {
   readySent: boolean
   deviceOsVersion?: string
   chromeData?: ChromePayload
+  /** Cached like `chromeData`, and replayed to a re-joining viewer for the same reason. */
+  postures?: PosturesPayload
   deviceInfo?: DeviceDetails
   idleTimer: ReturnType<typeof setTimeout> | null
 }
@@ -321,6 +323,7 @@ export class SessionManager {
     // `device:boot` would clear them a moment later via `device:booting`, but an MCP-attached
     // session never boots on its own and would keep them for as long as it lives.
     session.chromeData = undefined
+    session.postures = undefined
     session.deviceInfo = undefined
 
     Object.assign(session, SessionManager.agentFields(agent, device))
@@ -349,6 +352,7 @@ export class SessionManager {
     const session = this.sessions.get(sessionId)
     if (!session) return
     session.chromeData = undefined
+    session.postures = undefined
     session.deviceInfo = undefined
     session.deviceStatus = 'shutdown'
     // Called on `device:booting`: whatever we announced before is no longer true, and replaying it
@@ -378,6 +382,11 @@ export class SessionManager {
   setChromeData(sessionId: string, data: ChromePayload): void {
     const session = this.sessions.get(sessionId)
     if (session) session.chromeData = data
+  }
+
+  setPostures(sessionId: string, postures: PosturesPayload): void {
+    const session = this.sessions.get(sessionId)
+    if (session) session.postures = postures
   }
 
   setDeviceInfo(sessionId: string, info: DeviceDetails): void {

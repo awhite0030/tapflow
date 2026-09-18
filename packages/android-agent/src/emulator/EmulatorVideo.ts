@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import { createLogger } from '@tapflowio/agent-core'
 import { EmulatorGrpcClient } from './EmulatorGrpcClient.js'
 import type { ScrcpyFrame } from '../scrcpy/ScrcpyVideo.js'
+import type { ScreenshotStream, SkinRotation } from './EmulatorGrpcClient.js'
 
 const logger = createLogger('android-agent:emulator-video')
 
@@ -26,6 +27,9 @@ export function ensureExecutable(bin: string): void {
 export interface EmulatorVideoInfo {
   width: number
   height: number
+  /** The display's rotation on the first frame. Input has to be mapped through it — see
+   *  `AndroidAgent.toNaturalPoint`. */
+  rotation: SkinRotation
   /** Rounded-corner radius as a fraction of width (0 = square). The emulator bakes the device's
    *  rounded corners into the framebuffer as opaque black; the viewer clips them with border-radius. */
   cornerRadius: number
@@ -64,6 +68,17 @@ export interface EmulatorVideoOptions {
   maxHeight?: number
   /** Injectable for tests; defaults to spawning the real Swift VT encoder binary. */
   spawnEncoder?: (fps: number) => EncoderProcess
+  /** Called whenever the captured frame's size **or rotation** changes, including the first frame.
+   *
+   *  **The agent de-normalises touches with this size**, and on this backend it used to come from
+   *  `adb wm size` once at boot. `wm size` reports the display's *natural* dimensions: measured on a
+   *  Pixel 9 Pro Fold, 2076x2152 while the live display was 2152x2076 (`mRotation=3`), so taps landed
+   *  rotated 90° counter-clockwise — before any folding. Folding then swaps which physical display is
+   *  on, changing the size again mid-stream. The stream is the only thing that knows the truth at
+   *  both moments, which is why the size travels from here rather than from a boot-time query.
+   *
+   *  The scrcpy backend has the same rule, reading the size off the SPS (`AndroidAgent`'s `onFrame`). */
+  onSizeChange?: (width: number, height: number, rotation: SkinRotation, cornerRadius: number) => void
 }
 
 /**
@@ -74,12 +89,13 @@ export interface EmulatorVideoOptions {
  */
 export class EmulatorVideo {
   private encoder: EncoderProcess | null = null
-  private capture: { frames: AsyncIterable<{ image: Buffer; width: number; height: number; seq: number }>; cancel: () => void } | null = null
+  private capture: ScreenshotStream | null = null
   private controller: ReadableStreamDefaultController<ScrcpyFrame> | null = null
   private readonly buffered: ScrcpyFrame[] = []
   private stdoutBuf = Buffer.alloc(0)
   private width = 0
   private height = 0
+  private rotation: SkinRotation | null = null
   private stopped = false
   private outputClosed = false
   private encoderBusy = false // encoder stdin is saturated → drop frames until 'drain' (no unbounded buffering)
@@ -129,10 +145,15 @@ export class EmulatorVideo {
     try {
       for await (const f of this.capture!.frames) {
         if (this.stopped) break
-        if (f.width !== this.width || f.height !== this.height) {
+        if (f.width !== this.width || f.height !== this.height || f.rotation !== this.rotation) {
           this.width = f.width
           this.height = f.height
-          logger.info(`video size → ${f.width}×${f.height}`)
+          this.rotation = f.rotation
+          logger.info(`video format → ${f.width}×${f.height} ${f.rotation}`)
+          // Re-measured, not carried over: folding swaps to a different physical panel, and its
+          // rounded corners are a different fraction of the width — 85px on the 2076-wide inner
+          // display against 115px on the 1080-wide cover, so 4.1% becomes 10.6%.
+          this.options.onSizeChange?.(f.width, f.height, f.rotation, detectCornerRadius(f.image, f.width, f.height))
         }
         const now = performance.now()
         if (!first && now - lastFwdMs < minIntervalMs) {
@@ -156,7 +177,7 @@ export class EmulatorVideo {
         if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null }
         pendingFrame = null
         lastFwdMs = now
-        if (first) { first = false; onFirst({ width: f.width, height: f.height, cornerRadius: detectCornerRadius(f.image, f.width, f.height) }) }
+        if (first) { first = false; onFirst({ width: f.width, height: f.height, rotation: f.rotation, cornerRadius: detectCornerRadius(f.image, f.width, f.height) }) }
         this.writeToEncoder(f.image, f.width, f.height)
       }
     } catch (e) {
@@ -175,7 +196,7 @@ export class EmulatorVideo {
     // (a clean early end, e.g. stopped during boot, reports the last-known dims).
     if (first) {
       if (captureError) onError(captureError)
-      else onFirst({ width: this.width, height: this.height, cornerRadius: 0 })
+      else onFirst({ width: this.width, height: this.height, rotation: this.rotation ?? 'PORTRAIT', cornerRadius: 0 })
     }
     // Source ended (cancelled / emulator gone) — settle the output stream.
     this.closeOutput()

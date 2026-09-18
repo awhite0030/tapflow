@@ -171,8 +171,10 @@ describe('protocol message interfaces', () => {
     // messages, the last direction that had none. 66 is `DeviceShutdownError`, #542 — the shutdown pair had
     // no failure member, so an undeliverable shutdown had nothing to be answered with. 70 is
     // `NetworkRequestState`, #614 — the relay had no way to ask an agent to re-report a device's
-    // network condition, so a re-joining viewer had no way to learn it.
-    expect(messages.size).toBe(70)
+    // network condition, so a re-joining viewer had no way to learn it. 72 is the posture pair —
+    // `InputPosture` and `DevicePostures`, the foldable work: a device whose screens rearrange needs a
+    // way to be asked and a way to say what it offers.
+    expect(messages.size).toBe(72)
     // `InputKey` predates L1 and has always been named; it must be in here too.
     expect(messages.has('InputKey')).toBe(true)
   })
