@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { iosToNormScreen,
   androidToNorm,
   toPinchFingers,
-  iosDisplayScale, placeTurnedFrame, turnedSize, surfaceBox, composeTurn, overlaySpace, showsPicture, framesAgree } from '@/lib/coordinate-transform'
+  iosDisplayScale, placeTurnedFrame, turnedSize, surfaceBox, composeTurn, overlaySpace, showsPicture, framesAgree, remaining } from '@/lib/coordinate-transform'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -316,5 +316,20 @@ describe('framesAgree — the comparison that replaced a duration', () => {
     // "changing" prose about a change nobody asked for.
     expect(framesAgree(null, { width: 1080, height: 2424 }, 0)).toBe(true)
     expect(framesAgree({ width: 1080, height: 2424 }, null, 0)).toBe(true)
+  })
+})
+
+describe('remaining — a stop the answer cannot move', () => {
+  it('counts down from a deadline fixed at the press', () => {
+    // Pressed at t=0 with an 8s stop; a non-matching report at t=4200 leaves 3800, not 8000.
+    // Re-arming instead is what made a failed posture change spin for 12.2s rather than 8.
+    expect(remaining(8_000, 4_200)).toBe(3_800)
+  })
+
+  it('never goes negative, so a deadline already past still fires', () => {
+    // A report arriving after the stop should end the hold on the next tick, not schedule one
+    // in the past and then never resolve.
+    expect(remaining(8_000, 9_000)).toBe(0)
+    expect(remaining(8_000, 8_000)).toBe(0)
   })
 })

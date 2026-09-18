@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { AndroidButton, PosturesPayload } from '@/lib/types'
 import type { BinaryFrameHandler } from '@/lib/envelope'
-import { androidToNorm as toNormPure, toPinchFingers as makePinchFingers, placeTurnedFrame, turnedSize, surfaceBox, composeTurn, overlaySpace, showsPicture, framesAgree, type Turn } from '@/lib/coordinate-transform';
+import { androidToNorm as toNormPure, toPinchFingers as makePinchFingers, placeTurnedFrame, turnedSize, surfaceBox, composeTurn, overlaySpace, showsPicture, framesAgree, remaining, type Turn } from '@/lib/coordinate-transform';
 import type { MutableRefObject } from 'react';
 import type { PerfHook } from '@/components/perf/types';
 import { useClipboardBridge, isBridgedChord, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
@@ -273,7 +273,14 @@ export function AndroidViewer({
   // the fold finishes.
   const [pendingPosture, setPendingPosture] = useState<string | null>(null)
   const posturePending = pendingPosture !== null
+  // The stop's deadline, fixed when the press happens. **A report that does not match cannot be
+  // allowed to move it**: `postures` is a fresh object per message, so re-running this effect
+  // re-armed a whole new 8s from whenever the report arrived — and the agent sends one on the
+  // failure path precisely so a change that did not happen ends. That made it end later. Same
+  // shape as the rotate hold two blocks down, which had the same deps and the same comment.
+  const postureDeadline = useRef(0)
   const handlePosture = useCallback((postureId: string) => {
+    postureDeadline.current = Date.now() + 8_000
     setPendingPosture(postureId)
     send({ type: 'input:posture', sessionId, payload: { postureId } })
   }, [send, sessionId])
@@ -290,7 +297,10 @@ export function AndroidViewer({
     // screen agreeing, which is a fact rather than a duration. Released as soon as the device
     // reports the posture that was asked for, with a long stop for a change that never lands.
     const arrived = postures?.currentId === pendingPosture
-    const t = setTimeout(() => setPendingPosture(null), arrived ? 0 : 8_000)
+    const t = setTimeout(
+      () => setPendingPosture(null),
+      arrived ? 0 : remaining(postureDeadline.current, Date.now()),
+    )
     return () => clearTimeout(t)
   }, [pendingPosture, postures])
 

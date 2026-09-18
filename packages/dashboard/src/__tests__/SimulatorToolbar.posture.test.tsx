@@ -101,10 +101,25 @@ describe('SimulatorToolbar posture control', () => {
     const onSelect = vi.fn()
     toolbar({ postures: FOLD, currentId: '1', pending: true, onSelect })
     const button = screen.getByRole('button', { name: /— changing$/ })
-    expect(button).toBeDisabled()
+    // **`aria-disabled`, and focusable.** The name changes at the moment of the press, so a
+    // `disabled` button drops out of the tab order exactly when it has something to announce —
+    // and its `aria-describedby` becomes unreachable with it. The refusal is in behaviour.
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).not.toBeDisabled()
     expect(button).toHaveAttribute('aria-busy', 'true')
+    button.focus()
+    expect(button).toHaveFocus()
     await userEvent.click(button)
     expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0)
+  })
+
+  it('refuses the toggle too, not only the menu', async () => {
+    // The pair case has its own trigger and its own handler, so "does not open a menu" says
+    // nothing about it — and a press that slipped through here would fold a device already mid-fold.
+    const onSelect = vi.fn()
+    toolbar({ postures: PAIR, currentId: '1', pending: true, onSelect })
+    await userEvent.click(screen.getByRole('button', { name: /— changing$/ }))
+    expect(onSelect).not.toHaveBeenCalled()
   })
 
   it('opens again once the device has answered', async () => {

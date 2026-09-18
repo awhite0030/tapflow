@@ -461,25 +461,36 @@ export function SimulatorToolbar({
             : (current ? `Posture: ${current.label}` : 'Posture');
           const trigger = (onClick?: () => void) => (
             <Button
-              variant="ghost" size="icon" className="h-8 w-8"
+              variant="ghost" size="icon" className="h-8 w-8 aria-disabled:opacity-50"
               aria-label={posture.pending ? `${label} — changing` : label}
               aria-busy={posture.pending}
-              disabled={posture.pending}
+              // `aria-disabled`, not `disabled`: this button's name changes at the moment it is
+              // pressed, and `disabled` takes the focused element out of the tab order so the new
+              // name is announced to nobody — and `aria-describedby` cannot be heard on a control
+              // that can no longer be focused, which is the one moment it has something to say.
+              // The restart, recording and network controls in this file each avoid the same
+              // shape (#447, #624); this one did not, and the refusal lives in the guard below.
+              aria-disabled={posture.pending}
               aria-describedby={postureStatusId}
-              onClick={onClick}
+              onClick={() => { if (!posture.pending) onClick?.(); }}
             >
               {posture.pending
                 ? <Loader2 className="h-4 w-4 animate-spin" />
                 : <PostureIcon className="h-4 w-4" />}
             </Button>
           );
-          // While a change is in flight the button is rendered without the menu attached at all.
-          // `disabled` alone does not stop the trigger opening it — measured — and a menu that opens
-          // over a device mid-fold offers a choice that would be sent into a posture already moving.
+          // While a change is in flight the button is rendered without the *menu* attached at all.
+          // `aria-disabled` does not stop a trigger opening it, and neither did `disabled` —
+          // measured — and a menu that opens over a device mid-fold offers a choice that would be
+          // sent into a posture already moving.
+          //
+          // The toggle keeps its handler, so the refusal for it is the guard in `trigger` rather
+          // than an absent callback. One refusal that a test can exercise beats two that look the
+          // same from outside: with the handler dropped here, removing the guard broke nothing.
           if (posture.pending) {
             return (
               <Tooltip>
-                <TooltipTrigger asChild>{trigger()}</TooltipTrigger>
+                <TooltipTrigger asChild>{trigger(pair ? () => posture.onSelect(other.id) : undefined)}</TooltipTrigger>
                 <TooltipContent side="left">{`${label} — changing`}</TooltipContent>
               </Tooltip>
             );

@@ -111,8 +111,14 @@ vi.mock('../emulator/EmulatorGrpcClient', () => ({
   }) }),
 }))
 
+/** The options the agent handed the last `EmulatorVideo`, so a test can fire `onSizeChange`
+ *  itself — the callback is created inside `startGrpcVideoStream` and reachable no other way. */
+type GrpcVideoOptions = { onSizeChange?: (w: number, h: number, skin: string, r: number) => void }
+let grpcVideoOptions: GrpcVideoOptions | null = null
 vi.mock('../emulator/EmulatorVideo', () => ({
-  EmulatorVideo: vi.fn(function () { return ({
+  EmulatorVideo: vi.fn(function (_client: unknown, options: Record<string, unknown>) {
+    grpcVideoOptions = options as GrpcVideoOptions
+    return ({
     start: vi.fn().mockImplementation(() => {
       const err = grpcStartError
       grpcStartError = null
@@ -123,7 +129,8 @@ vi.mock('../emulator/EmulatorVideo', () => ({
     frames: vi.fn(() => new ReadableStream<ScrcpyFrame>({ start(c) { grpcFramesController = c } })),
     requestIdr: vi.fn(),
     stop: vi.fn(),
-  }) }),
+  }) },
+  ),
 }))
 
 import { WebSocket, WebSocketServer } from 'ws'
@@ -175,6 +182,8 @@ interface TestState {
   skin: SkinRotation | null
   /** The grid injected touches land in; null falls back to the panel size. */
   touchRange: { width: number; height: number } | null
+  posturing: boolean
+  skinDirty: boolean
   /** The panel's corner radius in device pixels. */
   cornerRadiusPx: number
 }
@@ -190,6 +199,7 @@ interface AndroidAgentInternals {
   _scheduleReconnect(): void
   restartVideoStream(state: TestState): Promise<void>
   cleanupDeviceState(state: TestState): void
+  finishPosture(state: TestState | null, serial: string, before: 0 | 90 | 180 | 270 | null): Promise<void>
   handleRelayMessage(msg: unknown): void
   reconcileScreen(state: TestState, serial: string, frameW: number, frameH: number, skin: SkinRotation | null): Promise<boolean>
   toDevicePx(state: TestState, x: number, y: number): { px: number; py: number }
@@ -3723,6 +3733,164 @@ describe('a posture change reports as soon as the guest commits', () => {
     // control sitting on its long stop.
     const order = await (async () => { const o = fold({ commitsAfter: 0, postureFails: true }); await settle(); return o })()
     expect(order).toContain('device:postures')
+  })
+})
+
+describe('what the delta review found', () => {
+  const metrics = (rot: 0 | 90 | 180 | 270 = 0) => ({
+    natural: { width: 1080, height: 2424 },
+    current: rot === 0 ? { width: 1080, height: 2424 } : { width: 2424, height: 1080 },
+    rotation: rot,
+  })
+
+  it('stops the screen watch with the stream that started it', () => {
+    // The watcher writes `rotation`/`skin`/`streamRotation` and is started only by the gRPC
+    // stream. Left running while those are cleared, its next tick puts them straight back — and
+    // a restart that lands on scrcpy never starts a new one, so the stale interval outlives the
+    // backend it belonged to and keeps a dead stream's skin alive for the session.
+    const agent = new AndroidAgent({}, mockAdb(true))
+    const timer = setInterval(() => {}, 60_000)
+    const state = { deviceId: 'avd:Pixel_8_API_34', screenWatch: timer, grpcClient: null } as unknown as TestState
+    ;(agent as unknown as { clearGrpcState(s: TestState): void }).clearGrpcState(state)
+    expect(state.screenWatch).toBeNull()
+    clearInterval(timer)
+  })
+
+  it('does not unfold the device when a dead stream restarts', async () => {
+    // `normaliseOnBoot` sits at the top of `startGrpcVideoStream`, which the auto-restart also
+    // reaches — and there the tester is mid-test. A hiccup in the pump is not a reason to throw
+    // away the posture and rotation they were working in.
+    const adb = mockAdb(true)
+    vi.spyOn(adb, 'printDeviceStates').mockResolvedValue(
+      `DeviceState{identifier=0, name='CLOSED'}\nDeviceState{identifier=1, name='HALF_OPENED'}`)
+    vi.spyOn(adb, 'deviceState').mockResolvedValue(`Committed state: DeviceState{identifier=0, name='CLOSED'}`)
+    const setPosture = vi.spyOn(adb, 'setPosture').mockResolvedValue(undefined)
+    const setRotation = vi.spyOn(adb, 'setRotation').mockResolvedValue(undefined)
+    const agent = new AndroidAgent({}, adb)
+    const state = { deviceId: 'avd:Pixel_8_API_34', landscape: true, restarting: true } as unknown as TestState
+
+    await internals(agent).normaliseOnBoot(state, 'emulator-5554')
+
+    expect(setPosture).not.toHaveBeenCalled()
+    expect(setRotation).not.toHaveBeenCalled()
+    expect(state.landscape).toBe(true)
+  })
+
+  it('re-describes the screen after carrying the rotation across', async () => {
+    // A rotation changes the correction and not the frame's shape, so nothing in the stream
+    // reveals it and an idle screen sends no frame. The report has already gone out by then, so
+    // without this the picture is shown a quarter turn out — and `toDevicePx` maps taps through
+    // the same stale `state.rotation`.
+    const adb = mockAdb(true)
+    vi.spyOn(adb, 'getDisplayMetrics').mockResolvedValue(metrics(270))
+    const setRotation = vi.spyOn(adb, 'setRotation').mockResolvedValue(undefined)
+    const agent = new AndroidAgent({}, adb)
+    const sent: string[] = []
+    ;(agent as unknown as { ws: { readyState: number; send(d: string): void } }).ws = {
+      readyState: 1, send: (d: string) => sent.push((JSON.parse(d) as { type: string }).type),
+    }
+    const state = {
+      deviceId: 'avd:Pixel_8_API_34', sessionId: 's1', booted: true, grpcClient: {},
+      videoWidth: 1080, videoHeight: 2424, displayWidth: 1080, displayHeight: 2424,
+      rotation: 0, streamRotation: 0, skin: 'PORTRAIT', cornerRadiusPx: 0,
+    } as unknown as TestState
+
+    await internals(agent).finishPosture(state, 'emulator-5554', 0)
+
+    expect(setRotation).toHaveBeenCalledWith('emulator-5554', 0)
+    expect(state.rotation).toBe(270)
+    expect(sent).toContain('session:chrome')
+  })
+
+  it('says nothing when there is no viewer to say it to', async () => {
+    // The capability entry point takes a device, not a session, so it passes no state — and the
+    // pair with the test above is what stops that being an accident.
+    const adb = mockAdb(true)
+    vi.spyOn(adb, 'getDisplayMetrics').mockResolvedValue(metrics(270))
+    vi.spyOn(adb, 'setRotation').mockResolvedValue(undefined)
+    const agent = new AndroidAgent({}, adb)
+    await expect(internals(agent).finishPosture(null, 'emulator-5554', 0)).resolves.toBeUndefined()
+  })
+
+  it('ignores a second posture request while one is in flight', async () => {
+    // The report now goes out before the carry finishes, which puts the control back within
+    // reach while the first change is still settling. A second press would read its `before`
+    // from a panel mid-swap, and the two carries would land in arbitrary order.
+    const adb = mockAdb(true)
+    vi.spyOn(adb, 'printDeviceStates').mockResolvedValue(
+      `DeviceState{identifier=0, name='CLOSED'}\nDeviceState{identifier=1, name='HALF_OPENED'}`)
+    vi.spyOn(adb, 'deviceState').mockResolvedValue(`Committed state: DeviceState{identifier=1, name='HALF_OPENED'}`)
+    vi.spyOn(adb, 'getDisplayMetrics').mockResolvedValue(metrics(0))
+    const setPosture = vi.spyOn(adb, 'setPosture').mockImplementation(
+      () => new Promise((r) => setTimeout(r, 120)))
+    const agent = new AndroidAgent({}, adb)
+    const state = { deviceId: 'avd:Pixel_8_API_34', sessionId: 's1', booted: true, posturing: false } as unknown as TestState
+    internals(agent).deviceStates.set('s1', state)
+
+    internals(agent).handleRelayMessage({ type: 'input:posture', sessionId: 's1', payload: { postureId: '2' } })
+    internals(agent).handleRelayMessage({ type: 'input:posture', sessionId: 's1', payload: { postureId: '1' } })
+    await new Promise((r) => setTimeout(r, 400))
+
+    expect(setPosture).toHaveBeenCalledTimes(1)
+    // And the flag is released, so the next real press is not swallowed too.
+    expect(state.posturing).toBe(false)
+  })
+
+  it('records a size change it had to drop, because nothing will report it twice', async () => {
+    // The write half. `EmulatorVideo` reports a change once and records the new value, so a
+    // callback dropped while a reconcile is running is the only notice there will ever be — and
+    // a skin-only change moves none of the fields the watcher's cheap read compares.
+    grpcVideoOptions = null
+    const adb = mockAdb(true)
+    vi.spyOn(adb, 'getScreenSize').mockResolvedValue({ width: 1080, height: 2400 })
+    const pinned = process.env.TAPFLOW_ANDROID_BACKEND
+    process.env.TAPFLOW_ANDROID_BACKEND = 'grpc'
+    const agent = new AndroidAgent({}, adb)
+    const state = {
+      deviceId: 'avd:Pixel_8_API_34', sessionId: 's1', booted: true,
+      reconciling: false, screenWatch: null, skinDirty: false,
+    } as unknown as TestState
+    try {
+      await (agent as unknown as {
+        startGrpcVideoStream(s: TestState, ws: unknown, serial: string): Promise<void>
+      }).startGrpcVideoStream(state, { readyState: 1, send: () => {} }, 'emulator-5554')
+      if (state.screenWatch) clearInterval(state.screenWatch)
+      // Read through a local: the only assignment is inside the mock factory, which the
+      // compiler cannot see from here, so it narrows the module-level binding to `null`.
+      const opts = grpcVideoOptions as GrpcVideoOptions | null
+      expect(opts?.onSizeChange).toBeTypeOf('function')
+      // A reconcile is already running, so this callback is dropped — and must leave a mark.
+      state.reconciling = true
+      opts!.onSizeChange!(2152, 2076, 'REVERSE_LANDSCAPE', 0)
+      expect(state.skinDirty).toBe(true)
+    } finally {
+      if (pinned === undefined) delete process.env.TAPFLOW_ANDROID_BACKEND
+      else process.env.TAPFLOW_ANDROID_BACKEND = pinned
+    }
+  })
+
+  it('settles after a dropped size change the cheap read cannot see', async () => {
+    // `EmulatorVideo` reports a change once and records it, so a skin-only change dropped while
+    // a reconcile was running never repeats — and it moves none of the three fields the cheap
+    // read compares, so nothing else would ever pick it up.
+    vi.useFakeTimers()
+    const adb = mockAdb(true)
+    const reads = vi.spyOn(adb, 'getDisplayMetrics').mockResolvedValue(metrics(0))
+    const agent = new AndroidAgent({}, adb)
+    const state = {
+      deviceId: 'avd:Pixel_8_API_34', sessionId: 's1', booted: true, reconciling: false,
+      screenWatch: null, skin: 'PORTRAIT', skinDirty: true,
+      videoWidth: 1080, videoHeight: 2424, displayWidth: 1080, displayHeight: 2424,
+      rotation: 0, streamRotation: 0, cornerRadiusPx: 0,
+    } as unknown as TestState
+    internals(agent).watchScreen(state, 'emulator-5554', 'PORTRAIT')
+    await vi.advanceTimersByTimeAsync(2_000)
+    // More than the single cheap read: the settling pass ran even though nothing in `dumpsys`
+    // had moved. And the flag is consumed, so the next idle tick is cheap again.
+    expect(reads.mock.calls.length).toBeGreaterThan(1)
+    expect(state.skinDirty).toBe(false)
+    if (state.screenWatch) clearInterval(state.screenWatch)
+    vi.useRealTimers()
   })
 })
 

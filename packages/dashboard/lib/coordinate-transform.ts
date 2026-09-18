@@ -216,3 +216,19 @@ export function framesAgree(
   const { width, height } = turnedSize(video.width, video.height, streamRotation)
   return Math.abs(width / height - shown.width / shown.height) < 0.05
 }
+
+/**
+ * How long a hold with a fixed deadline has left.
+ *
+ * **A stop must not be movable by the thing it is stopping.** Both holds in the Android viewer
+ * were written as a timer re-armed by their own effect's dependencies, so an answer arriving
+ * inside the window cleared the running timer and started a fresh full one — a fast agent
+ * produced a *longer* wait than a slow one. The posture hold had it worse: the agent sends a
+ * report on the failure path precisely so a change that did not happen ends, and that report
+ * pushed the end further out.
+ *
+ * Never negative, so a deadline already passed fires on the next tick rather than never.
+ */
+export function remaining(deadline: number, now: number): number {
+  return Math.max(0, deadline - now)
+}

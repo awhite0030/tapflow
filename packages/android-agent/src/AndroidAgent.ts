@@ -301,6 +301,13 @@ interface DeviceState {
    *  on: on a foldable those differ, and this is the one input is measured in. Read once per
    *  stream; null means the read failed and the panel size is used instead. */
   touchRange: { width: number; height: number } | null
+  /** An `onSizeChange` was dropped because a reconcile was already running. The watcher's cheap
+   *  read cannot see a skin-only change, so it has to be told one was missed. */
+  skinDirty: boolean
+  /** A posture change is in flight. The device can only be in one posture, and the carry that
+   *  follows reads a rotation from before the change — so a second request overlapping the first
+   *  restores an orientation the device has already left. */
+  posturing: boolean
   /** Polls the display while the session is live. See `SCREEN_WATCH_INTERVAL_MS`. */
   screenWatch: ReturnType<typeof setInterval> | null
   /** A reconcile is in flight; the fold's own and the watcher's must not overlap. */
@@ -575,6 +582,8 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         streamRotation: 0,
         skin: null,
         touchRange: null,
+        posturing: false,
+        skinDirty: false,
         screenWatch: null,
         reconciling: false,
         displayWidth: 0,
@@ -690,6 +699,12 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
    * three copies, because the first version fixed the path that was easiest to see.
    */
   private clearGrpcState(state: DeviceState): void {
+    // **The watcher is part of this too.** It is started only by the gRPC stream and it writes
+    // the very fields below, so leaving it running while they are cleared lets its next tick put
+    // them straight back — and a restart that lands on scrcpy never starts a new one, so the old
+    // interval keeps a dead stream's `skin` alive for the rest of the session.
+    if (state.screenWatch) clearInterval(state.screenWatch)
+    state.screenWatch = null
     state.grpcClient?.close()
     state.grpcClient = null
     state.cornerRadiusPx = 0
@@ -781,7 +796,9 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
    */
   async setPosture(deviceId: string, postureId: string): Promise<void> {
     const { serial, before } = await this.beginPosture(deviceId, postureId)
-    await this.finishPosture(serial, before)
+    // No state: `deviceStates` is keyed by session and this entry point takes a device. The
+    // capability's callers do not hold a viewer, so there is nothing to re-describe to.
+    await this.finishPosture(null, serial, before)
   }
 
   /**
@@ -811,7 +828,9 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     const before = (await this.adb.getDisplayMetrics(serial).catch(() => null))?.rotation ?? null
     await this.adb.setPosture(serial, postureId)
     const started = Date.now()
-    for (let waited = 0; waited < POSTURE_COMMIT_TIMEOUT_MS; waited += POSTURE_COMMIT_POLL_MS) {
+    // Measured against the clock, not by adding up the sleeps: each pass also costs a read, so
+    // counting only the gaps overran the constant this promises by a third.
+    while (Date.now() - started < POSTURE_COMMIT_TIMEOUT_MS) {
       const current = await this.adb.deviceState(serial).then(parseCurrentPosture).catch(() => null)
       if (current === postureId) {
         logger.info(`posture ${postureId}: guest committed in ${Date.now() - started}ms`)
@@ -841,7 +860,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
    * reconcile's completion, and the duplicate is now background work that delays nothing a viewer
    * sees. Left deliberately rather than by omission.
    */
-  private async finishPosture(serial: string, before: 0 | 90 | 180 | 270 | null): Promise<void> {
+  private async finishPosture(state: DeviceState | null, serial: string, before: 0 | 90 | 180 | 270 | null): Promise<void> {
     if (before === null) return
     const after = await this.stableDisplayMetrics(serial)
     if (!after || after.rotation === before) return
@@ -849,6 +868,16 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     logger.info(`posture: carrying rotation ${before} across`)
     await this.adb.setRotation(serial, quarter)
       .catch((e: unknown) => logger.warn(`could not carry the rotation across: ${(e as Error).message}`))
+    // **And say so, for the same reason `input:rotate` does.** A rotation changes the correction
+    // the viewer applies but not the frame's dimensions — the capture is the skin, which does not
+    // move — so nothing in the stream reveals it, and an idle screen sends no frame either. It
+    // also leaves `state.rotation` stale, which is what `toDevicePx` maps every tap through. The
+    // report had already gone out by now, so without this the picture is shown a quarter turn out
+    // until the watcher's next tick, and taps land there too.
+    if (!state?.grpcClient) return
+    const changed = await this.reconcileScreen(
+      state, serial, state.videoWidth, state.videoHeight, state.skin)
+    if (changed && state.booted) this.sendChrome(state)
   }
 
   /** Tell the viewer which postures exist and which one the device is in. Sent at boot and after a
@@ -948,6 +977,11 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
    * logged rather than failing the boot. The session is usable in the state it is in.
    */
   private async normaliseOnBoot(state: DeviceState, serial: string): Promise<void> {
+    // **A restart is not a boot.** This runs from `startGrpcVideoStream`, which the stream's own
+    // auto-restart also reaches — and there the tester is mid-test. Unfolding their device and
+    // standing it upright because the pump hiccuped is the opposite of what the normalisation is
+    // for: it exists so a *new* session starts from a state both sides can name.
+    if (state.restarting) return
     const postures = await this.listPostures(state.deviceId)
     const open = bootPostureId(postures)
     const folded = open !== null && open !== (await this.getPosture(state.deviceId))?.id
@@ -986,7 +1020,11 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         // read itself is 20ms, so a steady-state tick is now 3% of what it was, and the sampling
         // it used to do no longer competes with a fold's own.
         const quick = await this.adb.getDisplayMetrics(serial).catch(() => null)
-        if (quick
+        // A dropped `onSizeChange` is a change this read cannot see: the skin lives in the frame,
+        // not in `dumpsys`. Cleared here so the settling pass below is what answers it.
+        const missed = state.skinDirty
+        state.skinDirty = false
+        if (!missed && quick
           && quick.natural.width === state.videoWidth && quick.natural.height === state.videoHeight
           && quick.current.width === state.displayWidth && quick.current.height === state.displayHeight
           && quick.rotation === state.rotation) return
@@ -1309,7 +1347,16 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
       // previous one is still resolving is dropped rather than queued; the next frame at the new
       // size re-reports, and sizes do not change faster than a person can fold a phone.
       onSizeChange: (w, h, skin) => {
-        if (state.emulatorVideo !== video || state.reconciling) return
+        if (state.emulatorVideo !== video) return
+        if (state.reconciling) {
+          // **Dropped, and the drop has to be remembered.** `EmulatorVideo` reports a change once
+          // and records the new value, so it will not call back with the same skin again — and a
+          // skin-only change moves none of the three fields the watcher's cheap read compares, so
+          // nothing would ever pick it up. The comment here used to say the next frame re-reports;
+          // that is true for a size and false for an orientation.
+          state.skinDirty = true
+          return
+        }
         state.reconciling = true
         void this.reconcileScreen(state, serial, w, h, skin)
           .then((changed) => { if (changed && state.booted) this.sendChrome(state) })
@@ -2241,6 +2288,16 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         // carry that follows needs a settling read the viewer never consumes, and waiting for it
         // added ~380ms to every fold. Nothing on this side records the posture — `sendPostures`
         // reads the device, which is also what makes a fold performed outside tapflow show up.
+        // **One at a time.** The report now goes out before the carry finishes, which is what
+        // puts the control back within reach while the first change is still settling — so the
+        // second press would read its `before` from a panel mid-swap and the two carries would
+        // land in arbitrary order. Dropped rather than queued: a second request during a fold is
+        // a double-press, and the posture it asks for is the one already arriving.
+        if (state.posturing) {
+          logger.info(`posture ${postureId}: a change is already in flight, ignoring`)
+          break
+        }
+        state.posturing = true
         void (async () => {
           let carry: { serial: string; before: 0 | 90 | 180 | 270 | null } | null = null
           try {
@@ -2248,11 +2305,13 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
           } catch (e: unknown) {
             logger.warn(`setPosture(${postureId}): ${(e as Error).message}`)
           }
-          // Sent on the failure path too, so a change that could not happen releases the control
-          // rather than leaving it on its own long stop.
+          // Sent on the failure path too, so a change that could not happen reports what the
+          // device really is rather than leaving the control with nothing to go on.
           await this.sendPostures(state)
-          if (carry) await this.finishPosture(carry.serial, carry.before)
-        })().catch((e: unknown) => logger.warn(`posture ${postureId}: ${(e as Error).message}`))
+          if (carry) await this.finishPosture(state, carry.serial, carry.before)
+        })()
+          .catch((e: unknown) => logger.warn(`posture ${postureId}: ${(e as Error).message}`))
+          .finally(() => { state.posturing = false })
         break
       }
       case 'input:button': {
