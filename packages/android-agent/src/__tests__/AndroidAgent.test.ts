@@ -3659,6 +3659,73 @@ describe('clearGrpcState — every teardown that can come back on scrcpy', () =>
   })
 })
 
+describe('a posture change reports as soon as the guest commits', () => {
+  const STATES = `DeviceState{identifier=0, name='CLOSED'}\nDeviceState{identifier=1, name='HALF_OPENED'}`
+  const committed = (name: string) => `Committed state: DeviceState{identifier=1, name='${name}'}`
+
+  /** Drives `input:posture` and records the order of everything the agent did. */
+  function fold(opts: { commitsAfter: number; postureFails?: boolean }) {
+    const adb = mockAdb(true)
+    const order: string[] = []
+    vi.spyOn(adb, 'printDeviceStates').mockResolvedValue(STATES)
+    let reads = 0
+    vi.spyOn(adb, 'deviceState').mockImplementation(async () => {
+      order.push('deviceState')
+      return committed(reads++ < opts.commitsAfter ? 'CLOSED' : 'HALF_OPENED')
+    })
+    vi.spyOn(adb, 'setPosture').mockImplementation(async () => {
+      order.push('setPosture')
+      if (opts.postureFails) throw new Error('KO: unknown command')
+    })
+    vi.spyOn(adb, 'getDisplayMetrics').mockImplementation(async () => {
+      order.push('getDisplayMetrics')
+      return { natural: { width: 1080, height: 2424 }, current: { width: 1080, height: 2424 }, rotation: 0 as const }
+    })
+    vi.spyOn(adb, 'setRotation').mockResolvedValue(undefined)
+    const agent = new AndroidAgent({}, adb)
+    ;(agent as unknown as { ws: { readyState: number; send(d: string): void } }).ws = {
+      readyState: 1,
+      send: (d: string) => { if ((JSON.parse(d) as { type: string }).type === 'device:postures') order.push('device:postures') },
+    }
+    const state = { deviceId: 'avd:Pixel_8_API_34', sessionId: 's1', booted: true } as unknown as TestState
+    internals(agent).deviceStates.set('s1', state)
+    internals(agent).handleRelayMessage({ type: 'input:posture', sessionId: 's1', payload: { postureId: '2' } })
+    return order
+  }
+
+  const settle = async () => { await new Promise((r) => setTimeout(r, 400)) }
+
+  it('does not make the viewer wait for the rotation carry\'s settling read', async () => {
+    // **The ~380ms this split removes.** The report used to be chained to the whole operation,
+    // including a settling read whose answer only the rotation carry consumes — measured on a
+    // Pixel 9 Pro Fold as the screen's description landing at ~740ms and the posture report at
+    // ~1100ms. The carry still happens; it just stopped being something the viewer waits on.
+    const order = await (async () => { const o = fold({ commitsAfter: 1 }); await settle(); return o })()
+    const reported = order.indexOf('device:postures')
+    expect(reported).toBeGreaterThan(-1)
+    // One `getDisplayMetrics` precedes it — the pre-change rotation the carry will restore. The
+    // settling run is several more, and all of them must come after.
+    expect(order.slice(0, reported).filter((o) => o === 'getDisplayMetrics')).toHaveLength(1)
+    expect(order.slice(reported).filter((o) => o === 'getDisplayMetrics').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('waits for the guest to commit before reporting, not just for the console', async () => {
+    // `adb emu posture` returns as soon as the emulator takes it; the guest follows a moment
+    // later. Reporting in between names the posture being left, and the viewer's control is
+    // released by the report *matching what was asked for* — so it would hang on its 8s stop.
+    const order = await (async () => { const o = fold({ commitsAfter: 2 }); await settle(); return o })()
+    const reported = order.indexOf('device:postures')
+    expect(order.slice(0, reported).filter((o) => o === 'deviceState').length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('still reports when the device refuses the change', async () => {
+    // A posture that could not be written ends with an honest report rather than with the
+    // control sitting on its long stop.
+    const order = await (async () => { const o = fold({ commitsAfter: 0, postureFails: true }); await settle(); return o })()
+    expect(order).toContain('device:postures')
+  })
+})
+
 describe('the screen watch is cheap while nothing moves', () => {
   const settled = { natural: { width: 1080, height: 2424 }, current: { width: 1080, height: 2424 }, rotation: 0 as const }
   const watching = (metricsImpl: () => Promise<typeof settled>) => {

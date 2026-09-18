@@ -130,6 +130,12 @@ const SCREEN_WATCH_INTERVAL_MS = 2_000
 const METRICS_STABLE_RUN = 3
 const METRICS_SAMPLES = 12
 const METRICS_SAMPLE_GAP_MS = 300
+// A posture is committed by the guest a moment after the emulator console takes it. Polled
+// because there is no push, and cheaply: `cmd device_state state` measures 20ms, so the wait is
+// the guest's own latency rather than a sampling schedule. The stop is long because a device that
+// never commits should still end with an honest report rather than a spinner.
+const POSTURE_COMMIT_POLL_MS = 50
+const POSTURE_COMMIT_TIMEOUT_MS = 3_000
 
 const SKIN_DEGREES: Record<SkinRotation, 0 | 90 | 180 | 270> = {
   PORTRAIT: 0,
@@ -774,12 +780,26 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
    * written before it is overwritten by whatever the incoming panel had.
    */
   async setPosture(deviceId: string, postureId: string): Promise<void> {
+    const { serial, before } = await this.beginPosture(deviceId, postureId)
+    await this.finishPosture(serial, before)
+  }
+
+  /**
+   * Write the posture and wait for the **guest** to commit it — nothing more.
+   *
+   * Split from the rotation carry because the viewer holds the picture until `device:postures`
+   * says the device arrived, and that report used to wait for the carry's settling read as well.
+   * Measured on a Pixel 9 Pro Fold: the screen's own description was already on the wire at
+   * ~740ms while the posture report landed at ~1100ms, so the last ~380ms of every fold was the
+   * viewer waiting on a read whose answer it does not consume.
+   *
+   * The wait is a direct read of the thing that changed — `cmd device_state state` at 20ms a
+   * call — rather than an inference from the display settling. A commit that never arrives falls
+   * out after `POSTURE_COMMIT_TIMEOUT_MS`, and the report then says what the device really is.
+   */
+  private async beginPosture(deviceId: string, postureId: string): Promise<{ serial: string; before: 0 | 90 | 180 | 270 | null }> {
     const serial = this.adb.getSerial(deviceId)
     if (!serial) throw new PlatformError(`No device for ${deviceId}`)
-    // The viewer holds the picture back for this whole call and then for the reconcile the new
-    // frame triggers, so the two halves are timed separately — a fold that takes seconds is one
-    // of them, and until now the log said only that it finished.
-    const started = Date.now()
     // Checked against the list rather than passed through. The list is what the *guest* says it
     // supports, filtered to what the emulator console can actually reach — so an id outside it is
     // either unknown or a posture tapflow cannot move the device into, and both would read as a
@@ -790,15 +810,43 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     }
     const before = (await this.adb.getDisplayMetrics(serial).catch(() => null))?.rotation ?? null
     await this.adb.setPosture(serial, postureId)
-    if (before === null) return
-    // Settle first: reading or writing the rotation mid-change lands on the panel being left.
-    const after = await this.stableDisplayMetrics(serial)
-    if (!after || after.rotation === before) {
-      logger.info(`posture ${postureId}: device answered in ${Date.now() - started}ms`)
-      return
+    const started = Date.now()
+    for (let waited = 0; waited < POSTURE_COMMIT_TIMEOUT_MS; waited += POSTURE_COMMIT_POLL_MS) {
+      const current = await this.adb.deviceState(serial).then(parseCurrentPosture).catch(() => null)
+      if (current === postureId) {
+        logger.info(`posture ${postureId}: guest committed in ${Date.now() - started}ms`)
+        return { serial, before }
+      }
+      await new Promise((resolve) => setTimeout(resolve, POSTURE_COMMIT_POLL_MS))
     }
+    logger.warn(`posture ${postureId}: guest did not commit within ${POSTURE_COMMIT_TIMEOUT_MS}ms`)
+    return { serial, before }
+  }
+
+  /**
+   * Put the panel back into the orientation the tester was already in.
+   *
+   * **Each panel remembers its own rotation, and a person does not think of it that way.** Folding
+   * a device held sideways and unfolding it gives you the inner panel's last rotation, not the one
+   * you were just looking at — so a landscape session came back landscape only by coincidence, and
+   * a portrait one came back landscape. Carrying the rotation across makes the posture control
+   * change one thing at a time, which is what a physical hinge does.
+   *
+   * The rotation is re-applied rather than pre-set: the panels swap during the change, and a lock
+   * written before it is overwritten by whatever the incoming panel had.
+   *
+   * **Off the critical path, and it still settles.** It needs the rotation the *incoming* panel
+   * settled on, which a single reading taken mid-fold gets wrong. That duplicates the settling the
+   * frame-driven reconcile is doing at the same moment; sharing one would mean waiting on that
+   * reconcile's completion, and the duplicate is now background work that delays nothing a viewer
+   * sees. Left deliberately rather than by omission.
+   */
+  private async finishPosture(serial: string, before: 0 | 90 | 180 | 270 | null): Promise<void> {
+    if (before === null) return
+    const after = await this.stableDisplayMetrics(serial)
+    if (!after || after.rotation === before) return
     const quarter = (before / 90) as 0 | 1 | 2 | 3
-    logger.info(`posture ${postureId}: carrying rotation ${before} across (${Date.now() - started}ms so far)`)
+    logger.info(`posture: carrying rotation ${before} across`)
     await this.adb.setRotation(serial, quarter)
       .catch((e: unknown) => logger.warn(`could not carry the rotation across: ${(e as Error).message}`))
   }
@@ -2188,13 +2236,23 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         const { postureId } = msg.payload as { postureId: string }
         // No ack by declaration (same as `input:rotate`), so a failure is reported by the posture
         // list that follows saying the device did not move, rather than by an error nobody awaits.
-        // **Nothing on this side records the posture.** An earlier version did, to feed a
-        // per-posture rotation offset that turned out to be fitted to a bad baseline; the offset
-        // is gone and the field went with it. `sendPostures` reads the device rather than a
-        // remembered value, which is also what makes a fold performed outside tapflow show up.
-        void this.setPosture(state.deviceId, postureId)
-          .catch((e: unknown) => logger.warn(`setPosture(${postureId}): ${(e as Error).message}`))
-          .finally(() => { void this.sendPostures(state) })
+        // **Reported the moment the guest commits, not when the whole change finishes.** The
+        // viewer's control is held until `device:postures` says the device arrived; the rotation
+        // carry that follows needs a settling read the viewer never consumes, and waiting for it
+        // added ~380ms to every fold. Nothing on this side records the posture — `sendPostures`
+        // reads the device, which is also what makes a fold performed outside tapflow show up.
+        void (async () => {
+          let carry: { serial: string; before: 0 | 90 | 180 | 270 | null } | null = null
+          try {
+            carry = await this.beginPosture(state.deviceId, postureId)
+          } catch (e: unknown) {
+            logger.warn(`setPosture(${postureId}): ${(e as Error).message}`)
+          }
+          // Sent on the failure path too, so a change that could not happen releases the control
+          // rather than leaving it on its own long stop.
+          await this.sendPostures(state)
+          if (carry) await this.finishPosture(carry.serial, carry.before)
+        })().catch((e: unknown) => logger.warn(`posture ${postureId}: ${(e as Error).message}`))
         break
       }
       case 'input:button': {

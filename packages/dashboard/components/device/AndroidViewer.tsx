@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { AndroidButton, PosturesPayload } from '@/lib/types'
 import type { BinaryFrameHandler } from '@/lib/envelope'
-import { androidToNorm as toNormPure, toPinchFingers as makePinchFingers, placeTurnedFrame, turnedSize, surfaceBox, composeTurn, overlaySpace, showsPicture, type Turn } from '@/lib/coordinate-transform';
+import { androidToNorm as toNormPure, toPinchFingers as makePinchFingers, placeTurnedFrame, turnedSize, surfaceBox, composeTurn, overlaySpace, showsPicture, framesAgree, type Turn } from '@/lib/coordinate-transform';
 import type { MutableRefObject } from 'react';
 import type { PerfHook } from '@/components/perf/types';
 import { useClipboardBridge, isBridgedChord, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
@@ -607,28 +607,9 @@ export function AndroidViewer({
   // content rounds at the same radius → no dark corner). Falls back to the design default 22px.
   // `cornerRadius == null` = unknown → design default; an explicit 0 (square screen) must stay 0.
   const screenRadius = cornerRadius != null ? Math.round(cornerRadius * androidDisplayW) : 22;
-  // **The picture is shown when the frame and the screen agree, and hidden while they do not.**
-  //
-  // The two arrive on different paths: the stream changes shape the moment the emulator does, and
-  // `session:chrome` only once the agent has read the settled display. In the window between them
-  // the new frame is drawn into the old frame's dimensions — stretched and a quarter turn out —
-  // which is the flash.
-  //
-  // **Compared, not timed.** Earlier versions hid on the chrome arriving (too late — the flash had
-  // already happened) and then for a fixed beat after the device answered (a guess, and the fold
-  // outlasts it). The condition is not "how long does a fold take", it is "do these two describe
-  // the same screen", and both values are already here to be asked.
-  //
-  // Aspect rather than size, because the stream may be downscaled by the server-side resize; a
-  // downscale preserves the ratio. The tolerance covers the encoder's 16-pixel alignment — a
-  // 2076-wide panel is encoded 2080 wide.
-  const frameMatchesScreen = (() => {
-    if (!videoSize || !shownSize) return true
-    const quarter = streamRotation === 90 || streamRotation === 270
-    const frameW = quarter ? videoSize.height : videoSize.width
-    const frameH = quarter ? videoSize.width : videoSize.height
-    return Math.abs(frameW / frameH - shownSize.width / shownSize.height) < 0.05
-  })()
+  // Whether the frame and the agent's description are talking about the same screen; the
+  // reasoning, and why the user's quarter is deliberately not part of it, is in `framesAgree`.
+  const frameMatchesScreen = framesAgree(videoSize, shownSize, streamRotation)
   const pictureVisible = showsPicture({
     ready: canvasReady, aspectAgrees: frameMatchesScreen, frameIsAhead, rotating: rotatePending,
   });

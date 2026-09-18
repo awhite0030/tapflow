@@ -36,7 +36,7 @@ function toolbar(posture?: Posture) {
   )
 }
 
-const postureButton = () => screen.queryByRole('button', { name: /^(Posture|Fold)/ })
+const postureButton = () => screen.queryByRole('button', { name: /^(Posture|Unfold|Fold)/ })
 
 describe('SimulatorToolbar posture control', () => {
   it('is absent when the device has no postures', () => {
@@ -53,7 +53,9 @@ describe('SimulatorToolbar posture control', () => {
   it('toggles directly when there are two — no menu for a single alternative', async () => {
     const onSelect = vi.fn()
     toolbar({ postures: PAIR, currentId: '1', onSelect })
-    expect(postureButton()).toHaveAccessibleName('Fold: Folded to Unfolded')
+    // Unfold, because that is what pressing it does from here — see the icon suite below,
+    // which asserts the name and the glyph name the same direction.
+    expect(postureButton()).toHaveAccessibleName('Unfold: Folded to Unfolded')
     await userEvent.click(postureButton()!)
     expect(onSelect).toHaveBeenCalledWith('2')
     expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0)
@@ -113,51 +115,6 @@ describe('SimulatorToolbar posture control', () => {
   })
 })
 
-// The rule the viewer uses to decide whether the picture is showable: does the frame, once the
-// agent's correction is applied, describe the same screen `session:chrome` does? Kept as a unit
-// because the flash lives in the window where the answer is no, and that window is the only thing
-// a duration was ever standing in for.
-describe('frame/screen agreement', () => {
-  const agrees = (
-    video: { width: number; height: number },
-    shown: { width: number; height: number },
-    streamRotation: 0 | 90 | 180 | 270,
-  ) => {
-    const quarter = streamRotation === 90 || streamRotation === 270
-    const frameW = quarter ? video.height : video.width
-    const frameH = quarter ? video.width : video.height
-    return Math.abs(frameW / frameH - shown.width / shown.height) < 0.05
-  }
-
-  it('agrees once the fold has settled — folded', () => {
-    // Measured: the cover panel streams 2424x1080 while Android draws 1080x2424, corrected by 270.
-    expect(agrees({ width: 2424, height: 1080 }, { width: 1080, height: 2424 }, 270)).toBe(true)
-  })
-
-  it('agrees once the fold has settled — unfolded', () => {
-    // Unfolded the skin and the display agree, so there is no correction to apply.
-    expect(agrees({ width: 2152, height: 2076 }, { width: 2152, height: 2076 }, 0)).toBe(true)
-  })
-
-  it('disagrees in the window the flash lives in', () => {
-    // Mid-fold: the stream is already the cover panel, the chrome still describes the inner one.
-    expect(agrees({ width: 2424, height: 1080 }, { width: 2152, height: 2076 }, 0)).toBe(false)
-    // And the other way, unfolding.
-    expect(agrees({ width: 2152, height: 2076 }, { width: 1080, height: 2424 }, 270)).toBe(false)
-  })
-
-  it('tolerates the encoder\'s 16-pixel alignment', () => {
-    // A 2076-wide panel is encoded 2080 wide; that is not a disagreement.
-    expect(agrees({ width: 2080, height: 2152 }, { width: 2076, height: 2152 }, 0)).toBe(true)
-  })
-
-  it('tolerates a downscaled stream, which keeps the ratio', () => {
-    // Server-side resize halves the frame; the screen it depicts is unchanged.
-    expect(agrees({ width: 1212, height: 540 }, { width: 1080, height: 2424 }, 270)).toBe(true)
-  })
-})
-
-
 describe('SimulatorToolbar posture icon', () => {
   // lucide names the svg's class after the icon, which is the only handle the DOM gives for it.
   const icon = (c: HTMLElement) => c.querySelector('.lucide-fold-horizontal') ? 'fold'
@@ -169,6 +126,19 @@ describe('SimulatorToolbar posture icon', () => {
     // recording's stop square all show what the press does rather than the state it is in.
     expect(icon(toolbar({ postures: PAIR, currentId: '1', onSelect: () => {} }).container)).toBe('unfold')
     expect(icon(toolbar({ postures: PAIR, currentId: '2', onSelect: () => {} }).container)).toBe('fold')
+  })
+
+  it('names the same direction the icon shows', () => {
+    // Asserted together, because they were allowed to disagree: the name opened with `Fold:`
+    // whichever way the press went, so a screen reader reading it on a folded device announced
+    // the opposite of the icon beside it. One test, so they cannot drift apart again.
+    const folded = toolbar({ postures: PAIR, currentId: '1', onSelect: () => {} })
+    expect(icon(folded.container)).toBe('unfold')
+    expect(folded.getByRole('button', { name: /^Unfold: Folded to Unfolded$/ })).toBeTruthy()
+
+    const open = toolbar({ postures: PAIR, currentId: '2', onSelect: () => {} })
+    expect(icon(open.container)).toBe('fold')
+    expect(open.getByRole('button', { name: /^Fold: Unfolded to Folded$/ })).toBeTruthy()
   })
 
   it('shows the same two on a device with a menu', () => {

@@ -189,3 +189,30 @@ export function showsPicture(opts: {
   if (!opts.ready || opts.rotating) return false
   return opts.aspectAgrees || !opts.frameIsAhead
 }
+
+/**
+ * Does the frame, once the stream's correction is applied, describe the same screen the agent does?
+ *
+ * The two arrive on different paths: the stream changes shape the moment the emulator does, and
+ * `session:chrome` only once the agent has read the settled display. In the window between them a
+ * new frame is drawn into the old frame's box — stretched and a quarter turn out — which is the
+ * flash. Compared rather than timed: the question is not "how long does a fold take" but "do
+ * these two describe the same screen", and both values are already to hand.
+ *
+ * **The stream's correction, not the composed turn.** The user's quarter does not change the
+ * frame's shape, so folding it in would invert the test.
+ *
+ * Aspect rather than size, because the stream may be downscaled by the server-side resize and a
+ * downscale preserves the ratio. The tolerance covers the encoder's 16-pixel alignment — a
+ * 2076-wide panel is encoded 2080 wide. Unknown sizes agree: before the first frame there is
+ * nothing to disagree with, and the first-frame hold is a separate gate.
+ */
+export function framesAgree(
+  video: { width: number; height: number } | null,
+  shown: { width: number; height: number } | null,
+  streamRotation: Turn,
+): boolean {
+  if (!video || !shown) return true
+  const { width, height } = turnedSize(video.width, video.height, streamRotation)
+  return Math.abs(width / height - shown.width / shown.height) < 0.05
+}

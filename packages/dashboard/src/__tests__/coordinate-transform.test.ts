@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { iosToNormScreen,
   androidToNorm,
   toPinchFingers,
-  iosDisplayScale, placeTurnedFrame, turnedSize, surfaceBox, composeTurn, overlaySpace, showsPicture } from '@/lib/coordinate-transform'
+  iosDisplayScale, placeTurnedFrame, turnedSize, surfaceBox, composeTurn, overlaySpace, showsPicture, framesAgree } from '@/lib/coordinate-transform'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -284,5 +284,37 @@ describe('showsPicture — the gate that latched', () => {
     expect(gate({ rotating: true })).toBe(false)
     // And neither is overridden by the agreement above.
     expect(gate({ ready: false, aspectAgrees: false, frameIsAhead: false })).toBe(false)
+  })
+})
+
+describe('framesAgree — the comparison that replaced a duration', () => {
+  // **The real function, imported.** This lived in a test file as a copy of the expression, so it
+  // was green whatever the viewer actually computed.
+  it('agrees once a fold has settled, in either posture', () => {
+    // Measured: the cover panel streams 2424x1080 while Android draws 1080x2424, corrected by 270.
+    expect(framesAgree({ width: 2424, height: 1080 }, { width: 1080, height: 2424 }, 270)).toBe(true)
+    // Unfolded the skin and the display agree, so there is no correction to apply.
+    expect(framesAgree({ width: 2152, height: 2076 }, { width: 2152, height: 2076 }, 0)).toBe(true)
+  })
+
+  it('disagrees in the window the flash lives in', () => {
+    // Mid-fold: the stream is already the cover panel, the chrome still describes the inner one.
+    expect(framesAgree({ width: 2424, height: 1080 }, { width: 2152, height: 2076 }, 0)).toBe(false)
+    expect(framesAgree({ width: 2152, height: 2076 }, { width: 1080, height: 2424 }, 270)).toBe(false)
+  })
+
+  it('tolerates the encoder\'s alignment and a downscaled stream', () => {
+    // A 2076-wide panel is encoded 2080 wide; that is not a disagreement. And a server-side
+    // resize halves the frame while the screen it depicts is unchanged.
+    expect(framesAgree({ width: 2080, height: 2152 }, { width: 2076, height: 2152 }, 0)).toBe(true)
+    expect(framesAgree({ width: 1212, height: 540 }, { width: 1080, height: 2424 }, 270)).toBe(true)
+  })
+
+  it('agrees when either side is still unknown', () => {
+    // Before the first frame there is nothing to disagree with, and waiting for one is a
+    // different gate — `showsPicture`'s `ready`. Answering false here would hide the boot behind
+    // "changing" prose about a change nobody asked for.
+    expect(framesAgree(null, { width: 1080, height: 2424 }, 0)).toBe(true)
+    expect(framesAgree({ width: 1080, height: 2424 }, null, 0)).toBe(true)
   })
 })

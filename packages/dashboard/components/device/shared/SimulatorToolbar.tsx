@@ -443,9 +443,6 @@ export function SimulatorToolbar({
           // click for nothing. More than two — a device that offers flipped or tent — gets the menu.
           const pair = posture.postures.length === 2;
           const other = posture.postures[(at + 1) % posture.postures.length]!;
-          const label = pair
-            ? (current ? `Fold: ${current.label} to ${other.label}` : `Fold: ${other.label}`)
-            : (current ? `Posture: ${current.label}` : 'Posture');
           // **The icon says what pressing does, like every other button in this toolbar.** The
           // list runs most closed → most open, so a destination further along it opens the device
           // and one before it closes it. A menu has no single destination, so it asks the weaker
@@ -454,6 +451,14 @@ export function SimulatorToolbar({
           // (`postures[0]`, the most closed) actually points.
           const opening = at === -1 ? false : pair ? posture.postures.indexOf(other) > at : at === 0;
           const PostureIcon = opening ? UnfoldHorizontal : FoldHorizontal;
+          // **And the name says the same thing the icon does.** It used to open with `Fold:`
+          // whichever way the press went, so someone reading the name alone — a screen reader, or
+          // voice control speaking the label — was told a folded device would fold again, while
+          // the icon beside it offered to unfold. The verb is the one fact both have to share.
+          const verb = opening ? 'Unfold' : 'Fold';
+          const label = pair
+            ? (current ? `${verb}: ${current.label} to ${other.label}` : `${verb}: ${other.label}`)
+            : (current ? `Posture: ${current.label}` : 'Posture');
           const trigger = (onClick?: () => void) => (
             <Button
               variant="ghost" size="icon" className="h-8 w-8"
