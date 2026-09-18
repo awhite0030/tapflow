@@ -46,7 +46,7 @@ export interface SimctlRunner {
   execWithOpts(opts: SimctlExecOpts, ...args: string[]): Promise<string>
 }
 
-const CORE_SIM_DOCS_URL = 'https://tapflow.dev/guide/troubleshooting#ios-simulator-service-version-mismatch'
+const CORE_SIM_DOCS_URL = 'https://www.tapflow.dev/guide/troubleshooting#ios-simulator-service-version-mismatch'
 
 function coreSimServiceError(): Error {
   return new Error(

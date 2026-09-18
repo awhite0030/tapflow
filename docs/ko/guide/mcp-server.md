@@ -95,6 +95,7 @@ MCP를 지원하는 클라이언트라면 모두 tapflow를 사용할 수 있습
 
 | 도구 | 설명 |
 |------|------|
+| `list_builds` | 릴레이의 앱·빌드 목록 조회 (`install_app`·`launch_app`에 넘길 `buildId`의 출처) |
 | `list_devices` | 연결된 시뮬레이터·에뮬레이터 목록 조회 |
 | `connect_device` | 세션 참여 (제어 전 필수) |
 | `disconnect_device` | 세션 종료 |

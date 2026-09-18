@@ -95,6 +95,7 @@ Any MCP-compatible client can use tapflow. Add the following to your MCP config 
 
 | Tool | Description |
 |------|-------------|
+| `list_builds` | List the apps and builds on the relay (where the `buildId` for `install_app` and `launch_app` comes from) |
 | `list_devices` | List connected simulators and emulators |
 | `connect_device` | Join a session (required before controlling a device) |
 | `disconnect_device` | End a session |
