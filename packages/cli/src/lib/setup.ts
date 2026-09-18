@@ -1,3 +1,4 @@
+import { isInteractive } from './interactive.js'
 import { execSync, spawnSync } from 'node:child_process'
 import {
   installNetFilter, followThroughApproval, offerApprovalUpFront, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, isFilterEnforcing,
@@ -204,7 +205,7 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
     }
   }
   if (process.platform === 'darwin') {
-    if (!process.stdout.isTTY) {
+    if (!isInteractive()) {
       return {
         label: 'Network filter',
         ok: false,
@@ -333,7 +334,7 @@ async function checkAndFixAudioPermission(): Promise<SetupStepResult> {
   if (!isAudioSupported()) {
     return { label: 'Audio output', ok: true, warn: true, detail: 'Requires macOS 14.2+ — iOS audio output unavailable on this host.' }
   }
-  if (!process.stdout.isTTY) {
+  if (!isInteractive()) {
     return { label: 'Audio permission', ok: true, warn: true, detail: '`tapflow agent start` will prompt for the audio-capture permission.' }
   }
   const proceed = await confirm({ message: 'Grant audio-capture permission now? (audio is on by default; one-time macOS prompt)' })
@@ -354,7 +355,7 @@ async function checkAndFixXcode(): Promise<SetupStepResult> {
     return { label: 'Xcode installed', ok: true, state: 'found' }
   }
   // Xcode는 App Store에서만 설치 가능 — CLI가 직접 설치할 수 없다.
-  if (!process.stdout.isTTY) {
+  if (!isInteractive()) {
     return {
       label: 'Xcode',
       ok: false,
@@ -410,7 +411,7 @@ async function checkXcodeActivation(xcodeInstalled: boolean): Promise<SetupStepR
     // 미설정 — 아래에서 조치
   }
   if (!dir.includes('Xcode.app')) {
-    if (!process.stdout.isTTY) {
+    if (!isInteractive()) {
       return { label: 'Xcode command-line tools', ok: false, warn: true, detail: selectHint }
     }
     const ok = await runSudo('Set Xcode as the active developer directory (needs sudo)?', [
@@ -427,7 +428,7 @@ async function checkXcodeActivation(xcodeInstalled: boolean): Promise<SetupStepR
     return { label: 'Xcode ready', ok: true, state: repaired ? 'repaired' : 'found' }
   }
   const finishHint = 'Finish Xcode setup: sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch'
-  if (!process.stdout.isTTY) {
+  if (!isInteractive()) {
     return { label: 'Xcode setup', ok: false, warn: true, detail: finishHint }
   }
   const ok = await runSudo('Accept the Xcode license and run first launch (needs sudo)?', [
@@ -446,7 +447,7 @@ async function checkAndFixSimulator(): Promise<SetupStepResult> {
     return { label: 'Simulator ready', ok: true, state: 'found' }
   }
   const hint = 'No simulator runtime. Run: xcodebuild -downloadPlatform iOS (or install one in Xcode).'
-  if (!process.stdout.isTTY) {
+  if (!isInteractive()) {
     return { label: 'Simulator', ok: false, warn: true, detail: hint }
   }
   const proceed = await confirm({ message: 'No iOS simulator found. Download the iOS simulator runtime?' })
@@ -473,7 +474,7 @@ async function checkAndFixHomebrew(): Promise<SetupStepResult> {
     // 미설치 — 아래에서 확인 후 설치
   }
   // 원격 스크립트 자동 실행은 명시적 동의가 있을 때만. 비대화형이면 안내만.
-  if (!process.stdout.isTTY) {
+  if (!isInteractive()) {
     return {
       label: 'Homebrew',
       ok: false,
@@ -514,7 +515,7 @@ async function checkAndFixJdk(brewAvailable: boolean): Promise<SetupStepResult> 
   if (!brewAvailable) {
     return { label: 'Java (JDK)', ok: false, detail: 'Install Homebrew first, then: brew install --cask temurin' }
   }
-  if (!process.stdout.isTTY) {
+  if (!isInteractive()) {
     return { label: 'Java (JDK)', ok: false, warn: true, detail: 'Run: brew install --cask temurin (skipped in non-interactive mode)' }
   }
   const proceed = await confirm({
@@ -557,7 +558,7 @@ async function checkAndFixAndroidSdk(brewAvailable: boolean, javaOk: boolean): P
     if (!brewAvailable) {
       return { label: 'Android SDK', ok: false, detail: 'Install Homebrew first, then: brew install --cask android-commandlinetools' }
     }
-    if (!process.stdout.isTTY) {
+    if (!isInteractive()) {
       return { label: 'Android SDK', ok: false, warn: true, detail: 'Run: brew install --cask android-commandlinetools (skipped in non-interactive mode)' }
     }
     console.log()
@@ -568,7 +569,7 @@ async function checkAndFixAndroidSdk(brewAvailable: boolean, javaOk: boolean): P
     bootSdkmanager = whichSdkmanager() ?? 'sdkmanager'
   }
 
-  if (!process.stdout.isTTY) {
+  if (!isInteractive()) {
     return { label: 'Android SDK', ok: false, warn: true, detail: 'Android SDK not installed (skipped in non-interactive mode).' }
   }
 
@@ -610,7 +611,7 @@ async function checkAndFixAvd(sdkOk: boolean): Promise<SetupStepResult> {
     return { label: `AVD ready: ${avds.length} device(s)`, ok: true, state: 'found' }
   }
   const manualHint = 'Create an AVD with avdmanager (see Android docs).'
-  if (!process.stdout.isTTY) {
+  if (!isInteractive()) {
     return { label: 'AVD', ok: false, warn: true, detail: `No AVD found. ${manualHint}` }
   }
   const proceed = await confirm({ message: 'No Android Virtual Device found. Create a set of AVDs now?' })
