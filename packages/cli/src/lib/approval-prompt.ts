@@ -20,7 +20,7 @@ export function terminalApprovalDeps(): ApprovalDeps {
     // provisioning script — clack draws the prompt, the promise never settles, and node exits 0 with
     // nothing after it. Measured with clack 1.7 under a pty: exit 0, never settled. The command would end
     // without a banner, which is worse than not asking.
-    interactive: process.stdout.isTTY === true && process.stdin.isTTY === true,
+    interactive: isInteractive(),
     confirm: async (message) => {
       const answer = await confirm({ message })
       if (isCancel(answer)) return 'cancelled'
@@ -28,4 +28,14 @@ export function terminalApprovalDeps(): ApprovalDeps {
     },
     say: step,
   }
+}
+
+
+/**
+ * Returns true if both ends are a terminal.
+ * Under a terminal with stdin at EOF (a provisioning script), Clack draws the prompt and Node
+ * exits 0 with the promise never settled. We should not attempt to ask a question if we can't answer it.
+ */
+export function isInteractive(): boolean {
+  return process.stdout.isTTY === true && process.stdin.isTTY === true
 }
