@@ -37,8 +37,22 @@ describe('parseDisplayMetrics', () => {
   })
 
   it('defaults to 0 when the rotation is absent rather than guessing', () => {
-    const noRot = FOLDED.replace(/mRotation=ROTATION_0/, '')
+    // **Stripped from the *unfolded* dump, whose rotation is 270.** Taken from the folded one it
+    // proved nothing: that fixture reads 0 anyway, so "absent" and "read it" gave the same
+    // answer and the default was never exercised.
+    const noRot = UNFOLDED.replace(/mRotation=ROTATION_270/, '')
     expect(parseDisplayMetrics(noRot)?.rotation).toBe(0)
+    // And it is still there to be read wrongly: `mDisplayRotation=ROTATION_270` survives the
+    // strip, so a 270 here would mean the pattern had matched inside that longer field name.
+    expect(noRot).toContain('mDisplayRotation=ROTATION_270')
+  })
+
+  it('does not read a value out of a longer field that ends in the same word', () => {
+    // The dump prints `mDisplayRotation` first and they can disagree. `mDisplayRotation` ends
+    // `…ayRotation`, so it does not contain `mRotation` — asserted rather than reasoned about,
+    // since the whole coordinate correction hangs off which of the two is read.
+    const disagree = UNFOLDED.replace(/mDisplayRotation=ROTATION_270/, 'mDisplayRotation=ROTATION_90')
+    expect(parseDisplayMetrics(disagree)?.rotation).toBe(270)
   })
 
   it('returns null when the dump has no display line', () => {

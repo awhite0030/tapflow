@@ -32,9 +32,12 @@ export function parseDisplayMetrics(output: string): DisplayMetrics | null {
   const current = { width: Number(dims[3]), height: Number(dims[4]) }
   // `mRotation=ROTATION_270`. Read rather than derived: a square-ish display (the unfolded foldable
   // is 2076x2152) cannot tell 0 from 180, and derived-from-aspect cannot tell 90 from 270 at all.
+  //
+  // **One fallback, not two.** An absent field and a value outside the four are the same answer —
+  // 0, rather than a guess — and written as two they masked each other: changing either still
+  // produced 0, so no test could fail on it and the absent case was never really covered.
   const rot = output.match(/mRotation=ROTATION_(\d+)/)
-  const quarter = rot ? Number(rot[1]) : 0
-  const rotation = ([0, 90, 180, 270] as const).find((r) => r === quarter) ?? 0
+  const rotation = ([0, 90, 180, 270] as const).find((r) => r === Number(rot?.[1])) ?? 0
   return { natural, current, rotation }
 }
 
