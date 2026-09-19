@@ -1,5 +1,6 @@
 import { confirm, isCancel } from '@clack/prompts'
 import type { ApprovalDeps } from './net-filter.js'
+import { isInteractive } from './interactive.js'
 import { step } from './print.js'
 
 /**
@@ -16,11 +17,8 @@ import { step } from './print.js'
  */
 export function terminalApprovalDeps(): ApprovalDeps {
   return {
-    // **Both ends, not only the one that prints.** With stdin at EOF under a terminal — `</dev/null`, a
-    // provisioning script — clack draws the prompt, the promise never settles, and node exits 0 with
-    // nothing after it. Measured with clack 1.7 under a pty: exit 0, never settled. The command would end
-    // without a banner, which is worse than not asking.
-    interactive: process.stdout.isTTY === true && process.stdin.isTTY === true,
+    // Both ends, and the reason they are both read lives with the rule — see `isInteractive`.
+    interactive: isInteractive(),
     confirm: async (message) => {
       const answer = await confirm({ message })
       if (isCancel(answer)) return 'cancelled'

@@ -62,9 +62,32 @@ function findStep<T extends { label: string }>(results: T[], keyword: string): T
   return results.find((r) => r.label.toLowerCase().includes(keyword.toLowerCase()))
 }
 
+/**
+ * A whole terminal, both ends. `setup` asks only when stdin is one as well — see `isInteractive`.
+ * Setting stdout alone is what these tests did while the guards read stdout alone, and it is why a
+ * run with stdin at `/dev/null` reached every prompt with the suite green.
+ */
 function setTTY(value: boolean | undefined) {
   Object.defineProperty(process.stdout, 'isTTY', { value, configurable: true })
+  Object.defineProperty(process.stdin, 'isTTY', { value, configurable: true })
 }
+
+/** stdout is a terminal, stdin is not — `tapflow setup ios </dev/null`, or a script under a pty. */
+function setEmptyStdin() {
+  Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
+  Object.defineProperty(process.stdin, 'isTTY', { value: undefined, configurable: true })
+}
+
+/**
+ * The two shapes a run has when nobody can answer. Every guard is exercised against both, because
+ * they used to differ: the guards read stdout alone, so the second shape walked straight into a
+ * prompt that never settles — `confirm()` drawn, never resolved, node out of the event loop at
+ * exit 0 with no results list and no banner (#807).
+ */
+const NON_INTERACTIVE: [string, () => void][] = [
+  ['no terminal', () => setTTY(false)],
+  ['stdout a terminal, stdin at EOF', () => setEmptyStdin()],
+]
 
 describe('runSetupAndroid', () => {
   beforeEach(() => {
@@ -98,8 +121,8 @@ describe('runSetupAndroid', () => {
     setTTY(undefined)
   })
 
-  it('Homebrew 없음 + 비대화형이면 confirm 없이 warn', async () => {
-    setTTY(false)
+  it.each(NON_INTERACTIVE)('Homebrew 없음 + 비대화형(%s)이면 confirm 없이 warn', async (_shape, notATerminal) => {
+    notATerminal()
     mockExecSync.mockImplementation((cmd) => {
       const c = cmd as string
       if (c === 'which brew') throw new Error('not found')
@@ -127,8 +150,8 @@ describe('runSetupAndroid', () => {
     expect(mockSpawnSync).toHaveBeenCalledWith('brew', ['install', '--cask', 'temurin'], expect.anything())
   })
 
-  it('JDK 없음 + 비대화형이면 warn (설치 안 함)', async () => {
-    setTTY(false)
+  it.each(NON_INTERACTIVE)('JDK 없음 + 비대화형(%s)이면 warn (설치 안 함)', async (_shape, notATerminal) => {
+    notATerminal()
     mockExecSync.mockImplementation((cmd) => {
       const c = cmd as string
       if (c === 'which brew') return '/opt/homebrew/bin/brew\n'
@@ -182,12 +205,32 @@ describe('runSetupAndroid', () => {
     expect(findStep(results, 'android sdk')?.ok).toBe(true)
   })
 
-  it('SDK 자기완결 아님 + 비대화형이면 warn', async () => {
-    setTTY(false)
+  it.each(NON_INTERACTIVE)('SDK 자기완결 아님 + 비대화형(%s)이면 warn', async (_shape, notATerminal) => {
+    notATerminal()
     mockExistsSync.mockImplementation((p) => p === SDK_EMULATOR)
 
     const results = await runSetupAndroid()
     expect(findStep(results, 'android sdk')?.warn).toBe(true)
+  })
+
+  it.each(NON_INTERACTIVE)('sdkmanager가 아예 없으면 brew 설치를 묻지 않는다 (%s)', async (_shape, notATerminal) => {
+    // One guard earlier than the test above: with no `sdkmanager` in the SDK or on PATH, the step
+    // offers to `brew install --cask android-commandlinetools` before it offers anything else.
+    notATerminal()
+    mockExistsSync.mockImplementation((p) => p === SDK_EMULATOR)
+    mockExecSync.mockImplementation((cmd) => {
+      const c = cmd as string
+      if (c === 'which brew') return '/opt/homebrew/bin/brew\n'
+      if (c === '/usr/libexec/java_home') return '/Library/Java/.../Home\n'
+      if (c === 'which sdkmanager') throw new Error('not found')
+      return ''
+    })
+
+    const results = await runSetupAndroid()
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(mockSpawnSync).not.toHaveBeenCalledWith('brew', ['install', '--cask', 'android-commandlinetools'], expect.anything())
+    expect(findStep(results, 'android sdk')?.ok).toBe(false)
+    expect(findStep(results, 'android sdk')?.detail).toContain('android-commandlinetools')
   })
 
   it('partial SDK without emulator/system image is repaired instead of reported as found', async () => {
@@ -322,8 +365,8 @@ describe('runSetupAndroid', () => {
     expect(findStep(results, 'avd')?.ok).toBe(true)
   })
 
-  it('AVD 없음 + 비대화형이면 warn (생성 안 함)', async () => {
-    setTTY(false)
+  it.each(NON_INTERACTIVE)('AVD 없음 + 비대화형(%s)이면 warn (생성 안 함)', async (_shape, notATerminal) => {
+    notATerminal()
     mockSpawnSync.mockImplementation((cmd, args) => {
       const a = Array.isArray(args) ? args : []
       if (cmd === SDK_EMULATOR && a.includes('-list-avds')) return { ...okSpawn, stdout: '' } as never
@@ -331,7 +374,12 @@ describe('runSetupAndroid', () => {
     })
 
     const results = await runSetupAndroid()
+    expect(findStep(results, 'avd')?.ok).toBe(false)
     expect(findStep(results, 'avd')?.warn).toBe(true)
+    // **The question, not only its consequence.** `createAvds()` fails on this fixture anyway, so
+    // the two assertions below hold whether or not anyone was asked — mutating the guard to read
+    // stdout alone survived both. Asking is the thing the guard decides, so assert it directly.
+    expect(mockConfirm).not.toHaveBeenCalled()
     expect(mockSpawnSync).not.toHaveBeenCalledWith(
       SDK_AVDMANAGER,
       expect.arrayContaining(['create']),
@@ -542,8 +590,8 @@ describe('runSetupIos', () => {
     expect(findStep(results, 'xcode')?.ok).toBe(true)
   })
 
-  it('Xcode 미설치 + 비대화형이면 warn + App Store 링크', async () => {
-    setTTY(false)
+  it.each(NON_INTERACTIVE)('Xcode 미설치 + 비대화형(%s)이면 warn + App Store 링크', async (_shape, notATerminal) => {
+    notATerminal()
     mockExistsSync.mockReturnValue(false)
 
     const results = await runSetupIos()
@@ -652,6 +700,104 @@ describe('runSetupIos', () => {
     const results = await runSetupIos()
     expect(results.filter((r) => !r.ok).map((r) => [r.label, r.detail])).toEqual([])
     expect(mockSpawnSync).not.toHaveBeenCalled()
+  })
+
+  // #807. The guards below read stdout alone, so a run with stdin at `/dev/null` walked into each
+  // of these prompts and stopped there — and because the prompt never settles, the process left the
+  // event loop at exit 0: no results list, no `SETUP INCOMPLETE` banner, and nothing to say which
+  // step it died on. `setUpNetFilter` is the one step with a `process.platform` branch of its own,
+  // so a case that wants its guard has to say which platform it is on — CI runs this suite on
+  // ubuntu, where the step returns `macOS only` without ever reaching the guard under test.
+  it.each(NON_INTERACTIVE)('오디오 권한을 묻지 않고, 뒤 단계까지 보고한다 (%s)', async (_shape, notATerminal) => {
+    // **The step the issue is named for.** It prompts on every macOS 14.2+ run whose output is a
+    // terminal, so a Mac that is already set up reaches it — and it runs before the network filter,
+    // which is why one unanswerable question took the whole rest of the run with it.
+    notATerminal()
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
+
+    const results = await runSetupIos()
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(findStep(results, 'audio permission')?.detail).toContain('agent start')
+    // The step behind it, reported — the half a silent exit 0 swallowed.
+    expect(findStep(results, 'network filter')?.ok).toBe(true)
+  })
+
+  it.each(NON_INTERACTIVE)('넷필터 미설치면 설치를 묻지 않는다 (%s)', async (_shape, notATerminal) => {
+    notATerminal()
+    // **Named, because this step is the one that asks what platform it is on.** On ubuntu — which is
+    // where CI runs this suite — `setUpNetFilter` skips both of its `darwin` blocks and answers
+    // `macOS only`, so the guard under test is never reached and the case would pass, or fail, for
+    // a reason that has nothing to do with it.
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
+    // No `TapflowNetFilter.app` and no heartbeat: the step falls past its own no-op check.
+    mockExistsSync.mockImplementation((path) => path === XCODE_APP)
+
+    const results = await runSetupIos()
+    expect(mockConfirm).not.toHaveBeenCalled()
+    const filter = findStep(results, 'network filter')
+    // **`ok`, and not only `warn`.** `netFilterSkipped()` — asked, and declined — carries the same
+    // `warn: true` and the same `migrate net-filter` in its detail. `ok` is the only field that
+    // separates the two, and it is the field `SETUP INCOMPLETE` is made of.
+    expect(filter?.ok).toBe(false)
+    expect(filter?.warn).toBe(true)
+    expect(filter?.detail).toContain('migrate net-filter')
+  })
+
+  it.each(NON_INTERACTIVE)('시뮬 런타임 없으면 다운로드를 묻지 않는다 (%s)', async (_shape, notATerminal) => {
+    notATerminal()
+    mockExecSync.mockImplementation((cmd) => {
+      const c = cmd as string
+      if (c === 'which brew') return '/opt/homebrew/bin/brew\n'
+      if (c === 'xcode-select -p') return '/Applications/Xcode.app/Contents/Developer\n'
+      if (c === 'xcodebuild -version') return 'Xcode 26.5\n'
+      if (c.includes('simctl list devices')) return simctlEmpty
+      return ''
+    })
+
+    const results = await runSetupIos()
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(mockSpawnSync).not.toHaveBeenCalledWith('xcodebuild', ['-downloadPlatform', 'iOS'], expect.anything())
+    expect(findStep(results, 'simulator')?.ok).toBe(false)
+    expect(findStep(results, 'simulator')?.warn).toBe(true)
+  })
+
+  // The two sudo steps had no non-interactive test of their own in either shape — the fixture is a
+  // Mac whose Xcode is already selected and licensed, so nothing reached them. Both ask through
+  // `runSudo`, so the question is what to assert.
+  it.each(NON_INTERACTIVE)('active developer dir이 Xcode가 아니어도 sudo를 묻지 않는다 (%s)', async (_shape, notATerminal) => {
+    notATerminal()
+    mockExecSync.mockImplementation((cmd) => {
+      const c = cmd as string
+      if (c === 'which brew') return '/opt/homebrew/bin/brew\n'
+      if (c === 'xcode-select -p') return '/Library/Developer/CommandLineTools\n'
+      if (c === 'xcodebuild -version') return 'Xcode 26.5\n'
+      if (c.includes('simctl list devices')) return simctlBooted
+      return ''
+    })
+
+    const results = await runSetupIos()
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(mockSpawnSync).not.toHaveBeenCalledWith('sudo', expect.arrayContaining(['xcode-select']), expect.anything())
+    expect(findStep(results, 'command-line tools')?.ok).toBe(false)
+    expect(findStep(results, 'command-line tools')?.detail).toContain('xcode-select -s')
+  })
+
+  it.each(NON_INTERACTIVE)('Xcode 라이선스가 안 끝났어도 sudo를 묻지 않는다 (%s)', async (_shape, notATerminal) => {
+    notATerminal()
+    mockExecSync.mockImplementation((cmd) => {
+      const c = cmd as string
+      if (c === 'which brew') return '/opt/homebrew/bin/brew\n'
+      if (c === 'xcode-select -p') return '/Applications/Xcode.app/Contents/Developer\n'
+      if (c === 'xcodebuild -version') throw new Error('license not accepted')
+      if (c.includes('simctl list devices')) return simctlBooted
+      return ''
+    })
+
+    const results = await runSetupIos()
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(mockSpawnSync).not.toHaveBeenCalledWith('sudo', expect.arrayContaining(['xcodebuild']), expect.anything())
+    expect(findStep(results, 'xcode setup')?.ok).toBe(false)
+    expect(findStep(results, 'xcode setup')?.detail).toContain('-license accept')
   })
 
   it('필터가 꺼져 있으면 버전이 다 맞아도 found로 넘기지 않는다', async () => {

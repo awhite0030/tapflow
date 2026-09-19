@@ -3,6 +3,7 @@ import path from 'path'
 import { select, text, isCancel, cancel } from '@clack/prompts'
 import { dnsProviders } from '@tapflowio/relay'
 import { banner, warn } from '../lib/print.js'
+import { isInteractive } from '../lib/interactive.js'
 
 export interface InitConfigOptions {
   tunnel?: string
@@ -204,13 +205,13 @@ export async function cmdInitConfig(opts: InitConfigOptions): Promise<void> {
     tunnel = { provider: 'tailscale' }
   } else if (opts.tunnel === 'rathole') {
     tunnel = { provider: 'rathole', serverAddr: '', publicUrl: '', ssh: null }
-  } else if (process.stdin.isTTY) {
+  } else if (isInteractive()) {
     tunnel = await promptTunnel()
   }
 
   // HTTPS(WebCodecs)는 LAN(=no tunnel) 경로에서만 위저드로 묻는다. tailscale/rathole의 HTTPS는 후속.
   let tls: TlsConfig | null = null
-  if (tunnel == null && process.stdin.isTTY) {
+  if (tunnel == null && isInteractive()) {
     tls = await promptTls()
   }
 

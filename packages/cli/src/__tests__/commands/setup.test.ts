@@ -22,8 +22,16 @@ const mockRunSetupIos = vi.mocked(runSetupIos)
 const mockResolveAdb = vi.mocked(resolveAdb)
 const mockConfirm = vi.mocked(confirm)
 
+/** A whole terminal, both ends — `detectPlatforms` asks only when stdin is one too. */
 function setTTY(value: boolean | undefined) {
   Object.defineProperty(process.stdout, 'isTTY', { value, configurable: true })
+  Object.defineProperty(process.stdin, 'isTTY', { value, configurable: true })
+}
+
+/** stdout is a terminal, stdin is not — `tapflow setup </dev/null`, or a script under a pty. */
+function setEmptyStdin() {
+  Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
+  Object.defineProperty(process.stdin, 'isTTY', { value: undefined, configurable: true })
 }
 
 describe('cmdSetup', () => {
@@ -69,8 +77,13 @@ describe('cmdSetup', () => {
     expect(mockRunSetupAndroid).toHaveBeenCalled()
   })
 
-  it('인자 없음 + darwin + adb 없음 + 비대화형 → ios만 (Android 안 물음)', async () => {
-    setTTY(false)
+  it.each([
+    ['터미널 아님', () => setTTY(false)],
+    // #807: this shape passed a `stdout.isTTY` guard and reached a prompt that never settles, so
+    // `cmdSetup` never returned a platform list and the run ended at exit 0 with no banner.
+    ['stdout만 터미널, stdin은 EOF', () => setEmptyStdin()],
+  ])('인자 없음 + darwin + adb 없음 + 비대화형(%s) → ios만 (Android 안 물음)', async (_shape, notATerminal) => {
+    notATerminal()
     vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
     mockResolveAdb.mockReturnValue(null)
 
