@@ -8,6 +8,7 @@ import { initDb, getDb, closeDb } from '../db'
 import { makePasswordHash } from '../api/auth'
 import { signJwt } from '../middleware/auth'
 import { makeAppTarGz, writeRawTarGz } from './helpers/tarFixture'
+import { assertArchiveTools } from './helpers/archivePrereqs'
 
 const XML_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
@@ -60,6 +61,7 @@ describe('POST /api/v1/builds — .tar.gz (EAS simulator) ingest', () => {
   let cookie: string
 
   beforeAll(() => {
+    assertArchiveTools(['tar'])
     dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapflow-targz-db-'))
     fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapflow-targz-fix-'))
     initDb(path.join(dbDir, 'test.db'))
@@ -68,10 +70,11 @@ describe('POST /api/v1/builds — .tar.gz (EAS simulator) ingest', () => {
     cookie = `tapflow_token=${signJwt({ userId: 1, email: 'admin@example.com', role: 'Admin' })}`
   })
 
+  // Guarded: assertArchiveTools above can throw before the dirs are assigned.
   afterAll(() => {
     closeDb()
-    fs.rmSync(dbDir, { recursive: true, force: true })
-    fs.rmSync(fixtureDir, { recursive: true, force: true })
+    if (dbDir) fs.rmSync(dbDir, { recursive: true, force: true })
+    if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true })
   })
 
   beforeEach(async () => {
