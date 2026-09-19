@@ -1,4 +1,5 @@
 import type { Device } from '@tapflowio/agent-core'
+import { parseCornerRadius, parseDisplayMetrics, type DisplayMetrics } from './displayMetrics.js'
 import { PlatformError, ValidationError } from '@tapflowio/agent-core'
 import { defaultRunner, type AdbRunner } from './adb.js'
 
@@ -104,6 +105,51 @@ export class AdbWrapper {
     const m = output.match(/(\d+)x(\d+)/)
     if (!m) throw new PlatformError(`Cannot parse screen size from: ${output}`)
     return { width: parseInt(m[1], 10), height: parseInt(m[2], 10) }
+  }
+
+  /** The display's natural size, what it is currently showing, and the rotation between them.
+   *  See `parseDisplayMetrics` for why neither `wm size` nor the emulator's own rotation field is
+   *  enough on its own. */
+  async getDisplayMetrics(serial: string): Promise<DisplayMetrics | null> {
+    const out = await this.runner.exec('-s', serial, 'shell', 'dumpsys', 'window', 'displays')
+    return parseDisplayMetrics(out)
+  }
+
+  /** The rounded-corner radius, in device pixels, of the panel with these natural dimensions.
+   *  See `parseCornerRadius` for why this is read rather than measured off the frame, and why it
+   *  is pixels rather than a fraction. */
+  async getCornerRadius(serial: string, width: number, height: number): Promise<number | null> {
+    const out = await this.runner.exec('-s', serial, 'shell', 'dumpsys', 'display')
+    return parseCornerRadius(out, width, height)
+  }
+
+  /** Raw `cmd device_state print-states` — the postures this device offers, if any. */
+  async printDeviceStates(serial: string): Promise<string> {
+    return this.runner.exec('-s', serial, 'shell', 'cmd', 'device_state', 'print-states')
+  }
+
+  /** Raw `cmd device_state state` — the posture the device is in. */
+  async deviceState(serial: string): Promise<string> {
+    return this.runner.exec('-s', serial, 'shell', 'cmd', 'device_state', 'state')
+  }
+
+  /**
+   * Put the device into a posture, through the **emulator console** rather than the guest.
+   *
+   * `cmd device_state` changes only Android's framework state: the emulator goes on rendering the
+   * screen it had, so the gRPC capture keeps streaming the unfolded panel while the guest believes
+   * it is shut. Measured on a Pixel 9 Pro Fold — after `cmd device_state state 0` the stream was
+   * still 2152x2076, and `Image.format.foldedDisplay` was null. `adb emu posture` moves the
+   * emulator itself: the stream becomes 2424x1080 and `foldedDisplay` fills in.
+   *
+   * `identifier` is an emulator posture id (1 closed, 2 half-opened, 3 opened), not a
+   * `cmd device_state` one — the two vocabularies do not line up, which is what `postures.ts` maps.
+   */
+  async setPosture(serial: string, identifier: string): Promise<void> {
+    const out = await this.runner.exec('-s', serial, 'emu', 'posture', identifier)
+    // The console answers `KO: <reason>` on a refusal with a zero exit code, so the text is the
+    // only signal that the device did not move.
+    if (/^KO\b/m.test(out)) throw new PlatformError(`emu posture ${identifier} refused: ${out.trim()}`)
   }
 
   // pm clear prints "Failed" with exit code 0 (e.g. unknown package), so the

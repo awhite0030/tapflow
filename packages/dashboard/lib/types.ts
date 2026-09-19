@@ -5,12 +5,14 @@
 // the *other* shape. Re-exported so this module stays the one import site for view code.
 import type {
   AgentResources, AndroidButton, ChromeButton, ChromeData, ChromeRect,
-  AndroidChrome, BrowserInbound, ChromePayload, DeviceDetails, DeviceSummary, SessionInfo,
+  AndroidChrome, BrowserInbound, ChromePayload, DeviceDetails, DevicePosture, DeviceSummary,
+  PosturesPayload, SessionInfo,
 } from '@tapflowio/protocol'
 
 export type {
   AgentResources, AndroidButton, ChromeButton, ChromeData, ChromeRect,
   AndroidChrome, BrowserInbound, ChromePayload, DeviceDetails, DeviceSummary, SessionInfo,
+  DevicePosture, PosturesPayload,
 }
 
 export interface Comment {

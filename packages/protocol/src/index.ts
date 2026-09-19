@@ -205,9 +205,25 @@ export interface ChromeData {
 export interface AndroidChrome {
   buttons: AndroidButton[]
   streamType: 'h264'
+  /** What Android is drawing — the size the viewer frames, and the space a person points at. */
   screenWidth?: number
   screenHeight?: number
   cornerRadius?: number
+  /**
+   * Quarter turns **clockwise** to apply to the video before it matches `screenWidth/Height`.
+   *
+   * The capture does not always arrive in the orientation Android is drawing. The emulator's gRPC
+   * backend captures the panel in the device's fixed physical orientation, so folding — which
+   * rotates Android's screen back to 0 while the skin stays put — leaves the frame a quarter turn
+   * from the picture. Measured on a Pixel 9 Pro Fold: unfolded the two agree, folded the frame is
+   * 2424x1080 against a 1080x2424 screen.
+   *
+   * **The agent computes it** rather than the viewer deriving it from the two sizes. Only the agent
+   * sees the display's rotation, and a viewer comparing aspect ratios would have to wait for the
+   * decoder and this message to agree — which they do not during a fold, so the picture flipped
+   * while they disagreed. Absent or 0 means the frame is already upright.
+   */
+  streamRotation?: 0 | 90 | 180 | 270
 }
 
 /** The `session:chrome` payload. The relay never reads it — it stores and forwards — but the
@@ -817,6 +833,9 @@ export interface NetworkError extends SessionScoped {
 export type RelayOrAgentToBrowser =
   | SessionChrome
   | SessionDeviceInfo
+  // The agent produces it; the relay replays the cached copy to a re-joining viewer, exactly as it
+  // does for `session:chrome` above.
+  | DevicePostures
   | DeviceReady
   | AppInstallError
   | AppLaunchError
@@ -1537,6 +1556,56 @@ export interface InputRotate {
   sessionId: string
 }
 
+/**
+ * One physical arrangement of a device's screens — folded, unfolded, and whatever else a platform
+ * offers.
+ *
+ * **`id` is opaque and platform-owned.** Android's are `cmd device_state` names, and a future
+ * platform's will be something else; nothing outside the agent that produced it may compare one to
+ * a literal. That is the same rule `Platform` follows (a `string`, so a third-party agent can
+ * register one) and for the same reason.
+ *
+ * **No size.** A posture is not identified by its screen: on a Pixel 9 Pro Fold, `CLOSED` and
+ * `REAR_DISPLAY_MODE` both present 1080x2424. And a screen's size is a function of posture *and*
+ * rotation, so a size carried here would be false the first time the user rotates. The size a
+ * viewer needs is in `session:chrome`, which is re-sent when it changes.
+ */
+export interface DevicePosture {
+  id: string
+  /** Final, human-readable text. The dashboard renders it as given rather than mapping it — a map
+   *  would have to grow a case per platform, which is what `AgentRegistry` exists to avoid. */
+  label: string
+}
+
+/** Ask the device to take a posture. Answers nothing, like `input:rotate`: the change shows up as a
+ *  new `device:postures` and, when the screen changed with it, a new `session:chrome`. */
+export interface InputPosture {
+  type: 'input:posture'
+  sessionId: string
+  payload: { postureId: string }
+}
+
+/**
+ * The postures this device has, and which one it is in.
+ *
+ * **Ordered most closed → most open.** That ordering is the contract, and it is what lets a viewer
+ * render a control without knowing any platform's vocabulary: draw the list in order and the
+ * left-hand end is "shut". A device that does not fold sends an empty list, which is how a viewer
+ * knows to show nothing.
+ */
+export interface DevicePostures {
+  type: 'device:postures'
+  sessionId: string
+  payload: PosturesPayload
+}
+
+/** The payload of `device:postures`, named because the relay caches it for the re-join replay —
+ *  the same reason `ChromePayload` has a name. */
+export interface PosturesPayload {
+  postures: DevicePosture[]
+  currentId: string | null
+}
+
 export interface InputKeyboardToggle {
   type: 'input:keyboard:toggle'
   sessionId: string
@@ -1563,6 +1632,7 @@ export type BrowserToRelay =
   | InputType
   | InputButton
   | InputRotate
+  | InputPosture
   | InputKeyboardToggle
   | ClipboardRequest
   | NetworkSet

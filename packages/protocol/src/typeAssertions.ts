@@ -22,6 +22,7 @@ import type {
   AgentControlOutbound, StreamToRelay,
   StreamRegistered, StreamRequestIdr, UiTreeError, UiTreeRequest, UiTreeResponse,
   NetworkRequestState,
+  InputPosture, DevicePostures,
 } from './index.js'
 
 // ── must NOT compile ─────────────────────────────────────────────────────────
@@ -171,6 +172,7 @@ export const _InputPinchEnd: InputPinchEnd['type'] = 'input:pinch:end'
 export const _InputPinchMove: InputPinchMove['type'] = 'input:pinch:move'
 export const _InputPinchStart: InputPinchStart['type'] = 'input:pinch:start'
 export const _InputRotate: InputRotate['type'] = 'input:rotate'
+export const _InputPosture: InputPosture['type'] = 'input:posture'
 export const _InputTouchEnd: InputTouchEnd['type'] = 'input:touch:end'
 export const _InputTouchMove: InputTouchMove['type'] = 'input:touch:move'
 export const _InputTouchStart: InputTouchStart['type'] = 'input:touch:start'
@@ -184,6 +186,7 @@ export const _OpenUrlError: OpenUrlError['type'] = 'open-url:error'
 export const _ScreenshotRequest: ScreenshotRequest['type'] = 'screenshot:request'
 export const _SessionAgentAway: SessionAgentAway['type'] = 'session:agent-away'
 export const _SessionChrome: SessionChrome['type'] = 'session:chrome'
+export const _DevicePostures: DevicePostures['type'] = 'device:postures'
 export const _SessionDeviceInfo: SessionDeviceInfo['type'] = 'session:deviceInfo'
 export const _SessionEnd: SessionEnd['type'] = 'session:end'
 export const _SessionJoined: SessionJoined['type'] = 'session:joined'

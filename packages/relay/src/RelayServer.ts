@@ -8,7 +8,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { SessionManager } from './SessionManager.js'
 import type { Session } from './SessionManager.js'
 import type { DeviceDetails, UIElement } from './types.js'
-import type { ChromePayload, InputErrorReason, RelayOutbound } from '@tapflowio/protocol'
+import type { ChromePayload, InputErrorReason, RelayOutbound, PosturesPayload } from '@tapflowio/protocol'
 import { directionOf, parseInbound } from '@tapflowio/protocol/validate'
 import type { ParsedInbound, ParseFailure, ParseResult } from '@tapflowio/protocol/validate'
 import { Router, json } from './router.js'
@@ -185,7 +185,7 @@ type Inbound<T extends ParsedInbound['type']> = Extract<ParsedInbound, { type: T
 type Acked = Inbound<'input:touch:end' | 'input:pinch:end' | 'input:key' | 'input:button' | 'input:type'>
 type Unacked = Inbound<
   'input:touch:start' | 'input:touch:move' | 'input:pinch:start' | 'input:pinch:move'
-  | 'input:rotate' | 'input:keyboard:toggle'
+  | 'input:rotate' | 'input:posture' | 'input:keyboard:toggle'
 >
 
 export class RelayServer {
@@ -1075,10 +1075,26 @@ export class RelayServer {
         // two-member union** while `AgentRegister.platform` is `string`, open so that a third-party
         // platform can register through `AgentRegistry.register()` (root AGENTS.md, OCP). Validating
         // this would refuse a platform the repo promises to support — and refusing costs more than a
-        // dropped frame, because the message arrives once per boot and skipping `setChromeData` also
-        // empties what the re-join replay reads. The relay never looks inside; the viewer does, and it
-        // is where the variants are already told apart.
+        // dropped frame: skipping `setChromeData` also
+        // empties what the re-join replay reads. It is no longer true that this arrives once per boot,
+        // either — a foldable re-sends it when the screen changes under the session — so the cost of
+        // a refusal is a viewer stuck with the previous screen's bezel rather than one frame.
+        // The relay never looks inside; the viewer does, and it is where the variants are already
+        // told apart.
         this.sessions.setChromeData(session.id, raw['payload'] as ChromePayload)
+        if (session.browserSocket?.readyState === WebSocket.OPEN) {
+          session.browserSocket.send(JSON.stringify(raw))
+        }
+        break
+      }
+      case 'device:postures': {
+        const session = this.sessions.get(msg.sessionId)
+        if (!session) break
+        // Cached for the same reason `session:chrome` is: a viewer that re-joins (a tab reload, a
+        // socket blip) gets the session's state replayed, and without this the posture control would
+        // simply be missing until the device was rebooted — with the picture still fine, which is
+        // the hardest kind of gap to diagnose.
+        this.sessions.setPostures(session.id, raw['payload'] as PosturesPayload)
         if (session.browserSocket?.readyState === WebSocket.OPEN) {
           session.browserSocket.send(JSON.stringify(raw))
         }
@@ -1328,6 +1344,7 @@ export class RelayServer {
       case 'input:pinch:start':
       case 'input:pinch:move':
       case 'input:rotate':
+      case 'input:posture':
       case 'input:keyboard:toggle': {
         // No ack, so no correlator to check and nothing to answer. An unowned frame is dropped rather
         // than refused for the same reason: there is no waiter to tell.
@@ -1723,6 +1740,9 @@ export class RelayServer {
     }
     if (session.deviceInfo) {
       this.sendTo(ws, { type: 'session:deviceInfo', sessionId: session.id, payload: session.deviceInfo })
+    }
+    if (session.postures) {
+      this.sendTo(ws, { type: 'device:postures', sessionId: session.id, payload: session.postures })
     }
     // Replay device:ready only if this session actually announced one (browser WS blip reconnect).
     // Not `deviceStatus`: that starts from the agent's `simctl list` snapshot, so a session for a

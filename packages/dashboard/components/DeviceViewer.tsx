@@ -7,7 +7,7 @@ import { usePerfMode } from '@/hooks/usePerfMode';
 import { IOSViewer } from './device/IOSViewer';
 import { AndroidViewer } from './device/AndroidViewer';
 import { SimulatorInfoCard } from './device/shared/SimulatorInfoCard';
-import type { AndroidChrome, ChromeData, BrowserInbound } from '@/lib/types';
+import type { AndroidChrome, ChromeData, BrowserInbound, PosturesPayload } from '@/lib/types';
 import type { FrameTiming, PerfHook } from './perf/types';
 import { parseEnvelopeHeader, HEADER_SIZE, CODEC_H264, CODEC_AUDIO, type BinaryFrameHandler } from '@/lib/envelope';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
@@ -80,6 +80,10 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   const [agentAway, setAgentAway] = useState(false);
   const [deviceReady, setDeviceReady] = useState(false);
   const [chrome, setChrome] = useState<ChromeData | AndroidChrome | null>(null);
+  // Postures the device offers, ordered most closed → most open by the protocol's contract, so the
+  // control renders in that order without knowing any platform's vocabulary. Empty for a device
+  // with one fixed screen, which is how the control knows to stay hidden.
+  const [postures, setPostures] = useState<PosturesPayload>({ postures: [], currentId: null });
   const [installing, setInstalling] = useState(false);
   const [installed, setInstalled] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
@@ -355,6 +359,11 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       setInstalled(false);
       setInstallError(null);
       setBootError(null);
+      // The postures belong to the cycle that reported them. A restart can land the device in a
+      // different one, and the control's accessible name is built from `currentId` — so keeping it
+      // would have assistive technology naming a posture the device may not be in until a fresh
+      // `device:postures` happens to arrive. Cleared, the control hides instead.
+      setPostures({ postures: [], currentId: null });
       // A boot cycle invalidates the installs of the previous one, and this handler is where everything
       // else a new cycle invalidates is already cleared. Without it the record outlives the cycle that
       // made it: cycle 1's `app:install-done` can arrive while cycle 2's install is still in flight, and
@@ -428,6 +437,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
       setLaunching(false);
     }
     if (msg.type === 'session:chrome') { setChrome(msg.payload); }
+    if (msg.type === 'device:postures') { setPostures(msg.payload); }
     if (msg.type === 'keyboard:toggled') {
       const { visible } = msg.payload;
       setSwKeyboardVisible(visible);
@@ -720,7 +730,7 @@ export function DeviceViewer({ sessionId, deviceId, buildId, resetMode, onRecord
   return (
     <>
       {iosChrome && <IOSViewer {...commonProps} chrome={iosChrome} perfHookRef={devPerfHookRef} />}
-      {androidChrome && <AndroidViewer {...commonProps} androidButtons={androidChrome.buttons} screenWidth={androidChrome.screenWidth} screenHeight={androidChrome.screenHeight} cornerRadius={androidChrome.cornerRadius} perfHookRef={devPerfHookRef} />}
+      {androidChrome && <AndroidViewer {...commonProps} androidButtons={androidChrome.buttons} screenWidth={androidChrome.screenWidth} screenHeight={androidChrome.screenHeight} cornerRadius={androidChrome.cornerRadius} postures={postures} streamRotation={androidChrome.streamRotation} perfHookRef={devPerfHookRef} />}
       {import.meta.env.DEV && perfMode && perfVisible && (
         <>
           <StatsOverlay perfHookRef={statsRef} />

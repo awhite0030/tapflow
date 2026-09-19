@@ -94,6 +94,10 @@ export const INBOUND_DISPOSITION = {
     ignored: 'Nothing here sends `input:keyboard:toggle`. It reports the on-screen keyboard\'s visibility, '
       + 'which is a viewer concern — this client has no surface to reflect it on.',
   },
+  'device:postures': {
+    ignored: 'Which postures a foldable offers, and which it is in. No tool changes a device\'s '
+      + 'posture, so there is nothing here that would act on the list.',
+  },
   'session:chrome': {
     ignored: 'Bezel geometry and device model, for drawing a device frame around a video stream. This '
       + 'client renders nothing; `list_devices` already carries the name and platform a model needs.',

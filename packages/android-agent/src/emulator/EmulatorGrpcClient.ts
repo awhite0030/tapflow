@@ -67,12 +67,16 @@ const CLIPBOARD_DEADLINE_MS = 5_000
 // optimistic success, so a dead emulator produces an answer rather than that fallback.
 const INPUT_DEADLINE_MS = 1_500
 type ClipCb = (err: Error | null, res?: ClipDataMsg) => void
+interface DisplayConfigMsg { width: number; height: number; display: number }
+interface DisplayConfigsMsg { displays: DisplayConfigMsg[] }
+type DisplayCb = (err: Error | null, res?: DisplayConfigsMsg) => void
 
 /** The subset of the generated EmulatorController stub we use. Injectable for tests. */
 export interface RawEmulatorController {
   streamScreenshot(format: ImageFormatMsg): ClientReadableStream<ImageMsg>
   streamAudio(format: AudioFormatMsg): ClientReadableStream<AudioPacketMsg>
   sendTouch(event: TouchEventMsg, options: CallOptions, cb: UnaryCb): void
+  getDisplayConfigurations(empty: Record<string, never>, options: CallOptions, cb: DisplayCb): void
   sendKey(event: KeyboardEventMsg, options: CallOptions, cb: UnaryCb): void
   sendMouse(event: MouseEventMsg, cb: UnaryCb): void
   sendWheel(event: WheelEventMsg, cb: UnaryCb): void
@@ -158,6 +162,35 @@ export class EmulatorGrpcClient {
       }
     }
     return { frames: mapped(), cancel: () => call.cancel() }
+  }
+
+  /**
+   * Display 0's size **as the emulator has it configured** — which is not always the panel the
+   * guest is currently drawing on.
+   *
+   * This is the divisor for input, and that is the only reason it exists. `sendTouch` takes
+   * pixels and the emulator converts them to its touch device's normalized range, so the number
+   * it divides by is its own, not the guest's. They agree on a phone and on an unfolded foldable
+   * (where the panel *is* `hw.lcd`), and disagree the moment the device folds: measured on a
+   * Pixel 9 Pro Fold, folded reports `1080x2424` to `dumpsys` while this stays `2076x2152`, so
+   * every tap went 1.92x too far across and 0.89x too far down.
+   *
+   * Asking the emulator rather than deriving it is the point. The guest's own numbers are what
+   * misled two earlier attempts, and the device's `getevent` range is a normalized `32768x32768`
+   * that is not a pixel reference at all.
+   */
+  getDisplaySize(): Promise<{ width: number; height: number } | null> {
+    return new Promise((resolve) => {
+      this.raw.getDisplayConfigurations({}, { deadline: Date.now() + INPUT_DEADLINE_MS }, (err, res) => {
+        if (err) return resolve(null)
+        const d = res?.displays?.find((x) => Number(x.display ?? 0) === 0) ?? res?.displays?.[0]
+        const width = Number(d?.width ?? 0)
+        const height = Number(d?.height ?? 0)
+        // A zero would divide every coordinate to the top-left corner, which is worse than the
+        // panel size this falls back to.
+        resolve(width > 0 && height > 0 ? { width, height } : null)
+      })
+    })
   }
 
   // --- input (coords are display-resolution px, top-left origin; pressure 0 = up) ---

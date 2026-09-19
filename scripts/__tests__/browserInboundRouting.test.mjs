@@ -170,9 +170,9 @@ describe('browser-inbound routing matches the protocol union', () => {
   // empty set. L2 shipped exactly that mistake in the other direction — a lazy regex truncated a
   // nested literal to 6 of 11 fields and the by-name assertion passed anyway.
   it('the parser reached every forward site', () => {
-    expect(forwarded.size).toBe(24)
+    expect(forwarded.size).toBe(25)
     const sends = (relaySrc.match(/browserSocket\.send\(JSON\.stringify\(raw\)\)/g) ?? []).length
-    expect(sends).toBe(8) // 6 single-label blocks + the 13-label block + the owner-gated block
+    expect(sends).toBe(9) // 7 single-label blocks + the 13-label block + the owner-gated block
   })
 
   // The other half of the rule above, and the one a count cannot see: a forward that switched back to
@@ -210,7 +210,7 @@ describe('browser-inbound routing matches the protocol union', () => {
 
   it('RelayOrAgentToBrowser is shared by both directions rather than copied', () => {
     const shared = unionMembers(protocolSrc, 'RelayOrAgentToBrowser')
-    expect(shared.size).toBe(12)
+    expect(shared.size).toBe(13)
     for (const name of ['RelayToBrowser', 'AgentToBrowser']) {
       expect(protocolSrc).toContain(`export type ${name} =\n  | RelayOrAgentToBrowser`)
     }

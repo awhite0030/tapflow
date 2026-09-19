@@ -1,6 +1,9 @@
 'use client';
 
-import { Camera, Link2, Loader2, Radio, RadioOff, RefreshCw, RotateCw, Square, Video } from 'lucide-react';
+import { Camera, FoldHorizontal, Link2, Loader2, Radio, RadioOff, RefreshCw, RotateCw, Square, UnfoldHorizontal, Video } from 'lucide-react';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -42,6 +45,16 @@ interface SimulatorToolbarProps {
   onRecordToggle: () => void;
   recordState: 'idle' | 'recording' | 'uploading' | 'done';
   onRotate: () => void;
+  /** Foldable postures, ordered most closed → most open by the protocol's contract. The control
+   *  renders only when there is more than one to choose between, so a device with a single fixed
+   *  screen shows nothing and no platform check is needed to decide that. */
+  posture?: {
+    postures: ReadonlyArray<{ id: string; label: string }>;
+    currentId: string | null;
+    /** A change is in flight — the device has not answered yet. */
+    pending: boolean;
+    onSelect: (id: string) => void;
+  };
   onDeepLink: () => void;
   /**
    * Platform buttons that move around the app or the OS — home, back, recent apps. Rendered in the
@@ -322,6 +335,7 @@ export function SimulatorToolbar({
   onRecordToggle,
   recordState,
   onRotate,
+  posture,
   onDeepLink,
   navigationSlot,
   deviceSlot,
@@ -335,6 +349,7 @@ export function SimulatorToolbar({
   // toolbar at a time and cannot see that.
   const descId = useId();
   const rebootStatusId = useId();
+  const postureStatusId = useId();
   const recordStatusId = useId();
   // Controlled rather than an `AlertDialogTrigger`, because the button it would wrap is already
   // wrapped by a `TooltipTrigger asChild` — two libraries cloning the same child and both wanting to
@@ -405,6 +420,111 @@ export function SimulatorToolbar({
           </TooltipTrigger>
           <TooltipContent side="left"><ShortcutTooltip label="Rotate" keys={['⌘', '⇧', 'O']} /></TooltipContent>
         </Tooltip>
+
+        {/* The outcome of a fold is otherwise conveyed only by pixels — the spinner swapping back
+            and the picture returning — so it is announced, as reboot, recording and network already
+            are. `polite` because a posture change is something the user asked for and is waiting on,
+            not an interruption. */}
+        {posture && posture.postures.length > 1 && (
+          <span id={postureStatusId} role="status" aria-live="polite" className="sr-only">
+            {posture.pending
+              ? 'Changing posture'
+              : (posture.postures.find((p) => p.id === posture.currentId)?.label ?? '')}
+          </span>
+        )}
+        {posture && posture.postures.length > 1 && (() => {
+          // **A menu, not a cycle.** Cycling looked right while a foldable had two postures and
+          // stopped as soon as it had three: `HALF_OPENED` and `OPENED` present the same screen on a
+          // Pixel 9 Pro Fold, so a step between them changed nothing visible and read as a press
+          // that did not register. A list also survives `flipped` and `tent` arriving later.
+          const at = posture.postures.findIndex((p) => p.id === posture.currentId);
+          const current = at === -1 ? null : posture.postures[at];
+          // Two postures is a toggle, not a list: opening a menu to pick the only other option is a
+          // click for nothing. More than two — a device that offers flipped or tent — gets the menu.
+          const pair = posture.postures.length === 2;
+          const other = posture.postures[(at + 1) % posture.postures.length]!;
+          // **The icon says what pressing does, like every other button in this toolbar.** The
+          // list runs most closed → most open, so a destination further along it opens the device
+          // and one before it closes it. A menu has no single destination, so it asks the weaker
+          // question the same way round: from the most closed posture the only move is to open.
+          // An unknown current posture falls to Fold, which is where the pair's destination
+          // (`postures[0]`, the most closed) actually points.
+          const opening = at === -1 ? false : pair ? posture.postures.indexOf(other) > at : at === 0;
+          const PostureIcon = opening ? UnfoldHorizontal : FoldHorizontal;
+          // **And the name says the same thing the icon does.** It used to open with `Fold:`
+          // whichever way the press went, so someone reading the name alone — a screen reader, or
+          // voice control speaking the label — was told a folded device would fold again, while
+          // the icon beside it offered to unfold. The verb is the one fact both have to share.
+          const verb = opening ? 'Unfold' : 'Fold';
+          const label = pair
+            ? (current ? `${verb}: ${current.label} to ${other.label}` : `${verb}: ${other.label}`)
+            : (current ? `Posture: ${current.label}` : 'Posture');
+          const trigger = (onClick?: () => void) => (
+            <Button
+              variant="ghost" size="icon" className="h-8 w-8 aria-disabled:opacity-50"
+              aria-label={posture.pending ? `${label} — changing` : label}
+              aria-busy={posture.pending}
+              // `aria-disabled`, not `disabled`: this button's name changes at the moment it is
+              // pressed, and `disabled` takes the focused element out of the tab order so the new
+              // name is announced to nobody — and `aria-describedby` cannot be heard on a control
+              // that can no longer be focused, which is the one moment it has something to say.
+              // The restart, recording and network controls in this file each avoid the same
+              // shape (#447, #624); this one did not, and the refusal lives in the guard below.
+              aria-disabled={posture.pending}
+              aria-describedby={postureStatusId}
+              onClick={() => { if (!posture.pending) onClick?.(); }}
+            >
+              {posture.pending
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <PostureIcon className="h-4 w-4" />}
+            </Button>
+          );
+          // While a change is in flight the button is rendered without the *menu* attached at all.
+          // `aria-disabled` does not stop a trigger opening it, and neither did `disabled` —
+          // measured — and a menu that opens over a device mid-fold offers a choice that would be
+          // sent into a posture already moving.
+          //
+          // The toggle keeps its handler, so the refusal for it is the guard in `trigger` rather
+          // than an absent callback. One refusal that a test can exercise beats two that look the
+          // same from outside: with the handler dropped here, removing the guard broke nothing.
+          if (posture.pending) {
+            return (
+              <Tooltip>
+                <TooltipTrigger asChild>{trigger(pair ? () => posture.onSelect(other.id) : undefined)}</TooltipTrigger>
+                <TooltipContent side="left">{`${label} — changing`}</TooltipContent>
+              </Tooltip>
+            );
+          }
+          if (pair) {
+            return (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {trigger(() => posture.onSelect(other.id))}
+                </TooltipTrigger>
+                <TooltipContent side="left">{label}</TooltipContent>
+              </Tooltip>
+            );
+          }
+          return (
+            <DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>{trigger()}</DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="left">{label}</TooltipContent>
+              </Tooltip>
+              <DropdownMenuContent side="left" align="start">
+                {/* Rendered in the order the agent sent — most closed to most open, which is the
+                    protocol's contract and the reason this needs no platform knowledge. */}
+                <DropdownMenuRadioGroup value={posture.currentId ?? ''} onValueChange={posture.onSelect}>
+                  {posture.postures.map((p) => (
+                    <DropdownMenuRadioItem key={p.id} value={p.id}>{p.label}</DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          );
+        })()}
 
         {reboot && (() => {
           // **One string, two channels, so they cannot drift apart.** The tooltip is the visible

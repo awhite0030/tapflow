@@ -92,6 +92,7 @@ export const INBOUND_DISPOSITION = {
   'open-url:done': { at: 'DeviceViewer' },
   'open-url:error': { at: 'DeviceViewer' },
   'session:agent-away': { at: 'DeviceViewer' },
+  'device:postures': { at: 'DeviceViewer' },
   'session:chrome': { at: 'DeviceViewer' },
   // Same as `error` above: `useAgentSession`'s branch cannot fire, and is named for the same reason.
   'session:joined': { at: 'DeviceViewer, SessionList, useAgentSession' },
