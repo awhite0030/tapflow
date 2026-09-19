@@ -231,12 +231,27 @@ jobs:
             }
           }
 
+          # Fail with the actionable error before invoking either executable: with
+          # `$ErrorActionPreference = 'Stop'`, calling a missing tool would throw
+          # an unhandled command-not-found error instead of this message.
+          $missing = @()
+          if (-not (Get-Command unzip -ErrorAction SilentlyContinue)) { $missing += 'unzip' }
+          if (-not (Get-Command tar -ErrorAction SilentlyContinue)) { $missing += 'tar' }
+          if ($missing.Count -gt 0) {
+            Write-Error ("Missing required archive tools: $($missing -join ', '). " +
+              "On windows-latest, unzip.exe comes from Git for Windows ('C:\Program Files\Git\usr\bin' " +
+              "or '%LocalAppData%\Programs\Git\usr\bin' for user installs); " +
+              "ensure that directory is on PATH. tar.exe ships with Windows in 'C:\Windows\System32'; " +
+              "ensure System32 is on PATH. See CONTRIBUTING prerequisites.")
+            exit 1
+          }
+
           Write-Host '--- resolved archive tools ---'
-          Get-Command unzip, tar -ErrorAction SilentlyContinue | Format-Table Name, Source -AutoSize | Out-String | Write-Host
+          Get-Command unzip, tar | Format-Table Name, Source -AutoSize | Out-String | Write-Host
 
           # Keep native Windows tar first where both exist.
-          $tarCmd = Get-Command tar -ErrorAction SilentlyContinue
-          if ($tarCmd -and $tarCmd.Source -notlike '*System32*') {
+          $tarCmd = Get-Command tar
+          if ($tarCmd.Source -notlike '*System32*') {
             $sys32 = 'C:\Windows\System32'
             if (Test-Path (Join-Path $sys32 'tar.exe')) {
               $parts = $env:PATH -split ';' | Where-Object { $_ -and $_ -ne '' }
@@ -247,7 +262,8 @@ jobs:
             }
           }
 
-          # Verify the executables run, not just resolve.
+          # Both tools resolved above, so these verify they run rather than
+          # re-checking presence: a non-zero exit names the broken tool.
           & unzip -v | Select-Object -First 2
           if ($LASTEXITCODE -ne 0) {
             Write-Error "unzip resolved but 'unzip -v' failed (exit $LASTEXITCODE)."
@@ -256,17 +272,6 @@ jobs:
           & tar --version | Select-Object -First 2
           if ($LASTEXITCODE -ne 0) {
             Write-Error "tar resolved but 'tar --version' failed (exit $LASTEXITCODE)."
-            exit 1
-          }
-
-          $missing = @()
-          if (-not (Get-Command unzip -ErrorAction SilentlyContinue)) { $missing += 'unzip' }
-          if (-not (Get-Command tar -ErrorAction SilentlyContinue)) { $missing += 'tar' }
-          if ($missing.Count -gt 0) {
-            Write-Error ("Missing required archive tools: $($missing -join ', '). " +
-              "On windows-latest, unzip.exe comes from Git for Windows ('C:\Program Files\Git\usr\bin'); " +
-              "ensure that directory is on PATH. tar.exe ships with Windows in 'C:\Windows\System32'; " +
-              "ensure System32 is on PATH. See CONTRIBUTING prerequisites.")
             exit 1
           }
 
