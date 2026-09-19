@@ -19,7 +19,10 @@ function probeTool(tool: ArchiveTool): ToolProbe {
   const result = spawnSync(tool, args, { encoding: 'utf8' })
   if (result.error) {
     const detail = result.error instanceof Error ? result.error.message : String(result.error)
-    return { tool, state: 'missing', detail }
+    // Only ENOENT means "not on PATH". Other startup failures (EACCES, EPERM)
+    // resolve to something that cannot start, so they belong with `broken`.
+    const code = (result.error as NodeJS.ErrnoException).code
+    return { tool, state: code === 'ENOENT' ? 'missing' : 'broken', detail }
   }
   if (result.status !== 0) {
     const stderr = typeof result.stderr === 'string' ? result.stderr.trim() : ''
@@ -61,7 +64,7 @@ export function assertArchiveTools(tools: readonly ArchiveTool[] = ['unzip', 'ta
     failures.push(`missing executables (not found on PATH): ${missingDetails.join(', ')}`)
   }
   if (brokenDetails.length > 0) {
-    failures.push(`executables that resolve but fail their version check: ${brokenDetails.join('; ')}`)
+    failures.push(`executables that fail to start or fail their version check: ${brokenDetails.join('; ')}`)
   }
   throw new Error(
     `Missing required archive tools for relay tests: ${failures.join('; ')}. ` +
