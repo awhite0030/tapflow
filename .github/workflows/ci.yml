@@ -264,14 +264,22 @@ jobs:
 
           # Both tools resolved above, so these verify they run rather than
           # re-checking presence: a non-zero exit names the broken tool.
-          & unzip -v | Select-Object -First 2
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "unzip resolved but 'unzip -v' failed (exit $LASTEXITCODE)."
+          #
+          # Run each native command UNPIPED and capture $LASTEXITCODE on the very
+          # next line: piping native output (e.g. `| Select-Object -First 2`)
+          # leaves $LASTEXITCODE empty and falsely fails this check (PR #815).
+          $unzipVersion = & unzip -v 2>&1
+          $unzipExit = $LASTEXITCODE
+          $unzipVersion | Select-Object -First 2 | Out-String | Write-Host
+          if ($unzipExit -ne 0) {
+            Write-Error "unzip resolved but 'unzip -v' failed (exit $unzipExit)."
             exit 1
           }
-          & tar --version | Select-Object -First 2
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "tar resolved but 'tar --version' failed (exit $LASTEXITCODE)."
+          $tarVersion = & tar --version 2>&1
+          $tarExit = $LASTEXITCODE
+          $tarVersion | Select-Object -First 2 | Out-String | Write-Host
+          if ($tarExit -ne 0) {
+            Write-Error "tar resolved but 'tar --version' failed (exit $tarExit)."
             exit 1
           }
 
