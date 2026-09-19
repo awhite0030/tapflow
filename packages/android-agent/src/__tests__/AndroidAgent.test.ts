@@ -183,7 +183,6 @@ interface TestState {
   /** The grid injected touches land in; null falls back to the panel size. */
   touchRange: { width: number; height: number } | null
   posturing: boolean
-  skinDirty: boolean
   /** The panel's corner radius in device pixels. */
   cornerRadiusPx: number
 }
@@ -3566,6 +3565,17 @@ describe('reconcileScreen (the wiring, not the arithmetic)', () => {
     expect(await internals(agent).reconcileScreen(state, 'emulator-5554', 2152, 2076, 'REVERSE_LANDSCAPE')).toBe(false)
   })
 
+  it('treats an unknown skin as no correction rather than a NaN nobody can apply', async () => {
+    // The type says the emulator only sends the four it declares; the value comes off the wire,
+    // so a newer one would index the table to `undefined` and propagate as `NaN` all the way to
+    // the viewer's `rotate(NaNdeg)` — a correction that silently does nothing, with nothing said.
+    const agent = agentWith(metrics('1080x2424', '1080x2424', 0))
+    const state = stateFor()
+    await internals(agent).reconcileScreen(
+      state, 'emulator-5554', 1080, 2424, 'TENT' as unknown as SkinRotation)
+    expect(state.streamRotation).toBe(0)
+  })
+
   it('falls back to the frame size when the metrics cannot be read', async () => {
     const adb = mockAdb()
     vi.spyOn(adb, 'getDisplayMetrics').mockRejectedValue(new Error('device offline'))
@@ -3836,61 +3846,66 @@ describe('what the delta review found', () => {
     expect(state.posturing).toBe(false)
   })
 
-  it('records a size change it had to drop, because nothing will report it twice', async () => {
-    // The write half. `EmulatorVideo` reports a change once and records the new value, so a
-    // callback dropped while a reconcile is running is the only notice there will ever be — and
-    // a skin-only change moves none of the fields the watcher's cheap read compares.
+  it('waits for a fresh pass rather than dropping a change that arrived mid-reconcile', async () => {
+    // `EmulatorVideo` reports each change once and records it, so a callback dropped while a
+    // reconcile was running was the only notice there would ever be — and a skin-only change
+    // moves none of the fields the watcher's cheap read compares, so nothing picked it up. It is
+    // coalesced onto a trailing pass now, which is why the field that remembered drops is gone.
     grpcVideoOptions = null
     const adb = mockAdb(true)
     vi.spyOn(adb, 'getScreenSize').mockResolvedValue({ width: 1080, height: 2400 })
+    const reads = vi.spyOn(adb, 'getDisplayMetrics').mockResolvedValue(metrics(0))
     const pinned = process.env.TAPFLOW_ANDROID_BACKEND
     process.env.TAPFLOW_ANDROID_BACKEND = 'grpc'
     const agent = new AndroidAgent({}, adb)
     const state = {
       deviceId: 'avd:Pixel_8_API_34', sessionId: 's1', booted: true,
-      reconciling: false, screenWatch: null, skinDirty: false,
+      reconciling: false, screenWatch: null,
     } as unknown as TestState
     try {
       await (agent as unknown as {
         startGrpcVideoStream(s: TestState, ws: unknown, serial: string): Promise<void>
       }).startGrpcVideoStream(state, { readyState: 1, send: () => {} }, 'emulator-5554')
       if (state.screenWatch) clearInterval(state.screenWatch)
-      // Read through a local: the only assignment is inside the mock factory, which the
-      // compiler cannot see from here, so it narrows the module-level binding to `null`.
       const opts = grpcVideoOptions as GrpcVideoOptions | null
       expect(opts?.onSizeChange).toBeTypeOf('function')
-      // A reconcile is already running, so this callback is dropped — and must leave a mark.
-      state.reconciling = true
+      reads.mockClear()
+      // One already running, one arriving behind it. Dropped, the second read never happens.
+      const first = (agent as unknown as {
+        reconcileSerial(s: TestState, serial: string, w: number, h: number, skin: string): Promise<boolean>
+      }).reconcileSerial(state, 'emulator-5554', 1080, 2400, 'PORTRAIT')
       opts!.onSizeChange!(2152, 2076, 'REVERSE_LANDSCAPE', 0)
-      expect(state.skinDirty).toBe(true)
+      await first
+      await new Promise((r) => setTimeout(r, 200))
+      // Two passes, not one: the trailing pass re-reads rather than reusing the first's answer.
+      expect(reads.mock.calls.length).toBeGreaterThan(3)
     } finally {
       if (pinned === undefined) delete process.env.TAPFLOW_ANDROID_BACKEND
       else process.env.TAPFLOW_ANDROID_BACKEND = pinned
     }
   })
 
-  it('settles after a dropped size change the cheap read cannot see', async () => {
-    // `EmulatorVideo` reports a change once and records it, so a skin-only change dropped while
-    // a reconcile was running never repeats — and it moves none of the three fields the cheap
-    // read compares, so nothing else would ever pick it up.
-    vi.useFakeTimers()
+  it('coalesces a third request onto the pass a second one already scheduled', async () => {
+    // Three questions while one runs are one question. Queueing them instead would cost a
+    // settling pass each — seconds — for a value that did not change between them.
     const adb = mockAdb(true)
     const reads = vi.spyOn(adb, 'getDisplayMetrics').mockResolvedValue(metrics(0))
-    const agent = new AndroidAgent({}, adb)
+    const agent = new AndroidAgent({}, adb) as unknown as {
+      reconcileSerial(s: TestState, serial: string, w: number, h: number, skin: string): Promise<boolean>
+    }
     const state = {
       deviceId: 'avd:Pixel_8_API_34', sessionId: 's1', booted: true, reconciling: false,
-      screenWatch: null, skin: 'PORTRAIT', skinDirty: true,
       videoWidth: 1080, videoHeight: 2424, displayWidth: 1080, displayHeight: 2424,
-      rotation: 0, streamRotation: 0, cornerRadiusPx: 0,
+      rotation: 0, streamRotation: 0, skin: 'PORTRAIT', cornerRadiusPx: 0,
     } as unknown as TestState
-    internals(agent).watchScreen(state, 'emulator-5554', 'PORTRAIT')
-    await vi.advanceTimersByTimeAsync(2_000)
-    // More than the single cheap read: the settling pass ran even though nothing in `dumpsys`
-    // had moved. And the flag is consumed, so the next idle tick is cheap again.
-    expect(reads.mock.calls.length).toBeGreaterThan(1)
-    expect(state.skinDirty).toBe(false)
-    if (state.screenWatch) clearInterval(state.screenWatch)
-    vi.useRealTimers()
+    const running = agent.reconcileSerial(state, 'emulator-5554', 1080, 2424, 'PORTRAIT')
+    const second = agent.reconcileSerial(state, 'emulator-5554', 1080, 2424, 'PORTRAIT')
+    const third = agent.reconcileSerial(state, 'emulator-5554', 1080, 2424, 'PORTRAIT')
+    expect(second).toBe(third)
+    expect(second).not.toBe(running)
+    await Promise.all([running, second, third])
+    // Two passes for three requests: the running one, and the single trailing one they share.
+    expect(reads.mock.calls.length).toBeLessThan(9)
   })
 })
 

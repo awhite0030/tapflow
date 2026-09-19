@@ -39,7 +39,7 @@ export function parseDisplayMetrics(output: string): DisplayMetrics | null {
 }
 
 /**
- * The rounded-corner radius of the panel with these natural dimensions, as a fraction of its width.
+ * The rounded-corner radius, in device pixels, of the panel with these natural dimensions.
  *
  * **Read from Android rather than measured off the picture.** `detectCornerRadius` finds the run of
  * black down the frame's left edge, which is the radius only while the frame is upright — and the

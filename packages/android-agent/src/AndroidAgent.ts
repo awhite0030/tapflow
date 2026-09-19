@@ -301,9 +301,6 @@ interface DeviceState {
    *  on: on a foldable those differ, and this is the one input is measured in. Read once per
    *  stream; null means the read failed and the panel size is used instead. */
   touchRange: { width: number; height: number } | null
-  /** An `onSizeChange` was dropped because a reconcile was already running. The watcher's cheap
-   *  read cannot see a skin-only change, so it has to be told one was missed. */
-  skinDirty: boolean
   /** A posture change is in flight. The device can only be in one posture, and the carry that
    *  follows reads a rotation from before the change — so a second request overlapping the first
    *  restores an orientation the device has already left. */
@@ -583,7 +580,6 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         skin: null,
         touchRange: null,
         posturing: false,
-        skinDirty: false,
         screenWatch: null,
         reconciling: false,
         displayWidth: 0,
@@ -705,6 +701,9 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     // interval keeps a dead stream's `skin` alive for the rest of the session.
     if (state.screenWatch) clearInterval(state.screenWatch)
     state.screenWatch = null
+    this.reconcileRunning.delete(state.deviceId)
+    this.reconcileQueued.delete(state.deviceId)
+    this.reconcileToken.delete(state.deviceId)
     state.grpcClient?.close()
     state.grpcClient = null
     state.cornerRadiusPx = 0
@@ -875,7 +874,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     // report had already gone out by now, so without this the picture is shown a quarter turn out
     // until the watcher's next tick, and taps land there too.
     if (!state?.grpcClient) return
-    const changed = await this.reconcileScreen(
+    const changed = await this.reconcileSerial(
       state, serial, state.videoWidth, state.videoHeight, state.skin)
     if (changed && state.booted) this.sendChrome(state)
   }
@@ -1011,8 +1010,9 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     state.screenWatch = setInterval(() => {
       // A reconcile may still be running from a fold; skipping a tick is free, since the next one
       // is two seconds away and the fold's own reconcile is doing the same work.
+      // A reconcile already running is the answer this tick would have asked for, and
+      // `reconcileSerial` would coalesce onto it anyway; skipping saves the cheap read too.
       if (state.reconciling) return
-      state.reconciling = true
       void (async () => {
         // **One cheap read first, and settle only if it moved.** `reconcileScreen` samples until
         // three readings agree, which costs ~700ms of waiting — and this poll paid it every two
@@ -1020,26 +1020,90 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         // read itself is 20ms, so a steady-state tick is now 3% of what it was, and the sampling
         // it used to do no longer competes with a fold's own.
         const quick = await this.adb.getDisplayMetrics(serial).catch(() => null)
-        // A dropped `onSizeChange` is a change this read cannot see: the skin lives in the frame,
-        // not in `dumpsys`. Cleared here so the settling pass below is what answers it.
-        const missed = state.skinDirty
-        state.skinDirty = false
-        if (!missed && quick
+        if (quick
           && quick.natural.width === state.videoWidth && quick.natural.height === state.videoHeight
           && quick.current.width === state.displayWidth && quick.current.height === state.displayHeight
           && quick.rotation === state.rotation) return
         // It moved, or could not be read. Either way the settling pass is the one that answers,
         // because a single reading taken mid-fold describes the posture being left.
-        const changed = await this.reconcileScreen(
+        const changed = await this.reconcileSerial(
           state, serial, state.videoWidth, state.videoHeight, state.skin ?? skin)
         if (changed && state.booted) this.sendChrome(state)
       })()
         .catch((e: unknown) => logger.debug(`screen watch: ${(e as Error).message}`))
-        .finally(() => { state.reconciling = false })
     }, SCREEN_WATCH_INTERVAL_MS)
     // Never hold the process open for a poll.
     state.screenWatch.unref?.()
   }
+
+  /**
+   * One reconcile per device at a time, with at most one waiting behind it.
+   *
+   * **Four callers read the same display and write the same fields**, and only two of them took
+   * the `reconciling` flag: the watcher and the frame's own `onSizeChange`. `input:rotate` and
+   * the posture carry did not, so a rotate landing during a watcher tick put two settling passes
+   * in flight over one `DeviceState` — and the one that finished last won, which is not the one
+   * that read last. The loser's dimensions, rotation and corner radius were committed, and a
+   * `session:chrome` went out describing them.
+   *
+   * **Coalesced rather than queued, because a reconcile is a question and not a command.** Every
+   * caller asks "what is the display now"; three asked while one runs are one question with one
+   * answer, and running three settling passes back to back would cost seconds reading a value
+   * that did not change between them. So the first request while one is running schedules the
+   * single pass that follows it, and later ones join that same pass — they get a *fresh* read
+   * rather than the running pass's answer, because the change they are asking about may have
+   * landed after it sampled.
+   *
+   * This also retires the dropped-callback problem `skinDirty` existed for: `onSizeChange` no
+   * longer loses a change it arrived too early for — it waits for one.
+   */
+  private reconcileSerial(
+    state: DeviceState, serial: string, w: number, h: number, skin: SkinRotation | null,
+  ): Promise<boolean> {
+    const key = state.deviceId
+    const running = this.reconcileRunning.get(key)
+    if (!running) return this.startReconcile(state, serial, w, h, skin, key)
+    const queued = this.reconcileQueued.get(key)
+    if (queued) return queued
+    const next = running
+      // The trailing pass runs whatever the running one did, including throw.
+      .catch(() => false)
+      .then(() => {
+        this.reconcileQueued.delete(key)
+        return this.startReconcile(state, serial, w, h, skin, key)
+      })
+    this.reconcileQueued.set(key, next)
+    return next
+  }
+
+  private startReconcile(
+    state: DeviceState, serial: string, w: number, h: number, skin: SkinRotation | null, key: string,
+  ): Promise<boolean> {
+    // A token rather than the promise itself: the cleanup runs inside the promise it would have
+    // to name, and comparing identity is all it needs — "is the map still pointing at me".
+    const token = Symbol('reconcile')
+    const running = (async () => {
+      state.reconciling = true
+      try {
+        return await this.reconcileScreen(state, serial, w, h, skin)
+      } finally {
+        state.reconciling = false
+        // Only if this is still the current one: a trailing pass may already have replaced it.
+        if (this.reconcileToken.get(key) === token) {
+          this.reconcileToken.delete(key)
+          this.reconcileRunning.delete(key)
+        }
+      }
+    })()
+    this.reconcileToken.set(key, token)
+    this.reconcileRunning.set(key, running)
+    return running
+  }
+
+  /** In-flight and trailing reconciles, per device. See `reconcileSerial`. */
+  private readonly reconcileRunning = new Map<string, Promise<boolean>>()
+  private readonly reconcileQueued = new Map<string, Promise<boolean>>()
+  private readonly reconcileToken = new Map<string, symbol>()
 
   /** Bring the device's coordinate spaces in step with what Android is drawing.
    *
@@ -1080,9 +1144,16 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     // This is the form that matches every reading taken from a *known* state, and the session now
     // starts from one — see `normaliseOnBoot`. The landscape case is tracked separately rather than
     // fitted to readings that contradict each other.
-    const streamRotation = skin === null
+    // `SKIN_DEGREES` is keyed by the emulator's own enum, and an entry it does not carry gives
+    // `undefined` — which propagates as `NaN` through the arithmetic below and out to the viewer
+    // as a correction nobody can apply, silently. The type says that cannot happen; the value
+    // comes off the wire, so it can. An unknown skin means no correction, which is what a
+    // device whose capture does not turn already gets.
+    const skinDegrees = skin === null ? null : SKIN_DEGREES[skin] ?? null
+    if (skin !== null && skinDegrees === null) logger.warn(`unknown skin orientation ${skin}; not correcting`)
+    const streamRotation = skinDegrees === null
       ? 0
-      : ((((SKIN_DEGREES[skin] - rotation) % 360) + 360) % 360) as 0 | 90 | 180 | 270
+      : ((((skinDegrees - rotation) % 360) + 360) % 360) as 0 | 90 | 180 | 270
     const same = natural.width === state.videoWidth && natural.height === state.videoHeight
       && current.width === state.displayWidth && current.height === state.displayHeight
       && rotation === state.rotation && streamRotation === state.streamRotation
@@ -1342,26 +1413,15 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     const video = new EmulatorVideo(client, {
       fps,
       ...(maxSize ? { maxWidth: maxSize, maxHeight: maxSize } : {}),
-      // The screen can change under a live session — a foldable swaps which physical display is on.
-      // `reconcileScreen` is async and this callback is not, so a change that arrives while the
-      // previous one is still resolving is dropped rather than queued; the next frame at the new
-      // size re-reports, and sizes do not change faster than a person can fold a phone.
+      // The screen can change under a live session — a foldable swaps which physical display is
+      // on. A change arriving while one is still resolving waits for a fresh pass rather than
+      // being dropped: `EmulatorVideo` reports each one once and records it, so a skin-only
+      // change dropped here would never be reported again by anything.
       onSizeChange: (w, h, skin) => {
         if (state.emulatorVideo !== video) return
-        if (state.reconciling) {
-          // **Dropped, and the drop has to be remembered.** `EmulatorVideo` reports a change once
-          // and records the new value, so it will not call back with the same skin again — and a
-          // skin-only change moves none of the three fields the watcher's cheap read compares, so
-          // nothing would ever pick it up. The comment here used to say the next frame re-reports;
-          // that is true for a size and false for an orientation.
-          state.skinDirty = true
-          return
-        }
-        state.reconciling = true
-        void this.reconcileScreen(state, serial, w, h, skin)
+        void this.reconcileSerial(state, serial, w, h, skin)
           .then((changed) => { if (changed && state.booted) this.sendChrome(state) })
           .catch((e: unknown) => logger.warn(`screen reconcile failed: ${(e as Error).message}`))
-          .finally(() => { state.reconciling = false })
       },
     })
     // Before the first frame, so no tap can arrive while the divisor is still unknown. Cheap: one
@@ -2267,7 +2327,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
             // `state.rotation` on a backend whose frames are already natural, which `toDevicePx`
             // says must never happen.
             if (!state.grpcClient) return
-            const changed = await this.reconcileScreen(
+            const changed = await this.reconcileSerial(
               state, serial, state.videoWidth, state.videoHeight, state.skin)
             if (changed && state.booted) this.sendChrome(state)
           })
