@@ -8,7 +8,7 @@ vi.mock('@clack/prompts', () => ({
 }))
 
 import { confirm } from '@clack/prompts'
-import { terminalApprovalDeps } from '../../lib/approval-prompt.js'
+import { terminalApprovalDeps, isInteractive } from '../../lib/approval-prompt.js'
 
 const mockConfirm = vi.mocked(confirm)
 
@@ -53,5 +53,25 @@ describe('terminalApprovalDeps', () => {
     expect(mockConfirm).toHaveBeenCalledWith({ message: 'the question' })
     mockConfirm.mockResolvedValue(false as never)
     expect(await terminalApprovalDeps().confirm('the question')).toBe(false)
+  })
+})
+
+describe('isInteractive', () => {
+  const realOut = process.stdout.isTTY
+  const realIn = process.stdin.isTTY
+  afterEach(() => { terminal(realOut, realIn) })
+
+  it('is true only when both stdin and stdout are TTYs', () => {
+    terminal(true, true)
+    expect(isInteractive()).toBe(true)
+
+    terminal(true, undefined)
+    expect(isInteractive()).toBe(false)
+
+    terminal(undefined, true)
+    expect(isInteractive()).toBe(false)
+
+    terminal(undefined, undefined)
+    expect(isInteractive()).toBe(false)
   })
 })

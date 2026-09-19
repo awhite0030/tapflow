@@ -1,4 +1,5 @@
 import { confirm, isCancel } from '@clack/prompts'
+import { isInteractive } from '../lib/approval-prompt.js'
 import { runSetupAndroid, runSetupIos, type SetupStepResult } from '../lib/setup.js'
 import { resolveAdb } from '../lib/doctor.js'
 import { warn, banner, step, BOLD, GREEN, RED, YELLOW, DIM, R } from '../lib/print.js'
@@ -15,7 +16,7 @@ async function detectPlatforms(): Promise<string[]> {
   if (process.platform === 'darwin') platforms.push('ios')
   if (resolveAdb() !== null) {
     platforms.push('android')
-  } else if (process.platform === 'darwin' && process.stdout.isTTY) {
+  } else if (process.platform === 'darwin' && isInteractive()) {
     const also = await confirm({ message: 'Also set up Android? (adb not found)' })
     if (!isCancel(also) && also) platforms.push('android')
   }
