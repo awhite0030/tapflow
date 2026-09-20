@@ -5,6 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { FieldError } from '@/components/ui/field-error'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
@@ -33,7 +34,6 @@ export function Invite() {
 
   const { register, handleSubmit, control, setError, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
-    mode: 'onBlur',
     defaultValues: { displayName: '', avatar: null },
   })
   const displayName = useWatch({ control, name: 'displayName' }) ?? ''
@@ -88,7 +88,7 @@ export function Invite() {
           <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
             <div className="grid gap-2">
               <Label htmlFor="display-name">Nickname <span className="text-muted-foreground text-xs">(optional)</span></Label>
-              <Input id="display-name" placeholder="Your name" {...register('displayName')} />
+              <Input id="display-name" placeholder="Your name"{...register('displayName')} />
             </div>
 
             <div className="grid gap-2">
@@ -111,6 +111,8 @@ export function Invite() {
                     <button
                       type="button"
                       aria-label="Change avatar"
+                      aria-invalid={!!errors.avatar}
+                      aria-describedby={errors.avatar ? 'avatar-error' : undefined}
                       onClick={() => avatarRef.current?.click()}
                       className="absolute bottom-0 right-0 w-6 h-6 rounded-full bg-background border border-border shadow-sm flex items-center justify-center hover:bg-accent transition-colors"
                     >
@@ -132,23 +134,23 @@ export function Invite() {
                   </div>
                 )}
               />
-              {errors.avatar && <p className="text-sm text-destructive">{errors.avatar.message}</p>}
+              <FieldError id="avatar-error" message={errors.avatar?.message} />
             </div>
 
             <Separator />
 
             <div className="grid gap-2">
               <Label htmlFor="password">Password</Label>
-              <Input id="password" type="password" {...register('password')} />
-              {errors.password && <p className="text-sm text-destructive">{errors.password.message}</p>}
+              <Input id="password" type="password"aria-required="true" autoComplete="new-password" aria-invalid={!!errors.password} aria-describedby={errors.password ? 'password-error' : undefined} {...register('password')} />
+              <FieldError id="password-error" message={errors.password?.message} />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="confirm">Confirm password</Label>
-              <Input id="confirm" type="password" {...register('confirm')} />
-              {errors.confirm && <p className="text-sm text-destructive">{errors.confirm.message}</p>}
+              <Input id="confirm" type="password"aria-required="true" autoComplete="new-password" aria-invalid={!!errors.confirm} aria-describedby={errors.confirm ? 'confirm-error' : undefined} {...register('confirm')} />
+              <FieldError id="confirm-error" message={errors.confirm?.message} />
             </div>
 
-            {errors.root && <p className="text-sm text-destructive">{errors.root.message}</p>}
+            <FieldError assertive id="invite-error" message={errors.root?.message} />
             <Button type="submit" disabled={isSubmitting} className="w-full">
               {isSubmitting ? 'Creating account…' : 'Create account'}
             </Button>

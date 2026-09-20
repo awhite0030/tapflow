@@ -4,6 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { FieldError } from '@/components/ui/field-error'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -51,7 +52,6 @@ export function TeamSettings() {
 
   const { register, handleSubmit, control, reset, formState: { errors, isSubmitting } } = useForm<InviteData>({
     resolver: zodResolver(inviteSchema),
-    mode: 'onBlur',
     defaultValues: { email: '', role: 'QA' },
   })
 
@@ -171,8 +171,8 @@ export function TeamSettings() {
               <form onSubmit={handleSubmit(onInvite)} className="flex flex-col gap-4 pt-2">
                 <div className="grid gap-2">
                   <Label htmlFor="invite-email">Email</Label>
-                  <Input id="invite-email" type="email" {...register('email')} />
-                  {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
+                  <Input id="invite-email" type="email"aria-required="true" aria-invalid={!!errors.email} aria-describedby={errors.email ? 'email-error' : undefined} {...register('email')} />
+                  <FieldError id="email-error" message={errors.email?.message} />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="invite-role">Role</Label>

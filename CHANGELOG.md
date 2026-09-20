@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Form fields no longer report an error when you leave them without typing.** Every dashboard form validated on blur whether or not anything had been entered, and the first field is focused when the page or dialog opens, so moving the pointer anywhere else answered with a validation message before the person had done anything. In a dialog it also cost the first click on Close: the message enters the layout, what is below it moves, and a `click` needs its press and release on the same element. Validation now runs on submit and corrects as you type from then on. Submit is also the moment focus moves to the first invalid field, and focus alone announces that field's name and nothing about what is wrong with it — so each message now has an id its field points at. Sign-in, first-run setup, invitation, password reset, and the team, token and settings forms.
+
 ## [0.23.0] - 2026-09-21
 
 ### Breaking Changes
