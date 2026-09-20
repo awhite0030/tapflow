@@ -25,7 +25,9 @@ Commands are registered in `src/index.ts`; user-facing reference: [`docs/referen
 Each command has exactly one responsibility. `tapflow start` is for local development only and does not accept a `--relay` option.
 "Connect to a relay" and "start a relay" are separate commands (`agent start` / `relay start`).
 "Scaffold config" and "create the admin account" are separate commands (`init` / `admin init`) — `init` never touches the relay or creates accounts.
-`doctor` diagnoses prerequisites; `setup` installs/fixes them. Both take an optional `[platform]` (`ios` | `android`) and mirror each other; device booting is left to the relay (on-demand on QA Session join), so `setup` only ensures a bootable device/AVD exists.
+`doctor` diagnoses prerequisites; `setup` installs/fixes them. Both take an optional `[platform]` (`ios` | `android`) and mirror each other in shape; device booting is left to the relay (on-demand on QA Session join), so `setup` only ensures a bootable device/AVD exists.
+
+**They do not mirror each other in what counts as failure, and they share a type that hides it.** `SetupStepResult` is `DoctorCheck` plus `state`, so both carry `ok` and `warn` — but `doctor` fails on `!ok && !warn` (`hasFailures`), while `setup` fails on `!ok` alone, which is the predicate its `SETUP INCOMPLETE` banner already used. In `doctor`, `warn` means *not fatal*; in `setup` it is presentation, and `ok` carries the whole meaning. A Mac with no simulator runtime therefore passes `tapflow doctor` and exits 1 from `tapflow setup`. That is deliberate: `doctor` answers whether the Mac is usable, `setup` answers whether the work it was asked to do got done. Do not "align" them without deciding which question changes — and do not cite one as the reason for the other, which is how a false justification shipped in three places once.
 
 ## HOW
 

@@ -224,6 +224,27 @@ later one produced two more that the sweep had specifically been looking for.
 - **Do not blanket-replace.** In that same pass the identical phrase "once per session" was **correct** two
   files away, describing a different record with a genuinely per-session key. A global substitution would have
   broken the true half while fixing the false one, and the distinction was the whole point of the fix.
+- **A justification that cites another command is a claim about that command, and nothing you run checks
+  it.** The three habits above all assume the sentence was true once. This one never was. `tapflow setup`
+  was changed to exit 1 on `SETUP INCOMPLETE`, and the reason given — in the changeset, the changelog and
+  the code comment — was *"`tapflow doctor` already exits 1 for the same state"*. The author had grepped
+  `doctor.ts`, seen `process.exit(1)` at three call sites, and stopped at the call. Its predicate is
+  `hasFailures = !ok && !warn`, one screen above, with a comment saying a warn does not count. Nearly every
+  pending step in `lib/setup.ts` is `ok: false, warn: true`, so the two disagree on the ordinary cases: a Mac
+  with no simulator runtime passes `doctor` and fails `setup`.
+
+  **The change was right and the reason was false**, which is the expensive combination — a false citation
+  does not just misinform, it conceals that the decision was never made. "Align with `doctor`" needs no
+  further argument, so nobody writes one; once the citation goes, the real reason ("the predicate the banner
+  already used, and deliberately stricter than `doctor`") is still unwritten. Green through 510 tests,
+  repo-wide typecheck and lint, and a five-mutation sweep on the predicate. **The sweep was not even blind:
+  measured afterwards, mutating the predicate to `doctor`'s own rule does fail, and fails on the assertions
+  that change added.** No suite was ever going to catch it, because the false sentence is about a file
+  nothing relates to this one.
+
+  So: **when a justification names another command or module, open it and read the predicate, not the call
+  site.** And when two components deliberately answer differently, say so beside both — see
+  `packages/cli/AGENTS.md` on `doctor` and `setup`.
 
 ### A prompt skeleton that stays cheap
 
