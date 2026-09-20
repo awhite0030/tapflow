@@ -189,6 +189,9 @@ jobs:
   # fails here with an install hint rather than as a misleading archive assertion.
   test-relay-windows:
     runs-on: windows-latest
+    # Bounded because the default is 360 minutes and this job holds the
+    # required check. A hung run would block the gate for six hours.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
