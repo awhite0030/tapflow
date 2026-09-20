@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-09-21
+
 ### Breaking Changes
 
 - **`tapflow setup` exits 1 when it says `SETUP INCOMPLETE`.** It returned 0 whatever the banner said, so `tapflow setup ios && tapflow agent start`, a provisioning run or a Makefile carried on against a Mac that was not set up. It is stricter than `tapflow doctor`, which passes a check that only warns: the two answer different questions, one whether the Mac is usable and one whether the work got done. Steps that report a note while still being fine, such as the audio permission on a run that cannot ask, do not count; declining an install at a prompt does, since the environment is then just as unready as if nothing had asked. Migrate: use `;` or `|| true` where a script relied on `&&` continuing, or `|| true` on the line itself under `set -e`.
@@ -26,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The network filter install says what it is waiting on** ([#799](https://github.com/jo-duchan/tapflow/issues/799)). `tapflow setup ios` and `tapflow migrate net-filter` printed nothing while the install ran — up to three minutes on a new Mac, which reads as a hang rather than as work. Each step now names itself as it starts: checking what the Mac already has, taking the current filter out of the path, copying, activating, and confirming a filter came back up. The activation step warns about the macOS approval prompt before it appears, since the host binary reports that only by exiting 120 seconds later. `setup ios` reports the first check on the path where it goes on to *skip* the install as well — the common case on a Mac that is already set up, and the half of the silence nothing inside the installer could reach.
 
 - **Approving the network filter finishes the install in the same run** ([#799](https://github.com/jo-duchan/tapflow/issues/799)). When the install stopped waiting for macOS approval, `tapflow migrate net-filter` and `tapflow setup ios` printed where to approve it and exited with the filter switched off, so even an approval given straight away needed a second run. In an interactive terminal, on a Mac with no approved tapflow extension, they now ask before installing whether to open the approval screen, and open it as soon as macOS starts waiting. macOS's own prompt highlights OK, which closes it without approving, and it does not appear at all on a rerun, so that screen is what gets people there. Unless that offer is declined, an approval that takes longer than the host's two minutes is still followed through: the command waits up to two more minutes for the switch and turns the filter on, offering the screen at that point if it had not already. The question says a yes ends with the Mac's open connections possibly dropping, SSH included, and when the command switches the filter on itself it declines to do so over a simulator started while it waited, saying whether the filter is off when it does. Without an interactive terminal, or when the offer is declined, the banner now says to run the command again instead of pointing at `doctor`.
+
+- **Runtime dependencies moved up within their major lines.** React 19.2.8 → 19.3.0 and `react-hook-form` 7.87 → 7.88 in the dashboard the relay serves, `zod` 4.5.4 → 4.6.5 in every package that validates a wire message, `@clack/prompts` 1.7.0 → 1.8.1 in the CLI, `yaml` 2.6 → 2.9.1 in the flow runner, and `lucide-react` 1.41 → 1.45. Nothing a self-hoster configures changed; the entry is here because dependency updates arrive as bot pull requests, which the changeset gate does not apply to, so this file is the only place that records them.
 
 ### Fixed
 
@@ -706,7 +710,8 @@ found out by waiting.
 
 - Automatic `tapflow.config.json` creation as a side effect of `tapflow start` / `tapflow relay start`.
 
-[Unreleased]: https://github.com/jo-duchan/tapflow/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/jo-duchan/tapflow/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/jo-duchan/tapflow/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/jo-duchan/tapflow/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/jo-duchan/tapflow/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/jo-duchan/tapflow/compare/v0.20.0...v0.20.1

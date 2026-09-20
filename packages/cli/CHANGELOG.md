@@ -1,5 +1,55 @@
 # tapflow
 
+## 0.23.0
+
+### Minor Changes
+
+- 3b63307: `tapflow migrate net-filter` and `tapflow setup ios` now finish an install that stopped at macOS approval in the same run. Until now they printed where to approve the network extension and exited with the filter switched off, so even someone who approved straight away had to run the command a second time before iOS network control worked.
+
+  In an interactive terminal the command now offers to open the approval screen — the Network Extensions sheet with tapflow's switch in it — and **the question itself says what a yes leads to**: once the switch is on, tapflow turns the filter on, and connections the Mac already has open may drop, SSH sessions included. It then waits up to two minutes for the switch and turns the filter on, naming the content-filtering question macOS may ask at that point. It will not switch on over a simulator somebody started while it waited, and when it declines it says whether the filter is off. It never claims the window opened, because nothing can check that: the path to the screen is printed alongside.
+
+  Without an interactive terminal — stdin as well as stdout, since a prompt reading an empty stdin ends the command with no output at all — or when the offer is declined or nobody switches it on in time, the banner now says to run the command again rather than to check with `tapflow doctor ios`, which only led back to the same instruction.
+
+  How to remove the network extension changed too. `tapflow doctor ios`, `tapflow setup ios` and `tapflow migrate net-filter` all suggested `systemextensionsctl uninstall` for an extension whose app is gone from `/Applications`, and macOS refuses that command on any Mac with System Integrity Protection on. They now give the steps that work: switch the filter off with the binary inside the package (the exact command is printed), remove the extension in System Settings, and restart the Mac to finish.
+
+- 57a244e: `tapflow setup ios` and `tapflow migrate net-filter` now say what the network-filter install is waiting on, instead of printing nothing while it runs. The install can take up to three minutes, and the silence read as a hang.
+
+  Each step is named as it starts: checking what the Mac already has, taking the current filter out of the path, copying, activating, and confirming that a filter came back up. The activation line carries the approval warning **before** macOS asks, because the host binary reports "needs user approval" only by exiting 120 seconds later — a synchronous install cannot read that in between, so a warning afterwards would describe a wait that is already over.
+
+  `tapflow setup ios` reports the first check too, on the path where it then _skips_ the install. That is the common case — a Mac that is already set up — and it decides it from the same four probes, so it was the half of the silence a report inside the installer could never reach.
+
+- 7d703ad: `tapflow setup` now exits 1 when it prints `SETUP INCOMPLETE`. It returned 0 whatever the banner said, so anything that chained on it — `tapflow setup ios && tapflow agent start`, a provisioning run, a Makefile — carried on against a Mac that was not set up. A person reads the banner and a script reads the code, and the two disagreed. This is stricter than `tapflow doctor`, which passes a check that only warns and so reports a Mac with no simulator runtime as fine — the two answer different questions, one whether the Mac is usable and one whether the work got done.
+
+  Only pending work counts. A step that reports a note while still being fine — the audio permission on a run that cannot ask, a host that is not macOS — leaves the run complete and the code 0. Declining an install at a prompt does count, because the environment is then just as unready as if nothing had asked.
+
+  The banner, the results list and the new-terminal hint all still print first.
+
+  Migrate: a script that should carry on past an incomplete setup needs `;` or `|| true` where it used `&&`, or `|| true` on the line itself under `set -e`.
+
+- 7877bc9: Tunnel traffic no longer counts as local. The relay opens a loopback-only tunnel port (`TAPFLOW_TUNNEL_PORT`) where every connection must authenticate, and `tapflow start` and `tapflow relay start` open it on 4001 whenever a tunnel is configured (4002 when the relay itself runs on 4001). The CLI points the rathole client at it, warns when `tailscale serve` forwards to the relay port or `tailscaled` runs in userspace-networking mode, and stops rathole clients left behind by an exited tapflow process.
+
+### Patch Changes
+
+- 4638949: `tapflow migrate net-filter` and `tapflow setup ios` now offer the approval screen **before** the install, and open it the moment macOS starts waiting for approval. The offer used to come only after the two-minute approval wait had run out, and on macOS 27 those two minutes were where people got lost: macOS's own prompt highlights OK, which closes it without approving anything, and a rerun shows no prompt at all because macOS does not ask twice about a request already waiting.
+
+  The offer is made when no tapflow extension is approved yet (a first install, a rerun over a waiting request, a reinstall after removing it), and only in an interactive terminal. It carries the same warning as before about connections dropping when the filter goes on. A yes is not asked for again after the wait, and a no is not repeated. Pressing Ctrl-C or Esc at the question stops the command with nothing installed (`setup ios` skips the step), since the question comes before anything has changed. When macOS was not expected to ask, the offer after the wait is unchanged. The activation line now tells people to choose Open System Settings rather than OK.
+
+- ef22d67: `tapflow setup` no longer ends at exit 0 with nothing after the question when stdin is empty. Every prompt in setup decided whether it could ask by reading `stdout` alone, so a run whose output is a terminal but whose input is not — `tapflow setup ios </dev/null`, or a wrapper that leaves stdin closed — drew the prompt and waited on a promise that never settles. The process then left the event loop and exited **0**: no results list, no `SETUP INCOMPLETE` banner, and every step after the one that asked never ran. A Mac that is already set up reached it at the audio-permission step, which is offered on every macOS 14.2+ run, so the network filter install behind it was silently skipped.
+
+  A session now counts as interactive only when both ends are a terminal, decided in one place that the setup steps, `tapflow init`, `tapflow admin init` and the network filter's approval all read. `tapflow admin init` had the same unguarded prompts and is the command self-hosting points headless servers at, so a provisioning script got exit 0 and no admin account; it now says a terminal is required and exits 1.
+
+  Two consequences worth knowing. Answers piped into stdin — `yes | tapflow setup android` — no longer reach the prompts, and the steps print what to run instead. That idiom was never whole: measured over three questions, clack answers the first from the pipe and then never settles again, so the run died the same silent death one step later. And a pty on both ends with nobody holding the other end (`ssh -tt host 'tapflow setup ios' </dev/null`, `docker run -t` without `-i`) reads as a terminal on both descriptors, so it is unchanged: no test of the file descriptors separates it from a person who has not typed yet.
+
+- Updated dependencies [00dcb7f]
+- Updated dependencies [e63e410]
+- Updated dependencies [9d4cfd5]
+- Updated dependencies [7877bc9]
+  - @tapflowio/ios-agent@0.23.0
+  - @tapflowio/agent-core@0.23.0
+  - @tapflowio/android-agent@0.23.0
+  - @tapflowio/relay@0.23.0
+  - @tapflowio/flow-runner@0.23.0
+
 ## 0.22.0
 
 ### Minor Changes

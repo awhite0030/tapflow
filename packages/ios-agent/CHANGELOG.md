@@ -1,5 +1,15 @@
 # @tapflowio/ios-agent
 
+## 0.23.0
+
+### Patch Changes
+
+- 00dcb7f: The CoreSimulator version-mismatch hint points at the canonical docs origin, so following it no longer costs a redirect.
+- Updated dependencies [e63e410]
+  - @tapflowio/protocol@0.23.0
+  - @tapflowio/agent-core@0.23.0
+  - @tapflowio/audiotap-helper@0.3.5
+
 ## 0.22.0
 
 ### Minor Changes
