@@ -743,6 +743,26 @@ describe('runSetupIos', () => {
     expect(filter?.detail).toContain('migrate net-filter')
   })
 
+  it('넷필터 설치를 거절하면 pending이 아니다 — 묻고 받은 아니오는 해결이다', async () => {
+    // **The other side of the case above, and the one that had no test at all.** Declining returns
+    // `warn` while still `ok`, so the run ends `SETUP COMPLETE` at exit 0, while the non-interactive
+    // branch returns `ok: false` and exits 1. That asymmetry is deliberate — asked and declined is a
+    // resolved question, never asked is not — but v0.23.0's release note said the opposite of it in
+    // three places, and nothing here contradicted them: no decline path in this file was asserted,
+    // for this install or any other. `ok` is the only field `SETUP INCOMPLETE` is made of.
+    setTTY(true)
+    mockConfirm.mockResolvedValue(false as never)
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
+    mockExistsSync.mockImplementation((path) => path === XCODE_APP)
+
+    const results = await runSetupIos()
+    expect(mockConfirm).toHaveBeenCalled()
+    const declined = findStep(results, 'network filter')
+    expect(declined?.ok).toBe(true)
+    expect(declined?.warn).toBe(true)
+    expect(declined?.detail).toContain('migrate net-filter')
+  })
+
   it.each(NON_INTERACTIVE)('시뮬 런타임 없으면 다운로드를 묻지 않는다 (%s)', async (_shape, notATerminal) => {
     notATerminal()
     mockExecSync.mockImplementation((cmd) => {
