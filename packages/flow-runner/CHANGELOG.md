@@ -1,5 +1,13 @@
 # @tapflowio/flow-runner
 
+## 0.23.0
+
+### Patch Changes
+
+- Updated dependencies [e63e410]
+  - @tapflowio/protocol@0.23.0
+  - @tapflowio/agent-core@0.23.0
+
 ## 0.22.0
 
 ### Patch Changes

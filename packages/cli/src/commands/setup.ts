@@ -101,9 +101,13 @@ export async function cmdSetup(platform?: string): Promise<void> {
   // this line runs, and a clack prompt that has been answered releases stdin, so the process ends
   // on its own. `doctor` still calls `process.exit(1)`; that is the older form, not a second rule.
   //
-  // **Declining an install counts.** Answering no at a prompt leaves the environment just as
-  // unready as never being asked, and the two are the same fact to whatever runs next. What it does
-  // not cover is a step that reports `warn` while still being `ok` — the audio permission, a host
-  // that is not macOS — because those are not pending work.
+  // **Declining an install counts, except where the step is an optional feature.** Answering no to
+  // the simulator runtime, Homebrew, a JDK or an AVD leaves the environment just as unready as never
+  // being asked, and those return `ok: false`. The network filter does not: it is iOS network
+  // control rather than a working Mac, so declining it returns `warn` while still `ok`, and a run
+  // that declines it is complete. The audio permission and a host that is not macOS report the same
+  // shape for the same reason. What the code reads is `!r.ok`, never `r.warn` — a step decides which
+  // side it is on by the `ok` it returns, and `setUpNetFilter`'s non-interactive branch deliberately
+  // returns `ok: false`, because a run that could never ask has not resolved anything.
   if (!allReady) process.exitCode = 1
 }
