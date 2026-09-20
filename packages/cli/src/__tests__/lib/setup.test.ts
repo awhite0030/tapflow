@@ -63,7 +63,7 @@ function findStep<T extends { label: string }>(results: T[], keyword: string): T
 }
 
 function setTTY(value: boolean | undefined) {
-  Object.defineProperty(process.stdout, 'isTTY', { value, configurable: true })
+  Object.defineProperty(process.stdout, 'isTTY', { value, configurable: true }); Object.defineProperty(process.stdin, 'isTTY', { value, configurable: true })
 }
 
 describe('runSetupAndroid', () => {
