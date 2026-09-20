@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- **`tapflow setup` exits 1 when it says `SETUP INCOMPLETE`.** It returned 0 whatever the banner said, so `tapflow setup ios && tapflow agent start`, a provisioning run or a Makefile carried on against a Mac that was not set up. It is stricter than `tapflow doctor`, which passes a check that only warns: the two answer different questions, one whether the Mac is usable and one whether the work got done. Steps that report a note while still being fine, such as the audio permission on a run that cannot ask, do not count; declining an install at a prompt does, since the environment is then just as unready as if nothing had asked. Migrate: use `;` or `|| true` where a script relied on `&&` continuing, or `|| true` on the line itself under `set -e`.
+
 - **Clients that reach the relay through a tunnel now have to authenticate.** A rathole tunnel, and `tailscale serve` pointed at the relay port, delivered their traffic to the relay from the relay's own machine, which the relay treats as local. Browsers were signing in anyway and are unaffected. An agent or tool that connects through the tunnel URL without a token is now refused, as it already was from anywhere else. Migrate: pass an `agent`-scope token (`--token` or `TAPFLOW_AGENT_TOKEN`), or a `view` token for flows and MCP. If you run `tailscale serve 4000`, run `tailscale serve reset`, then `tailscale serve --bg 4001`.
 
 ### Added

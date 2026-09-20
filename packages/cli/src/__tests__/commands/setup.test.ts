@@ -49,11 +49,16 @@ describe('cmdSetup', () => {
     exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
     mockRunSetupAndroid.mockResolvedValue([{ label: 'Homebrew installed', ok: true }])
     mockRunSetupIos.mockResolvedValue([{ label: 'Xcode installed', ok: true }])
+    // **Process-wide, so it is reset around every case.** `cmdSetup` reports an incomplete run by
+    // setting `process.exitCode` rather than calling `process.exit`, and vitest's workers share this
+    // process — a case that left it at 1 would make the whole suite exit 1 with every test green.
+    process.exitCode = undefined
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
     setTTY(undefined)
+    process.exitCode = undefined
   })
 
   it('setup ios → runSetupIos만 호출', async () => {
@@ -115,14 +120,16 @@ describe('cmdSetup', () => {
     expect(mockRunSetupAndroid).not.toHaveBeenCalled()
   })
 
-  it('전부 ready면 SETUP COMPLETE 배너', async () => {
+  it('전부 ready면 SETUP COMPLETE 배너 + exit 없음', async () => {
     mockRunSetupIos.mockResolvedValue([{ label: 'Xcode ready', ok: true }])
 
     await cmdSetup('ios')
     expect(logLines.join('\n')).toContain('SETUP COMPLETE')
+    expect(process.exitCode).toBeUndefined()
+    expect(exitSpy).not.toHaveBeenCalled()
   })
 
-  it('미완 step 있으면 SETUP INCOMPLETE 배너 + 사유', async () => {
+  it('미완 step 있으면 SETUP INCOMPLETE 배너 + 사유 + exitCode 1', async () => {
     mockRunSetupIos.mockResolvedValue([
       { label: 'Xcode ready', ok: true },
       { label: 'Simulator', ok: false, warn: true, detail: '...' },
@@ -132,6 +139,38 @@ describe('cmdSetup', () => {
     const out = logLines.join('\n')
     expect(out).toContain('SETUP INCOMPLETE')
     expect(out).toContain('Simulator')
+    // The banner and the results list still print. `exit()` is deliberately not called: killing the
+    // process there drops whatever stdout still has buffered when it is a pipe.
+    expect(process.exitCode).toBe(1)
+    expect(exitSpy).not.toHaveBeenCalled()
+  })
+
+  it("ok인 채 warn만 붙은 step은 실패가 아니다", async () => {
+    // The audio permission on a non-interactive run, and a host that is not macOS, both report this
+    // shape. They are notes, not pending work, so `SETUP COMPLETE` and exit 0 are correct — the
+    // filter that decides is `!r.ok`, not `r.warn`.
+    mockRunSetupIos.mockResolvedValue([
+      { label: 'Xcode ready', ok: true },
+      { label: 'Audio permission', ok: true, warn: true, detail: '`tapflow agent start` will prompt instead.' },
+    ])
+
+    await cmdSetup('ios')
+    expect(logLines.join('\n')).toContain('SETUP COMPLETE')
+    expect(process.exitCode).toBeUndefined()
+    expect(exitSpy).not.toHaveBeenCalled()
+  })
+
+  it('플랫폼 하나만 미완이어도 exitCode 1', async () => {
+    // Auto-detect runs both. The code is about the whole command, not the last platform it looked at.
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
+    mockResolveAdb.mockReturnValue({ path: '/x/adb', inPath: true })
+    mockRunSetupIos.mockResolvedValue([{ label: 'Xcode ready', ok: true }])
+    mockRunSetupAndroid.mockResolvedValue([{ label: 'AVD', ok: false, warn: true, detail: 'No AVD found.' }])
+
+    await cmdSetup()
+    expect(mockRunSetupIos).toHaveBeenCalled()
+    expect(mockRunSetupAndroid).toHaveBeenCalled()
+    expect(process.exitCode).toBe(1)
   })
 
   it('env를 방금 등록(detail에 new terminal)하면 새 터미널 안내 출력', async () => {

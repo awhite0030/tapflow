@@ -50,7 +50,7 @@ tapflow setup ios
 tapflow setup android
 ```
 
-setup is designed to finish in one run. For steps that require installation, it asks for consent in an interactive terminal and then runs the command for you; in non-interactive environments (CI and the like) it prints the command to run instead of installing.
+setup is designed to finish in one run. For steps that require installation, it asks for consent in an interactive terminal and then runs the command for you; in non-interactive environments (CI and the like) it prints the command to run instead of installing, and the run ends with exit code `1` because the work is still outstanding.
 
 ### iOS
 
