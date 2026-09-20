@@ -78,4 +78,32 @@ export async function cmdSetup(platform?: string): Promise<void> {
   if (needsNewShell) {
     step("Open a new terminal (or run: exec $SHELL), then `tapflow doctor` to verify — ANDROID_HOME/PATH is configured in your shell, but the current session hasn't loaded it yet.")
   }
+
+  // **The exit code says what the banner says.** This command returned 0 whatever it printed, so
+  // anything reading the code — `tapflow setup ios && tapflow agent start`, a provisioning run, a
+  // `set -e` bootstrap — carried on against a Mac that is not set up. A person reads the banner; a
+  // script reads this, and `!r.ok` is the same predicate the banner already used.
+  //
+  // **Stricter than `doctor`, deliberately.** `doctor` fails on `!ok && !warn` (`hasFailures`), so it
+  // passes a Mac with no simulator runtime and no AVD — both of which this command fails on. They
+  // answer different questions: `doctor` reports whether the Mac is usable, and this reports whether
+  // the work it was asked to do got done. Do not "align" them without changing what one of them means.
+  //
+  // Printed first, and after the new-terminal hint: the results list and what to do about them are
+  // the useful half, and exiting before them would trade one silent failure for another.
+  //
+  // **`exitCode`, not `exit()`.** `process.stdout` is asynchronous when it is a pipe, and
+  // `process.exit()` does not wait for it — measured on this machine, a run piped to `tail` lost
+  // everything past about a thousand lines, five times out of five, while setting the code kept all
+  // of it five times out of five. Under 64 KB both are intact, which is every real run of this
+  // command, so this buys correctness for `| tee` rather than fixing a bug anyone has hit. The
+  // reason it is safe is that nothing here holds the loop open: the prompts are settled by the time
+  // this line runs, and a clack prompt that has been answered releases stdin, so the process ends
+  // on its own. `doctor` still calls `process.exit(1)`; that is the older form, not a second rule.
+  //
+  // **Declining an install counts.** Answering no at a prompt leaves the environment just as
+  // unready as never being asked, and the two are the same fact to whatever runs next. What it does
+  // not cover is a step that reports `warn` while still being `ok` — the audio permission, a host
+  // that is not macOS — because those are not pending work.
+  if (!allReady) process.exitCode = 1
 }

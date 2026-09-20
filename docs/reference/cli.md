@@ -60,7 +60,7 @@ because its absence is otherwise silent: macOS ignores an injection path that do
 word, so the app launches unhooked and the network control goes on asking you to launch an app through
 tapflow — while the app you launched is running in front of you.
 
-Use `--json` for machine-readable output. Exits with code `1` if any check fails.
+Use `--json` for machine-readable output. Exits with code `1` if any check fails; a check that only warns does not count as a failure.
 
 | Option | Description |
 |--------|-------------|
@@ -84,6 +84,8 @@ Runs in one pass, asking for consent before each install (interactive terminals 
 
 - **iOS**: opens the App Store for Xcode, accepts the license / runs first-launch (needs sudo), downloads a simulator runtime.
 - **Android**: installs a JDK, builds a self-contained SDK at `~/Library/Android/sdk` (command-line tools, platform-tools, emulator, system image — no Android Studio GUI), and creates a set of AVDs across form factors.
+
+Exits with code `0` when every step is ready and `1` whenever it prints `SETUP INCOMPLETE`. That is stricter than `doctor`, which passes a check that only warns: setup reports whether the work it was asked to do got done, not whether the Mac is usable.
 
 On macOS, `setup ios` also installs the network filter that iOS network control needs — it asks
 first, like every other install here. When the Mac has no approved extension yet, it also asks whether
