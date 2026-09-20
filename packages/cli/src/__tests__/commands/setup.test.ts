@@ -23,7 +23,8 @@ const mockResolveAdb = vi.mocked(resolveAdb)
 const mockConfirm = vi.mocked(confirm)
 
 function setTTY(value: boolean | undefined) {
-  Object.defineProperty(process.stdout, 'isTTY', { value, configurable: true })
+
+  Object.defineProperty(process.stdout, 'isTTY', { value, configurable: true }); Object.defineProperty(process.stdin, 'isTTY', { value, configurable: true })
 }
 
 describe('cmdSetup', () => {
