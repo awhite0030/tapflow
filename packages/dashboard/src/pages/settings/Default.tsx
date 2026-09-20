@@ -30,20 +30,20 @@ import { useAuth } from '@/hooks/useAuth'
 type App = { id: number; name: string; bundle_id_key: string; platform: string }
 
 const workspaceSchema = z.object({
-  teamName: z.string().min(1),
+  teamName: z.string().min(1, 'Team name is required'),
   logo: z.instanceof(File).nullable().optional(),
 })
 type WorkspaceData = z.infer<typeof workspaceSchema>
 
 const profileSchema = z.object({
-  displayName: z.string().min(1),
+  displayName: z.string().min(1, 'Display name is required'),
   avatar: z.instanceof(File).nullable().optional(),
 })
 type ProfileData = z.infer<typeof profileSchema>
 
 const passwordSchema = z.object({
-  currentPassword: z.string().min(1),
-  newPassword: z.string().min(8),
+  currentPassword: z.string().min(1, 'Enter your current password'),
+  newPassword: z.string().min(8, 'Password must be at least 8 characters'),
   confirmPassword: z.string(),
 }).refine((d) => d.newPassword === d.confirmPassword, {
   message: 'Passwords do not match',
@@ -206,7 +206,7 @@ export function DefaultSettings() {
             <form onSubmit={workspaceForm.handleSubmit(onWorkspaceSave)} className="flex flex-col gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="team-name">Team name</Label>
-                <Input id="team-name" placeholder="My QA Team"aria-required="true" aria-invalid={!!workspaceForm.formState.errors.teamName} aria-describedby={workspaceForm.formState.errors.teamName ? 'teamName-error' : undefined} {...workspaceForm.register('teamName')} />
+                <Input id="team-name" placeholder="My QA Team" aria-required="true" aria-invalid={!!workspaceForm.formState.errors.teamName} aria-describedby={workspaceForm.formState.errors.teamName ? 'teamName-error' : undefined} {...workspaceForm.register('teamName')} />
                 <FieldError id="teamName-error" message={workspaceForm.formState.errors.teamName?.message} />
               </div>
               <Separator />
@@ -254,7 +254,7 @@ export function DefaultSettings() {
           <form onSubmit={profileForm.handleSubmit(onProfileSave)} className="flex flex-col gap-4">
             <div className="grid gap-2">
               <Label htmlFor="display-name">Nickname</Label>
-              <Input id="display-name" placeholder="Your name"aria-required="true" aria-invalid={!!profileForm.formState.errors.displayName} aria-describedby={profileForm.formState.errors.displayName ? 'displayName-error' : undefined} {...profileForm.register('displayName')} />
+              <Input id="display-name" placeholder="Your name" aria-required="true" aria-invalid={!!profileForm.formState.errors.displayName} aria-describedby={profileForm.formState.errors.displayName ? 'displayName-error' : undefined} {...profileForm.register('displayName')} />
               <FieldError id="displayName-error" message={profileForm.formState.errors.displayName?.message} />
             </div>
             <Separator />
@@ -310,17 +310,17 @@ export function DefaultSettings() {
           <form onSubmit={passwordForm.handleSubmit(onPasswordSave)} className="flex flex-col gap-4">
             <div className="grid gap-2">
               <Label htmlFor="current-password">Current password</Label>
-              <Input id="current-password" type="password"aria-required="true" autoComplete="current-password" aria-invalid={!!passwordForm.formState.errors.currentPassword} aria-describedby={passwordForm.formState.errors.currentPassword ? 'currentPassword-error' : undefined} {...passwordForm.register('currentPassword')} />
+              <Input id="current-password" type="password" aria-required="true" autoComplete="current-password" aria-invalid={!!passwordForm.formState.errors.currentPassword} aria-describedby={passwordForm.formState.errors.currentPassword ? 'currentPassword-error' : undefined} {...passwordForm.register('currentPassword')} />
               <FieldError id="currentPassword-error" message={passwordForm.formState.errors.currentPassword?.message} />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="new-password">New password</Label>
-              <Input id="new-password" type="password"aria-required="true" autoComplete="new-password" aria-invalid={!!passwordForm.formState.errors.newPassword} aria-describedby={passwordForm.formState.errors.newPassword ? 'newPassword-error' : undefined} {...passwordForm.register('newPassword')} />
+              <Input id="new-password" type="password" aria-required="true" autoComplete="new-password" aria-invalid={!!passwordForm.formState.errors.newPassword} aria-describedby={passwordForm.formState.errors.newPassword ? 'newPassword-error' : undefined} {...passwordForm.register('newPassword')} />
               <FieldError id="newPassword-error" message={passwordForm.formState.errors.newPassword?.message} />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="confirm-password">Confirm new password</Label>
-              <Input id="confirm-password" type="password"aria-required="true" autoComplete="new-password" aria-invalid={!!passwordForm.formState.errors.confirmPassword} aria-describedby={passwordForm.formState.errors.confirmPassword ? 'confirmPassword-error' : undefined} {...passwordForm.register('confirmPassword')} />
+              <Input id="confirm-password" type="password" aria-required="true" autoComplete="new-password" aria-invalid={!!passwordForm.formState.errors.confirmPassword} aria-describedby={passwordForm.formState.errors.confirmPassword ? 'confirmPassword-error' : undefined} {...passwordForm.register('confirmPassword')} />
               <FieldError id="confirmPassword-error" message={passwordForm.formState.errors.confirmPassword?.message} />
             </div>
             <FieldError assertive id="default-error" message={passwordForm.formState.errors.root?.message} />

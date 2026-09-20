@@ -1,23 +1,36 @@
 import { cn } from '@/lib/utils'
 
 /**
- * A field's validation message.
+ * A field's validation message, in a slot that is always mounted and takes no space until it has
+ * something to say.
  *
- * **Rendered only when there is something to say**, so a form at rest looks exactly as it did
- * before any of this — a reserved line under every field reads as a gap somebody forgot to close.
- * The message therefore moves what is below it when it appears, which is accepted rather than
- * overlooked: validation now runs on submit, so nothing appears while a pointer is on its way to a
- * dialog's Close button, which is the press that used to be eaten.
+ * **Always mounted, because an announcement needs a region that was already being watched.** A live
+ * region created together with its text is the case assistive technology supports worst, and for the
+ * form-level message there is no second channel: no field owns `errors.root` and focus never moves
+ * to it, so a missed announcement is a sign-in that failed for no stated reason.
  *
- * **Announced by being named, not by shouting.** Submit is where react-hook-form moves focus to the
- * first invalid input, and focus alone says "Admin email, edit text" and nothing about what is
- * wrong — so the input carries `aria-describedby` pointing here, and the description is read with
- * the name. No live region on a field slot: three bad fields would fire three announcements that
- * interrupt each other *and* the focus announcement that is carrying the one the person needs.
+ * **Out of flow while empty, so the form at rest looks as it did before any of this.** A reserved
+ * line under every field reads as a gap somebody forgot to close. `absolute` rather than `hidden`:
+ * `display: none` takes the element out of the accessibility tree too, which would undo the reason
+ * it is mounted early.
  *
- * `assertive` is for the form-level message (`errors.root`: a sign-in refused, a request that
- * failed). No field owns it, focus never lands on it, and nothing else says it — so that one is a
- * `role="alert"`, which announces on the insertion this component is built around.
+ * **Polite per field, assertive for the form.** `aria-live="polite"` and not `role="status"`,
+ * because `Team.tsx` and `Tokens.tsx` already put a `role="status"` region in their dialogs and a
+ * second one would make `getByRole('status')` ambiguous — the live region is what matters here, not
+ * the role name. Assertive belongs only to `errors.root`: a submit with three bad fields would
+ * otherwise fire three announcements that interrupt each other.
+ *
+ * **Why a field needs its own region at all, when `aria-describedby` already names it.** Because the
+ * description is only read when focus arrives, and on submit react-hook-form calls `.focus()` on the
+ * first invalid input — which fires no focus event when that input is already focused, the common
+ * case for someone pressing Enter in the field they were typing in. It also never reaches the second
+ * and third invalid fields. The description carries the message when focus does move; this carries
+ * it when focus does not.
+ *
+ * **Callers gate on `?.message`, never on the error object.** An error with no message would
+ * otherwise leave `aria-invalid="true"` pointing at an empty slot. Nothing produces one today —
+ * every `setError` call in this package passes a message and every zod rule has a default — which is
+ * why this is a sentence rather than a guard.
  */
 export function FieldError({
   id,
@@ -30,26 +43,13 @@ export function FieldError({
   className?: string
   assertive?: boolean
 }) {
-  if (assertive) {
-    // **The alert is mounted before it has anything to say.** An alert created together with its
-    // text is the case assistive technology supports worst — VoiceOver with Safari routinely misses
-    // it — and this is the only channel the form-level outcome has: no field owns `errors.root` and
-    // focus never moves to it, so a missed announcement is a sign-in that failed for no stated
-    // reason. The visible half stays conditional, and `sr-only` is `position: absolute`, so the
-    // region that is always there costs no space and no flex gap.
-    return (
-      <>
-        {message ? (
-          <p aria-hidden="true" className={cn('text-sm text-destructive', className)}>{message}</p>
-        ) : null}
-        <span id={id} role="alert" className="sr-only">{message ?? ''}</span>
-      </>
-    )
-  }
-  if (!message) return null
   return (
-    <p id={id} className={cn('text-sm text-destructive', className)}>
-      {message}
+    <p
+      id={id}
+      {...(assertive ? { role: 'alert' as const } : { 'aria-live': 'polite' as const })}
+      className={cn('text-sm text-destructive', !message && 'absolute', className)}
+    >
+      {message ?? ''}
     </p>
   )
 }

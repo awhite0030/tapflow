@@ -116,6 +116,13 @@ describe('SimulatorToolbar posture control', () => {
     await userEvent.click(button)
     // A press that slipped through would fold a device already mid-fold.
     expect(onSelect).not.toHaveBeenCalled()
+    // The in-flight text was the one value here with no assertion, which left the region free to
+    // fall silent at the start of a fold as well as at the end of one. Reached through the
+    // button's own `aria-describedby`: this toolbar has several status regions, so asking for the
+    // role alone is ambiguous — and going through the description also says the button and the
+    // region are still wired to each other.
+    const describedBy = button.getAttribute('aria-describedby')
+    expect(document.getElementById(describedBy!)).toHaveTextContent('Changing posture')
   })
 
   it('takes the press again once the device has answered', async () => {

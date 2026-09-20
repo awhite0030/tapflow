@@ -15,7 +15,7 @@ import { avatarColors } from '@/lib/avatar'
 const schema = z.object({
   displayName: z.string().optional(),
   avatar: z.instanceof(File).nullable().optional(),
-  password: z.string().min(8),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
   confirm: z.string(),
 }).refine((d) => d.password === d.confirm, {
   message: 'Passwords do not match',
@@ -88,7 +88,7 @@ export function Invite() {
           <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
             <div className="grid gap-2">
               <Label htmlFor="display-name">Nickname <span className="text-muted-foreground text-xs">(optional)</span></Label>
-              <Input id="display-name" placeholder="Your name"{...register('displayName')} />
+              <Input id="display-name" placeholder="Your name" {...register('displayName')} />
             </div>
 
             <div className="grid gap-2">
@@ -110,8 +110,12 @@ export function Invite() {
                     )}
                     <button
                       type="button"
-                      aria-label="Change avatar"
-                      aria-invalid={!!errors.avatar}
+                      /* The real control is the `hidden` file input below, which is out of the
+                         accessibility tree, so this button stands in for it. `aria-invalid` is
+                         not supported on `role="button"` in ARIA 1.2 and exposed nothing, so the
+                         state rides in the name — which a button does carry — and the message
+                         stays reachable through the description. */
+                      aria-label={errors.avatar ? 'Change avatar — the file was rejected' : 'Change avatar'}
                       aria-describedby={errors.avatar ? 'avatar-error' : undefined}
                       onClick={() => avatarRef.current?.click()}
                       className="absolute bottom-0 right-0 w-6 h-6 rounded-full bg-background border border-border shadow-sm flex items-center justify-center hover:bg-accent transition-colors"
@@ -134,19 +138,22 @@ export function Invite() {
                   </div>
                 )}
               />
-              <FieldError id="avatar-error" message={errors.avatar?.message} />
+              {/* `assertive`, unlike every other field here: this one is set from the picker's `onChange`,
+                  not from a submit, so no focus moves and the polite slot would wait for a
+                  reading that never comes. */}
+              <FieldError assertive id="avatar-error" message={errors.avatar?.message} />
             </div>
 
             <Separator />
 
             <div className="grid gap-2">
               <Label htmlFor="password">Password</Label>
-              <Input id="password" type="password"aria-required="true" autoComplete="new-password" aria-invalid={!!errors.password} aria-describedby={errors.password ? 'password-error' : undefined} {...register('password')} />
+              <Input id="password" type="password" aria-required="true" autoComplete="new-password" aria-invalid={!!errors.password} aria-describedby={errors.password ? 'password-error' : undefined} {...register('password')} />
               <FieldError id="password-error" message={errors.password?.message} />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="confirm">Confirm password</Label>
-              <Input id="confirm" type="password"aria-required="true" autoComplete="new-password" aria-invalid={!!errors.confirm} aria-describedby={errors.confirm ? 'confirm-error' : undefined} {...register('confirm')} />
+              <Input id="confirm" type="password" aria-required="true" autoComplete="new-password" aria-invalid={!!errors.confirm} aria-describedby={errors.confirm ? 'confirm-error' : undefined} {...register('confirm')} />
               <FieldError id="confirm-error" message={errors.confirm?.message} />
             </div>
 

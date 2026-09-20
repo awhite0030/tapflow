@@ -38,11 +38,16 @@ describe('Setup 페이지', () => {
 
   describe('검증은 제출 전에는 말하지 않는다', () => {
     // **A field that was focused and left is not a field the user filled in wrongly.** Every form
-    // here ran `mode: 'onBlur'`, which validates on blur whether or not anything was typed, so the
-    // first field — focused on open, in a dialog by Radix and by hand elsewhere — answered with
-    // `Enter a valid email` the moment the pointer went anywhere else. In a dialog that also cost
-    // the first click on Close: the message enters the layout, what is below it moves, and a
-    // `click` needs its press and release on the same element.
+    // here ran `mode: 'onBlur'`, which validates on blur whether or not anything was typed, so
+    // leaving a field untouched answered with `Enter a valid email` before the person had done
+    // anything.
+    //
+    // **On this page that takes a deliberate visit to the field**, and it is worth being exact:
+    // nothing in this package sets `autofocus`, so the four auth pages focus nothing on load. It is
+    // Radix that focuses the first control of a *dialog*, which is why the dialog case is the sharp
+    // one and why it also cost the first click on Close — the message enters the layout, what is
+    // below it moves, and a `click` needs its press and release on the same element.
+    // `Team.invite.test.tsx` holds that half.
     //
     // Nothing caught it. Removing `mode: 'onBlur'` from all nine forms left 640 tests green, which
     // is the reason these exist rather than a note in a changelog.
@@ -172,9 +177,8 @@ describe('Setup 페이지', () => {
     await userEvent.type(screen.getByLabelText(/confirm password/i), 'securepass')
     await userEvent.click(screen.getByRole('button', { name: /create admin account/i }))
 
-    // **By role, not by text.** The form-level message lives twice: a visible paragraph that is
-    // `aria-hidden`, and the `role="alert"` region that carries it to assistive technology. Asking
-    // for the alert says the thing that matters — it was announced, not merely rendered.
+    // **By role, not by text.** The form-level message is a `role="alert"` region, and asking for
+    // the role says the thing that matters — it was announced, not merely rendered.
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Already initialized'))
   })
 
@@ -182,8 +186,8 @@ describe('Setup 페이지', () => {
     // An alert element created together with its text is the case assistive technology supports
     // worst, and this region is the only channel `errors.root` has: no field owns it and focus
     // never moves to it. So it is mounted empty and fills in, rather than arriving with its
-    // message. It is `sr-only`, which is `position: absolute`, so being always there costs no
-    // layout.
+    // message. While empty it is `absolute` — out of the layout but still in the accessibility
+    // tree, which `hidden` would not be.
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ initialized: false }), { status: 200 }),
     )

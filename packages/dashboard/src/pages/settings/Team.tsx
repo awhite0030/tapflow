@@ -28,8 +28,8 @@ import { joinPath, loadTeammateBases } from '@/lib/publicLink'
 type Member = { id: number; email: string; display_name: string; role: string; joined_at: string }
 
 const inviteSchema = z.object({
-  email: z.string().email(),
-  role: z.string().min(1),
+  email: z.string().email('Enter a valid email'),
+  role: z.string().min(1, 'Pick a role'),
 })
 type InviteData = z.infer<typeof inviteSchema>
 
@@ -171,7 +171,7 @@ export function TeamSettings() {
               <form onSubmit={handleSubmit(onInvite)} className="flex flex-col gap-4 pt-2">
                 <div className="grid gap-2">
                   <Label htmlFor="invite-email">Email</Label>
-                  <Input id="invite-email" type="email"aria-required="true" aria-invalid={!!errors.email} aria-describedby={errors.email ? 'email-error' : undefined} {...register('email')} />
+                  <Input id="invite-email" type="email" aria-required="true" aria-invalid={!!errors.email} aria-describedby={errors.email ? 'email-error' : undefined} {...register('email')} />
                   <FieldError id="email-error" message={errors.email?.message} />
                 </div>
                 <div className="grid gap-2">
@@ -181,7 +181,11 @@ export function TeamSettings() {
                     control={control}
                     render={({ field }) => (
                       <Select value={field.value} onValueChange={field.onChange}>
-                        <SelectTrigger id="invite-role"><SelectValue /></SelectTrigger>
+                        <SelectTrigger
+                          id="invite-role"
+                          aria-invalid={!!errors.role}
+                          aria-describedby={errors.role ? 'role-error' : undefined}
+                        ><SelectValue /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="Admin">Admin</SelectItem>
                           <SelectItem value="Developer">Developer</SelectItem>
@@ -191,6 +195,11 @@ export function TeamSettings() {
                       </Select>
                     )}
                   />
+                  {/* The Select is seeded with `QA` and offers no empty option, so this cannot
+                      fire today. It is here because the rule exists: a validation message with
+                      nowhere to render is the silent refusal this whole change is about, and the
+                      cost of the slot is one line. */}
+                  <FieldError id="role-error" message={errors.role?.message} />
                 </div>
                 <Button type="submit" disabled={isSubmitting}>{isSubmitting ? 'Creating link…' : 'Generate invite link'}</Button>
               </form>

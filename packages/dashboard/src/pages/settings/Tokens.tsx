@@ -30,7 +30,7 @@ type TokenType = 'api' | 'agent'
 type Token = { id: number; name: string; scope: string; last_used_at: string | null; expires_at: string | null; created_at: string }
 
 const schema = z.object({
-  name: z.string().min(1),
+  name: z.string().min(1, 'Give the token a name'),
   expiresDays: z.string().refine(
     (v) => { const n = parseInt(v, 10); return !isNaN(n) && n >= 1 && n <= 365 },
     { message: 'Must be between 1 and 365' },
@@ -163,12 +163,12 @@ export function TokenSettings() {
               <form onSubmit={handleSubmit(onCreate)} className="flex flex-col gap-4 pt-2">
                 <div className="grid gap-2">
                   <Label htmlFor="token-name">Name</Label>
-                  <Input id="token-name" placeholder="e.g. ci-deploy"aria-required="true" aria-invalid={!!errors.name} aria-describedby={errors.name ? 'name-error' : undefined} {...register('name')} />
+                  <Input id="token-name" placeholder="e.g. ci-deploy" aria-required="true" aria-invalid={!!errors.name} aria-describedby={errors.name ? 'name-error' : undefined} {...register('name')} />
                   <FieldError id="name-error" message={errors.name?.message} />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="expires">Expires in (days)</Label>
-                  <Input id="expires" type="number"aria-required="true" aria-invalid={!!errors.expiresDays} aria-describedby={errors.expiresDays ? 'expiresDays-error' : undefined} {...register('expiresDays')} />
+                  <Input id="expires" type="number" aria-required="true" aria-invalid={!!errors.expiresDays} aria-describedby={errors.expiresDays ? 'expiresDays-error' : undefined} {...register('expiresDays')} />
                   <FieldError id="expiresDays-error" message={errors.expiresDays?.message} />
                 </div>
                 <div className="grid gap-2">

@@ -79,12 +79,12 @@ export function ResetPassword() {
           <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
             <div className="grid gap-2">
               <Label htmlFor="password">New password</Label>
-              <Input id="password" type="password"aria-required="true" autoComplete="new-password" aria-invalid={!!errors.password} aria-describedby={errors.password ? 'password-error' : undefined} {...register('password')} />
+              <Input id="password" type="password" aria-required="true" autoComplete="new-password" aria-invalid={!!errors.password} aria-describedby={errors.password ? 'password-error' : undefined} {...register('password')} />
               <FieldError id="password-error" message={errors.password?.message} />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="confirm">Confirm password</Label>
-              <Input id="confirm" type="password"aria-required="true" autoComplete="new-password" aria-invalid={!!errors.confirm} aria-describedby={errors.confirm ? 'confirm-error' : undefined} {...register('confirm')} />
+              <Input id="confirm" type="password" aria-required="true" autoComplete="new-password" aria-invalid={!!errors.confirm} aria-describedby={errors.confirm ? 'confirm-error' : undefined} {...register('confirm')} />
               <FieldError id="confirm-error" message={errors.confirm?.message} />
             </div>
             <FieldError assertive id="resetpassword-error" message={errors.root?.message} />
