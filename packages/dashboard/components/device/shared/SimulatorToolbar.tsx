@@ -1,9 +1,6 @@
 'use client';
 
 import { Camera, FoldHorizontal, Link2, Loader2, Radio, RadioOff, RefreshCw, RotateCw, Square, UnfoldHorizontal, Video } from 'lucide-react';
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -425,40 +422,56 @@ export function SimulatorToolbar({
             and the picture returning — so it is announced, as reboot, recording and network already
             are. `polite` because a posture change is something the user asked for and is waiting on,
             not an interruption. */}
-        {posture && posture.postures.length > 1 && (
+        {posture && posture.postures.length === 2 && (
           <span id={postureStatusId} role="status" aria-live="polite" className="sr-only">
             {posture.pending
               ? 'Changing posture'
-              : (posture.postures.find((p) => p.id === posture.currentId)?.label ?? '')}
+              /* **Never empty, or the fold is announced as starting and never as finishing.**
+                 `currentId` is null when the device reports a posture tapflow cannot name, and a
+                 live region emptied back out says nothing at all — so a screen-reader user heard
+                 "Changing posture" and then silence, while the spinner turning back into an icon
+                 told everyone else it was over. That is the success-is-silent shape the network
+                 control below is written to avoid.
+
+                 **A state, not a completion**, because this span is also the button's
+                 `aria-describedby` target and so is read on focus. "Posture changed" was tried and
+                 asserts a change to someone who has tabbed to the button and pressed nothing — and
+                 keeps asserting it for the rest of the session. Naming the state is true at rest
+                 *and* still carries the ending: the region goes from "Changing posture" to this,
+                 and a change is what a live region announces. */
+              : (posture.postures.find((p) => p.id === posture.currentId)?.label ?? 'Current posture unknown')}
           </span>
         )}
-        {posture && posture.postures.length > 1 && (() => {
-          // **A menu, not a cycle.** Cycling looked right while a foldable had two postures and
-          // stopped as soon as it had three: `HALF_OPENED` and `OPENED` present the same screen on a
-          // Pixel 9 Pro Fold, so a step between them changed nothing visible and read as a press
-          // that did not register. A list also survives `flipped` and `tent` arriving later.
+        {/* **Exactly two, which is all any device offers today, and the gate says so.** A toggle is
+            right for two: opening a menu to pick the only other option is a click for nothing. The
+            radio menu that used to stand behind this for three or more was unreachable —
+            `android-agent`'s `KNOWN` table has two entries and `parsePostures` filters it, so the
+            wire carries 0, 1 or 2, and iOS sends none.
+
+            It is `=== 2` rather than `> 1` so that a third entry added to that table does not
+            silently fall into `(at + 1) % length` and start *cycling*, which is the behaviour the
+            menu existed to avoid: `HALF_OPENED` and `OPENED` present the same screen on a Pixel 9
+            Pro Fold, so a step between them changed nothing visible and read as a press that had
+            been dropped. A third posture makes this control disappear instead, which is noticed,
+            and whoever adds it decides what replaces the toggle. */}
+        {posture && posture.postures.length === 2 && (() => {
           const at = posture.postures.findIndex((p) => p.id === posture.currentId);
           const current = at === -1 ? null : posture.postures[at];
-          // Two postures is a toggle, not a list: opening a menu to pick the only other option is a
-          // click for nothing. More than two — a device that offers flipped or tent — gets the menu.
-          const pair = posture.postures.length === 2;
-          const other = posture.postures[(at + 1) % posture.postures.length]!;
+          const other = posture.postures[(at + 1) % 2]!;
           // **The icon says what pressing does, like every other button in this toolbar.** The
           // list runs most closed → most open, so a destination further along it opens the device
           // and one before it closes it. A menu has no single destination, so it asks the weaker
           // question the same way round: from the most closed posture the only move is to open.
-          // An unknown current posture falls to Fold, which is where the pair's destination
+          // An unknown current posture falls to Fold, which is where the destination
           // (`postures[0]`, the most closed) actually points.
-          const opening = at === -1 ? false : pair ? posture.postures.indexOf(other) > at : at === 0;
+          const opening = at === 0;
           const PostureIcon = opening ? UnfoldHorizontal : FoldHorizontal;
           // **And the name says the same thing the icon does.** It used to open with `Fold:`
           // whichever way the press went, so someone reading the name alone — a screen reader, or
           // voice control speaking the label — was told a folded device would fold again, while
           // the icon beside it offered to unfold. The verb is the one fact both have to share.
           const verb = opening ? 'Unfold' : 'Fold';
-          const label = pair
-            ? (current ? `${verb}: ${current.label} to ${other.label}` : `${verb}: ${other.label}`)
-            : (current ? `Posture: ${current.label}` : 'Posture');
+          const label = current ? `${verb}: ${current.label} to ${other.label}` : `${verb}: ${other.label}`;
           const trigger = (onClick?: () => void) => (
             <Button
               variant="ghost" size="icon" className="h-8 w-8 aria-disabled:opacity-50"
@@ -479,50 +492,14 @@ export function SimulatorToolbar({
                 : <PostureIcon className="h-4 w-4" />}
             </Button>
           );
-          // While a change is in flight the button is rendered without the *menu* attached at all.
-          // `aria-disabled` does not stop a trigger opening it, and neither did `disabled` —
-          // measured — and a menu that opens over a device mid-fold offers a choice that would be
-          // sent into a posture already moving.
-          //
-          // The toggle keeps its handler, so the refusal for it is the guard in `trigger` rather
-          // than an absent callback. One refusal that a test can exercise beats two that look the
-          // same from outside: with the handler dropped here, removing the guard broke nothing.
-          if (posture.pending) {
-            return (
-              <Tooltip>
-                <TooltipTrigger asChild>{trigger(pair ? () => posture.onSelect(other.id) : undefined)}</TooltipTrigger>
-                <TooltipContent side="left">{`${label} — changing`}</TooltipContent>
-              </Tooltip>
-            );
-          }
-          if (pair) {
-            return (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  {trigger(() => posture.onSelect(other.id))}
-                </TooltipTrigger>
-                <TooltipContent side="left">{label}</TooltipContent>
-              </Tooltip>
-            );
-          }
+          // The refusal while a change is in flight is the guard inside `trigger`, not an absent
+          // handler: `aria-disabled` does not stop a press on its own, and `disabled` would take
+          // the button out of the tab order at the one moment its name has something new to say.
           return (
-            <DropdownMenu>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <DropdownMenuTrigger asChild>{trigger()}</DropdownMenuTrigger>
-                </TooltipTrigger>
-                <TooltipContent side="left">{label}</TooltipContent>
-              </Tooltip>
-              <DropdownMenuContent side="left" align="start">
-                {/* Rendered in the order the agent sent — most closed to most open, which is the
-                    protocol's contract and the reason this needs no platform knowledge. */}
-                <DropdownMenuRadioGroup value={posture.currentId ?? ''} onValueChange={posture.onSelect}>
-                  {posture.postures.map((p) => (
-                    <DropdownMenuRadioItem key={p.id} value={p.id}>{p.label}</DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>{trigger(() => posture.onSelect(other.id))}</TooltipTrigger>
+              <TooltipContent side="left">{posture.pending ? `${label} — changing` : label}</TooltipContent>
+            </Tooltip>
           );
         })()}
 
