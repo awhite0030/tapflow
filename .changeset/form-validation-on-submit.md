@@ -2,7 +2,7 @@
 '@tapflowio/relay': patch
 ---
 
-Form fields no longer report an error when you leave them without typing. Every form in the dashboard validated on blur regardless of whether anything had been entered, so leaving a field you had not touched answered with `Enter a valid email` or `Password must be at least 8 characters` before you had done anything. In a dialog it took no effort at all to reach: the first control is focused when the dialog opens, so the next pointer move was enough.
+Form fields no longer report an error when you leave them without typing. Every form in the dashboard validated on blur regardless of whether anything had been entered, so leaving a field you had not touched showed `Enter a valid email` or `Password must be at least 8 characters` before you had done anything. Opening a dialog was enough on its own: it focuses its first control, so the next pointer move anywhere else triggered the message.
 
 In a dialog it also cost the first click on Close. The message enters the layout, everything below it moves, and a `click` needs its press and release on the same element, so the press that dismissed the dialog landed on nothing and it took a second one.
 
