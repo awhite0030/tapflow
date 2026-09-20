@@ -453,7 +453,7 @@ pm2 restart relay
 ```
 
 ::: tip Next step
-Once the relay is running, open `http://localhost:4000` in a browser — the dashboard redirects to the setup page automatically. For headless servers, use `tapflow admin init` instead. For team invitations and your first build upload, see [First-time Setup](/dashboard/setup).
+Once the relay is running, open `http://localhost:4000` in a browser — the dashboard redirects to the setup page automatically. For headless servers, use `tapflow admin init` instead. It asks for an email and a password, so run it from a terminal rather than from a provisioning script. For team invitations and your first build upload, see [First-time Setup](/dashboard/setup).
 :::
 
 ## systemd (Linux relay server)

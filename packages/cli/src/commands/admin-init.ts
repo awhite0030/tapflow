@@ -1,12 +1,24 @@
 import { text, password, isCancel, cancel } from '@clack/prompts'
 import { config } from '@tapflowio/relay'
 import { createSpinner, banner, step } from '../lib/print.js'
+import { isInteractive } from '../lib/interactive.js'
 
 export interface InitOptions {
   relay?: string
 }
 
 export async function cmdAdminInit(opts: InitOptions): Promise<void> {
+  // **Both ends, before either question.** Self-hosting sends headless servers here, and a run that
+  // cannot answer used to draw the email prompt, never settle, and exit **0** with no account
+  // created and no spinner — indistinguishable from success to the script that called it. Failing
+  // is the honest answer: there is no flag to create an admin without being asked.
+  if (!isInteractive()) {
+    banner('error', 'A terminal is required', [
+      'tapflow admin init asks for an email and a password, so it needs stdin and stdout to be a terminal.',
+      'Run it from a terminal, or create the first admin from the relay\'s setup page in a browser.',
+    ])
+    process.exit(1)
+  }
   const defaultRelay = config.relay.url ?? `http://localhost:${config.local.port}`
   const baseUrl = (opts.relay ?? defaultRelay).replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://')
 

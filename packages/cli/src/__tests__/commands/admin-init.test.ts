@@ -13,6 +13,12 @@ import { cmdAdminInit } from '../../commands/admin-init.js'
 const mockText = vi.mocked(clack.text)
 const mockPassword = vi.mocked(clack.password)
 
+/** Both ends, because the command now refuses a run that could not answer its two questions. */
+function setTTY(value: boolean | undefined) {
+  Object.defineProperty(process.stdout, 'isTTY', { value, configurable: true })
+  Object.defineProperty(process.stdin, 'isTTY', { value, configurable: true })
+}
+
 function mockInputs(email: string, pw: string) {
   mockText.mockResolvedValue(email)
   mockPassword.mockResolvedValue(pw)
@@ -39,9 +45,11 @@ describe('cmdAdminInit', () => {
     vi.spyOn(console, 'error').mockImplementation((...args) => output.push(args.join(' ')))
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
+    setTTY(true)
   })
 
   afterEach(() => {
+    setTTY(undefined)
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -105,6 +113,26 @@ describe('cmdAdminInit', () => {
       expect.stringContaining('http://remote:4000'),
       expect.anything(),
     )
+  })
+
+  it.each([
+    ['터미널 아님', false],
+    // The shape self-hosting reaches: a provisioning script or `docker exec` without `-it`. The
+    // prompt used to draw, never settle, and the process exited 0 with no account and no spinner.
+    ['stdout만 터미널, stdin은 EOF', undefined],
+  ])('답할 수 없는 세션(%s)에서는 묻지 않고 1로 종료한다', async (_shape, stdinValue) => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
+    Object.defineProperty(process.stdin, 'isTTY', { value: stdinValue, configurable: true })
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(cmdAdminInit({})).rejects.toThrow('process.exit')
+    expect(mockText).not.toHaveBeenCalled()
+    expect(mockPassword).not.toHaveBeenCalled()
+    // Nothing was created, and the exit code says so rather than reading as success.
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(exitSpy).toHaveBeenCalledWith(1)
+    expect(output.join('\n')).toContain('terminal is required')
   })
 
   it('ws:// relay URL을 http://로 변환', async () => {

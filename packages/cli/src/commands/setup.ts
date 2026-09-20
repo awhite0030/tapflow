@@ -1,6 +1,7 @@
 import { confirm, isCancel } from '@clack/prompts'
 import { runSetupAndroid, runSetupIos, type SetupStepResult } from '../lib/setup.js'
 import { resolveAdb } from '../lib/doctor.js'
+import { isInteractive } from '../lib/interactive.js'
 import { warn, banner, step, BOLD, GREEN, RED, YELLOW, DIM, R } from '../lib/print.js'
 
 const RUNNERS: Record<string, () => Promise<SetupStepResult[]>> = {
@@ -9,13 +10,13 @@ const RUNNERS: Record<string, () => Promise<SetupStepResult[]>> = {
 }
 
 // 인자 없이 실행 시 환경을 보고 가능한 플랫폼을 고른다.
-// macOS면 iOS, adb가 있으면 Android 자동. adb가 없어도 TTY면 Android 세팅 의향을 묻는다.
+// macOS면 iOS, adb가 있으면 Android 자동. adb가 없어도 대화형이면 Android 세팅 의향을 묻는다.
 async function detectPlatforms(): Promise<string[]> {
   const platforms: string[] = []
   if (process.platform === 'darwin') platforms.push('ios')
   if (resolveAdb() !== null) {
     platforms.push('android')
-  } else if (process.platform === 'darwin' && process.stdout.isTTY) {
+  } else if (process.platform === 'darwin' && isInteractive()) {
     const also = await confirm({ message: 'Also set up Android? (adb not found)' })
     if (!isCancel(also) && also) platforms.push('android')
   }

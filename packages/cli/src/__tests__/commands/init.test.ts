@@ -13,6 +13,15 @@ vi.mock('@clack/prompts', () => ({
 import * as clack from '@clack/prompts'
 import { cmdInitConfig } from '../../commands/init.js'
 
+/**
+ * A whole terminal, both ends. `init` asks only when it could also be answered — see
+ * `isInteractive`. This used to set stdin alone, which matched a guard that read stdin alone.
+ */
+function setTTY(value: boolean) {
+  Object.defineProperty(process.stdout, 'isTTY', { value, configurable: true })
+  Object.defineProperty(process.stdin, 'isTTY', { value, configurable: true })
+}
+
 const mockSelect = vi.mocked(clack.select)
 const mockText = vi.mocked(clack.text)
 
@@ -57,7 +66,7 @@ describe('cmdInitConfig', () => {
   })
 
   it('tunnel 없음 → 기본 config 생성 (tunnel 섹션 없음)', async () => {
-    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true })
+    setTTY(false)
 
     await cmdInitConfig({})
 
@@ -90,7 +99,7 @@ describe('cmdInitConfig', () => {
   })
 
   it('인터랙티브 모드 tailscale 선택 → tailscale config 생성', async () => {
-    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+    setTTY(true)
     mockSelect.mockResolvedValue('tailscale')
 
     await cmdInitConfig({})
@@ -100,7 +109,7 @@ describe('cmdInitConfig', () => {
   })
 
   it('인터랙티브 모드 none 선택 → tunnel 없는 config 생성', async () => {
-    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+    setTTY(true)
     mockSelect.mockResolvedValue('none')
 
     await cmdInitConfig({})
@@ -110,7 +119,7 @@ describe('cmdInitConfig', () => {
   })
 
   it('인터랙티브 모드 rathole 선택 → serverAddr/publicUrl 입력 → rathole config 생성', async () => {
-    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+    setTTY(true)
     mockSelect.mockResolvedValue('rathole')
     mockText
       .mockResolvedValueOnce('vps.example.com:2333')
@@ -127,7 +136,7 @@ describe('cmdInitConfig', () => {
   })
 
   it('none + Standard 성능 → tls 없음 (HTTP/WASM)', async () => {
-    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+    setTTY(true)
     mockSelect.mockResolvedValueOnce('none').mockResolvedValueOnce('standard')
 
     await cmdInitConfig({})
@@ -138,7 +147,7 @@ describe('cmdInitConfig', () => {
   })
 
   it('none + High + Cloudflare → byo-api-token tls 생성', async () => {
-    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+    setTTY(true)
     mockSelect.mockResolvedValueOnce('none').mockResolvedValueOnce('high').mockResolvedValueOnce('cloudflare')
     mockText.mockResolvedValueOnce('tap.example.com')
 
@@ -150,7 +159,7 @@ describe('cmdInitConfig', () => {
   })
 
   it('none + High + Vercel → byo-api-token(vercel) tls 생성', async () => {
-    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+    setTTY(true)
     mockSelect.mockResolvedValueOnce('none').mockResolvedValueOnce('high').mockResolvedValueOnce('vercel')
     mockText.mockResolvedValueOnce('tap.example.com')
 
@@ -162,7 +171,7 @@ describe('cmdInitConfig', () => {
   })
 
   it('none + High + Import → import-cert tls 생성', async () => {
-    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+    setTTY(true)
     mockSelect.mockResolvedValueOnce('none').mockResolvedValueOnce('high').mockResolvedValueOnce('import')
     mockText.mockResolvedValueOnce('/etc/tls/fullchain.pem').mockResolvedValueOnce('/etc/tls/privkey.pem')
 
@@ -176,7 +185,7 @@ describe('cmdInitConfig', () => {
     const envPath = () => path.join(tmpDir, '.tapflow', 'data', '.env')
 
     it('byo-api-token → .tapflow/data/.env 를 빈 값 템플릿으로 자동 생성', async () => {
-      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+      setTTY(true)
       mockSelect.mockResolvedValueOnce('none').mockResolvedValueOnce('high').mockResolvedValueOnce('cloudflare')
       mockText.mockResolvedValueOnce('tap.example.com')
 
@@ -192,7 +201,7 @@ describe('cmdInitConfig', () => {
     })
 
     it('기존 .env 의 실제 값은 보존하고 누락 키만 추가', async () => {
-      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+      setTTY(true)
       fs.mkdirSync(path.join(tmpDir, '.tapflow', 'data'), { recursive: true })
       fs.writeFileSync(envPath(), 'TAPFLOW_VERCEL_TOKEN=secret_existing\n', 'utf-8')
       mockSelect.mockResolvedValueOnce('none').mockResolvedValueOnce('high').mockResolvedValueOnce('cloudflare')
@@ -206,7 +215,7 @@ describe('cmdInitConfig', () => {
     })
 
     it('import-cert → .env 생성 없음', async () => {
-      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+      setTTY(true)
       mockSelect.mockResolvedValueOnce('none').mockResolvedValueOnce('high').mockResolvedValueOnce('import')
       mockText.mockResolvedValueOnce('/etc/tls/fullchain.pem').mockResolvedValueOnce('/etc/tls/privkey.pem')
 
@@ -293,7 +302,7 @@ describe('cmdInitConfig', () => {
 
     it('레거시 존재 + DNS 자동발급 → .env scaffold 생략(.tapflow/data 미생성)', async () => {
       fs.mkdirSync(path.join(tmpDir, '.tapflow-data'), { recursive: true })
-      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+      setTTY(true)
       mockSelect.mockResolvedValueOnce('none').mockResolvedValueOnce('high').mockResolvedValueOnce('cloudflare')
       mockText.mockResolvedValueOnce('tap.example.com')
 
