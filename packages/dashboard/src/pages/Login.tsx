@@ -12,8 +12,8 @@ import { FieldError } from '@/components/ui/field-error'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
 const schema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
+  email: z.string().email('Enter a valid email'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
 })
 type FormData = z.infer<typeof schema>
 

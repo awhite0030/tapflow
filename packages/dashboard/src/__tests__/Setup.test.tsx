@@ -172,6 +172,24 @@ describe('Setup 페이지', () => {
     await userEvent.type(screen.getByLabelText(/confirm password/i), 'securepass')
     await userEvent.click(screen.getByRole('button', { name: /create admin account/i }))
 
-    await waitFor(() => expect(screen.getByText('Already initialized')).toBeInTheDocument())
+    // **By role, not by text.** The form-level message lives twice: a visible paragraph that is
+    // `aria-hidden`, and the `role="alert"` region that carries it to assistive technology. Asking
+    // for the alert says the thing that matters — it was announced, not merely rendered.
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Already initialized'))
+  })
+
+  it('폼 레벨 알림 영역은 말할 것이 생기기 전부터 떠 있다', async () => {
+    // An alert element created together with its text is the case assistive technology supports
+    // worst, and this region is the only channel `errors.root` has: no field owns it and focus
+    // never moves to it. So it is mounted empty and fills in, rather than arriving with its
+    // message. It is `sr-only`, which is `position: absolute`, so being always there costs no
+    // layout.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ initialized: false }), { status: 200 }),
+    )
+    renderSetup()
+    const alert = screen.getByRole('alert')
+    expect(alert).toBeInTheDocument()
+    expect(alert).toHaveTextContent('')
   })
 })

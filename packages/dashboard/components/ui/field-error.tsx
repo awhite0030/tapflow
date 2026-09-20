@@ -30,9 +30,25 @@ export function FieldError({
   className?: string
   assertive?: boolean
 }) {
+  if (assertive) {
+    // **The alert is mounted before it has anything to say.** An alert created together with its
+    // text is the case assistive technology supports worst — VoiceOver with Safari routinely misses
+    // it — and this is the only channel the form-level outcome has: no field owns `errors.root` and
+    // focus never moves to it, so a missed announcement is a sign-in that failed for no stated
+    // reason. The visible half stays conditional, and `sr-only` is `position: absolute`, so the
+    // region that is always there costs no space and no flex gap.
+    return (
+      <>
+        {message ? (
+          <p aria-hidden="true" className={cn('text-sm text-destructive', className)}>{message}</p>
+        ) : null}
+        <span id={id} role="alert" className="sr-only">{message ?? ''}</span>
+      </>
+    )
+  }
   if (!message) return null
   return (
-    <p id={id} {...(assertive ? { role: 'alert' as const } : {})} className={cn('text-sm text-destructive', className)}>
+    <p id={id} className={cn('text-sm text-destructive', className)}>
       {message}
     </p>
   )
