@@ -40,6 +40,7 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY packages ./packages
 COPY playground/package.json ./playground/
 COPY docs/package.json ./docs/
+COPY patches ./patches
 
 # Install dependencies across the entire monorepo
 RUN pnpm install --frozen-lockfile
