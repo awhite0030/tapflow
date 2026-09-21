@@ -15,6 +15,23 @@ const MIME_CANDIDATES = [
   'video/webm',
 ]
 
+/**
+ * **This hook does not compile under the React Compiler, and that is recorded rather than fixed.**
+ *
+ * Measured with `babel-plugin-react-compiler@1.0.0`, both bails predating the viewers' rotation
+ * work and neither a Rules of React violation:
+ *
+ * - `[InferMutationAliasingEffects] Expected value kind to be initialized` on `rafLoop` — an
+ *   internal invariant, tripped by the hoisted named function expression. Declaring the same
+ *   recursion inside `startClientRecording` compiles, and was tried and reverted: it buys nothing
+ *   while the second bail stands, and it costs the comment below, which describes a real hazard.
+ * - `Support value blocks … within a try/catch statement` on the upload — the `res.ok && json.url`
+ *   test and the `onUploadedRef.current?.()` call sit inside the `try`. Hoisting them out changes
+ *   what happens when the download trigger throws, and that path has no tests.
+ *
+ * What it costs is the auto-memoization, and every callback here is already wrapped by hand, so
+ * nothing downstream reaches it. Revisit when the compiler lifts the try/catch limitation.
+ */
 export function useClientRecording({ sessionId, buildId, onRecordingUploaded }: UseClientRecordingOptions) {
   const [recordState, setRecordState] = useState<RecordState>('idle')
   const recordCanvasRef = useRef<HTMLCanvasElement>(null)
