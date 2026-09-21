@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { registerTools } from '../tools.js'
+import { makeFlowDriver, registerTools } from '../tools.js'
 import type { TapflowClient } from '../client.js'
-import { TransientQueryError } from '@tapflowio/flow-runner'
+import { EnvironmentStepError, isEnvironmentStepFailure, parseFlow, runFlow, TransientQueryError } from '@tapflowio/flow-runner'
 
 type ToolResult = { content: unknown[]; isError?: boolean }
 type Handler = (args: Record<string, unknown>) => Promise<ToolResult>
@@ -58,6 +58,23 @@ describe('run_flow — install before replay', () => {
     await runFlowHandler(client)({ sessionId: 's1', flow: 'steps:\n  - clearState: com.example.app\n' })
     expect(client.installApp).not.toHaveBeenCalled()
     expect(calls).toEqual(['clearState'])
+  })
+
+  it('missing buildId on launchApp is an environment failure', async () => {
+    const calls: string[] = []
+    const client = fakeClient(calls)
+    const driver = makeFlowDriver(client, 's1', undefined)
+    await expect(driver.launchApp()).rejects.toBeInstanceOf(EnvironmentStepError)
+    await expect(driver.launchApp()).rejects.toThrow('pass buildId')
+    const err = await driver.launchApp().catch((e: unknown) => e as Error)
+    expect(isEnvironmentStepFailure(err)).toBe(true)
+
+    // Also verify runFlow classifies it as environment when flowing through the engine
+    const flow = parseFlow('steps:\n  - launchApp\n', 'f.yaml')
+    const result = await runFlow(flow, driver)
+    expect(result.status).toBe('failed')
+    expect(result.failureKind).toBe('environment')
+    expect(result.failureMessage).toContain('buildId')
   })
 
   it('passes the engine selector deadline signal to the client', async () => {

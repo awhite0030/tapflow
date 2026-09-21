@@ -3,7 +3,7 @@ export type { Flow, Step, Selector, ScrollDirection } from './schema.js'
 export { runFlow, matchSelector } from './engine.js'
 export type { FlowDriver, FlowResult, StepResult, EngineOptions } from './engine.js'
 export { toJUnitXml } from './junit.js'
-export { EnvironmentStepError, TransientQueryError } from './errors.js'
+export { EnvironmentStepError, TransientQueryError, isEnvironmentStepFailure, markEnvironmentFailure } from './errors.js'
 export {
   ENVIRONMENTAL_INPUT_REASONS,
   InputRefusedError,

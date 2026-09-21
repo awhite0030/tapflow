@@ -3,13 +3,13 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { parseFlow, runFlow, type FlowDriver } from '@tapflowio/flow-runner'
+import { EnvironmentStepError, parseFlow, runFlow, type FlowDriver } from '@tapflowio/flow-runner'
 import type { TapflowClient } from './client.js'
 
 // Adapts TapflowClient (this process's single relay connection) to the
 // flow-runner engine surface, so run_flow shares the session the agent
 // already joined via connect_device instead of opening a second one.
-function makeFlowDriver(client: TapflowClient, sessionId: string, buildId?: number): FlowDriver {
+export function makeFlowDriver(client: TapflowClient, sessionId: string, buildId?: number): FlowDriver {
   return {
     queryUITree: (signal) => client.queryUITree(sessionId, signal),
     tap: async (x, y) => client.tap(sessionId, x, y),
@@ -18,7 +18,9 @@ function makeFlowDriver(client: TapflowClient, sessionId: string, buildId?: numb
     pressKey: async (code) => client.pressKey(sessionId, code),
     openUrl: (url) => client.openUrl(sessionId, url),
     launchApp: async () => {
-      if (buildId === undefined) throw new Error('this flow uses launchApp — pass buildId (see list_builds)')
+      if (buildId === undefined) {
+        throw new EnvironmentStepError('this flow uses launchApp — pass buildId (see list_builds)')
+      }
       await client.launchApp(sessionId, buildId)
     },
     clearState: (appId) => client.clearState(sessionId, appId),
