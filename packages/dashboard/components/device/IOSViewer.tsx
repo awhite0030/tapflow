@@ -287,14 +287,16 @@ export function IOSViewer({
     }
   }, [recordCanvasRef])
 
-  // The recorder calls whichever composer was registered last, so a rotation reaches the frames
-  // that follow it rather than being frozen at the moment recording started.
+  // **Registered once, and the difference from Android is worth stating.** `composeFrame` here
+  // depends only on `recordCanvasRef`, a ref object whose identity never changes, so this fires on
+  // mount and never again — there is no newest composer on this platform. A rotation still reaches
+  // the frames, because the composer reads `chromeRef`, `canvasRef.current` and the canvas's own
+  // layout live on every draw, exactly as it did before the setter existed.
   //
-  // **A layout effect, because the frame loop runs before paint.** `requestAnimationFrame` fires
-  // between the layout effects and the paint, so a passive effect would register the new composer
-  // one tick late and the first frame after a rotation would be drawn with the old turn. The refs
-  // this replaced were mirrored in a layout effect for the same reason; keeping the timing is what
-  // makes the swap invisible in the recording.
+  // So the layout effect is not load-bearing here the way it is in `AndroidViewer`, where the
+  // composer is rebuilt on every turn and `requestAnimationFrame` would otherwise see the old one
+  // for a tick. It matches that file on purpose: the two viewers should register the same way, and
+  // this is the shape that is already correct if iOS ever composes by a turn of its own.
   useLayoutEffect(() => { setComposeFrame(composeFrame) }, [composeFrame, setComposeFrame])
 
   const handleScreenshot = useCallback(() => {
@@ -325,6 +327,7 @@ export function IOSViewer({
     send({ type: 'input:rotate', sessionId }); setIsLandscape(prev => !prev)
   }, [send, sessionId])
 
+  // Reset device orientation to portrait on unmount if we left it in landscape.
   //
   // **The whole cleanup goes in the ref, `send` and `sessionId` with it.** It must fire on unmount
   // and on nothing else, so the dependency list is empty — and an empty list closing over props is

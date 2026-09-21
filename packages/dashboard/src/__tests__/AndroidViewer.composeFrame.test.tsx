@@ -15,6 +15,15 @@ import userEvent from '@testing-library/user-event'
  * package, so rotating mid-recording — an ordinary thing to do while testing — was held by nothing.
  * It is held here because the mirroring is what the React Compiler refuses to compile, and any
  * rewrite of it has to keep this true.
+ *
+ * **What this file does not hold: that registration is a layout effect rather than a passive one.**
+ * The production comment gives a measured reason — `requestAnimationFrame` fires between the
+ * layout effects and the paint, so a passive effect would draw the first frame after a rotation
+ * with the old turn — and nothing here can fail if that changes. Every point these tests act at is
+ * inside `act()`, which flushes passive effects synchronously, so jsdom cannot tell the two apart.
+ * Holding it would mean ordering rAF against React's passive flush, which jsdom does not model;
+ * that is a decision to take deliberately rather than a missing assertion. Recorded because a
+ * green suite beside a stated reason reads as having held it.
  */
 
 type Compose = () => void
@@ -110,11 +119,15 @@ function renderViewer(streamRotation: 0 | 90 | 180 | 270 = 0) {
   // fixture from restating types the component already owns.
   } as unknown as React.ComponentProps<typeof AndroidViewer>
   const view = render(<AndroidViewer {...props} />)
+  type Props = React.ComponentProps<typeof AndroidViewer>
   return {
     ...view,
     send,
     rotateStream: (next: 0 | 90 | 180 | 270) =>
       view.rerender(<AndroidViewer {...props} streamRotation={next} />),
+    /** Anything else the agent can report in one go — a fold moves the turn and the screen together. */
+    rerenderWith: (patch: Partial<Props>) =>
+      view.rerender(<AndroidViewer {...props} {...patch} />),
   }
 }
 
@@ -133,8 +146,20 @@ function readyToCompose() {
   })
 }
 
-/** The first `rotate` of a compose pass is the frame's own turn; later ones are overlay space. */
+/** The first `rotate` of a compose pass is the frame's own turn; the second is overlay space. */
 const frameTurn = () => rotations[0]
+/**
+ * The turn the pointer overlay is drawn in — `totalTurn - streamRotation`, the user's own quarter
+ * with the stream's correction taken back out.
+ *
+ * **Asserted separately because the two move independently.** A test that reads only the frame's
+ * turn is blind to the overlay's arguments: passing `0` for `streamRotation` to `overlaySpace`,
+ * or dropping it from `composeFrame`'s dependency list, leaves index 0 untouched and index 1
+ * wrong. Both were measured green across all 681 tests before this existed — and drawing the
+ * cursor in the wrong space is the defect the comment beside that call says has already shipped
+ * twice, once against the frame and once against the picture.
+ */
+const overlayTurn = () => rotations[1]
 
 describe('AndroidViewer — the turn a recorded frame is composed with', () => {
   beforeEach(() => {
@@ -169,6 +194,8 @@ describe('AndroidViewer — the turn a recorded frame is composed with', () => {
     act(() => captured.compose?.())
 
     expect(frameTurn()).toBe(90)
+    // The stream turned the frame, so the overlay is already square with the screen.
+    expect(overlayTurn()).toBe(0)
   })
 
   it('follows the rotate button too, which the stream never hears about', async () => {
@@ -190,6 +217,32 @@ describe('AndroidViewer — the turn a recorded frame is composed with', () => {
     act(() => captured.compose?.())
 
     expect(frameTurn()).toBe(90)
+    // The quarter is the tester's alone this time, so the overlay carries all of it — the opposite
+    // reading from the stream-driven test above, which is what makes the pair discriminating.
+    expect(overlayTurn()).toBe(90)
+  })
+
+  it('keeps the overlay square when the stream takes over a turn the tester was holding', async () => {
+    // **The one case that separates the two dependencies.** Unfolding turns the screen landscape,
+    // so the viewer's own CSS quarter drops away at the same moment the stream starts correcting
+    // by one — `totalTurn` holds at 90 while `streamRotation` goes 0 → 90. The frame is drawn
+    // identically either way; only the overlay space moves. Every other test here moves both at
+    // once, which is why dropping `streamRotation` from `composeFrame`'s dependencies was green.
+    const { rerenderWith } = renderViewer(0)
+    readyToCompose()
+    await userEvent.click(screen.getByRole('button', { name: /record/i }))
+    await userEvent.click(screen.getByRole('button', { name: /rotate the device/i }))
+
+    act(() => captured.compose?.())
+    expect(frameTurn()).toBe(90)
+    expect(overlayTurn()).toBe(90)
+
+    rotations.length = 0
+    act(() => { rerenderWith({ streamRotation: 90, screenWidth: 2400, screenHeight: 1080 }) })
+    act(() => captured.compose?.())
+
+    expect(frameTurn()).toBe(90)
+    expect(overlayTurn()).toBe(0)
   })
 
   it('follows a turn the other way too, so the reading is the angle and not merely "changed"', async () => {
@@ -234,6 +287,10 @@ describe('AndroidViewer — putting the device back the way it was found', () =>
 
     unmount()
     expect(rotateCalls(send)).toHaveLength(2)
+    // The session the message is addressed to, not only that a message went out: the cleanup reads
+    // `sessionId` at unmount now rather than capturing it at mount, and a count cannot tell a
+    // rotate sent to this device from one sent to nobody.
+    expect(rotateCalls(send)[1][0]).toEqual({ type: 'input:rotate', sessionId: 's1' })
   })
 
   it('leaves a device it never turned alone', () => {

@@ -64,10 +64,18 @@ export function useClientRecording({ sessionId, buildId, onRecordingUploaded }: 
    *
    * **A setter rather than an argument to `startClientRecording`.** Taken at start, the recorder
    * held whichever closure existed then, so a rotation mid-recording never reached the frames —
-   * and the viewers worked around that by mirroring the turn into refs they wrote *after* handing
-   * the closure to this hook, which is a Rules of React violation the React Compiler will not
-   * compile past. It is not an option on this hook either: `composeFrame` needs `recordCanvasRef`,
-   * which this hook returns, so the viewer cannot have built it yet when it calls us.
+   * and `AndroidViewer`, whose composer is rebuilt on every turn, worked around that by mirroring
+   * the turn into refs it wrote *after* handing the closure to this hook. That is a Rules of React
+   * violation the React Compiler will not compile past. It is not an option on this hook either:
+   * `composeFrame` needs `recordCanvasRef`, which this hook returns, so the viewer cannot have
+   * built it yet when it calls us. (`IOSViewer`'s composer reads what it needs from refs on every
+   * draw, so it registers once and never mirrored a turn.)
+   *
+   * **The obligation this moved out of the type system.** A caller that starts recording without
+   * ever calling this gets a black video — no error, no warning, a green typecheck, where the old
+   * required argument made it impossible. A guard here would silently refuse to start, which is
+   * not better, so what holds it is a test per viewer that the composer is registered:
+   * `AndroidViewer.composeFrame.test.tsx` and `IOSViewer.rotateAndCompose.test.tsx`.
    */
   const setComposeFrame = useCallback((compose: () => void) => { composeFrameRef.current = compose }, [])
 
