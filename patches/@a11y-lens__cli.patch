@@ -1,0 +1,17 @@
+diff --git a/bin/a11y-lens.mjs b/bin/a11y-lens.mjs
+index 68fed8f6ce19539ebf362135a96b28d285db357c..d0af1d80f1dbf14f75a2fa395de907bf1d886c85 100755
+--- a/bin/a11y-lens.mjs
++++ b/bin/a11y-lens.mjs
+@@ -82,7 +82,11 @@ function commandCheck(args) {
+   console.log(
+     `a11y-lens: reviewing ${reviewable.length - dropped.length} file(s) with ${detection.name}…`,
+   );
+-  const result = runAgent(detection.agent, prompt);
++  let result = runAgent(detection.agent, prompt);
++  if (!result.ok && String(result.error).includes('ETIMEDOUT')) {
++    console.warn(`a11y-lens: agent failed: ${result.error} — retrying once...`);
++    result = runAgent(detection.agent, prompt);
++  }
+   if (!result.ok) softFail(`agent failed: ${result.error}`);
+
+   const parsed = parseFindings(result.output);

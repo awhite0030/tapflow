@@ -4,13 +4,18 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@a11y-lens/cli':
+    hash: 7cgdhvqoxoqtdhqb3usnig2bye
+    path: patches/@a11y-lens__cli.patch
+
 importers:
 
   .:
     devDependencies:
       '@a11y-lens/cli':
         specifier: ^0.4.1
-        version: 0.4.1
+        version: 0.4.1(patch_hash=7cgdhvqoxoqtdhqb3usnig2bye)
       '@changesets/cli':
         specifier: ^2.31.1
         version: 2.31.1(@types/node@22.20.2)
@@ -5388,7 +5393,7 @@ packages:
 
 snapshots:
 
-  '@a11y-lens/cli@0.4.1': {}
+  '@a11y-lens/cli@0.4.1(patch_hash=7cgdhvqoxoqtdhqb3usnig2bye)': {}
 
   '@adobe/css-tools@4.4.4': {}
 

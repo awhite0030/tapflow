@@ -52,6 +52,9 @@
     "vitest": "^4.1.11"
   },
   "pnpm": {
-    "overrides": {}
+    "overrides": {},
+    "patchedDependencies": {
+      "@a11y-lens/cli": "patches/@a11y-lens__cli.patch"
+    }
   }
 }
