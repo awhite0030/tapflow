@@ -6,6 +6,8 @@
 
 **Requirements**: Node.js ≥ 22, pnpm ≥ 9
 
+**Windows relay tests**: the relay suite shells to `unzip` and `tar` (`packages/relay/src/api/builds.ts`), so both must resolve on `PATH` before `pnpm --filter @tapflowio/relay test` can pass. `tar.exe` ships with Windows in `C:\Windows\System32`; `unzip.exe` comes from Git for Windows (`C:\Program Files\Git\usr\bin`, or `%LocalAppData%\Programs\Git\usr\bin` for user installs). If either is missing, the suite fails fast naming the tool instead of reporting a misleading archive assertion.
+
 ```sh
 git clone https://github.com/jo-duchan/tapflow.git
 cd tapflow

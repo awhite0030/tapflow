@@ -175,6 +175,121 @@ jobs:
             }
           '
 
+  # **The Windows guard #709 left unguarded (#710).**
+  #
+  # That PR made the relay suite pass on Windows, but no workflow named a Windows
+  # runner, so a reintroduced `spawnSync('zip', …)` fixture or an ungated POSIX
+  # assertion would stay green. One narrow job running only the relay suite keeps
+  # the signal without doubling `test`.
+  #
+  # `sourceFirst` means relay tests resolve sibling sources, so this goes straight
+  # from `pnpm install --frozen-lockfile` to the relay suite — no build steps.
+  # Production still shells to `unzip`/`tar` (`packages/relay/src/api/builds.ts`),
+  # so both must resolve to native processes before the suite runs; a missing tool
+  # fails here with an install hint rather than as a misleading archive assertion.
+  test-relay-windows:
+    runs-on: windows-latest
+    # Bounded because the default is 360 minutes and this job holds the
+    # required check. A hung run would block the gate for six hours.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      # Git for Windows ships unzip.exe under usr/bin, but that directory is not
+      # on PATH for native processes. Append (never prepend) so the in-box
+      # C:\Windows\System32\tar.exe keeps precedence over Git's tar.
+      - name: Make unzip and tar resolvable to native processes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $unzipCmd = Get-Command unzip -ErrorAction SilentlyContinue
+          if (-not $unzipCmd) {
+            $candidates = @(
+              'C:\Program Files\Git\usr\bin',
+              (Join-Path $env:ProgramFiles 'Git\usr\bin'),
+              'C:\Program Files (x86)\Git\usr\bin',
+              (Join-Path $env:LocalAppData 'Programs\Git\usr\bin')
+            ) | Where-Object { $_ } | Select-Object -Unique
+            foreach ($dir in $candidates) {
+              if ($dir -and (Test-Path (Join-Path $dir 'unzip.exe'))) {
+                # Append so System32 tar keeps precedence; GITHUB_ENV carries it
+                # to later steps (GITHUB_PATH would prepend and shadow tar).
+                $env:PATH = "$env:PATH;$dir"
+                "PATH=$env:PATH" | Add-Content -Path $env:GITHUB_ENV -Encoding utf8
+                Write-Host "Added to PATH for subsequent steps: $dir"
+                break
+              }
+            }
+          }
+
+          # Fail with the actionable error before invoking either executable: with
+          # `$ErrorActionPreference = 'Stop'`, calling a missing tool would throw
+          # an unhandled command-not-found error instead of this message.
+          $missing = @()
+          if (-not (Get-Command unzip -ErrorAction SilentlyContinue)) { $missing += 'unzip' }
+          if (-not (Get-Command tar -ErrorAction SilentlyContinue)) { $missing += 'tar' }
+          if ($missing.Count -gt 0) {
+            Write-Error ("Missing required archive tools: $($missing -join ', '). " +
+              "On windows-latest, unzip.exe comes from Git for Windows ('C:\Program Files\Git\usr\bin' " +
+              "or '%LocalAppData%\Programs\Git\usr\bin' for user installs); " +
+              "ensure that directory is on PATH. tar.exe ships with Windows in 'C:\Windows\System32'; " +
+              "ensure System32 is on PATH. See CONTRIBUTING prerequisites.")
+            exit 1
+          }
+
+          Write-Host '--- resolved archive tools ---'
+          Get-Command unzip, tar | Format-Table Name, Source -AutoSize | Out-String | Write-Host
+
+          # Keep native Windows tar first where both exist.
+          $tarCmd = Get-Command tar
+          if ($tarCmd.Source -notlike '*System32*') {
+            $sys32 = 'C:\Windows\System32'
+            if (Test-Path (Join-Path $sys32 'tar.exe')) {
+              $parts = $env:PATH -split ';' | Where-Object { $_ -and $_ -ne '' }
+              $parts = @($sys32) + ($parts | Where-Object { $_ -ine $sys32 })
+              $env:PATH = $parts -join ';'
+              "PATH=$env:PATH" | Add-Content -Path $env:GITHUB_ENV -Encoding utf8
+              Write-Host "Reordered PATH so native tar wins: $((Get-Command tar).Source)"
+            }
+          }
+
+          # Both tools resolved above, so these verify they run rather than
+          # re-checking presence: a non-zero exit names the broken tool.
+          #
+          # Run each native command UNPIPED and capture $LASTEXITCODE on the very
+          # next line: piping native output (e.g. `| Select-Object -First 2`)
+          # leaves $LASTEXITCODE empty and falsely fails this check (PR #815).
+          $unzipVersion = & unzip -v 2>&1
+          $unzipExit = $LASTEXITCODE
+          $unzipVersion | Select-Object -First 2 | Out-String | Write-Host
+          if ($unzipExit -ne 0) {
+            Write-Error "unzip resolved but 'unzip -v' failed (exit $unzipExit)."
+            exit 1
+          }
+          $tarVersion = & tar --version 2>&1
+          $tarExit = $LASTEXITCODE
+          $tarVersion | Select-Object -First 2 | Out-String | Write-Host
+          if ($tarExit -ne 0) {
+            Write-Error "tar resolved but 'tar --version' failed (exit $tarExit)."
+            exit 1
+          }
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm --filter @tapflowio/relay test
+
   # **The Swift the job above cannot touch — named for the language, not for today's one suite.**
   #
   # Swift is spread across this repo (`ios-netfilter`, `xctest-runner`, `netprobe`, the helper
@@ -319,7 +434,7 @@ jobs:
   # exactly how the `changeset` job below exempts bot PRs. Without the assertion it has no step
   # that can fail, so it always succeeds. Either omission makes the gate decorative.
   ci:
-    needs: [changes, test, test-swift]
+    needs: [changes, test, test-relay-windows, test-swift]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -328,7 +443,7 @@ jobs:
       # `needs.test.result` rolls up the whole matrix: it is `success` only if every leg was.
       # `failure`, `cancelled` and `skipped` all fail the assertion, so every path fails safe.
       #
-      # Index syntax for the macOS job. `needs.test-swift.result` also works — Actions allows a
+      # Index syntax for hyphenated jobs. `needs.test-swift.result` also works — Actions allows a
       # hyphen in property position — so this is a preference for a form that cannot be misread as
       # subtraction, not a correctness fix. An earlier comment here claimed it was one.
       #
@@ -336,12 +451,18 @@ jobs:
       # itself before wiring it in would have shipped exactly the decorative gate the comment above
       # this job warns about — and a runner that cannot build the project is something a PR should
       # fail on, which is what a PR is for.
+      #
+      # **The Windows relay job must be `success`, with no skipped exception.** Unlike
+      # `test-swift`, it has no path gate, so `skipped` can only mean a cancellation,
+      # a dependency failure, or a mistyped `if:` — every one of which must block.
       - run: |
           echo "changes result:  ${{ needs.changes.result }} (netfilter=${{ needs.changes.outputs.netfilter }})"
           echo "test result:     ${{ needs.test.result }}"
+          echo "test-relay-windows result: ${{ needs['test-relay-windows'].result }}"
           echo "test-swift result: ${{ needs['test-swift'].result }}"
           [ "${{ needs.changes.result }}" = "success" ]
           [ "${{ needs.test.result }}" = "success" ]
+          [ "${{ needs['test-relay-windows'].result }}" = "success" ]
           # **A skipped `test-swift` is accepted only when the gate says why.** Loosening this to
           # `success || skipped` would be the hole the paragraph above warns about, one job over: a
           # cancelled runner, a dependency that failed, or a mistyped `if:` all produce `skipped`, and

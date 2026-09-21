@@ -15,7 +15,13 @@ export function makeAppTarGz(tmpDir: string, appName: string, plistXml: string, 
   fs.writeFileSync(path.join(appDir, 'Frameworks', 'Foo.framework', 'Info.plist'), '<plist><dict/></plist>')
   fs.writeFileSync(path.join(appDir, appName), Buffer.from([0xcf, 0xfa, 0xed, 0xfe]))
   const out = path.join(tmpDir, `${appName}${ext}`)
-  spawnSync('tar', ['-czf', out, '-C', tmpDir, `${appName}.app`])
+  const created = spawnSync('tar', ['-czf', out, '-C', tmpDir, `${appName}.app`])
+  if (created.error || created.status !== 0) {
+    throw new Error(
+      `Failed to create tar fixture: 'tar -czf' failed. Ensure 'tar' is installed and on PATH. ` +
+        `On Windows, tar.exe ships in C:\\Windows\\System32; on macOS/Linux install tar via your package manager.`,
+    )
+  }
   return out
 }
 

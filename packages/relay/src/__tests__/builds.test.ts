@@ -4,6 +4,7 @@ import path from 'path'
 import os from 'os'
 import { initDb, getDb, closeDb } from '../db'
 import { makeAppZip, writeZipFixture } from './helpers/zipFixture'
+import { assertArchiveTools } from './helpers/archivePrereqs'
 
 const XML_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -304,13 +305,15 @@ describe('extractAppZipInfo', () => {
   let extractAppZipInfo: (zipPath: string) => ReturnType<typeof import('../api/builds').extractAppZipInfo>
 
   beforeAll(async () => {
+    assertArchiveTools(['unzip'])
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapflow-zip-test-'))
     zipPath = makeAppZip(tmpDir, 'CoffeeApp', XML_PLIST)
     const mod = await import('../api/builds')
     extractAppZipInfo = mod.extractAppZipInfo
   })
 
-  afterAll(() => { fs.rmSync(tmpDir, { recursive: true }) })
+  // Guarded: assertArchiveTools above can throw before tmpDir is assigned.
+  afterAll(() => { if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true }) })
 
   it('extracts bundle_id, version_name, build_number, app_name from .app.zip', () => {
     const info = extractAppZipInfo(zipPath)
@@ -345,6 +348,7 @@ describe('extractAppTarInfo', () => {
   let writeRawTarGz: typeof import('./helpers/tarFixture').writeRawTarGz
 
   beforeAll(async () => {
+    assertArchiveTools(['tar'])
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapflow-tar-test-'))
     mod = await import('../api/builds')
     const fx = await import('./helpers/tarFixture')
@@ -352,7 +356,8 @@ describe('extractAppTarInfo', () => {
     writeRawTarGz = fx.writeRawTarGz
   })
 
-  afterAll(() => { fs.rmSync(tmpDir, { recursive: true, force: true }) })
+  // Guarded: assertArchiveTools above can throw before tmpDir is assigned.
+  afterAll(() => { if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true }) })
 
   it('extracts metadata from the top-level *.app/Info.plist (not nested framework plist)', () => {
     const tarPath = makeAppTarGz(tmpDir, 'CoffeeApp', XML_PLIST)
