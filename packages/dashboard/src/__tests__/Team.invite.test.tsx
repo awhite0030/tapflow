@@ -42,6 +42,27 @@ describe('Team — the invite link a teammate gets', () => {
   })
   afterEach(() => vi.unstubAllGlobals())
 
+  it('a dialog opened and abandoned says nothing, and closes on the first press', async () => {
+    // **The reported bug was a dialog one, and the regression tests for it were on a page.** Radix
+    // autofocuses the first control when this dialog opens — nothing else in the app does, the four
+    // auth *pages* do not — so leaving without typing is one pointer move away. Under the old
+    // `mode: 'onBlur'` that drew `Enter a valid email`, and the inserted line moved what was below
+    // it, so the press that should have dismissed the dialog landed on nothing and it took a second.
+    stubFetch({ token: 't', emailSent: false, inviteUrl: null })
+    render(<TeamSettings />)
+    await userEvent.click(await screen.findByRole('button', { name: /invite member/i }))
+    const email = screen.getByLabelText(/email/i)
+    expect(email).toHaveFocus()
+
+    await userEvent.tab()
+    expect(screen.queryByText(/valid email/i)).toBeNull()
+
+    // The first press, not the second: this is the half a "no message appears" assertion misses.
+    // The dialog's close is the header X, whose accessible name is its `sr-only` "Close".
+    await userEvent.click(screen.getByRole('button', { name: /close/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
   it('shows and copies the link the relay mailed, not the browser address (#788)', async () => {
     const writeText = vi.fn(async (_text: string) => {})
     stubClipboard(writeText)
