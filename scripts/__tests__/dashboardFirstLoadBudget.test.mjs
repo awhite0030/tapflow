@@ -142,11 +142,24 @@ describe('the shipped dashboard bundle is compiled by the React Compiler', () =>
     // in app code only when app code was compiled — on an uncompiled build it appears in the React
     // vendor chunk alone, where React itself defines it. Reading the entry chunk rather than the
     // whole first-load set is what keeps the two apart.
+    //
+    // **What it cannot see: one component losing compilation.** A suppression added inside a single
+    // component removes that component's share of 161 sentinels and leaves the rest, and most of
+    // them are in lazy chunks this never opens — the streaming surface alone holds 73. That is held
+    // at the source instead, by `packages/dashboard/src/__tests__/noSuppressedCompilation.test.ts`,
+    // which asks the compiler for the skip *reason* rather than counting bytes.
+    // **Counted, not merely present.** react-dom defines the sentinel itself and is the only
+    // production dependency that ships it, so a build that stopped compiling *and* stopped splitting
+    // `vendor-react` would inline react-dom into the entry and pass a `toContain`. React contributes
+    // exactly one; compiled app code contributes dozens — 43 in the entry chunk on 2026-09-22, 161
+    // across the bundle. Ten is the anti-vacuity floor between those two, not a budget.
     const entry = entryScriptPath(readFileSync(INDEX_HTML, 'utf8'))
+    const sentinels = readFileSync(entry, 'utf8').split('react.memo_cache_sentinel').length - 1
     expect(
-      readFileSync(entry, 'utf8'),
-      `${relative(ROOT, entry)} carries no memo-cache sentinel — the build did not run the React Compiler.`,
-    ).toContain('react.memo_cache_sentinel')
+      sentinels,
+      `${relative(ROOT, entry)} carries ${sentinels} memo-cache sentinels — the build did not run ` +
+      `the React Compiler over app code. React itself accounts for one.`,
+    ).toBeGreaterThanOrEqual(10)
   })
 })
 

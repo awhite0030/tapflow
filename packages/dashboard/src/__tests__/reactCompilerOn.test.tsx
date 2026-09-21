@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { CompilerProbe } from './fixtures/compilerProbe'
 
 /**
@@ -23,12 +25,14 @@ describe('the React Compiler is applied to this package', () => {
   })
 
   it('and the uncompiled shape is what that pattern rules out', () => {
-    // The guard above is only meaningful if the pattern cannot match unprocessed source. This is
-    // what `CompilerProbe` looks like before the compiler touches it.
-    const uncompiled = `function CompilerProbe({ items }) {
-      const upper = items.map((i) => i.toUpperCase())
-      return upper
-    }`
-    expect(uncompiled).not.toMatch(/const \$ = .{0,40}\(\d+\)/)
+    // The guard above is only meaningful if the pattern cannot match unprocessed source — so read
+    // **the fixture's own source**, not a copy of it typed into the test. A hand-written literal
+    // stops describing the fixture the moment anyone edits the fixture, and no build state can make
+    // it fail; this one fails if the probe is ever written in a shape the pattern would match
+    // before the compiler runs.
+    // `import.meta.dirname` rather than a `new URL(..., import.meta.url)`: under jsdom that url
+    // is not a file: one, and `readFileSync` rejects it.
+    const source = readFileSync(join(import.meta.dirname, 'fixtures', 'compilerProbe.tsx'), 'utf8')
+    expect(source).not.toMatch(/const \$ = .{0,40}\(\d+\)/)
   })
 })

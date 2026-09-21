@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **The dashboard is built with the React Compiler.** It memoises what React would otherwise recompute on every render, in place of the hand-written `useCallback` and `useMemo` that were doing part of that by hand — 64 of the first and 3 of the second, against no memoised components at all. 158 functions are compiled and 15 are skipped, which is safe: a function the compiler cannot prove is left exactly as it was. Every one of those 15 is a shape the compiler does not lower yet — nine of them `try`/`catch` — rather than anything this codebase is doing wrong. The first load grows 3,810 B compressed, since the memoisation is code. Nothing about how the dashboard behaves changes.
+- **The dashboard is built with the React Compiler.** It memoises what React would otherwise recompute on every render, in place of the hand-written `useCallback` and `useMemo` that were doing part of that by hand — 62 of the first and 3 of the second, against no memoised components at all. 158 functions are compiled and 15 are skipped, which is safe: a function the compiler cannot prove is left exactly as it was. Fourteen of those 15 are a shape the compiler does not lower yet, nine of them `try`/`catch`; the fifteenth is an internal compiler invariant. None is anything this codebase is doing wrong. The first load grows 3,810 B compressed, since the memoisation is code. No behaviour change is intended — the compiler only memoises — and the dashboard's test suite runs against the compiled output rather than beside it.
 
 ### Fixed
 

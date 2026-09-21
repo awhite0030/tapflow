@@ -56,10 +56,12 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@babel/core": "^7.28.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.7",
     "@tweakpane/core": "^2.0.5",
+    "@types/babel__core": "^7.20.5",
     "@types/d3-array": "^3.2.2",
     "@types/d3-time": "^3.0.4",
     "@types/node": "^22.20.2",

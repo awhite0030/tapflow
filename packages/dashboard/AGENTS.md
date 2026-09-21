@@ -64,11 +64,18 @@ ships an uncompiled bundle. The second one fails on it.
 
 `reactPlugin.ts` sits at the package root, which used to be outside both gates — `lint` globbed
 `*.config.ts` and the tsconfig included only `src`/`components`/`hooks`/`lib`. Both now take every
-root `.ts`, so a new file beside the configs is covered without anyone remembering to add it.
+root **`.ts`** file, so a new one beside the configs is covered without anyone remembering to add
+it. A root `.mjs` — `postcss.config.mjs` is one — or a root `.tsx` is still outside both.
 
-**Stop adding `useCallback` and `useMemo` for identity.** The compiler does that. What is here:
-64 `useCallback`, 3 `useMemo`, and **zero** `memo()` components — so most of that is stabilising
-effect dependencies by hand. Existing ones are not worth a sweep; new ones need a reason that is not
+One consequence, taken knowingly: `build` is `tsc --noEmit && vite build`, so the production build
+now typechecks `vitest.config.ts` and, through it, the root `vitest.shared.ts`. A vitest upgrade
+whose config types shift would fail the dashboard build, and therefore the relay build and the
+Docker image, over a test-only type error. Narrowing the include back to the two build-relevant
+files would avoid that and would also give up the property above, which is the one worth having.
+
+**Stop adding `useCallback` and `useMemo` for identity.** The compiler does that. What is here, in
+product code (`src`/`components`/`hooks`/`lib` minus `__tests__`): 62 `useCallback`, 3 `useMemo`, and
+**zero** `memo()` components — so most of that is stabilising effect dependencies by hand. Existing ones are not worth a sweep; new ones need a reason that is not
 "so the child does not re-render".
 
 Measured 2026-09-22: **158 functions compiled, 15 skipped.** A skip is safe — the compiler leaves the
@@ -78,6 +85,13 @@ lower yet, nine of them `try`/`catch` shapes (value blocks inside a `try`, a `fi
 `import()`. The fifteenth is an internal invariant in `useClientRecording.ts`, recorded at the top
 of that file with both its bails and why neither is worth working around.
 
+`src/__tests__/noSuppressedCompilation.test.ts` is what keeps that "none of the 15 is ours" true. It
+runs the compiler over the package and fails on any skip whose **reason** is a suppression, which is
+the only kind anybody here can cause. It drives the same `@babel/core` major the build does, pinned
+for that reason: measured, `@babel/core` 8 and 7.29 disagree about whether `AndroidViewer` compiles.
+A bundle check cannot do this job — one suppressed component removes its share of 161 sentinels and
+leaves the rest, and 73 of them sit in a lazy chunk the build guard never opens.
+
 #### What an `eslint-disable` costs the compiler, stated as measured
 
 `AndroidViewer` and `IOSViewer` compiled **nothing** until #830, and the cause was easy to read too
@@ -86,17 +100,30 @@ broadly. Probed directly, it is narrower on both axes:
 - **Per function, not per file.** A file with four components, one carrying a suppression, compiles
   the other three. It looked file-wide on the viewers only because each of those files is a single
   component, so the one skip was the whole file.
-- **Only the rules the compiler's own validation lists.** An `exhaustive-deps` suppression skips the
-  function carrying it. A `react-hooks/purity` suppression does not — `src/pages/QASession.tsx` and
-  `components/ui/sidebar.tsx` each carry one and both compile.
+- **Exactly two rules, and they are a hardcoded list.**
+  `DEFAULT_ESLINT_SUPPRESSIONS` in `babel-plugin-react-compiler@1.0.0` is
+  `['react-hooks/exhaustive-deps', 'react-hooks/rules-of-hooks']`, overridable through the
+  `eslintSuppressionRules` option, which we do not set. Suppressing anything else costs nothing.
 
-So the cost of a suppression is real and local: it is the function it sits in, and it is silent,
-because a skipped function still works. Removing one is how the two viewers went from 0 to 1 each.
+**The list is not "the rules the compiler validates", and guessing that gets it wrong both ways.**
+`react-hooks/purity`, `refs`, `immutability`, `globals` and `set-state-in-effect` are all in the
+compiler's own diagnostics table at `severity: "Error", recommended: true`, and suppressing any of
+them compiles fine — `src/pages/QASession.tsx` and `components/ui/sidebar.tsx` each carry a `purity`
+suppression and both compile. `rules-of-hooks` is **not** in that table and does bail, which is the
+direction that costs something: it reads as the safe one and it is not. Probed directly rather than
+reasoned about, because the first reading of this was wrong.
+
+So the cost of a suppression is real, local and narrow: it is the function it sits in, for two rule
+names, and it is silent, because a skipped function still works. Removing one is how the two viewers
+went from 0 to 1 each.
 
 `react-hooks/set-state-in-effect` is `'off'` in `eslint.config.mjs` and hides **15 violations across
-13 files**. It is not a compiler-safety rule — it flags an effect pattern, not an assumption the
-compiler makes — so it blocks none of the above. It is a real cleanup with nothing scheduling it;
-the number is recorded here so the next person does not have to re-measure it.
+13 files**. It *is* one of the compiler's own diagnostics — it is simply not one of the two names
+above, so suppressing or disabling it costs no compilation. Worth knowing for a different reason:
+`eslint-plugin-react-hooks@7`'s recommended set is 16 rules, this is the only one turned off, and a
+clean lint here therefore means "every enabled diagnostic passes" rather than "the Rules of React
+hold". It is a real cleanup with nothing scheduling it; the number is recorded here so the next
+person does not have to re-measure it.
 
 ### Server data is read with TanStack Query, not fetched in an effect
 

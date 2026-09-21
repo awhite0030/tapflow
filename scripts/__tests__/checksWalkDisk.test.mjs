@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync, mkdirSync, existsSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import { sources, SKIP_DIRS } from './sourceFiles.mjs'
+import { sources, SKIP_DIRS, SKIP_PATHS, SKIP_PATHS_SOURCE } from './sourceFiles.mjs'
 
 // #522. Three static checks asked git which files exist. `git ls-files` reports **tracked** files only, and a
 // file that was just created is exactly the state a new violation is in — so each of those checks was blind to
@@ -151,5 +151,45 @@ describe('static checks enumerate the tree from disk, not from git', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  it('does not walk into the dashboard build\'s copy, which another test in this suite deletes', () => {
+    // `clientOutboundTyped.test.mjs` walks all of `packages/`, and `dashboardFirstLoadBudget.test.mjs`
+    // runs `pnpm --filter @tapflowio/dashboard build` in the same `pnpm test:scripts` invocation — whose
+    // last step is `rm -rf ../relay/public && cp -r dist/. ../relay/public/`. A walk inside that
+    // directory while the `rm -rf` runs dies on ENOENT, which is a failure about nothing.
+    //
+    // Held here rather than in the walker's caller because the race is not deterministic: a test that
+    // waits to observe it would be a flake of its own. This asserts the skip instead.
+    // **A planted file, because filtering the result is vacuous here.** `sources()` collects
+    // `.ts`/`.tsx` and that directory holds built `.js`, `.html` and `.svg` — so asserting "nothing
+    // walked came from there" passes whether or not the walk descends, and the race is about
+    // descending. Measured: with the assertion written that way, deleting the skip from
+    // `sourceFiles.mjs` failed nothing. This plants a file the walk would have to collect.
+    for (const target of SKIP_PATHS) {
+      const existed = existsSync(target)
+      if (!existed) mkdirSync(target, { recursive: true })
+      const probe = join(target, '__walk-probe.ts')
+      writeFileSync(probe, 'export const planted = 1\n')
+      try {
+        const walked = sources(join(root, 'packages'))
+        expect(
+          walked.filter((f) => f.endsWith('__walk-probe.ts')),
+          `sources() descended into ${relative(root, target)}, which the dashboard build deletes mid-run`,
+        ).toEqual([])
+      } finally {
+        rmSync(probe, { force: true })
+        if (!existed) rmSync(target, { recursive: true, force: true })
+      }
+    }
+
+    // And the skip is not allowed to go stale silently: it names a path the dashboard build writes,
+    // so if the build stops writing it the assertion above starts passing for the wrong reason.
+    const buildScript = JSON.parse(readFileSync(SKIP_PATHS_SOURCE.manifest, 'utf8'))
+      .scripts[SKIP_PATHS_SOURCE.script]
+    expect(
+      buildScript,
+      `the dashboard build no longer writes ${SKIP_PATHS_SOURCE.mentions} — SKIP_PATHS is stale`,
+    ).toContain(SKIP_PATHS_SOURCE.mentions)
   })
 })
