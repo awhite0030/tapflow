@@ -43,6 +43,39 @@ The audience is the whole team (PO, PM, designers, backend, QA) — not just QA.
 - **An address for someone else comes from `lib/publicLink.ts`** — an invite link, a link to a comment, the relay address in the agent command. The browser's own `location.origin` is right for this page and wrong for a teammate: on the Vite server it is `localhost:3001`, which is how #788 was found. The relay reports what its settings mean and the helper only falls back. `useRelay` is the exception, because it connects this page to its own relay. `scripts/__tests__/teammateUrlsSingleSource.test.mjs` fails on a `location` read other than `pathname`/`search`/`hash`/`hostname`/`protocol` outside the files it allows.
 - **Build order**: dashboard first → relay second (`agent-core → dashboard → relay`).
 
+### Server data is read with TanStack Query, not fetched in an effect
+
+A page that owns server rows in `useState` and fills them from a `useEffect` has to hand-roll three
+things, and the App Center had none of them: a pending state that covers the gap between the click
+and the effect, a way to drop a response that arrives after the selection moved on, and a failure
+path that is distinguishable from an empty result.
+
+What that cost, measured on one page: switching apps cleared `builds` synchronously while `loading`
+was still `false`, so one commit rendered "No builds yet" for an app nobody had asked about — the
+flicker this rule exists because of. A slow response for app A could paint its rows under app B.
+And a failed fetch fell into the empty state, so "the request failed" and "this app has no builds"
+looked the same.
+
+So: `useQuery` for reads, `useMutation` with an optimistic write for actions on those rows.
+
+- **The query key carries every input the request depends on** — `['builds', appId, search,
+  statusFilter]`. That is what makes a late answer harmless: it lands under a key nobody is
+  rendering. A key that omits an input is a stale-response bug with no symptom until someone clicks
+  twice quickly.
+- **`placeholderData: keepPreviousData` on anything a user switches between.** Without it the page
+  re-renders with no rows while the next set loads, and a page with no rows is the empty state.
+- **State derived from a fetch waits for that fetch's own answer.** The App Center seeds which
+  release is expanded from the rows it just received; running that during the placeholder window
+  seeds it from the *previous* app's rows and marks the new one as done, so the release that should
+  open never does. `AppCenter.switch.test.tsx` holds both halves — the previous list stays, and the
+  new one opens when it lands.
+- Defaults live in `lib/queryClient.ts` (`retry: 0`, `refetchOnWindowFocus: true`) with the reason
+  for each.
+
+Nine pages still fetch in an effect. They move one at a time; **the check that would fail on a new
+one belongs at the end of that, not now** — written today its allowlist would hold those nine, and
+an allowlist that long is a to-do list rather than a guard.
+
 ## Testing
 
 - `pnpm test` is always run foreground (terminal). **Never run vitest as a background process** — worker forks accumulate as zombies and exhaust CPU/RAM.

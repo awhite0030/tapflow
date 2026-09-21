@@ -8,11 +8,12 @@ import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { FieldError } from '@/components/ui/field-error'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
 const schema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
+  email: z.string().email('Enter a valid email'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
 })
 type FormData = z.infer<typeof schema>
 
@@ -30,7 +31,6 @@ export function Login() {
 
   const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
-    mode: 'onBlur',
   })
 
   async function onSubmit(data: FormData) {
@@ -64,9 +64,12 @@ export function Login() {
                 type="email"
                 placeholder="you@company.com"
                 autoComplete="email"
+                aria-required="true"
+                aria-invalid={!!errors.email}
+                aria-describedby={errors.email ? 'email-error' : undefined}
                 {...register('email')}
               />
-              {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
+              <FieldError id="email-error" message={errors.email?.message} />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="password">Password</Label>
@@ -74,11 +77,14 @@ export function Login() {
                 id="password"
                 type="password"
                 autoComplete="current-password"
+                aria-required="true"
+                aria-invalid={!!errors.password}
+                aria-describedby={errors.password ? 'password-error' : undefined}
                 {...register('password')}
               />
-              {errors.password && <p className="text-sm text-destructive">{errors.password.message}</p>}
+              <FieldError id="password-error" message={errors.password?.message} />
             </div>
-            {errors.root && <p className="text-sm text-destructive">{errors.root.message}</p>}
+            <FieldError assertive id="login-error" message={errors.root?.message} />
             <Button type="submit" size="lg" disabled={isSubmitting} className="w-full mt-1">
               {isSubmitting ? 'Signing in…' : 'Sign in'}
             </Button>

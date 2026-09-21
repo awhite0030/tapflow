@@ -5,11 +5,12 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { FieldError } from '@/components/ui/field-error'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
 const schema = z.object({
-  password: z.string().min(8),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
   confirm: z.string(),
 }).refine((d) => d.password === d.confirm, {
   message: 'Passwords do not match',
@@ -25,7 +26,6 @@ export function ResetPassword() {
 
   const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
-    mode: 'onBlur',
   })
 
   useEffect(() => {
@@ -79,15 +79,15 @@ export function ResetPassword() {
           <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
             <div className="grid gap-2">
               <Label htmlFor="password">New password</Label>
-              <Input id="password" type="password" {...register('password')} />
-              {errors.password && <p className="text-sm text-destructive">{errors.password.message}</p>}
+              <Input id="password" type="password" aria-required="true" autoComplete="new-password" aria-invalid={!!errors.password} aria-describedby={errors.password ? 'password-error' : undefined} {...register('password')} />
+              <FieldError id="password-error" message={errors.password?.message} />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="confirm">Confirm password</Label>
-              <Input id="confirm" type="password" {...register('confirm')} />
-              {errors.confirm && <p className="text-sm text-destructive">{errors.confirm.message}</p>}
+              <Input id="confirm" type="password" aria-required="true" autoComplete="new-password" aria-invalid={!!errors.confirm} aria-describedby={errors.confirm ? 'confirm-error' : undefined} {...register('confirm')} />
+              <FieldError id="confirm-error" message={errors.confirm?.message} />
             </div>
-            {errors.root && <p className="text-sm text-destructive">{errors.root.message}</p>}
+            <FieldError assertive id="resetpassword-error" message={errors.root?.message} />
             <Button type="submit" disabled={isSubmitting} className="w-full">
               {isSubmitting ? 'Saving…' : 'Set new password'}
             </Button>

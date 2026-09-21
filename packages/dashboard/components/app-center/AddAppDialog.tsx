@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { FieldError } from '@/components/ui/field-error'
 import {
   Dialog,
   DialogContent,
@@ -45,6 +46,10 @@ export function AddAppDialog({ onSuccess }: Props) {
       toast.success('App created')
       onSuccess()
     } catch {
+      // **Said in the dialog, not only in a toast.** The two other branches above already reach the
+      // message region; this one did not, so the path most likely to happen on a flaky network was
+      // the one with nothing in the dialog to read. The toast stays for the sighted case.
+      setError('Failed to create app — check your network')
       toast.error('Failed to create app — check your network')
     } finally {
       setSaving(false)
@@ -97,7 +102,11 @@ export function AddAppDialog({ onSuccess }: Props) {
               </SelectContent>
             </Select>
           </div>
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {/* A toast cannot be heard from inside an open dialog — Radix `aria-hidden`s
+              everything outside its portal — and this form's failure path fires one. So the
+              message is said here, in a region that was mounted before it had anything to
+              say. Same reasoning as the `role="status"` lines in Team.tsx and Tokens.tsx. */}
+          <FieldError assertive id="add-app-error" message={error || undefined} />
           <Button type="submit" disabled={saving} className="w-full">
             {saving ? 'Creating…' : 'Create App'}
           </Button>

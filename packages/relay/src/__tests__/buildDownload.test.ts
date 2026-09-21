@@ -166,7 +166,14 @@ describe('GET /api/v1/build-download', () => {
   // marked destroyed while its fd stayed open.
   //
   // Mutation: drop `res.on('close', () => rs.destroy())`. The count keeps climbing.
-  it('closes the file when the agent abandons the download', async () => {
+  //
+  // Windows-only skip: the count is read through `/dev/fd`, which does not exist
+  // there (hosted runners check out on `D:\`, so it fails as `D:\dev\fd` ENOENT).
+  // The descriptor is unobservable by any supported Node API on Windows — verified:
+  // 8 open ReadStreams move neither `process._getActiveHandles()` nor
+  // `process.getActiveResourcesInfo()`, and unlinking an open file succeeds — so
+  // no portable counting exists and the leak coverage stays on the POSIX legs.
+  it.skipIf(process.platform === 'win32')('closes the file when the agent abandons the download', async () => {
     const big = path.join(tmpDir, 'big.app.zip')
     fs.writeFileSync(big, Buffer.alloc(8 * 1024 * 1024))   // large enough not to finish in one tick
     const openFiles = () => fs.readdirSync(`/dev/fd`).length

@@ -2,7 +2,10 @@ import type { App, Build, ReleaseGroup } from '@/lib/types'
 
 export async function getApps(): Promise<App[]> {
   const res = await fetch('/api/v1/apps', { credentials: 'include' })
-  if (!res.ok) return []
+  // **An empty array is an answer, and a 500 is not one.** Returning `[]` here made every server
+  // failure indistinguishable from an account with no apps — and since the App Center now has a
+  // failure state, swallowing the status is what would keep it unreachable.
+  if (!res.ok) throw new Error(`GET /api/v1/apps failed with ${res.status}`)
   const data = await res.json()
   return data.items
 }
@@ -25,7 +28,7 @@ export async function getBuilds({
   if (search) params.set('q', search)
   if (statusFilter && statusFilter !== 'all') params.set('status', statusFilter)
   const res = await fetch(`/api/v1/builds?${params}`, { credentials: 'include' })
-  if (!res.ok) return []
+  if (!res.ok) throw new Error(`GET /api/v1/builds failed with ${res.status}`)
   const data = await res.json()
   return data.items
 }
@@ -50,12 +53,15 @@ export async function updateBuildStatus(
   id: number,
   status: string | null,
 ): Promise<void> {
-  await fetch(`/api/v1/builds/${id}`, {
+  const res = await fetch(`/api/v1/builds/${id}`, {
     method: 'PATCH',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status_label: status }),
   })
+  // Its two siblings below throw; this one did not, so the optimistic label stayed on screen after
+  // a refused change and the rollback beside it was unreachable code.
+  if (!res.ok) throw new Error(`PATCH /api/v1/builds/${id} failed with ${res.status}`)
 }
 
 // Put a build on the deletion clock (server sets delete_after = now + TTL) and

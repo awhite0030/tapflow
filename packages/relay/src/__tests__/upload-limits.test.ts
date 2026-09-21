@@ -8,6 +8,7 @@ import { initDb, getDb, closeDb } from '../db'
 import { makePasswordHash } from '../api/auth'
 import { signJwt } from '../middleware/auth'
 import { writeZipFixture } from './helpers/zipFixture'
+import { assertArchiveTools } from './helpers/archivePrereqs'
 
 // multipart/form-data 바디를 직접 구성한다 (busboy 파싱용).
 function multipartBody(boundary: string, parts: { name: string; filename?: string; contentType?: string; data: Buffer | string }[]): Buffer {
@@ -50,6 +51,7 @@ describe('upload size-limit handling', () => {
   let cookie: string
 
   beforeAll(() => {
+    assertArchiveTools(['unzip'])
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapflow-upload-test-'))
     initDb(path.join(tmpDir, 'test.db'))
     getDb().prepare('INSERT INTO users (email, display_name, role, password_hash) VALUES (?, ?, ?, ?)')
@@ -57,9 +59,10 @@ describe('upload size-limit handling', () => {
     cookie = `tapflow_token=${signJwt({ userId: 1, email: 'admin@example.com', role: 'Admin' })}`
   })
 
+  // Guarded: assertArchiveTools above can throw before tmpDir is assigned.
   afterAll(() => {
     closeDb()
-    fs.rmSync(tmpDir, { recursive: true, force: true })
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 
   beforeEach(async () => {

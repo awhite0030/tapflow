@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { useTheme } from 'next-themes'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { FieldError } from '@/components/ui/field-error'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
@@ -26,7 +27,6 @@ export function Setup() {
 
   const { register, handleSubmit, setError, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
-    mode: 'onBlur',
   })
 
   useEffect(() => {
@@ -74,9 +74,11 @@ export function Setup() {
                   type="email"
                   placeholder="admin@yourteam.com"
                   autoComplete="email"
-                  {...register('email')}
+aria-required="true" aria-invalid={!!errors.email}
+aria-describedby={errors.email ? 'email-error' : undefined}
+{...register('email')}
                 />
-                {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
+                <FieldError id="email-error" message={errors.email?.message} />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="password">Password</Label>
@@ -84,9 +86,11 @@ export function Setup() {
                   id="password"
                   type="password"
                   autoComplete="new-password"
-                  {...register('password')}
+aria-required="true" aria-invalid={!!errors.password}
+aria-describedby={errors.password ? 'password-error' : undefined}
+{...register('password')}
                 />
-                {errors.password && <p className="text-sm text-destructive">{errors.password.message}</p>}
+                <FieldError id="password-error" message={errors.password?.message} />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="confirm">Confirm password</Label>
@@ -94,11 +98,13 @@ export function Setup() {
                   id="confirm"
                   type="password"
                   autoComplete="new-password"
-                  {...register('confirm')}
+aria-required="true" aria-invalid={!!errors.confirm}
+aria-describedby={errors.confirm ? 'confirm-error' : undefined}
+{...register('confirm')}
                 />
-                {errors.confirm && <p className="text-sm text-destructive">{errors.confirm.message}</p>}
+                <FieldError id="confirm-error" message={errors.confirm?.message} />
               </div>
-              {errors.root && <p className="text-sm text-destructive">{errors.root.message}</p>}
+              <FieldError assertive id="setup-error" message={errors.root?.message} />
               <Button type="submit" size="lg" disabled={isSubmitting} className="w-full mt-1">
                 {isSubmitting ? 'Creating account…' : 'Create admin account'}
               </Button>

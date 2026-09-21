@@ -204,6 +204,7 @@ export function QASession() {
 
               <div className="flex items-center gap-2">
                 <SearchInput
+                  aria-label="Search devices"
                   placeholder="Search device…"
                   value={deviceSearch}
                   onChange={setDeviceSearch}
@@ -216,7 +217,7 @@ export function QASession() {
                       resetDevice();
                     }}
                   >
-                    <SelectTrigger className="h-8 w-36 shrink-0">
+                    <SelectTrigger className="h-8 w-36 shrink-0" aria-label="Filter by OS version">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
