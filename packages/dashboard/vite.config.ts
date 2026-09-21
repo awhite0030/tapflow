@@ -1,11 +1,24 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import { reactWithCompiler } from './reactPlugin'
 import { compression } from 'vite-plugin-compression2'
 import path from 'path'
 
 export default defineConfig({
   plugins: [
-    react(),
+    // **The React Compiler memoises for us, so the hand-written memoisation can stop growing.**
+    // This package had 76 `useCallback` and 7 `useMemo` against **zero** `memo()` components —
+    // most of that is stabilising effect dependencies, which the compiler does without being asked.
+    //
+    // Enabled only after the linter agreed. `eslint-plugin-react-hooks@7`'s recommended set is the
+    // compiler's own diagnostics (`refs`, `purity`, `immutability`, `globals`, `set-state-in-render`,
+    // `static-components`), it has been on in `eslint.config.mjs` all along, and it reports no
+    // errors — so the Rules of React the compiler assumes are already held here rather than hoped
+    // for. It caught a `useRef` written during render while #828 was being written, which is the
+    // evidence that it bites rather than decorates.
+    //
+    // A file the compiler cannot prove safe is skipped, not miscompiled; `--verbose` on a build
+    // prints which.
+    reactWithCompiler(),
     // Precompress text assets to .br at build time (brotli only) so the relay serves them with no runtime CPU.
     compression({ include: /\.(js|css|html|svg|json)$/, algorithms: ['brotliCompress', 'gzip'], deleteOriginalAssets: false }),
   ],

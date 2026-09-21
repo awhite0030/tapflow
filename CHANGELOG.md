@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The dashboard is built with the React Compiler.** It memoises what React would otherwise recompute on every render, in place of the hand-written `useCallback` and `useMemo` that were doing part of that by hand — 76 of the first and 7 of the second, against no memoised components at all. 144 functions are compiled and 17 are skipped, which is safe: a function the compiler cannot prove is left as it was. Twelve of those skips are syntax it does not lower yet; two are the device viewers, which carry rules the compiler depends on switched off, so the streaming page pays about 6 kB for a viewer that gets none of it — tracked separately. The first load grows about 3.9 kB compressed, since the memoisation is code. Nothing about how the dashboard behaves changes.
+
 ### Fixed
 
 - **Switching apps in the App Center no longer flashes "No builds yet".** The page cleared the list the moment you clicked, before asking the server anything, so for one frame an app nobody had fetched yet looked like an app with nothing in it — one click showed the list, that message, "Loading…", and then the new list. The list you were looking at now stays until the new one arrives, with the release you had open still open. Two faults with the same cause go with it: a slow answer for one app could paint its builds under a different app you had since selected, and a failed request was shown as "No builds yet", so an unreachable relay and an app with no builds looked identical — a relay that answered with an error at all, rather than not answering, was not even distinguishable to the page. A failure now says so in the same shape as the empty state, with a button to try again.

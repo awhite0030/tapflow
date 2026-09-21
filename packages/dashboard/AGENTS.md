@@ -43,6 +43,35 @@ The audience is the whole team (PO, PM, designers, backend, QA) — not just QA.
 - **An address for someone else comes from `lib/publicLink.ts`** — an invite link, a link to a comment, the relay address in the agent command. The browser's own `location.origin` is right for this page and wrong for a teammate: on the Vite server it is `localhost:3001`, which is how #788 was found. The relay reports what its settings mean and the helper only falls back. `useRelay` is the exception, because it connects this page to its own relay. `scripts/__tests__/teammateUrlsSingleSource.test.mjs` fails on a `location` read other than `pathname`/`search`/`hash`/`hostname`/`protocol` outside the files it allows.
 - **Build order**: dashboard first → relay second (`agent-core → dashboard → relay`).
 
+### The React Compiler is on, and the two device viewers are not compiled
+
+`babel-plugin-react-compiler` runs on this package, through `reactPlugin.ts` — **shared by
+`vite.config.ts` and `vitest.config.ts` on purpose.** The test run used to build its own `react()`
+without the compiler, which would have left the suite exercising source the product does not ship.
+`src/__tests__/reactCompilerOn.test.tsx` asserts the emitted memo-cache read, because a config that
+silently stops applying the compiler fails nothing else: everything it does is an optimisation.
+
+**Stop adding `useCallback` and `useMemo` for identity.** The compiler does that. What was here when
+it went on: 76 `useCallback`, 7 `useMemo`, and **zero** `memo()` components — so most of that was
+stabilising effect dependencies by hand. Existing ones are not worth a sweep; new ones need a reason
+that is not "so the child does not re-render".
+
+Measured when it was enabled: **144 functions compiled, 17 skipped.** A skip is safe — the compiler
+leaves the function alone rather than guessing — and twelve of those are syntax it cannot lower yet
+(`try`/`finally`, `throw` inside `try`, update expressions captured in lambdas, dynamic `import()`).
+
+**Two of the skips are ours, and they are the two that matter most.** `AndroidViewer` and
+`IOSViewer` are skipped because they carry `eslint-disable` lines for rules the compiler depends on
+(`react-hooks/immutability` twice in `AndroidViewer`, `exhaustive-deps` in both). So the streaming
+page pays for the compiler — its chunk grew ~6 kB — while the viewer inside it gets none of it.
+Removing those disables means fixing what they silence, on the stream path, which is why it is
+tracked separately rather than done alongside.
+
+`react-hooks/set-state-in-effect` is `'off'` in `eslint.config.mjs` and hides **15 violations across
+11 files**. It is not a compiler-safety rule — it flags an effect pattern, not an assumption the
+compiler makes — so it does not block any of the above. It is a real cleanup with nothing scheduling
+it; the number is recorded here so the next person does not have to re-measure it.
+
 ### Server data is read with TanStack Query, not fetched in an effect
 
 A page that owns server rows in `useState` and fills them from a `useEffect` has to hand-roll three
