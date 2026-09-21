@@ -8,13 +8,16 @@ import type { App, Build } from '@/lib/types'
 const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: toastError, warning: vi.fn() } }))
 
-const { getApps, getBuilds } = vi.hoisted(() => ({ getApps: vi.fn(), getBuilds: vi.fn() }))
+const { getApps, getBuilds, updateBuildStatus } = vi.hoisted(() => ({
+  getApps: vi.fn(), getBuilds: vi.fn(), updateBuildStatus: vi.fn(),
+}))
 vi.mock('@/lib/queries', async (importOriginal) => ({
   // `groupByRelease` is a pure derivation of the fetched rows, so the real one runs: a stub would
   // decide what this suite is asserting about.
   ...(await importOriginal<typeof import('@/lib/queries')>()),
   getApps,
   getBuilds,
+  updateBuildStatus,
 }))
 
 import { AppCenter } from '@/src/pages/AppCenter'
@@ -103,6 +106,7 @@ describe('App Center — switching apps', () => {
     // changed how many calls each makes.
     vi.resetAllMocks()
     getApps.mockResolvedValue(APPS)
+    updateBuildStatus.mockResolvedValue(undefined)
   })
   afterEach(() => vi.restoreAllMocks())
 
@@ -154,6 +158,112 @@ describe('App Center — switching apps', () => {
 
     second.resolve([build(2, '2.0.0')])
     await screen.findByText('2.0.0')
+  })
+
+  it('rolls a failed status change back into the app it was made in', async () => {
+    // **The optimistic writes were reached by no test at all**, which is how the bug this covers
+    // shipped: `onError` closed over `buildsKey` from the render that fired it, and react-query
+    // swaps a *pending* mutation's callbacks to the latest render's — so a failure arriving after
+    // the user switched app restored the first app's whole list into the second app's cache entry.
+    // Verified in the library rather than assumed: `useMutation.js:182` re-sets options every
+    // render, `mutationObserver.js:62` forwards that to a pending mutation, and `mutation.js:196`
+    // reads `onError` at settle time.
+    getBuilds.mockResolvedValueOnce([build(1, '1.0.0')])
+    renderAppCenter()
+    await screen.findByText('uploader-1')
+
+    const failed = deferred<void>()
+    updateBuildStatus.mockReturnValueOnce(failed.promise)
+    await userEvent.click(screen.getByRole('combobox', { name: /status for ios build 1, 1\.0\.0/i }))
+    await userEvent.click(screen.getByRole('option', { name: 'Done' }))
+
+    getBuilds.mockResolvedValueOnce([build(2, '2.0.0')])
+    await userEvent.click(appButton('Tea'))
+    await screen.findByText('uploader-2')
+
+    failed.reject(new Error('relay refused'))
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith('Failed to update status'))
+
+    // Tea's rows, not Coffee's restored over them.
+    expect(screen.getByText('uploader-2')).toBeInTheDocument()
+    expect(screen.queryByText('uploader-1')).toBeNull()
+  })
+
+  it('does not blink through Loading… while a search is refined', async () => {
+    // Reported from use. The branch above was written for an app switch and fired for filter
+    // changes too, so once a search matched nothing, every refinement of it flashed "Loading…"
+    // between two identical empty states.
+    getBuilds.mockResolvedValueOnce([build(1, '1.0.0')])
+    renderAppCenter()
+    await screen.findByText('uploader-1')
+
+    getBuilds.mockResolvedValue([])
+    await userEvent.type(screen.getByLabelText('Search versions'), 'zz')
+    await waitFor(() => expect(screen.getByText('No matching builds')).toBeInTheDocument())
+
+    const loading = watchForText('Loading…')
+    const settled = deferred<Build[]>()
+    getBuilds.mockReturnValueOnce(settled.promise)
+    await userEvent.type(screen.getByLabelText('Search versions'), 'z')
+    settled.resolve([])
+    await waitFor(() => expect(getBuilds).toHaveBeenCalledWith(expect.objectContaining({ search: 'zzz' })))
+    loading.stop()
+
+    expect(loading.seen).toBe(false)
+  })
+
+  it('offers a way to try again, and does not promise one it lacks', async () => {
+    getBuilds.mockRejectedValueOnce(new Error('relay down'))
+    renderAppCenter()
+    await screen.findByText("Couldn't load builds")
+
+    getBuilds.mockResolvedValueOnce([build(1, '1.0.0')])
+    await userEvent.click(screen.getByRole('button', { name: /try again/i }))
+
+    expect(await screen.findByText('uploader-1')).toBeInTheDocument()
+  })
+
+  it('keeps the failure on screen while its own retry runs', async () => {
+    // Pressing "Try again" puts the query back to pending, which took the failure branch away and
+    // unmounted the button that had just been pressed — focus to `body`, and a busy state that
+    // could never render.
+    getBuilds.mockRejectedValueOnce(new Error('relay down'))
+    renderAppCenter()
+    const button = await screen.findByRole('button', { name: /try again/i })
+    button.focus()
+
+    const retry = deferred<Build[]>()
+    getBuilds.mockReturnValueOnce(retry.promise)
+    await userEvent.click(button)
+
+    expect(screen.getByRole('button', { name: /trying…/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /trying…/i })).toHaveFocus()
+
+    retry.resolve([build(1, '1.0.0')])
+    await screen.findByText('uploader-1')
+  })
+
+  it('says the list is stale for as long as it is, not just while a toast lasts', async () => {
+    // The toast announces once and fades. `isRefetchError` stays true while the relay is down, and
+    // nothing on screen said so after it went.
+    getBuilds.mockResolvedValueOnce([build(1, '1.0.0')])
+    const { client } = renderAppCenter()
+    await screen.findByText('uploader-1')
+
+    getBuilds.mockRejectedValue(new Error('relay blinked'))
+    await client.invalidateQueries({ queryKey: ['builds'] })
+
+    await waitFor(() => expect(screen.getByText(/showing the last list/i)).toBeInTheDocument())
+    expect(screen.getByText('uploader-1')).toBeInTheDocument()
+  })
+
+  it('ignores an appId that is not one', async () => {
+    // `Number('abc')` is `NaN`, which passed the query's `!== null` guard and fired a request while
+    // the page rendered "No app selected".
+    renderAppCenter('/app-center?appId=abc')
+
+    await waitFor(() => expect(screen.getByText('No app selected')).toBeInTheDocument())
+    expect(getBuilds).not.toHaveBeenCalled()
   })
 
   it('asks once for a search, not once per letter', async () => {
@@ -221,7 +331,12 @@ describe('App Center — switching apps', () => {
     getBuilds.mockRejectedValueOnce(new Error('relay blinked'))
     await client.invalidateQueries({ queryKey: ['builds'] })
 
-    await waitFor(() => expect(status).toHaveTextContent('Couldn\'t refresh builds'))
+    // The toast carries it and the status region deliberately does not: sonner renders each toast
+    // as its own `role="status"`, so saying it in both read the same sentence out twice.
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(
+      expect.stringContaining("Couldn't refresh builds"), expect.anything(),
+    ))
+    expect(status).not.toHaveTextContent("Couldn't refresh")
     expect(screen.getByText('uploader-1')).toBeInTheDocument()
     expect(screen.queryByText("Couldn't load builds")).toBeNull()
   })
@@ -260,6 +375,9 @@ describe('App Center — switching apps', () => {
     await userEvent.click(appButton('Tea'))
 
     expect(emptyState()).toBeNull()
+    // Absence is not enough: without something in this slot the pane is simply blank for the whole
+    // round trip, and a test that only checks the empty state is gone cannot tell the two apart.
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
 
     second.resolve([build(2, '2.0.0')])
     await screen.findByText('2.0.0')

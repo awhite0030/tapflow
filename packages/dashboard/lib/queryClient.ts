@@ -19,6 +19,12 @@ export function makeQueryClient(): QueryClient {
       queries: {
         retry: 0,
         refetchOnWindowFocus: true,
+        // **`navigator.onLine` says nothing about whether the relay is reachable.** tapflow's
+        // relay is on this machine or this LAN, so a laptop with Wi-Fi off can still serve the
+        // whole product. The default (`'online'`) would pause the query instead of running it, and
+        // a paused query is neither loading nor failed nor holding a placeholder — so the App
+        // Center would render "No builds yet" for an app full of builds.
+        networkMode: 'always',
       },
     },
   })

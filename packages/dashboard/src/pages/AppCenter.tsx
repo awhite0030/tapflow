@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tansta
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Ban, Layers, Package } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { SearchInput } from '@/components/ui/search-input'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -32,7 +33,11 @@ export function AppCenter() {
   }, [search])
   const [openReleases, setOpenReleases] = useState<Set<string>>(new Set())
 
-  const selectedAppId = searchParams.get('appId') ? Number(searchParams.get('appId')) : null
+  // **Parsed once, and rejected when it is not an id.** `Number('abc')` is `NaN`, which is neither
+  // `null` nor falsy in the same way — the query's `enabled` guard let it through and fired a
+  // request for `appId=NaN` while the page rendered "No app selected".
+  const rawAppId = searchParams.get('appId')
+  const selectedAppId = rawAppId !== null && /^[1-9][0-9]*$/.test(rawAppId) ? Number(rawAppId) : null
 
   const appsQuery = useQuery({ queryKey: ['apps'], queryFn: getApps })
   const apps = appsQuery.data ?? []
@@ -67,11 +72,24 @@ export function AppCenter() {
   // effect below already runs at the moment the answer lands, which is the moment this changes.
   const [shownAppId, setShownAppId] = useState<number | null>(null)
 
-  // **Said on screen too, not only to assistive technology.** The status region below reports a
-  // failed refresh, and a sighted user keeps reading a list that may be stale with nothing to say
-  // so. Repeats reuse the id, so sonner refreshes one toast rather than stacking — which matters
-  // because `refetchOnWindowFocus` is on: a relay that is down would otherwise raise one every
-  // time the tab is focused. The list itself stays, because it is still the last good answer.
+  // **Held open across the retry it starts.** A refetch with no data behind it puts the query back
+  // to pending, which takes the failure branch away and unmounts the button that was just pressed
+  // — focus lands on `body`, and the busy state the button declares can never render. This keeps
+  // the failure on screen until the retry answers.
+  const [retrying, setRetrying] = useState(false)
+
+  // **Announced once by the toast, and stated for as long as it is true by the line below it.**
+  // The toast is the announcement: sonner renders each one as its own `role="status"`, so saying
+  // the same sentence in the page's status region as well read it out twice.
+  //
+  // **It fires once, not once per attempt** — while `isRefetchError` stays true these deps do not
+  // change, so a relay that stays down raises nothing further. An earlier comment here claimed the
+  // opposite and used it to justify the id; the id is still right (a recovery and a second failure
+  // would otherwise stack) but it is not what carries repetition. What carries the *state* is the
+  // inline note beside the filters, which stays while the list is stale instead of fading with the
+  // toast — and which is reachable by browsing after an open dialog has swallowed the
+  // announcement, the case this package's AGENTS.md describes under "A toast fired while a dialog
+  // is open is not heard".
   useEffect(() => {
     if (!buildsQuery.isRefetchError) return
     toast.error("Couldn't refresh builds — showing the last list", { id: 'builds:refresh' })
@@ -91,24 +109,37 @@ export function AppCenter() {
     setSearchParams({ appId: String(id) })
   }
 
+  type MutationContext = { previous?: Build[]; key: typeof buildsKey }
+
   /**
    * Rewrite the rows on screen now, and put them back if the server refuses.
    *
    * The three build actions all follow this shape, and two of them had no rollback at all before —
    * a failed status change left the new label on screen until the next fetch disagreed with it.
+   *
+   * **The key travels in the context, and reading it from the closure is a bug.** `useMutation`
+   * re-sets its options on every render (`useMutation.js:182`), and a *pending* mutation has its
+   * options replaced with them (`mutationObserver.js:62`); `onError` and `onSuccess` are read at
+   * settle time (`mutation.js:181,196`). So a rollback that closed over `buildsKey` would restore
+   * one app's whole list into whichever key was current when the answer came back — and switching
+   * app while a status change is in flight is an ordinary thing to do.
    */
   function optimisticRows<V>(apply: (builds: Build[], vars: V) => Build[], failureMessage: string) {
     return {
       onMutate: async (vars: V) => {
-        await queryClient.cancelQueries({ queryKey: buildsKey })
-        const previous = queryClient.getQueryData<Build[]>(buildsKey)
-        queryClient.setQueryData<Build[]>(buildsKey, (old) => (old ? apply(old, vars) : old))
-        return { previous }
+        const key = buildsKey
+        await queryClient.cancelQueries({ queryKey: key })
+        const previous = queryClient.getQueryData<Build[]>(key)
+        queryClient.setQueryData<Build[]>(key, (old) => (old ? apply(old, vars) : old))
+        return { previous, key }
       },
-      onError: (_error: unknown, _vars: V, context: { previous?: Build[] } | undefined) => {
-        if (context?.previous) queryClient.setQueryData(buildsKey, context.previous)
+      onError: (_error: unknown, _vars: V, context: MutationContext | undefined) => {
+        if (context?.previous) queryClient.setQueryData(context.key, context.previous)
         toast.error(failureMessage)
       },
+      // The same row lives under every other search and filter of this app, and those entries still
+      // hold the pre-mutation value. Nothing renders them now; something will.
+      onSettled: () => { void queryClient.invalidateQueries({ queryKey: ['builds'] }) },
     }
   }
 
@@ -141,8 +172,9 @@ export function AppCenter() {
         b.id === buildId ? { ...b, delete_after: new Date().toISOString() } : b),
       'Failed to schedule deletion',
     ),
-    onSuccess: (deleteAfter: string, buildId: number) => {
-      queryClient.setQueryData<Build[]>(buildsKey, (old) =>
+    onSuccess: (deleteAfter: string, buildId: number, context?: MutationContext) => {
+      if (!context) return
+      queryClient.setQueryData<Build[]>(context.key, (old) =>
         old?.map(b => b.id === buildId ? { ...b, delete_after: deleteAfter } : b))
     },
   })
@@ -184,7 +216,6 @@ export function AppCenter() {
   const buildsStatus =
     selectedAppId === null ? ''
       : buildsQuery.isLoadingError ? `Couldn't load builds for ${appName}`
-        : buildsQuery.isRefetchError ? `Couldn't refresh builds for ${appName} — showing the last list`
           : buildsQuery.isLoading || switching ? `Loading builds for ${appName}`
             : releaseGroups.length > 0
               ? `Showing ${builds.length} build${builds.length === 1 ? '' : 's'} for ${appName}`
@@ -218,7 +249,7 @@ export function AppCenter() {
 
         <p role="status" className="sr-only">{buildsStatus}</p>
 
-        {!selectedAppId ? (
+        {selectedAppId === null ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center">
             <Layers className="w-8 h-8 text-muted-foreground/40" />
             <p className="text-sm font-medium">No app selected</p>
@@ -243,11 +274,14 @@ export function AppCenter() {
               <SelectItem value="Rejected">Rejected</SelectItem>
             </SelectContent>
           </Select>
+          {/* Not a live region: the toast already announced it. This is the part that has to
+              outlast the toast, because the list stays stale after it fades. */}
+          {buildsQuery.isRefetchError && (
+            <p className="text-sm text-muted-foreground self-center">Showing the last list — refresh failed.</p>
+          )}
         </div>
 
-        {buildsQuery.isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : buildsQuery.isLoadingError ? (
+        {buildsQuery.isLoadingError || retrying ? (
           /* `isLoadingError`, not `isError`: with `refetchOnWindowFocus` on and no retries, a
              single missed answer while the tab was in the background would otherwise throw away a
              list that is still perfectly good — and take the focus inside it with the rows. A
@@ -258,9 +292,29 @@ export function AppCenter() {
           <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center">
             <Ban className="w-8 h-8 text-muted-foreground/40" />
             <p className="text-sm font-medium">Couldn't load builds</p>
-            <p className="text-sm text-muted-foreground">Check that the relay is reachable, then try again.</p>
+            <p className="text-sm text-muted-foreground">Check that the relay is reachable.</p>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={retrying}
+              onClick={() => {
+                setRetrying(true)
+                void buildsQuery.refetch().finally(() => setRetrying(false))
+              }}
+            >
+              {retrying ? 'Trying…' : 'Try again'}
+            </Button>
           </div>
-        ) : releaseGroups.length === 0 && !buildsQuery.isPlaceholderData ? (
+        ) : buildsQuery.isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : releaseGroups.length === 0 && switching ? (
+          /* **Only a change of app is unknown enough to say so.** Held emptiness from the app you
+             are leaving is not an answer about the one you picked. But held emptiness from the
+             *same* app under a different search is the last answer, and swapping it for "Loading…"
+             on every refinement is the flicker this whole change is about — pointed at the filter
+             bar instead of the sidebar. */
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : releaseGroups.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center">
             <Package className="w-8 h-8 text-muted-foreground/40" />
             <p className="text-sm font-medium">{filtered ? 'No matching builds' : 'No builds yet'}</p>
@@ -268,8 +322,6 @@ export function AppCenter() {
               {filtered ? 'No build matches the search and status filters.' : 'Upload the first build to get started.'}
             </p>
           </div>
-        ) : releaseGroups.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
         ) : (
           /* `aria-busy` while the rows belong to the app you were looking at rather than the one
              the heading now names — the visible half of the same lag. */
