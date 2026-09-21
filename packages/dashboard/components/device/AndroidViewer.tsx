@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { AndroidButton, PosturesPayload } from '@/lib/types'
 import type { BinaryFrameHandler } from '@/lib/envelope'
-import { androidToNorm as toNormPure, toPinchFingers as makePinchFingers, placeTurnedFrame, turnedSize, surfaceBox, composeTurn, overlaySpace, showsPicture, framesAgree, remaining, type Turn } from '@/lib/coordinate-transform';
+import { androidToNorm as toNormPure, toPinchFingers as makePinchFingers, placeTurnedFrame, turnedSize, surfaceBox, composeTurn, overlaySpace, showsPicture, framesAgree, remaining } from '@/lib/coordinate-transform';
 import type { MutableRefObject } from 'react';
 import type { PerfHook } from '@/components/perf/types';
 import { useClipboardBridge, isBridgedChord, type ClipboardMessageHandler } from '@/hooks/useClipboardBridge';
@@ -84,7 +84,7 @@ export function AndroidViewer({
   const decoderRef = useRef<Decoder | null>(null);
   const { fps, frameCount } = useFps();
 
-  const { recordState, recordCanvasRef, startClientRecording, stopClientRecording } = useClientRecording({ sessionId, buildId, onRecordingUploaded });
+  const { recordState, recordCanvasRef, setComposeFrame, startClientRecording, stopClientRecording } = useClientRecording({ sessionId, buildId, onRecordingUploaded });
 
   const [deepLinkOpen, setDeepLinkOpen] = useState(false);
   const [canvasReady, setCanvasReady] = useState(false);
@@ -152,6 +152,16 @@ export function AndroidViewer({
   })
 
   // ── Recording (composeFrame only — state/refs/lifecycle in useClientRecording) ──
+  // **Derived here rather than beside the layout that uses it**, because the capture callbacks
+  // below depend on the turn and a dependency array is evaluated during render. It reads only
+  // props and state declared above, so the position is free; the comments explaining *what* each
+  // step means stayed with the layout code that reads them.
+  const shownSize = screenWidth && screenHeight ? { width: screenWidth, height: screenHeight } : null;
+  const effectiveSize = shownSize ?? videoSize;
+  const isLandscapeContent = effectiveSize ? effectiveSize.width > effectiveSize.height : false;
+  const needsCSSRotation = userWantsLandscape && !isLandscapeContent;
+  const totalTurn = composeTurn(streamRotation, needsCSSRotation);
+
   const composeFrame = useCallback(() => {
     const rc = recordCanvasRef.current; const fc = decoderRef.current?.surface
     const size = videoSizeRef.current
@@ -163,7 +173,7 @@ export function AndroidViewer({
     // dimensions then). The turn is read per frame rather than inferred from rc's aspect: an
     // aspect comparison cannot tell 90 from 270 and cannot see 180 at all.
     const fw = size.width; const fh = size.height
-    const turn = totalTurnRef.current
+    const turn = totalTurn
     const { picW, picH, scale, left, top } = placeTurnedFrame(rc.width, rc.height, fw, fh, turn)
 
     ctx.clearRect(0, 0, rc.width, rc.height)
@@ -181,7 +191,7 @@ export function AndroidViewer({
     // been wrong here: against the frame it missed by the stream's correction on a foldable, and
     // against the picture it missed by the user's quarter on every backend, scrcpy included.
     // So: turn the canvas by that quarter alone, and draw in the shown screen's dimensions.
-    const shown = overlaySpace(fw, fh, turn, streamRotationRef.current)
+    const shown = overlaySpace(fw, fh, turn, streamRotation)
     ctx.save()
     ctx.translate(left + (picW * scale) / 2, top + (picH * scale) / 2)
     ctx.scale(scale, scale)
@@ -229,7 +239,17 @@ export function AndroidViewer({
       }
     }
     ctx.restore()
-  }, [recordCanvasRef])
+  }, [recordCanvasRef, totalTurn, streamRotation])
+
+  // The recorder calls whichever composer was registered last, so a rotation reaches the frames
+  // that follow it rather than being frozen at the moment recording started.
+  //
+  // **A layout effect, because the frame loop runs before paint.** `requestAnimationFrame` fires
+  // between the layout effects and the paint, so a passive effect would register the new composer
+  // one tick late and the first frame after a rotation would be drawn with the old turn. The refs
+  // this replaced were mirrored in a layout effect for the same reason; keeping the timing is what
+  // makes the swap invisible in the recording.
+  useLayoutEffect(() => { setComposeFrame(composeFrame) }, [composeFrame, setComposeFrame])
 
   const handleScreenshot = useCallback(() => {
     const src = decoderRef.current?.surface; const size = videoSizeRef.current
@@ -237,7 +257,7 @@ export function AndroidViewer({
     const c = document.createElement('canvas'); const ctx = c.getContext('2d'); if (!ctx) return
     // The picture, not the frame — same reason as `placeFrame`. Sized to the turned frame, so the
     // fit is exact and the scale is 1.
-    const turn = totalTurnRef.current
+    const turn = totalTurn
     const shot = turnedSize(size.width, size.height, turn)
     c.width = shot.width; c.height = shot.height
     ctx.translate(c.width / 2, c.height / 2)
@@ -249,7 +269,7 @@ export function AndroidViewer({
       const a = document.createElement('a'); a.href = url; a.download = `tapflow-${Date.now()}.png`; a.click()
       URL.revokeObjectURL(url)
     }, 'image/png')
-  }, [])
+  }, [totalTurn])
 
   const handleRecordToggle = useCallback(() => {
     if (recordState === 'idle') {
@@ -257,13 +277,13 @@ export function AndroidViewer({
       // Size the record canvas to the picture (frame-native, swapped by a quarter turn) so the
       // recording keeps aspect AND matches what's on screen (#179).
       const size = videoSizeRef.current; if (!size) return
-      const shot = turnedSize(size.width, size.height, totalTurnRef.current)
+      const shot = turnedSize(size.width, size.height, totalTurn)
       rc.width = shot.width; rc.height = shot.height
-      startClientRecording(composeFrame)
+      startClientRecording()
     } else if (recordState === 'recording') {
       stopClientRecording()
     }
-  }, [recordState, startClientRecording, stopClientRecording, composeFrame, recordCanvasRef])
+  }, [recordState, startClientRecording, stopClientRecording, totalTurn, recordCanvasRef])
 
   // A fold takes a moment — the emulator changes panel and the stream renegotiates — and without a
   // sign of it the button reads as not having registered the press.
@@ -342,12 +362,16 @@ export function AndroidViewer({
   }, [send, sessionId])
 
   // Reset device orientation to portrait on unmount if we left it in landscape (iOS pattern).
-  const userWantsLandscapeRef = useRef(userWantsLandscape)
-  useEffect(() => { userWantsLandscapeRef.current = userWantsLandscape }, [userWantsLandscape])
+  //
+  // **The whole cleanup goes in the ref, `send` and `sessionId` with it.** It must fire on unmount
+  // and on nothing else, so the dependency list is empty — and an empty list closing over props is
+  // exactly what `react-hooks/exhaustive-deps` was suppressed for here. A suppression is not local
+  // any more: the React Compiler skips the entire file that carries one, whichever rule it names.
+  const undoRotateRef = useRef<(() => void) | null>(null)
   useEffect(() => {
-    return () => { if (userWantsLandscapeRef.current) send({ type: 'input:rotate', sessionId }) }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    undoRotateRef.current = userWantsLandscape ? () => send({ type: 'input:rotate', sessionId }) : null
+  }, [userWantsLandscape, send, sessionId])
+  useEffect(() => () => { undoRotateRef.current?.() }, [])
 
   const sendChord = useCallback((code: 'KeyC' | 'KeyV' | 'KeyX', modifiers: number) => {
     send({ type: 'input:key', sessionId, requestId: newRequestId(), payload: { code, modifiers } })
@@ -416,13 +440,6 @@ export function AndroidViewer({
 
   // ── Pointer interaction ───────────────────────────────────────────────────
   const needsCSSRotationRef = useRef(false)
-  /** The whole turn between the frame and what the viewer shows — `streamRotation` plus the CSS
-   *  quarter. Capture and recording read it so they produce the picture on screen rather than the
-   *  frame behind it; see `composeFrame`. */
-  const totalTurnRef = useRef<Turn>(0)
-  /** The stream's own correction, without the user's quarter. Capture needs both: the total says
-   *  how far to turn the video, and this one says which space the pointer overlay lives in. */
-  const streamRotationRef = useRef<Turn>(0)
 
   const toNorm = useCallback((e: { clientX: number; clientY: number }) => {
     const host = surfaceHostRef.current
@@ -558,8 +575,6 @@ export function AndroidViewer({
   // current size; the emulator's gRPC capture arrives in the device's *physical* orientation, and on
   // a folded foldable those differ — measured: Android draws 1080x2424 while the frame is 2424x1080.
   // Framing the stream's dimensions is what laid the folded screen on its side.
-  const shownSize = screenWidth && screenHeight ? { width: screenWidth, height: screenHeight } : null;
-  const effectiveSize = shownSize ?? videoSize;
   const androidScale = effectiveSize
     ? Math.min(1, MAX_ANDROID_LONG / Math.max(effectiveSize.width, effectiveSize.height))
     : 0.3;
@@ -577,8 +592,6 @@ export function AndroidViewer({
   // captures the display as it actually is — measured on a Pixel 9 Pro Fold: 2152x2076 while
   // `wm size` reported the natural 2076x2152 — so there the frame is already landscape and
   // `isLandscapeContent` turns this off by itself.
-  const isLandscapeContent = effectiveSize ? effectiveSize.width > effectiveSize.height : false;
-  const needsCSSRotation = userWantsLandscape && !isLandscapeContent;
   // **The device frame is never rotated — the video inside it is.** A foldable's frame follows the
   // screen Android draws, and turning the whole shell was what put the bezel on its side. The
   // quarter turn comes from the agent rather than from comparing the two sizes here: they update on
@@ -594,21 +607,14 @@ export function AndroidViewer({
   //
   // What differs between them is the *shell*: only the user's request changes the frame's shape,
   // because the device's screen has not actually rotated.
-  const totalTurn = composeTurn(streamRotation, needsCSSRotation);
-  // Both are mirrored into refs so the pointer and capture callbacks read the current value
-  // without being rebuilt on every turn — the standard pattern, and each is only ever *read* from
-  // a callback, never passed to a hook, listed in a deps array or exposed via forwardRef.
-  //
-  // `react-hooks/immutability` counts a closure capture as an argument, so which of these three
-  // it objects to depends on which ref the capture callbacks happen to read — it has moved three
-  // times while this file was being written. An unused directive is itself a warning, so they are
-  // placed by what lint reports rather than on all three defensively; expect to move one if a
-  // callback starts or stops reading a ref.
+  // **One ref, and only because a pointer event is not a render.** `toNorm` runs from a pointer
+  // handler and wants whatever is true at the moment of the event, not at the render that built
+  // it. The turn used to be mirrored the same way for capture, which was the wrong reason for the
+  // same shape: the mirror was written *after* the closure was handed to `useClientRecording`, so
+  // the value a frame drew with came from a ref the hook already held — a Rules of React violation
+  // the React Compiler will not compile past. Capture takes the turn as a dependency now and
+  // re-registers; see `setComposeFrame` beside `composeFrame`.
   useLayoutEffect(() => { needsCSSRotationRef.current = needsCSSRotation }, [needsCSSRotation])
-  // eslint-disable-next-line react-hooks/immutability
-  useLayoutEffect(() => { totalTurnRef.current = totalTurn }, [totalTurn])
-  // eslint-disable-next-line react-hooks/immutability
-  useLayoutEffect(() => { streamRotationRef.current = streamRotation }, [streamRotation])
   // Container uses landscape dims; canvas inside rotated 90° to show portrait content in landscape shell
   const containerW = needsCSSRotation ? androidDisplayH : androidDisplayW;
   const containerH = needsCSSRotation ? androidDisplayW : androidDisplayH;

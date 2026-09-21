@@ -3,7 +3,7 @@
 import type { BrowserToRelay } from '@tapflowio/protocol'
 import { newRequestId } from '@/lib/requestId';
 import { buttonHitRect, pickButton } from '@/lib/buttonHit';
-import { useCallback, useEffect, useId, useRef, useState, Fragment } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, Fragment } from 'react';
 import { useClientRecording } from '@/hooks/useClientRecording';
 import { Home, Keyboard, Loader2, Play } from 'lucide-react';
 import { useFps } from '@/hooks/useFps';
@@ -94,7 +94,7 @@ export function IOSViewer({
   const { fps, frameCount } = useFps();
 
   const lastFrameRecvAtRef = useRef<number>(0);
-  const { recordState, recordCanvasRef, startClientRecording, stopClientRecording } = useClientRecording({ sessionId, buildId, onRecordingUploaded });
+  const { recordState, recordCanvasRef, setComposeFrame, startClientRecording, stopClientRecording } = useClientRecording({ sessionId, buildId, onRecordingUploaded });
   const deviceSeq = useRef(0);
 
   const [deepLinkOpen, setDeepLinkOpen] = useState(false);
@@ -287,6 +287,16 @@ export function IOSViewer({
     }
   }, [recordCanvasRef])
 
+  // The recorder calls whichever composer was registered last, so a rotation reaches the frames
+  // that follow it rather than being frozen at the moment recording started.
+  //
+  // **A layout effect, because the frame loop runs before paint.** `requestAnimationFrame` fires
+  // between the layout effects and the paint, so a passive effect would register the new composer
+  // one tick late and the first frame after a rotation would be drawn with the old turn. The refs
+  // this replaced were mirrored in a layout effect for the same reason; keeping the timing is what
+  // makes the swap invisible in the recording.
+  useLayoutEffect(() => { setComposeFrame(composeFrame) }, [composeFrame, setComposeFrame])
+
   const handleScreenshot = useCallback(() => {
     const src = canvasRef.current; if (!src) return
     const c = document.createElement('canvas'); const ctx = c.getContext('2d'); if (!ctx) return
@@ -305,22 +315,26 @@ export function IOSViewer({
       const container = containerRef.current
       if (container && container.clientWidth > 0) { rc.width = container.clientWidth; rc.height = container.clientHeight }
       else { const fc = canvasRef.current; if (fc && fc.width > 0) { rc.width = fc.width; rc.height = fc.height } else return }
-      startClientRecording(composeFrame)
+      startClientRecording()
     } else if (recordState === 'recording') {
       stopClientRecording()
     }
-  }, [recordState, startClientRecording, stopClientRecording, composeFrame, recordCanvasRef])
+  }, [recordState, startClientRecording, stopClientRecording, recordCanvasRef])
 
   const handleRotate = useCallback(() => {
     send({ type: 'input:rotate', sessionId }); setIsLandscape(prev => !prev)
   }, [send, sessionId])
 
-  const isLandscapeRef = useRef(isLandscape)
-  useEffect(() => { isLandscapeRef.current = isLandscape }, [isLandscape])
+  //
+  // **The whole cleanup goes in the ref, `send` and `sessionId` with it.** It must fire on unmount
+  // and on nothing else, so the dependency list is empty — and an empty list closing over props is
+  // exactly what `react-hooks/exhaustive-deps` was suppressed for here. A suppression is not local
+  // any more: the React Compiler skips the entire file that carries one, whichever rule it names.
+  const undoRotateRef = useRef<(() => void) | null>(null)
   useEffect(() => {
-    return () => { if (isLandscapeRef.current) send({ type: 'input:rotate', sessionId }) }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    undoRotateRef.current = isLandscape ? () => send({ type: 'input:rotate', sessionId }) : null
+  }, [isLandscape, send, sessionId])
+  useEffect(() => () => { undoRotateRef.current?.() }, [])
 
   const sendChord = useCallback((code: 'KeyC' | 'KeyV' | 'KeyX', modifiers: number) => {
     send({ type: 'input:key', sessionId, requestId: newRequestId(), payload: { code, modifiers } })

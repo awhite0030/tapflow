@@ -41,7 +41,20 @@ export function useClientRecording({ sessionId, buildId, onRecordingUploaded }: 
 
   // Caller must set recordCanvasRef.current.width/height before calling this.
   // (iOS uses container px, Android multiplies by devicePixelRatio — kept as caller responsibility.)
-  const startClientRecording = useCallback((composeFrame: () => void) => {
+  /**
+   * Tell the recorder which function draws a frame. The newest one wins, and the frame loop reads
+   * it afresh every tick.
+   *
+   * **A setter rather than an argument to `startClientRecording`.** Taken at start, the recorder
+   * held whichever closure existed then, so a rotation mid-recording never reached the frames —
+   * and the viewers worked around that by mirroring the turn into refs they wrote *after* handing
+   * the closure to this hook, which is a Rules of React violation the React Compiler will not
+   * compile past. It is not an option on this hook either: `composeFrame` needs `recordCanvasRef`,
+   * which this hook returns, so the viewer cannot have built it yet when it calls us.
+   */
+  const setComposeFrame = useCallback((compose: () => void) => { composeFrameRef.current = compose }, [])
+
+  const startClientRecording = useCallback(() => {
     const rc = recordCanvasRef.current
     if (!rc) return
     const ctx0 = rc.getContext('2d')
@@ -58,7 +71,6 @@ export function useClientRecording({ sessionId, buildId, onRecordingUploaded }: 
     mediaRecorderRef.current = mr
     mr.start(1000)
 
-    composeFrameRef.current = composeFrame
     recordingRef.current = true
     rafIdRef.current = requestAnimationFrame(rafLoop)
     setRecordState('recording')
@@ -120,5 +132,5 @@ export function useClientRecording({ sessionId, buildId, onRecordingUploaded }: 
     }
   }, [recordState, stopClientRecording])
 
-  return { recordState, recordCanvasRef, startClientRecording, stopClientRecording }
+  return { recordState, recordCanvasRef, setComposeFrame, startClientRecording, stopClientRecording }
 }
