@@ -63,15 +63,19 @@ Measured: deleting `reactWithCompiler()` from `vite.config.ts` alone leaves the 
 ships an uncompiled bundle. The second one fails on it.
 
 `reactPlugin.ts` sits at the package root, which used to be outside both gates — `lint` globbed
-`*.config.ts` and the tsconfig included only `src`/`components`/`hooks`/`lib`. Both now take every
-root **`.ts`** file, so a new one beside the configs is covered without anyone remembering to add
-it. A root `.mjs` — `postcss.config.mjs` is one — or a root `.tsx` is still outside both.
+`*.config.ts` and the tsconfig included only `src`/`components`/`hooks`/`lib`. The `lint` glob is
+`*.ts` now, so every root TypeScript file is linted; a root `.mjs` (`postcss.config.mjs` is one) or
+a root `.tsx` is still outside it.
 
-One consequence, taken knowingly: `build` is `tsc --noEmit && vite build`, so the production build
-now typechecks `vitest.config.ts` and, through it, the root `vitest.shared.ts`. A vitest upgrade
-whose config types shift would fail the dashboard build, and therefore the relay build and the
-Docker image, over a test-only type error. Narrowing the include back to the two build-relevant
-files would avoid that and would also give up the property above, which is the one worth having.
+**The tsconfig lists the root configs one by one, and `vitest.config.ts` is deliberately not among
+them.** `build` is `tsc --noEmit && vite build`, so whatever the tsconfig includes becomes a
+dependency of the *production image build* — and the Docker builder copies `packages/` and the
+workspace manifests, not the repo root. Globbing `*.ts` there was tried and the image build died on
+`TS2307: Cannot find module '../../vitest.shared'`, with every local check green; it is the Docker
+job in CI that says so. Copying that file into the image context would have moved the fragility
+rather than removed it, since the next test-only root file breaks it again. So the tsconfig covers
+what the build itself loads, and `vitest.config.ts` keeps exactly the coverage it always had —
+linted, not type-checked.
 
 **Stop adding `useCallback` and `useMemo` for identity.** The compiler does that. What is here, in
 product code (`src`/`components`/`hooks`/`lib` minus `__tests__`): 62 `useCallback`, 3 `useMemo`, and
