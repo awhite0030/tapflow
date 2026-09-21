@@ -131,7 +131,16 @@ export function BuildRow({
         </div>
 
         <Select value={build.status_label ?? 'none'} onValueChange={handleValueChange}>
-          <SelectTrigger className="h-9 w-32 text-xs">
+          {/* Named from what the row shows, so a screen reader hears what the control sets and
+              voice control can address one row. **The build number alone does not identify a
+              row**: a release groups by `version_name` only, so an iOS and an Android build with
+              the same number sit in one accordion, and iOS restarts numbering per version. The DB
+              id was the first fallback and was worse — the row renders "build —", so it named
+              something nobody can see or say. */}
+          <SelectTrigger
+            className="h-9 w-32 text-xs"
+            aria-label={`Status for ${build.platform} build ${build.build_number ?? 'without a number'}, ${build.version_name ?? 'Unversioned'}`}
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
