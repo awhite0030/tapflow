@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   BrowserToRelay, DeviceSummary, InputErrorReason, SessionTerminatedReason, UIElement,
 } from '@tapflowio/protocol'
+import { EnvironmentStepError, TransientQueryError } from '@tapflowio/flow-runner'
 
 // Protocol owns the wire shape; this file used to declare an identical copy under a name the
 // relay uses for a *different* shape. Kept exported as `DeviceInfo` because that is this
@@ -38,6 +39,27 @@ export interface AppInfo {
 export type { UIElement } from '@tapflowio/protocol'
 
 type RelayMsg = Record<string, unknown>
+const UI_ROLES = new Set(['button', 'text', 'input', 'image', 'checkbox', 'switch', 'slider', 'list', 'cell', 'tab', 'other'])
+const PERMANENT_QUERY_STATUSES = new Set([400, 401, 403, 404, 409])
+const MAX_TIMER_MS = 2_147_483_647
+
+function isUIElement(value: unknown): value is UIElement {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  const frame = record.frame
+  if (typeof frame !== 'object' || frame === null || Array.isArray(frame)) return false
+  const rect = frame as Record<string, unknown>
+  if (typeof record.role !== 'string' || !UI_ROLES.has(record.role) || typeof record.label !== 'string' || typeof record.enabled !== 'boolean') return false
+  if (record.identifier !== undefined && typeof record.identifier !== 'string') return false
+  if (record.rawRole !== undefined && typeof record.rawRole !== 'string') return false
+  const x = rect.x
+  const y = rect.y
+  const width = rect.width
+  const height = rect.height
+  if (![x, y, width, height].every((n) => typeof n === 'number' && Number.isFinite(n))) return false
+  return (x as number) >= 0 && (y as number) >= 0 && (width as number) >= 0 && (height as number) >= 0
+    && (x as number) + (width as number) <= 1 && (y as number) + (height as number) <= 1
+}
 
 /**
  * Matches a reply whose correlator is **optional** — the lifecycle pair only. An absent `requestId` means
@@ -379,8 +401,19 @@ export class TapflowClient {
   }
 
   disconnect(): void {
-    this.ws?.close()
+    const ws = this.ws
     this.ws = null
+    if (!ws) return
+    try {
+      ws.close()
+    } catch {
+      // ignore close errors on half-open socket
+    }
+    try {
+      if ((ws as unknown as { readyState: number }).readyState !== WebSocket.CLOSED) ws.terminate()
+    } catch {
+      // ignore terminate errors
+    }
   }
 
   /** The relay's word on a session, keyed by id. One entry per session this process joins, which is one per
@@ -849,6 +882,9 @@ export class TapflowClient {
     endY: number,
     durationMs = 300,
   ): Promise<void> {
+    if (!Number.isFinite(durationMs) || !Number.isInteger(durationMs) || durationMs <= 0 || durationMs > MAX_TIMER_MS) {
+      throw new RangeError(`swipe duration must be a positive finite integer no greater than ${MAX_TIMER_MS}ms`)
+    }
     const STEPS = 8
     const interval = durationMs / STEPS
 
@@ -979,12 +1015,13 @@ export class TapflowClient {
     }
   }
 
-  async screenshot(sessionId: string, format: 'png' | 'jpeg' = 'png'): Promise<Buffer> {
+  async screenshot(sessionId: string, format: 'png' | 'jpeg' = 'png', signal?: AbortSignal): Promise<Buffer> {
     const httpBase = this.relayUrl.replace(/^wss?/, (p) => (p === 'wss' ? 'https' : 'http'))
     const url = new URL(`/api/v1/sessions/${sessionId}/screenshot`, httpBase)
     if (format === 'jpeg') url.searchParams.set('format', 'jpeg')
     const res = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${this.token}` },
+      signal,
     })
     if (!res.ok) {
       // Read text first — res.json() consumes the body, so a later res.text()
@@ -1000,12 +1037,23 @@ export class TapflowClient {
     return Buffer.from(await res.arrayBuffer())
   }
 
-  async queryUITree(sessionId: string): Promise<UIElement[]> {
+  async queryUITree(sessionId: string, signal?: AbortSignal): Promise<UIElement[]> {
     const httpBase = this.relayUrl.replace(/^wss?/, (p) => (p === 'wss' ? 'https' : 'http'))
     const url = new URL(`/api/v1/sessions/${sessionId}/ui-tree`, httpBase)
-    const res = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${this.token}` },
-    })
+    let res: Response
+    try {
+      res = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${this.token}` },
+        signal,
+      })
+    } catch (e) {
+      const session = this.lifecycle.get(sessionId)
+      if (session?.terminated || session?.needsReboot) {
+        const cause = this.failed(sessionId, `UI tree query failed: ${(e as Error).message}`)
+        throw new EnvironmentStepError(`UI tree query failed: ${cause.message}`, { cause })
+      }
+      throw new TransientQueryError(`UI tree query failed: ${(e as Error).message}`, { cause: e })
+    }
     if (!res.ok) {
       // Read text first — res.json() consumes the body, so a later res.text()
       // fallback can never run after a failed JSON parse.
@@ -1015,12 +1063,25 @@ export class TapflowClient {
         const body = JSON.parse(text) as { error?: string }
         if (body.error) message = body.error
       } catch { /* keep the raw text */ }
-      // The note only. Whether a ui-tree failure is retryable is #572 — this path has no poll loop of its
-      // own, and classifying it means deciding where `TransientQueryError` lives.
-      throw this.failed(sessionId, message)
+      const cause = this.failed(sessionId, message)
+      const session = this.lifecycle.get(sessionId)
+      if (session?.terminated || session?.needsReboot || PERMANENT_QUERY_STATUSES.has(res.status)) {
+        throw new EnvironmentStepError(`UI tree query failed: ${cause.message}`, { cause })
+      }
+      throw new TransientQueryError(cause.message, { cause })
     }
-    const body = (await res.json()) as { elements?: UIElement[] }
-    return body.elements ?? []
+    let body: unknown
+    try {
+      body = await res.json()
+    } catch (e) {
+      const cause = this.failed(sessionId, `UI tree query returned invalid JSON: ${(e as Error).message}`)
+      throw new EnvironmentStepError(`UI tree query failed: ${cause.message}`, { cause })
+    }
+    if (typeof body !== 'object' || body === null || Array.isArray(body) || !('elements' in body) || !Array.isArray(body.elements) || !body.elements.every(isUIElement)) {
+      const cause = this.failed(sessionId, 'UI tree query returned an invalid response shape')
+      throw new EnvironmentStepError(`UI tree query failed: ${cause.message}`, { cause })
+    }
+    return body.elements
   }
 
   async listBuilds(): Promise<AppInfo[]> {

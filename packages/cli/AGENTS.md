@@ -17,7 +17,7 @@ Commands are registered in `src/index.ts`; user-facing reference: [`docs/referen
 
 - `init` never touches the relay; it scaffolds config and auto-adds the `.tapflow/` runtime dirs to `.gitignore`. `admin init` is the CLI fallback for headless servers (web `/setup` is the default path).
 - `agent start --token` (or `TAPFLOW_AGENT_TOKEN`) carries an `agent`-scope PAT, required when the relay is on a different machine; flag wins over env.
-- `flow run` exit codes: `0` passed · `1` flow failed · `2` env/config error. Always sends `device:boot` (idempotent — it initializes the agent's touch/stream state). `--token` needs a `view`-scope PAT; REST (`/ui-tree`, `/screenshot`) requires auth even on localhost.
+- `flow run` exit codes: `0` passed · `1` any product or mixed flow failure · `2` env/config error, including relay/agent/session failures when every failed flow is environmental. Always sends `device:boot` (idempotent — it initializes the agent's touch/stream state). `--token` needs a `view`-scope PAT; REST (`/ui-tree`, `/screenshot`) requires auth even on localhost.
 - `migrate data-dir` moves a legacy `.tapflow-data/` into the unified `.tapflow/data/` (atomic rename), repoints `local.dataDir` in `tapflow.config.json` when it pinned the old default, and updates `.gitignore`. Idempotent; the relay itself never moves data (read-only fallback only).
 
 ### Command Design Principles

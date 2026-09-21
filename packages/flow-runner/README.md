@@ -12,7 +12,7 @@ Most users run flows through the tapflow CLI:
 tapflow flow run .tapflow/flows/*.yaml --build 42 --junit report.xml
 ```
 
-Exit codes: `0` all flows passed · `1` a flow failed · `2` environment/config error.
+Exit codes: `0` all flows passed · `1` a product failure or a mixed run · `2` every failure was environmental/configuration-related.
 
 ## Flow YAML
 

@@ -10,8 +10,8 @@
 // rather than trusting the config to mean what it says.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'child_process'
-import { readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync } from 'fs'
-import { join, dirname } from 'path'
+import { readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync, rmSync } from 'fs'
+import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -20,19 +20,60 @@ const PKGS = join(ROOT, 'packages')
 const packageDirs = () =>
   readdirSync(PKGS).filter((d) => existsSync(join(PKGS, d, 'package.json')))
 
-/** Does this package's own test files import a sibling workspace package? */
+function sourceFiles(dir) {
+  if (!existsSync(dir)) return []
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name)
+    return entry.isDirectory() ? sourceFiles(path) : /\.(?:ts|tsx)$/.test(entry.name) ? [path] : []
+  })
+}
+
+function resolveLocalImport(from, specifier) {
+  if (!specifier.startsWith('.')) return undefined
+  const base = resolve(dirname(from), specifier.replace(/\.js$/, ''))
+  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts')]) {
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
+}
+
+/** Does a test import a sibling directly or through one of its local source modules? */
 function testsImportASibling(dir) {
   const tests = join(PKGS, dir, 'src', '__tests__')
   if (!existsSync(tests)) return false
-  try {
-    execFileSync('grep', ['-rlq', '@tapflowio/', tests], { stdio: 'ignore' })
-    return true
-  } catch { return false }
+  const queue = sourceFiles(tests)
+  const seen = new Set()
+  while (queue.length > 0) {
+    const file = queue.pop()
+    if (seen.has(file)) continue
+    seen.add(file)
+    const source = readFileSync(file, 'utf8')
+    if (/['"]@tapflowio\/[^'"]+['"]/.test(source)) return true
+    for (const match of source.matchAll(/from\s*['"]([^'"]+)['"]/g)) {
+      const local = resolveLocalImport(file, match[1])
+      if (local && !seen.has(local)) queue.push(local)
+    }
+  }
+  return false
 }
 
 const extendsShared = (dir) => {
   const cfg = join(PKGS, dir, 'vitest.config.ts')
   return existsSync(cfg) && readFileSync(cfg, 'utf8').includes('sourceFirst')
+}
+
+function runProbe(packageDir, probe) {
+  const relativeProbe = probe.slice(packageDir.length + 1)
+  if (process.platform === 'win32') {
+    const vitest = join(packageDir, 'node_modules', '.bin', 'vitest.cmd')
+    execFileSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `${vitest} run ${relativeProbe}`], {
+      cwd: packageDir,
+      stdio: 'pipe',
+      encoding: 'utf8',
+    })
+  } else {
+    execFileSync('pnpm', ['exec', 'vitest', 'run', relativeProbe], { cwd: packageDir, stdio: 'pipe', encoding: 'utf8' })
+  }
 }
 
 describe('every package whose tests import a sibling reads its source', () => {
@@ -89,14 +130,34 @@ describe('and the resolution really lands on source', () => {
         '',
       ].join('\n'))
       try {
-        execFileSync('npx', ['vitest', 'run', '--root', join(PKGS, 'ios-agent'),
-          'src/__tests__/zz-source-resolution.probe.test.ts'],
-          { cwd: ROOT, stdio: 'pipe', encoding: 'utf8' })
+        runProbe(join(PKGS, 'ios-agent'), probe)
       } finally {
-        execFileSync('rm', ['-f', probe])
+        rmSync(probe, { force: true })
       }
     } finally {
       writeFileSync(RELAY_DIST, before)
+    }
+  }, 120_000)
+
+  it('the MCP flow-runner import does not see a symbol that exists only in dist', () => {
+    const FLOW_RUNNER_DIST = join(PKGS, 'flow-runner', 'dist', 'index.js')
+    const packageDir = join(PKGS, 'mcp-server')
+    const probe = join(packageDir, 'src', '__tests__', 'zz-source-resolution.probe.test.ts')
+    const marker = '__LOADED_FLOW_RUNNER_FROM_DIST__'
+    if (!existsSync(FLOW_RUNNER_DIST)) throw new Error('packages/flow-runner/dist/index.js is missing — run `pnpm build` first')
+    const before = readFileSync(FLOW_RUNNER_DIST, 'utf8')
+    appendFileSync(FLOW_RUNNER_DIST, `\nexport const ${marker} = true;\n`)
+    try {
+      writeFileSync(probe, [
+        `import { it, expect } from 'vitest'`,
+        `import * as runner from '@tapflowio/flow-runner'`,
+        `it('resolves to source', () => { expect('${marker}' in runner).toBe(false) })`,
+        '',
+      ].join('\n'))
+      runProbe(packageDir, probe)
+    } finally {
+      rmSync(probe, { force: true })
+      writeFileSync(FLOW_RUNNER_DIST, before)
     }
   }, 120_000)
 })

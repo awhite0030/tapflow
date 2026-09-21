@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tapflow flow run` exits 2 when every failed flow failed environmentally** ([#543](https://github.com/jo-duchan/tapflow/issues/543)). A refused input with an environmental reason, a session lost to an agent restart, or a dropped relay connection used to reach CI as exit 1, reading as a product regression on dashboards that rely on the 1-vs-2 distinction. Selector, assertion and other product failures still exit 1, successful runs still exit 0, and a run with both kinds keeps exit 1 so a real regression is never masked by a blip. The shared MCP flow runner now keeps selector and failure-screenshot requests bounded by their engine deadlines and rejects malformed UI-tree responses.
+
 ## [0.23.0] - 2026-09-21
 
 ### Breaking Changes

@@ -91,6 +91,11 @@ steps:
     expect(() => parseFlow('steps:\n  - tapOn:\n      role: cell\n      index: 1.5\n', 'x.yaml')).toThrow(/index/)
   })
 
+  it('rejects non-finite and timer-overflow selector timeouts', () => {
+    expect(() => parseFlow('steps:\n  - tapOn:\n      label: OK\n      timeout: .inf\n', 'x.yaml')).toThrow(/timeout/)
+    expect(() => parseFlow('steps:\n  - tapOn:\n      label: OK\n      timeout: 2147483.648\n', 'x.yaml')).toThrow(/timeout/)
+  })
+
   it('rejects index alone with no id/label/role', () => {
     expect(() => parseFlow('steps:\n  - tapOn:\n      index: 0\n', 'x.yaml')).toThrow(/id.*label.*role/)
   })

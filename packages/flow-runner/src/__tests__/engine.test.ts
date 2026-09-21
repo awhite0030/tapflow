@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { UIElement } from '@tapflowio/agent-core'
 import { runFlow, type FlowDriver } from '../engine.js'
 import { parseFlow } from '../schema.js'
-import { TransientQueryError } from '../errors.js'
+import { EnvironmentStepError, TransientQueryError } from '../errors.js'
 
 const el = (over: Partial<UIElement>): UIElement => ({
   role: 'button',
@@ -140,6 +140,7 @@ describe('runFlow', () => {
     driver.queryUITree = vi.fn(async () => { throw new TransientQueryError('is the app running in the foreground?') })
     const result = await runFlow(flowOf('steps:\n  - tapOn: "OK"\n'), driver, OPTS)
     expect(result.status).toBe('failed')
+    expect(result.failureKind).toBe('environment')
     expect(result.failureMessage).toContain('last query error: is the app running in the foreground?')
   })
 
@@ -161,6 +162,36 @@ describe('runFlow', () => {
     const result = await runFlow(flowOf('steps:\n  - tapOn: "OK"\n'), driver, OPTS)
     expect(result.status).toBe('failed')
     expect(vi.mocked(driver.queryUITree).mock.calls[0]![0]).toBeInstanceOf(AbortSignal) // engine passed a bounding signal
+  })
+
+  it('caps the final polling delay at the selector deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const driver = fakeDriver([[]])
+      const pending = runFlow(flowOf('steps:\n  - assertVisible:\n      label: OK\n'), driver, { pollIntervalMs: 500, defaultTimeoutMs: 100 })
+      await vi.advanceTimersByTimeAsync(100)
+      const result = await pending
+      expect(result.status).toBe('failed')
+      expect(driver.queryUITree).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not hang when failure screenshot capture stalls', async () => {
+    vi.useFakeTimers()
+    try {
+      const driver = fakeDriver([[]])
+      driver.openUrl = vi.fn(async () => { throw new Error('product failure') })
+      driver.screenshot = vi.fn(() => new Promise<Buffer>(() => {}))
+      const pending = runFlow(flowOf('steps:\n  - openUrl: "app://x"\n'), driver, OPTS)
+      await vi.advanceTimersByTimeAsync(10_000)
+      const result = await pending
+      expect(result.status).toBe('failed')
+      expect(result.failureScreenshot).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('fails with a timeout, captures a screenshot, and skips remaining steps', async () => {
@@ -259,6 +290,12 @@ steps:
     expect(Date.now() - start).toBeLessThan(1_000)
   })
 
+  it('normalizes fractional default timeouts before using timer APIs', async () => {
+    const driver = fakeDriver([[]])
+    const result = await runFlow(flowOf('steps:\n  - openUrl: "app://x"\n'), driver, { defaultTimeoutMs: 1_234.5 })
+    expect(result.status).toBe('passed')
+  })
+
   it('reports step names and durations in results', async () => {
     const driver = fakeDriver([[el({ label: 'OK' })]])
     const result = await runFlow(flowOf('steps:\n  - launchApp\n  - tapOn: "OK"\n'), driver, OPTS)
@@ -273,5 +310,34 @@ steps:
     const result = await runFlow(flowOf('steps:\n  - openUrl: "app://x"\n'), driver, OPTS)
     expect(result.status).toBe('failed')
     expect(result.failureMessage).toContain('agent offline')
+  })
+
+  // Failure-kind routing (#543): the engine is what classifies, so consumers never branch on prose.
+  it('marks an environment step failure as environment', async () => {
+    const driver = fakeDriver([[el({ label: 'x' })]])
+    driver.tap = vi.fn(async () => { throw new EnvironmentStepError('relay connection closed') })
+    const result = await runFlow(flowOf('steps:\n  - tapOn: "x"\n'), driver, OPTS)
+    expect(result.status).toBe('failed')
+    expect(result.failureKind).toBe('environment')
+    expect(result.failureMessage).toContain('relay connection closed')
+  })
+
+  it('marks selector and assertion failures as product', async () => {
+    const missing = fakeDriver([[]])
+    const missingResult = await runFlow(flowOf('steps:\n  - tapOn: "없는버튼"\n'), missing, OPTS)
+    expect(missingResult.status).toBe('failed')
+    expect(missingResult.failureKind).toBe('product')
+
+    const ambiguous = fakeDriver([[el({ label: 'x' }), el({ label: 'x' })]])
+    const ambiguousResult = await runFlow(flowOf('steps:\n  - tapOn: "x"\n'), ambiguous, OPTS)
+    expect(ambiguousResult.status).toBe('failed')
+    expect(ambiguousResult.failureKind).toBe('product')
+  })
+
+  it('omits the failure kind on success', async () => {
+    const driver = fakeDriver([[el({ label: 'x' })]])
+    const result = await runFlow(flowOf('steps:\n  - tapOn: "x"\n'), driver, OPTS)
+    expect(result.status).toBe('passed')
+    expect(result.failureKind).toBeUndefined()
   })
 })

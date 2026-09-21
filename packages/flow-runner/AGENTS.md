@@ -28,7 +28,7 @@ Consumers: `tapflow flow run` (CLI) and the `run_flow` MCP tool — both drive t
 - **A session-scoped failure carries what the relay said about that session**, through `failed()`, and `scripts/__tests__/sessionNoteCoverage.test.mjs` enforces it across both clients — see [mcp-server/AGENTS.md](../mcp-server/AGENTS.md) for why it anchors on the construction rather than the `throw`.
 - `junit.ts` — one `<testcase>` per flow, step log in `system-out` / `<failure>`.
 - `schema/tapflow-flow.schema.json` — JSON Schema shipped for editor autocomplete; keep it in sync with `schema.ts` when the vocabulary changes.
-- Exit-code contract (CLI): `0` all passed · `1` flow failure · `2` environment/config error (parse errors, relay unreachable, no device). Never conflate 1 and 2 — CI dashboards rely on the distinction.
+- Exit-code contract (CLI): `0` all passed · `1` any product or mixed flow failure · `2` environment/config error, including relay/agent/session failures when every failed flow is environmental. Never conflate 1 and 2 — CI dashboards rely on the distinction.
 - Coordinates are normalized 0-1 everywhere, matching the touch path and `query_ui_tree` frames.
 - `clearState` maps to `app:clear-state` (relay) → `pm clear` (Android) / data-container wipe (iOS `SimctlWrapper.clearAppData`).
 

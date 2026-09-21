@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
 import { TapflowClient, REASON_ADVICE, SessionEndedError, SessionLeftError, reasonAdvice } from '../client.js'
+import { TransientQueryError } from '@tapflowio/flow-runner'
 
 // inputAck models the agent's terminal-input ack: 'done' = new agent (booted), 'error' = rejects with prose only, 'error-with-reason' = rejects with the machine-readable reason too, 'none' = older agent that never acks (degradation).
 function createMockRelay(): {
@@ -856,6 +857,20 @@ describe('TapflowClient', () => {
       }
     })
 
+    it('passes an abort signal to the screenshot request', async () => {
+      const controller = new AbortController()
+      const origFetch = globalThis.fetch
+      globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+        expect(init?.signal).toBe(controller.signal)
+        return new Response(Buffer.from([0x89, 0x50, 0x4e, 0x47]), { status: 200 })
+      }
+      try {
+        await client.screenshot('sess-1', 'png', controller.signal)
+      } finally {
+        globalThis.fetch = origFetch
+      }
+    })
+
     it('throws on 401', async () => {
       const origFetch = globalThis.fetch
       globalThis.fetch = async () =>
@@ -904,6 +919,44 @@ describe('TapflowClient', () => {
       try {
         const elements = await client.queryUITree('sess-1')
         expect(elements).toEqual(ELEMENTS)
+      } finally {
+        globalThis.fetch = origFetch
+      }
+    })
+
+    it('passes an abort signal to the ui-tree request', async () => {
+      const controller = new AbortController()
+      const origFetch = globalThis.fetch
+      globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+        expect(init?.signal).toBe(controller.signal)
+        return new Response(JSON.stringify({ elements: ELEMENTS }), { status: 200 })
+      }
+      try {
+        await client.queryUITree('sess-1', controller.signal)
+      } finally {
+        globalThis.fetch = origFetch
+      }
+    })
+
+    it.each([500, 502, 503, 504])('classifies %d as transient query error (retryable)', async (status) => {
+      const origFetch = globalThis.fetch
+      globalThis.fetch = async () => new Response(JSON.stringify({ error: 'temporary' }), { status })
+      try {
+        await expect(client.queryUITree('sess-1')).rejects.toBeInstanceOf(TransientQueryError)
+      } finally {
+        globalThis.fetch = origFetch
+      }
+    })
+
+    it.each([
+      {},
+      { elements: [{}] },
+      { elements: [{ role: 'button', label: 'x', frame: { x: 0, y: 0, width: 2, height: 1 }, enabled: true }] },
+    ])('rejects malformed successful ui-tree responses', async (body) => {
+      const origFetch = globalThis.fetch
+      globalThis.fetch = async () => new Response(JSON.stringify(body), { status: 200 })
+      try {
+        await expect(client.queryUITree('sess-1')).rejects.toThrow('invalid response shape')
       } finally {
         globalThis.fetch = origFetch
       }

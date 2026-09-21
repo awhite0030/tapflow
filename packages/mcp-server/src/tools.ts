@@ -11,7 +11,7 @@ import type { TapflowClient } from './client.js'
 // already joined via connect_device instead of opening a second one.
 function makeFlowDriver(client: TapflowClient, sessionId: string, buildId?: number): FlowDriver {
   return {
-    queryUITree: () => client.queryUITree(sessionId),
+    queryUITree: (signal) => client.queryUITree(sessionId, signal),
     tap: async (x, y) => client.tap(sessionId, x, y),
     swipe: (from, to, durationMs) => client.swipe(sessionId, from[0], from[1], to[0], to[1], durationMs),
     inputText: async (text) => client.typeText(sessionId, text),
@@ -22,7 +22,7 @@ function makeFlowDriver(client: TapflowClient, sessionId: string, buildId?: numb
       await client.launchApp(sessionId, buildId)
     },
     clearState: (appId) => client.clearState(sessionId, appId),
-    screenshot: () => client.screenshot(sessionId),
+    screenshot: (signal) => client.screenshot(sessionId, 'png', signal),
   }
 }
 

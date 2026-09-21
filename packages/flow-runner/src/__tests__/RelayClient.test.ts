@@ -1,6 +1,15 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
-import { RelayClient, SessionEndedError, SessionJoinError, SessionLeftError } from '../RelayClient.js'
+import {
+  InputRefusedError,
+  InputUnconfirmedError,
+  RelayClient,
+  RelayHttpError,
+  SessionEndedError,
+  SessionJoinError,
+  SessionLeftError,
+  SessionUnavailableError,
+} from '../RelayClient.js'
 import { TransientQueryError } from '../errors.js'
 
 // Minimal Response stub for the ui-tree GET.
@@ -35,7 +44,7 @@ describe('RelayClient.queryUITree — transient vs permanent classification', ()
   it.each([400, 401, 403, 404, 409])('%d → NOT transient (fail-fast)', async (status) => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(status, { error: 'nope' }))
     const err = await client().queryUITree('s1').catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(Error)
+    expect(err).toBeInstanceOf(RelayHttpError)
     expect(err).not.toBeInstanceOf(TransientQueryError)
   })
 
@@ -59,6 +68,35 @@ describe('RelayClient.queryUITree — transient vs permanent classification', ()
   it('carries the server error message', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(502, { error: 'is the app running in the foreground?' }))
     await expect(client().queryUITree('s1')).rejects.toThrow('is the app running in the foreground?')
+  })
+
+  it.each([
+    {},
+    { elements: [{}] },
+    { elements: [{ role: 'button', label: 'x', frame: { x: -1, y: 0, width: 1, height: 1 }, enabled: true }] },
+    { elements: [{ role: 'future-role', label: 'x', frame: { x: 0, y: 0, width: 1, height: 1 }, enabled: true }] },
+  ])('classifies invalid response shapes as permanent relay errors', async (body) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => body,
+    } as unknown as Response)
+    const err = await client().queryUITree('s1').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RelayHttpError)
+    expect((err as RelayHttpError).permanent).toBe(true)
+    expect((err as Error).message).toContain('invalid response shape')
+  })
+
+  it('classifies invalid JSON as a permanent relay error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => { throw new SyntaxError('unexpected end of input') },
+    } as unknown as Response)
+    const err = await client().queryUITree('s1').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RelayHttpError)
+    expect((err as RelayHttpError).permanent).toBe(true)
+    expect((err as Error).message).toContain('invalid JSON')
   })
 })
 
@@ -116,6 +154,30 @@ describe('RelayClient — the input senders mint a correlator and await the ack'
     await client.connect()
     await client.joinSession('s1')
     return { client, received }
+  }
+
+  async function typeErrorClient(reason?: unknown) {
+    wss = new WebSocketServer({ port: 0 })
+    wss.on('connection', (ws) => {
+      ws.on('message', (data) => {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>
+        if (msg['type'] === 'session:start') {
+          ws.send(JSON.stringify({ type: 'session:joined', sessionId: msg['sessionId'], capabilities: [] }))
+        }
+        if (msg['type'] === 'input:type') {
+          const reply: Record<string, unknown> = {
+            type: 'input:type-error', sessionId: msg['sessionId'], requestId: msg['requestId'], message: 'no input channel',
+          }
+          if (reason !== undefined) reply['reason'] = reason
+          ws.send(JSON.stringify(reply))
+        }
+      })
+    })
+    const port = (wss.address() as { port: number }).port
+    const client = new RelayClient(`ws://localhost:${port}`, '')
+    await client.connect()
+    await client.joinSession('s1')
+    return client
   }
 
   const usable = (m: Record<string, unknown> | undefined, what: string) => {
@@ -189,6 +251,21 @@ describe('RelayClient — the input senders mint a correlator and await the ack'
     const err = await client.pressKey('s1', 'Enter').catch((e: unknown) => e) as Error
     expect(err.message).toMatch(/\(channel-unavailable\)/)
     expect(err.message).not.toMatch(/invented-in-a-later-release/)
+  })
+
+  it('classifies type text refusals and preserves their reason', async () => {
+    const client = await typeErrorClient('not-booted')
+    const err = await client.typeText('s1', 'hello').catch((e: unknown) => e) as InputRefusedError
+    expect(err).toBeInstanceOf(InputRefusedError)
+    expect(err.reason).toBe('not-booted')
+    expect(err.message).toContain('type text was refused by the device (not-booted)')
+  })
+
+  it('treats a missing type text reason as channel-unavailable', async () => {
+    const client = await typeErrorClient()
+    const err = await client.typeText('s1', 'hello').catch((e: unknown) => e) as InputRefusedError
+    expect(err).toBeInstanceOf(InputRefusedError)
+    expect(err.reason).toBe('channel-unavailable')
   })
 
   it('reports a lost relay as unconfirmed, and does not blame the agent for it', async () => {
@@ -686,6 +763,7 @@ describe('RelayClient — session lifecycle (#512, finding 4)', () => {
     const launch = client.launchApp('s1', 7)
     await reply('app:launch', { type: 'app:launch-error', message: 'No booted device' })
     const err = await launch.catch((e: unknown) => e) as Error
+    expect(err).toBeInstanceOf(SessionUnavailableError)
     expect(err.message).toMatch(/agent reconnected/i)
     expect(err.message).not.toMatch(/went away/i)
   })
@@ -730,6 +808,7 @@ describe('RelayClient — session lifecycle (#512, finding 4)', () => {
     await settle()
     const err = await client.tap('s1', 0.5, 0.5).catch((e: unknown) => e) as Error
 
+    expect(err).toBeInstanceOf(InputUnconfirmedError)
     expect(err.message).toMatch(/not confirmed/i)
     expect(err.message).toMatch(/went away/i)
     expect(errors.join('\n')).not.toMatch(/predates input correlation/)
@@ -1119,5 +1198,82 @@ describe('RelayClient.queryUITree — the session record decides retryability (#
     const c = await told({ type: 'session:rebound', sessionId: 's1', capabilities: [] })
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(200, { elements: [] }))
     await expect(c.queryUITree('s1')).resolves.toEqual([])
+  })
+})
+
+// Typed environment failures (#543): the same messages as before, carrying the
+// machine reason so the engine can classify without branching on prose.
+describe('RelayClient — typed environment failures', () => {
+  let wss: WebSocketServer | null = null
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    const s = wss
+    wss = null
+    if (!s) return
+    for (const c of s.clients) c.terminate()
+    await new Promise<void>((r) => s.close(() => r()))
+  })
+
+  async function rigged(ack: (m: Record<string, unknown>) => Record<string, unknown> | null) {
+    let conn: WebSocket | null = null
+    wss = new WebSocketServer({ port: 0 })
+    wss.on('connection', (ws) => {
+      conn = ws
+      ws.on('message', (data) => {
+        const m = JSON.parse(String(data)) as Record<string, unknown>
+        if (m['type'] === 'session:start') {
+          ws.send(JSON.stringify({ type: 'session:joined', sessionId: m['sessionId'], capabilities: [] }))
+        }
+        if (m['type'] === 'input:touch:end' || m['type'] === 'input:key') {
+          const reply = ack(m)
+          if (reply) ws.send(JSON.stringify(reply))
+        }
+      })
+    })
+    const port = (wss.address() as { port: number }).port
+    const client = new RelayClient(`ws://localhost:${port}`, '')
+    await client.connect()
+    await client.joinSession('s1')
+    return {
+      client,
+      push: async (msg: Record<string, unknown>) => {
+        conn!.send(JSON.stringify(msg))
+        await new Promise((r) => setTimeout(r, 20))
+      },
+    }
+  }
+
+  const refusal = (reason: string) => (m: Record<string, unknown>) => ({
+    type: 'input:error',
+    sessionId: m['sessionId'],
+    requestId: m['requestId'],
+    reason,
+    message: 'device is not booted',
+  })
+
+  it('a refused input throws InputRefusedError with the reason, message unchanged', async () => {
+    const { client } = await rigged(refusal('not-booted'))
+    const err = await client.tap('s1', 0.5, 0.5).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(InputRefusedError)
+    expect((err as InputRefusedError).reason).toBe('not-booted')
+    expect((err as Error).message).toMatch(/tap was refused by the device \(not-booted\): device is not booted/)
+  })
+
+  it('a product refusal stays typed with its own reason', async () => {
+    const { client } = await rigged(refusal('malformed'))
+    const err = await client.tap('s1', 0.5, 0.5).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(InputRefusedError)
+    expect((err as InputRefusedError).reason).toBe('malformed')
+  })
+
+  it('a terminated ui-tree query throws SessionUnavailableError naming the ending', async () => {
+    const { client, push } = await rigged(() => null)
+    await push({ type: 'session:terminated', sessionId: 's1', reason: 'agent-disconnected' })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(404, { error: 'Session not found' }))
+    const err = await client.queryUITree('s1').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(SessionUnavailableError)
+    expect((err as Error).message).toMatch(/the relay ended this session \(agent-disconnected\)/)
+    expect((err as Error).cause).toBeInstanceOf(Error)
   })
 })

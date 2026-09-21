@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { registerTools } from '../tools.js'
 import type { TapflowClient } from '../client.js'
+import { TransientQueryError } from '@tapflowio/flow-runner'
 
 type ToolResult = { content: unknown[]; isError?: boolean }
 type Handler = (args: Record<string, unknown>) => Promise<ToolResult>
@@ -57,6 +58,40 @@ describe('run_flow — install before replay', () => {
     await runFlowHandler(client)({ sessionId: 's1', flow: 'steps:\n  - clearState: com.example.app\n' })
     expect(client.installApp).not.toHaveBeenCalled()
     expect(calls).toEqual(['clearState'])
+  })
+
+  it('passes the engine selector deadline signal to the client', async () => {
+    const calls: string[] = []
+    const client = fakeClient(calls)
+    vi.mocked(client.queryUITree).mockImplementation(async (_sessionId, signal) => {
+      expect(signal).toBeInstanceOf(AbortSignal)
+      return [{
+        role: 'button',
+        label: 'OK',
+        frame: { x: 0, y: 0, width: 1, height: 1 },
+        enabled: true,
+      }]
+    })
+    const res = await runFlowHandler(client)({ sessionId: 's1', flow: 'steps:\n  - assertVisible: "OK"\n' })
+    expect(res.isError).toBeFalsy()
+  })
+
+  it('retries a transient ui-tree response until the selector resolves', async () => {
+    const calls: string[] = []
+    const client = fakeClient(calls)
+    let attempts = 0
+    vi.mocked(client.queryUITree).mockImplementation(async () => {
+      if (attempts++ === 0) throw new TransientQueryError('temporary relay failure')
+      return [{
+        role: 'button',
+        label: 'OK',
+        frame: { x: 0, y: 0, width: 1, height: 1 },
+        enabled: true,
+      }]
+    })
+    const res = await runFlowHandler(client)({ sessionId: 's1', flow: 'steps:\n  - assertVisible: "OK"\n' })
+    expect(res.isError).toBeFalsy()
+    expect(client.queryUITree).toHaveBeenCalledTimes(2)
   })
 
   it('surfaces an install failure as a run_flow error and never runs the flow', async () => {

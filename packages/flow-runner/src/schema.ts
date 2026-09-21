@@ -37,6 +37,8 @@ export interface Flow {
 
 const SCROLL_DIRECTIONS = new Set<string>(['up', 'down', 'left', 'right'])
 const DEFAULT_SWIPE_DURATION_MS = 300
+const MAX_TIMER_MS = 2_147_483_647
+const MAX_TIMEOUT_SECONDS = MAX_TIMER_MS / 1000
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -74,7 +76,9 @@ function parseSelector(v: unknown, ctx: string): Selector {
       selector.index = index
     }
     if (timeout !== undefined) {
-      if (typeof timeout !== 'number' || !(timeout > 0)) throw new ValidationError(`${ctx}: "timeout" must be a positive number of seconds`)
+      if (typeof timeout !== 'number' || !Number.isFinite(timeout) || !(timeout > 0) || timeout > MAX_TIMEOUT_SECONDS) {
+        throw new ValidationError(`${ctx}: "timeout" must be a positive number of seconds no greater than ${MAX_TIMEOUT_SECONDS}`)
+      }
       selector.timeoutMs = Math.round(timeout * 1000)
     }
     return selector
@@ -141,7 +145,9 @@ function parseStep(raw: unknown, ctx: string): Step {
         durationMs: DEFAULT_SWIPE_DURATION_MS,
       }
       if (durationMs !== undefined) {
-        if (typeof durationMs !== 'number' || !(durationMs > 0)) throw new ValidationError(`${ctx}: "durationMs" must be a positive number`)
+        if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || !Number.isInteger(durationMs) || !(durationMs > 0) || durationMs > MAX_TIMER_MS) {
+          throw new ValidationError(`${ctx}: "durationMs" must be a positive integer no greater than ${MAX_TIMER_MS}ms`)
+        }
         parsed.durationMs = durationMs
       }
       return parsed
