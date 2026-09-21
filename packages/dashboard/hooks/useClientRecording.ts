@@ -15,6 +15,23 @@ const MIME_CANDIDATES = [
   'video/webm',
 ]
 
+/**
+ * **This hook does not compile under the React Compiler, and that is recorded rather than fixed.**
+ *
+ * Measured with `babel-plugin-react-compiler@1.0.0`, both bails predating the viewers' rotation
+ * work and neither a Rules of React violation:
+ *
+ * - `[InferMutationAliasingEffects] Expected value kind to be initialized` on `rafLoop` — an
+ *   internal invariant, tripped by the hoisted named function expression. Declaring the same
+ *   recursion inside `startClientRecording` compiles, and was tried and reverted: it buys nothing
+ *   while the second bail stands, and it costs the comment below, which describes a real hazard.
+ * - `Support value blocks … within a try/catch statement` on the upload — the `res.ok && json.url`
+ *   test and the `onUploadedRef.current?.()` call sit inside the `try`. Hoisting them out changes
+ *   what happens when the download trigger throws, and that path has no tests.
+ *
+ * What it costs is the auto-memoization, and every callback here is already wrapped by hand, so
+ * nothing downstream reaches it. Revisit when the compiler lifts the try/catch limitation.
+ */
 export function useClientRecording({ sessionId, buildId, onRecordingUploaded }: UseClientRecordingOptions) {
   const [recordState, setRecordState] = useState<RecordState>('idle')
   const recordCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -41,7 +58,28 @@ export function useClientRecording({ sessionId, buildId, onRecordingUploaded }: 
 
   // Caller must set recordCanvasRef.current.width/height before calling this.
   // (iOS uses container px, Android multiplies by devicePixelRatio — kept as caller responsibility.)
-  const startClientRecording = useCallback((composeFrame: () => void) => {
+  /**
+   * Tell the recorder which function draws a frame. The newest one wins, and the frame loop reads
+   * it afresh every tick.
+   *
+   * **A setter rather than an argument to `startClientRecording`.** Taken at start, the recorder
+   * held whichever closure existed then, so a rotation mid-recording never reached the frames —
+   * and `AndroidViewer`, whose composer is rebuilt on every turn, worked around that by mirroring
+   * the turn into refs it wrote *after* handing the closure to this hook. That is a Rules of React
+   * violation the React Compiler will not compile past. It is not an option on this hook either:
+   * `composeFrame` needs `recordCanvasRef`, which this hook returns, so the viewer cannot have
+   * built it yet when it calls us. (`IOSViewer`'s composer reads what it needs from refs on every
+   * draw, so it registers once and never mirrored a turn.)
+   *
+   * **The obligation this moved out of the type system.** A caller that starts recording without
+   * ever calling this gets a black video — no error, no warning, a green typecheck, where the old
+   * required argument made it impossible. A guard here would silently refuse to start, which is
+   * not better, so what holds it is a test per viewer that the composer is registered:
+   * `AndroidViewer.composeFrame.test.tsx` and `IOSViewer.rotateAndCompose.test.tsx`.
+   */
+  const setComposeFrame = useCallback((compose: () => void) => { composeFrameRef.current = compose }, [])
+
+  const startClientRecording = useCallback(() => {
     const rc = recordCanvasRef.current
     if (!rc) return
     const ctx0 = rc.getContext('2d')
@@ -58,7 +96,6 @@ export function useClientRecording({ sessionId, buildId, onRecordingUploaded }: 
     mediaRecorderRef.current = mr
     mr.start(1000)
 
-    composeFrameRef.current = composeFrame
     recordingRef.current = true
     rafIdRef.current = requestAnimationFrame(rafLoop)
     setRecordState('recording')
@@ -120,5 +157,5 @@ export function useClientRecording({ sessionId, buildId, onRecordingUploaded }: 
     }
   }, [recordState, stopClientRecording])
 
-  return { recordState, recordCanvasRef, startClientRecording, stopClientRecording }
+  return { recordState, recordCanvasRef, setComposeFrame, startClientRecording, stopClientRecording }
 }

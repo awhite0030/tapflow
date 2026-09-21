@@ -3,7 +3,7 @@
 import type { BrowserToRelay } from '@tapflowio/protocol'
 import { newRequestId } from '@/lib/requestId';
 import { buttonHitRect, pickButton } from '@/lib/buttonHit';
-import { useCallback, useEffect, useId, useRef, useState, Fragment } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, Fragment } from 'react';
 import { useClientRecording } from '@/hooks/useClientRecording';
 import { Home, Keyboard, Loader2, Play } from 'lucide-react';
 import { useFps } from '@/hooks/useFps';
@@ -94,7 +94,7 @@ export function IOSViewer({
   const { fps, frameCount } = useFps();
 
   const lastFrameRecvAtRef = useRef<number>(0);
-  const { recordState, recordCanvasRef, startClientRecording, stopClientRecording } = useClientRecording({ sessionId, buildId, onRecordingUploaded });
+  const { recordState, recordCanvasRef, setComposeFrame, startClientRecording, stopClientRecording } = useClientRecording({ sessionId, buildId, onRecordingUploaded });
   const deviceSeq = useRef(0);
 
   const [deepLinkOpen, setDeepLinkOpen] = useState(false);
@@ -287,6 +287,18 @@ export function IOSViewer({
     }
   }, [recordCanvasRef])
 
+  // **Registered once, and the difference from Android is worth stating.** `composeFrame` here
+  // depends only on `recordCanvasRef`, a ref object whose identity never changes, so this fires on
+  // mount and never again — there is no newest composer on this platform. A rotation still reaches
+  // the frames, because the composer reads `chromeRef`, `canvasRef.current` and the canvas's own
+  // layout live on every draw, exactly as it did before the setter existed.
+  //
+  // So the layout effect is not load-bearing here the way it is in `AndroidViewer`, where the
+  // composer is rebuilt on every turn and `requestAnimationFrame` would otherwise see the old one
+  // for a tick. It matches that file on purpose: the two viewers should register the same way, and
+  // this is the shape that is already correct if iOS ever composes by a turn of its own.
+  useLayoutEffect(() => { setComposeFrame(composeFrame) }, [composeFrame, setComposeFrame])
+
   const handleScreenshot = useCallback(() => {
     const src = canvasRef.current; if (!src) return
     const c = document.createElement('canvas'); const ctx = c.getContext('2d'); if (!ctx) return
@@ -305,22 +317,27 @@ export function IOSViewer({
       const container = containerRef.current
       if (container && container.clientWidth > 0) { rc.width = container.clientWidth; rc.height = container.clientHeight }
       else { const fc = canvasRef.current; if (fc && fc.width > 0) { rc.width = fc.width; rc.height = fc.height } else return }
-      startClientRecording(composeFrame)
+      startClientRecording()
     } else if (recordState === 'recording') {
       stopClientRecording()
     }
-  }, [recordState, startClientRecording, stopClientRecording, composeFrame, recordCanvasRef])
+  }, [recordState, startClientRecording, stopClientRecording, recordCanvasRef])
 
   const handleRotate = useCallback(() => {
     send({ type: 'input:rotate', sessionId }); setIsLandscape(prev => !prev)
   }, [send, sessionId])
 
-  const isLandscapeRef = useRef(isLandscape)
-  useEffect(() => { isLandscapeRef.current = isLandscape }, [isLandscape])
+  // Reset device orientation to portrait on unmount if we left it in landscape.
+  //
+  // **The whole cleanup goes in the ref, `send` and `sessionId` with it.** It must fire on unmount
+  // and on nothing else, so the dependency list is empty — and an empty list closing over props is
+  // exactly what `react-hooks/exhaustive-deps` was suppressed for here. A suppression is not local
+  // any more: the React Compiler skips the entire file that carries one, whichever rule it names.
+  const undoRotateRef = useRef<(() => void) | null>(null)
   useEffect(() => {
-    return () => { if (isLandscapeRef.current) send({ type: 'input:rotate', sessionId }) }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    undoRotateRef.current = isLandscape ? () => send({ type: 'input:rotate', sessionId }) : null
+  }, [isLandscape, send, sessionId])
+  useEffect(() => () => { undoRotateRef.current?.() }, [])
 
   const sendChord = useCallback((code: 'KeyC' | 'KeyV' | 'KeyX', modifiers: number) => {
     send({ type: 'input:key', sessionId, requestId: newRequestId(), payload: { code, modifiers } })
