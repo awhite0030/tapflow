@@ -298,12 +298,26 @@ const TEXT_EXT = /\.(md|txt|ts|tsx|mts|mjs|js|json|ya?ml)$/
 const SKIP = new Set(['node_modules', 'dist', 'build', '.next', 'coverage', '.turbo', '.git',
   '.work', '.vercel', '.internal', 'cache', '.tapflow-data', '.tapflow', '.playwright-mcp'])
 
+/** Generated trees a name cannot reach, because the name is taken by something real.
+ *
+ *  `packages/relay/public` is a *copy* of `packages/dashboard/dist` — the dashboard build ends with
+ *  `rm -rf ../relay/public && cp -r dist/. ../relay/public/` — so skipping `dist` above while
+ *  walking this was the same rule applied to only one of the two copies. `public` cannot go in the
+ *  set by name: `docs/public` holds `robots.txt` and `llms.txt`, which this file asserts on.
+ *
+ *  It also made the walk race the build. `dashboardFirstLoadBudget.test.mjs` runs that build in
+ *  this same suite, and a walk that reaches this directory while `rm -rf` is running dies on
+ *  ENOENT — one real `pnpm test:scripts` run failed here, and a loop measured 2 failures in 1,718
+ *  walks, both at the moment the copy was replaced. 24 of the files it removes match `TEXT_EXT`. */
+const SKIP_PATHS = new Set([join(ROOT, 'packages', 'relay', 'public')])
+
 function textFiles(dir = ROOT, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const child = join(dir, e.name)
     if (e.isDirectory()) {
-      if (!SKIP.has(e.name)) textFiles(join(dir, e.name), out)
+      if (!SKIP.has(e.name) && !SKIP_PATHS.has(child)) textFiles(child, out)
     } else if (TEXT_EXT.test(e.name)) {
-      out.push(join(dir, e.name))
+      out.push(child)
     }
   }
   return out
@@ -320,6 +334,10 @@ describe('the site has one origin', () => {
     expect(files).toContain(join(DOCS, 'public', 'llms.txt'))
     expect(files).toContain(join(DOCS, '.vitepress', 'config.ts'))
     expect(files.length).toBeGreaterThan(700)
+    // The dashboard build's copy is not the repo, and walking it is what made this test race the
+    // build in `dashboardFirstLoadBudget.test.mjs`. Asserted rather than assumed: the skip is by
+    // absolute path, so a rename of either directory silently restores the race.
+    expect(files.filter((f) => f.startsWith(join(ROOT, 'packages', 'relay', 'public')))).toEqual([])
 
     const offenders = files
       .filter((f) => /https:\/\/tapflow\.dev/.test(readFileSync(f, 'utf8')))

@@ -43,34 +43,60 @@ The audience is the whole team (PO, PM, designers, backend, QA) — not just QA.
 - **An address for someone else comes from `lib/publicLink.ts`** — an invite link, a link to a comment, the relay address in the agent command. The browser's own `location.origin` is right for this page and wrong for a teammate: on the Vite server it is `localhost:3001`, which is how #788 was found. The relay reports what its settings mean and the helper only falls back. `useRelay` is the exception, because it connects this page to its own relay. `scripts/__tests__/teammateUrlsSingleSource.test.mjs` fails on a `location` read other than `pathname`/`search`/`hash`/`hostname`/`protocol` outside the files it allows.
 - **Build order**: dashboard first → relay second (`agent-core → dashboard → relay`).
 
-### The React Compiler is on, and the two device viewers are not compiled
+### The React Compiler is on
 
-`babel-plugin-react-compiler` runs on this package, through `reactPlugin.ts` — **shared by
+`babel-plugin-react-compiler` runs on this package through `reactPlugin.ts` — **shared by
 `vite.config.ts` and `vitest.config.ts` on purpose.** The test run used to build its own `react()`
 without the compiler, which would have left the suite exercising source the product does not ship.
-`src/__tests__/reactCompilerOn.test.tsx` asserts the emitted memo-cache read, because a config that
-silently stops applying the compiler fails nothing else: everything it does is an optimisation.
 
-**Stop adding `useCallback` and `useMemo` for identity.** The compiler does that. What was here when
-it went on: 76 `useCallback`, 7 `useMemo`, and **zero** `memo()` components — so most of that was
-stabilising effect dependencies by hand. Existing ones are not worth a sweep; new ones need a reason
-that is not "so the child does not re-render".
+**Two configs need two guards, and for a while only one had one.** Everything the compiler does is
+an optimisation, so a config that quietly stops applying it fails nothing else.
 
-Measured when it was enabled: **144 functions compiled, 17 skipped.** A skip is safe — the compiler
-leaves the function alone rather than guessing — and twelve of those are syntax it cannot lower yet
-(`try`/`finally`, `throw` inside `try`, update expressions captured in lambdas, dynamic `import()`).
+- `src/__tests__/reactCompilerOn.test.tsx` asserts the emitted memo-cache read. It runs *under
+  vitest*, so what it proves is that `vitest.config.ts` applies the compiler.
+- `scripts/__tests__/dashboardFirstLoadBudget.test.mjs` asserts that the built entry chunk contains
+  `react.memo_cache_sentinel` — a string literal the compiler writes into every function it caches
+  for, which survives minification and lands in app code only when app code was compiled. On an
+  uncompiled build it appears in the React vendor chunk alone, where React itself defines it.
 
-**Two of the skips are ours, and they are the two that matter most.** `AndroidViewer` and
-`IOSViewer` are skipped because they carry `eslint-disable` lines for rules the compiler depends on
-(`react-hooks/immutability` twice in `AndroidViewer`, `exhaustive-deps` in both). So the streaming
-page pays for the compiler — its chunk grew ~6 kB — while the viewer inside it gets none of it.
-Removing those disables means fixing what they silence, on the stream path, which is why it is
-tracked separately rather than done alongside.
+Measured: deleting `reactWithCompiler()` from `vite.config.ts` alone leaves the first test green and
+ships an uncompiled bundle. The second one fails on it.
+
+`reactPlugin.ts` sits at the package root, which used to be outside both gates — `lint` globbed
+`*.config.ts` and the tsconfig included only `src`/`components`/`hooks`/`lib`. Both now take every
+root `.ts`, so a new file beside the configs is covered without anyone remembering to add it.
+
+**Stop adding `useCallback` and `useMemo` for identity.** The compiler does that. What is here:
+64 `useCallback`, 3 `useMemo`, and **zero** `memo()` components — so most of that is stabilising
+effect dependencies by hand. Existing ones are not worth a sweep; new ones need a reason that is not
+"so the child does not re-render".
+
+Measured 2026-09-22: **158 functions compiled, 15 skipped.** A skip is safe — the compiler leaves the
+function alone rather than guessing — and **none of the 15 is ours.** Fourteen are syntax it cannot
+lower yet, nine of them `try`/`catch` shapes (value blocks inside a `try`, a `finally` clause, a
+`throw` inside a `try`), plus `UpdateExpression` on a variable captured in a lambda and dynamic
+`import()`. The fifteenth is an internal invariant in `useClientRecording.ts`, recorded at the top
+of that file with both its bails and why neither is worth working around.
+
+#### What an `eslint-disable` costs the compiler, stated as measured
+
+`AndroidViewer` and `IOSViewer` compiled **nothing** until #830, and the cause was easy to read too
+broadly. Probed directly, it is narrower on both axes:
+
+- **Per function, not per file.** A file with four components, one carrying a suppression, compiles
+  the other three. It looked file-wide on the viewers only because each of those files is a single
+  component, so the one skip was the whole file.
+- **Only the rules the compiler's own validation lists.** An `exhaustive-deps` suppression skips the
+  function carrying it. A `react-hooks/purity` suppression does not — `src/pages/QASession.tsx` and
+  `components/ui/sidebar.tsx` each carry one and both compile.
+
+So the cost of a suppression is real and local: it is the function it sits in, and it is silent,
+because a skipped function still works. Removing one is how the two viewers went from 0 to 1 each.
 
 `react-hooks/set-state-in-effect` is `'off'` in `eslint.config.mjs` and hides **15 violations across
-11 files**. It is not a compiler-safety rule — it flags an effect pattern, not an assumption the
-compiler makes — so it does not block any of the above. It is a real cleanup with nothing scheduling
-it; the number is recorded here so the next person does not have to re-measure it.
+13 files**. It is not a compiler-safety rule — it flags an effect pattern, not an assumption the
+compiler makes — so it blocks none of the above. It is a real cleanup with nothing scheduling it;
+the number is recorded here so the next person does not have to re-measure it.
 
 ### Server data is read with TanStack Query, not fetched in an effect
 

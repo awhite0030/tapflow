@@ -6,7 +6,7 @@ import path from 'path'
 export default defineConfig({
   plugins: [
     // **The React Compiler memoises for us, so the hand-written memoisation can stop growing.**
-    // This package had 76 `useCallback` and 7 `useMemo` against **zero** `memo()` components —
+    // This package has 64 `useCallback` and 3 `useMemo` against **zero** `memo()` components —
     // most of that is stabilising effect dependencies, which the compiler does without being asked.
     //
     // Enabled only after the linter agreed. `eslint-plugin-react-hooks@7`'s recommended set is the
