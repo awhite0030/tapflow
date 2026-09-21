@@ -1,9 +1,11 @@
 import { lazy, Suspense, type ReactNode } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { Toaster, type ToasterProps } from 'sonner'
 import { useTheme } from 'next-themes'
 import { DashboardLayout } from './layouts/DashboardLayout'
 import { Login } from './pages/Login'
+import { makeQueryClient } from '@/lib/queryClient'
 
 // Lazy-load routes (Login + shell stay eager); QASession's chunk loads before its viewer, off the stream frame path.
 const Setup = lazy(() => import('./pages/Setup').then((m) => ({ default: m.Setup })))
@@ -22,9 +24,14 @@ const pageFallback = <div className="flex h-screen w-full items-center justify-c
 // layout's Outlet boundary so the sidebar/header stay mounted while loading.
 const suspended = (el: ReactNode) => <Suspense fallback={pageFallback}>{el}</Suspense>
 
+// One client for the app's lifetime. Built outside the component so a re-render never swaps the
+// cache out from under the pages reading it.
+const queryClient = makeQueryClient()
+
 export function App() {
   const { resolvedTheme } = useTheme()
   return (
+    <QueryClientProvider client={queryClient}>
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
@@ -44,5 +51,6 @@ export function App() {
       </Routes>
       <Toaster position="bottom-right" richColors theme={resolvedTheme as ToasterProps['theme']} />
     </BrowserRouter>
+    </QueryClientProvider>
   )
 }
