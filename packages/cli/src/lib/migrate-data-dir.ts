@@ -15,6 +15,7 @@ export type MigrateDataDirResult =
   | { status: 'conflict'; legacy: string; target: string } // both exist — needs manual reconciliation
   | { status: 'exdev'; from: string; to: string } // cross-filesystem — needs a manual move
   | { status: 'relay-running'; port: number }
+  | { status: 'config-unwritable' }
 
 // One-shot atomic-rename move of legacy .tapflow-data/ → .tapflow/data/, also repointing config.json and .gitignore. Idempotent; never destroys data.
 export async function migrateDataDir(cwd: string): Promise<MigrateDataDirResult> {
@@ -54,7 +55,7 @@ export async function migrateDataDir(cwd: string): Promise<MigrateDataDirResult>
     configUpdated = repointConfig(cwd)
   } catch (err) {
     fs.renameSync(target, legacy)
-    throw err
+    return { status: 'config-unwritable' }
   }
 
   const gitignoreUpdated = ensureGitignore(cwd)

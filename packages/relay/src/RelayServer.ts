@@ -489,8 +489,8 @@ export class RelayServer {
     this.purgeOldResourcesTimer = setInterval(purgeOldResources, 24 * 60 * 60 * 1000)
     this.purgeOldResourcesTimer.unref()
 
-    purgeExpiredBuilds(this.recordingsDir)
-    this.purgeBuildsTimer = setInterval(() => purgeExpiredBuilds(this.recordingsDir), 24 * 60 * 60 * 1000)
+    purgeExpiredBuilds(this.uploadsDir)
+    this.purgeBuildsTimer = setInterval(() => purgeExpiredBuilds(this.uploadsDir), 24 * 60 * 60 * 1000)
     this.purgeBuildsTimer.unref()
 
     this.flushResourcesTimer = setInterval(() => this.flushResourceBuffers(), 60_000)

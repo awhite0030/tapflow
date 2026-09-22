@@ -47,6 +47,14 @@ export async function cmdMigrateDataDir(): Promise<void> {
       ])
       process.exit(1)
       break
+    case 'config-unwritable':
+      banner('error', 'CONFIG IS UNWRITABLE', [
+        'Could not update local.dataDir in tapflow.config.json.',
+        'The data directory was not moved.',
+        'Fix the file permissions and try again, or migrate by hand.'
+      ])
+      process.exit(1)
+      break
   }
 }
 
