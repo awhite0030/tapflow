@@ -1,5 +1,6 @@
 import fs from 'fs'
 import path from 'path'
+import { probeBind } from './port-available.js'
 
 // Local (not imported from @tapflowio/relay, whose import runs a config-load side effect) so this stays a pure fs op; mirrors relay's lib/dataDir.ts.
 const LEGACY_DATA_DIR = '.tapflow-data'
@@ -13,16 +14,31 @@ export type MigrateDataDirResult =
   | { status: 'noop-already' } // legacy gone, unified dir present
   | { status: 'conflict'; legacy: string; target: string } // both exist — needs manual reconciliation
   | { status: 'exdev'; from: string; to: string } // cross-filesystem — needs a manual move
+  | { status: 'relay-running'; port: number }
 
 // One-shot atomic-rename move of legacy .tapflow-data/ → .tapflow/data/, also repointing config.json and .gitignore. Idempotent; never destroys data.
-export function migrateDataDir(cwd: string): MigrateDataDirResult {
+export async function migrateDataDir(cwd: string): Promise<MigrateDataDirResult> {
   const legacy = path.join(cwd, LEGACY_DATA_DIR)
   const target = path.join(cwd, UNIFIED_DATA_DIR)
   const legacyExists = fs.existsSync(legacy)
   const targetExists = fs.existsSync(target)
 
+
   if (!legacyExists) return { status: targetExists ? 'noop-already' : 'noop-no-legacy' }
   if (targetExists) return { status: 'conflict', legacy, target }
+
+  let port = 4000
+  try {
+    const raw = fs.readFileSync(path.join(cwd, 'tapflow.config.json'), 'utf-8')
+    const cfg = JSON.parse(raw)
+    if (typeof cfg.local?.port === 'number') port = cfg.local.port
+  } catch {}
+
+  const err = await probeBind(port, '127.0.0.1')
+  if (err && err.code === 'EADDRINUSE') {
+    return { status: 'relay-running', port }
+  }
+
 
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true })
@@ -32,7 +48,15 @@ export function migrateDataDir(cwd: string): MigrateDataDirResult {
     throw err
   }
 
-  const configUpdated = repointConfig(cwd)
+
+  let configUpdated = false
+  try {
+    configUpdated = repointConfig(cwd)
+  } catch (err) {
+    fs.renameSync(target, legacy)
+    throw err
+  }
+
   const gitignoreUpdated = ensureGitignore(cwd)
   return { status: 'migrated', from: legacy, to: target, configUpdated, gitignoreUpdated }
 }

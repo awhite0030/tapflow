@@ -182,7 +182,13 @@ function load(): TapflowConfig {
   // it's set only by config.json or TAPFLOW_DATA_DIR. Precedence: TAPFLOW_DATA_DIR > config.json > default.
   // The relay never moves data; when the default is in effect it resolves read-only, falling back to a
   // pre-existing legacy .tapflow-data/ so an un-migrated install keeps reading its data.
+
+  if (file.local?.dataDir === LEGACY_DATA_DIR) {
+    logger.warn(`tapflow.config.json pins local.dataDir to ${LEGACY_DATA_DIR} — run \`tapflow migrate data-dir\` to move it into ${UNIFIED_DATA_DIR}/.`)
+  }
+
   let dataDir: string
+
   if (process.env.TAPFLOW_DATA_DIR) {
     dataDir = resolveDataDir(process.env.TAPFLOW_DATA_DIR)
   } else if (file.local?.dataDir != null) {

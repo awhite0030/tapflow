@@ -2104,11 +2104,18 @@ export class RelayServer {
     // A missing file is answered rather than thrown for the same reason the lookup above is: the
     // build row outlives its file whenever a bind mount goes away or a purge half-ran, and an
     // unanswered install is a spinner that never stops and a caller that times out with no cause.
+
     let bytes: number
+    let resolvedFilePath = build.file_path
     try {
-      bytes = fs.statSync(build.file_path).size
+      bytes = fs.statSync(resolvedFilePath).size
     } catch {
-      return fail('The relay cannot read this build file. It may have been deleted — re-upload the build.')
+      resolvedFilePath = path.join(this.uploadsDir, 'builds', path.basename(build.file_path))
+      try {
+        bytes = fs.statSync(resolvedFilePath).size
+      } catch {
+        return fail('The relay cannot read this build file. It may have been deleted — re-upload the build.')
+      }
     }
 
     this.sendTo(session.agentSocket, {
@@ -2117,10 +2124,11 @@ export class RelayServer {
       requestId,
       payload: {
         // Still sent, and sent first: an agent that predates `build-download` reads only this.
-        filePath: build.file_path,
+        filePath: resolvedFilePath,
         bundleId: build.bundle_id,
-        buildTicket: this.buildTickets.mint(msg.buildId, build.file_path),
-        buildName: path.basename(build.file_path),
+        buildTicket: this.buildTickets.mint(msg.buildId, resolvedFilePath),
+        buildName: path.basename(resolvedFilePath),
+
         buildBytes: bytes,
       },
     })

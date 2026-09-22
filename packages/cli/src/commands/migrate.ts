@@ -7,8 +7,8 @@ import {
 import { terminalApprovalDeps } from '../lib/approval-prompt.js'
 
 // `tapflow migrate data-dir` — one-shot move of a legacy .tapflow-data/ into the unified .tapflow/data/.
-export function cmdMigrateDataDir(): void {
-  const result = migrateDataDir(process.cwd())
+export async function cmdMigrateDataDir(): Promise<void> {
+  const result = await migrateDataDir(process.cwd())
   switch (result.status) {
     case 'migrated': {
       const lines = ['Moved .tapflow-data/ → .tapflow/data/.']
@@ -28,6 +28,14 @@ export function cmdMigrateDataDir(): void {
       banner('error', 'MIGRATION BLOCKED', [
         'Both .tapflow-data/ (legacy) and .tapflow/data/ exist.',
         'Reconcile by hand — keep the directory with your real data, remove the other, then re-run.',
+      ])
+      process.exit(1)
+      break
+
+    case 'relay-running':
+      banner('error', 'RELAY IS RUNNING', [
+        `The relay is currently running on port ${result.port}.`,
+        'Stop the relay before migrating the data directory.'
       ])
       process.exit(1)
       break
