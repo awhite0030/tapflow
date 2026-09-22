@@ -65,9 +65,9 @@ docker compose up -d
       - TAPFLOW_RELAY_URL=http://<docker-box-ip>:4000
 ```
 
-설정 파일이 아니라 환경변수인 이유가 있습니다. 릴레이는 `tapflow.config.json`을 작업 디렉터리에서
-읽습니다. 이미지에서는 그게 `/app`입니다. Compose 볼륨이 마운트하는 것은 `/app/.tapflow/data`이므로
-거기 둔 파일은 열리지 않습니다. 이 값은 CORS·CSRF 허용 목록에도 함께 들어갑니다. 프록시 뒤에 두는 배포에는
+설정 파일이 아니라 환경변수인 이유가 있습니다. 릴레이는 `tapflow.config.json`을 설치 디렉토리에서
+읽고, 이미지에서는 `TAPFLOW_HOME`이 그 위치를 `/app`으로 고정합니다. Compose 볼륨이 마운트하는 것은
+`/app/.tapflow/data`이므로 거기 둔 파일은 열리지 않습니다. 이 값은 CORS·CSRF 허용 목록에도 함께 들어갑니다. 프록시 뒤에 두는 배포에는
 그쪽이 필요합니다.
 :::
 
@@ -471,12 +471,14 @@ sudo mkdir -p /etc/tapflow /var/lib/tapflow/.tapflow/data
 sudo chown -R tapflow:tapflow /var/lib/tapflow
 ```
 
-릴레이 시크릿은 `/etc/tapflow/relay.env`에 둡니다. 기존 [JWT_SECRET](#jwt-secret) 섹션은 릴레이가 직접 읽는 `.tapflow/data/.env` 방식도 설명합니다:
+릴레이 시크릿은 `/etc/tapflow/relay.env`에 둡니다. 기존 [JWT_SECRET](#jwt-secret) 섹션은 릴레이가 데이터 디렉토리에서 직접 읽는 `.env` 방식도 설명합니다:
 
 ```ini
 TAPFLOW_DATA_DIR=/var/lib/tapflow/.tapflow/data
 JWT_SECRET=YOUR_JWT_SECRET
 ```
+
+`TAPFLOW_HOME`만 두면 데이터는 `/var/lib/tapflow/data`에 놓입니다. 그런데도 `TAPFLOW_DATA_DIR`을 함께 적는 이유는, 설치 디렉토리 개념이 생기기 전에 구축한 서버와 같은 경로를 쓰기 위해서입니다. 새로 만드는 서버라면 이 줄을 빼고 짧은 레이아웃을 써도 됩니다.
 
 `JWT_SECRET`은 `openssl rand -hex 32`로 생성하고, `/etc/tapflow/relay.env`는 root만 읽을 수 있게 제한합니다:
 

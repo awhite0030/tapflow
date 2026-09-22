@@ -66,8 +66,8 @@ as the variables below:
 ```
 
 An environment variable rather than the config file, because the relay reads `tapflow.config.json`
-from its working directory — `/app` in the image — and the Compose volume mounts
-`/app/.tapflow/data`, so a file placed there is never opened. The same value also goes into the
+from its install directory, which `TAPFLOW_HOME` in the image pins to `/app`, while the Compose
+volume mounts `/app/.tapflow/data` — so a file placed in the volume is never opened. The same value also goes into the
 CORS and CSRF allowlist, which a proxied deployment needs.
 :::
 
@@ -472,12 +472,14 @@ sudo mkdir -p /etc/tapflow /var/lib/tapflow/.tapflow/data
 sudo chown -R tapflow:tapflow /var/lib/tapflow
 ```
 
-Put relay secrets in `/etc/tapflow/relay.env`. The existing [JWT_SECRET](#jwt-secret) section also describes the `.tapflow/data/.env` convention that the relay reads directly:
+Put relay secrets in `/etc/tapflow/relay.env`. The existing [JWT_SECRET](#jwt-secret) section also describes the `.env` convention that the relay reads directly from its data directory:
 
 ```ini
 TAPFLOW_DATA_DIR=/var/lib/tapflow/.tapflow/data
 JWT_SECRET=YOUR_JWT_SECRET
 ```
+
+`TAPFLOW_HOME` alone would put the data in `/var/lib/tapflow/data`. `TAPFLOW_DATA_DIR` is named here anyway, so this unit matches a server set up before the install directory existed and keeps its data where it already is. Drop the line on a fresh server if you prefer the shorter layout.
 
 Generate `JWT_SECRET` with `openssl rand -hex 32`, then keep `/etc/tapflow/relay.env` readable only by root:
 

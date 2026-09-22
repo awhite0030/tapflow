@@ -28,11 +28,16 @@ load():
   1. read tapflow.config.json
   2. resolve dataDir   (config.json ?? default, then TAPFLOW_DATA_DIR from the shell)
   3. loadDataDirEnv(dataDir)   ← fills process.env from .env (shell wins)
-  4. read the remaining process.env values + jwtSecret
+  4. read the remaining process.env values
 ```
 
-`.tapflow/data/.env` becomes the single default home for every relay secret, so the mental model
-is one line: "secrets live in `.tapflow/data/.env`."
+The JWT secret is **not** among them: `getJwtSecret()` creates it on first use, which
+`RelayServer.start()` triggers on boot. Creating it in `load()` meant every CLI command wrote one
+wherever it ran, because the CLI imports every command's module at startup.
+
+`<dataDir>/.env` becomes the single default home for every relay secret, so the mental model is one
+line: "secrets live in the install's data directory." That directory is `~/.tapflow/data` on a
+default install, and the `.tapflow/data` or `.tapflow-data` an older one already has.
 
 ## Decisions worth keeping
 

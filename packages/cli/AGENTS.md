@@ -20,7 +20,7 @@ Commands are registered in `src/index.ts`; user-facing reference: [`docs/referen
 - **`init` pins `local.dataDir` in the config it writes.** A new install in tapflow's own dir gets `data`; one sharing a dir with something else gets `.tapflow/data`, where that repo's `.gitignore` already covers it. Pinned so the layout cannot change later under a different resolution rule.
 - `agent start --token` (or `TAPFLOW_AGENT_TOKEN`) carries an `agent`-scope PAT, required when the relay is on a different machine; flag wins over env.
 - `flow run` exit codes: `0` passed · `1` flow failed · `2` env/config error. Always sends `device:boot` (idempotent — it initializes the agent's touch/stream state). `--token` needs a `view`-scope PAT; REST (`/ui-tree`, `/screenshot`) requires auth even on localhost.
-- `migrate data-dir` moves a legacy `.tapflow-data/` into the unified `.tapflow/data/` (atomic rename), repoints `local.dataDir` in `tapflow.config.json` when it pinned the old default, and updates `.gitignore`. Idempotent; the relay itself never moves data (read-only fallback only).
+- `migrate data-dir` moves a legacy `.tapflow-data/` into the unified `.tapflow/data/` (atomic rename) **inside the resolved install dir**, repoints `local.dataDir` in `tapflow.config.json` when it pinned the old default, and updates `.gitignore`. Idempotent; the relay itself never moves data (read-only fallback only).
 
 ### Command Design Principles
 
