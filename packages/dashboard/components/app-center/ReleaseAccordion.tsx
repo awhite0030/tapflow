@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { TechLabel } from '@/components/ui/tech-label'
 import { BuildRow } from './BuildRow'
@@ -12,6 +13,9 @@ interface Props {
   onStatusChange: (buildId: number, status: string | null) => void
   onScheduleDeletion: (buildId: number) => void
   onCancelDeletion: (buildId: number) => void
+  /** Ids describing the header — App Center passes its status line to the first release, which is
+   *  where focus lands when a retry brings the list back. */
+  describedBy?: string
 }
 
 export function ReleaseAccordion({
@@ -23,12 +27,25 @@ export function ReleaseAccordion({
   onStatusChange,
   onScheduleDeletion,
   onCancelDeletion,
+  describedBy,
 }: Props) {
+  const panelId = useId()
   return (
     <div className="rounded-lg shadow-card-2 overflow-hidden">
+      {/* A disclosure: the chevron is the only visible sign of open or closed, so the state has to be
+          said as well. `aria-controls` only while the panel exists — it is not rendered when closed.
+
+          **The focus ring is drawn inside.** The wrapper's `overflow-hidden` clips an outline drawn
+          outside the button — on three sides when open, all four when closed — and this is where
+          focus lands when a retry brings the list back. Inside twice over: the ring is inset, and so
+          is the transparent outline `outline-none` leaves, because forced-colors mode drops the ring
+          (a box-shadow) and paints that outline in a system colour instead. */}
       <button
-        className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-accent/50 bg-card"
+        className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-accent/50 bg-card focus-visible:outline-none focus-visible:outline-offset-[-2px] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         onClick={onToggle}
+        aria-expanded={isOpen}
+        aria-controls={isOpen ? panelId : undefined}
+        aria-describedby={describedBy}
       >
         {isOpen
           ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -40,7 +57,7 @@ export function ReleaseAccordion({
         </span>
       </button>
       {isOpen && (
-        <div className="border-t bg-card">
+        <div id={panelId} className="border-t bg-card">
           {builds.map((b, idx) => (
             <BuildRow
               key={b.id}
