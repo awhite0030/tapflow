@@ -70,11 +70,11 @@ If you turn on HTTPS, choose how the certificate is provided.
 | **DNS auto-issue** | Auto-issues and renews a Let's Encrypt certificate with a Cloudflare or Vercel API token. Just enter your domain. |
 | **Existing certificate (import)** | Point to an internal PKI or a certificate file you already hold. You manage renewal yourself. |
 
-When you choose DNS auto-issue, you select a provider and enter a domain, and a `.tapflow/data/.env` for the token is scaffolded alongside. The full reference for issuance modes and config keys is in [Configuration — HTTPS](/reference/configuration#https-secure-context).
+When you choose DNS auto-issue, you select a provider and enter a domain, and a `.env` for the token is scaffolded in the data directory. The full reference for issuance modes and config keys is in [Configuration — HTTPS](/reference/configuration#https-secure-context).
 
-## .tapflow/data/.env — holding secrets
+## The data directory's .env — holding secrets
 
-`.tapflow/data/.env` is the **default home for every relay secret**. Choosing DNS auto-issue makes `init` scaffold an empty template for the token, but this file holds more than DNS tokens — `JWT_SECRET`, the SMTP password, and any other secret go here too, one per line. Secrets stay out of `tapflow.config.json` and live in this gitignored file instead.
+`<data directory>/.env` — `~/.tapflow/data/.env` on a default install — is the **default home for every relay secret**. Choosing DNS auto-issue makes `init` scaffold an empty template for the token, but this file holds more than DNS tokens — `JWT_SECRET`, the SMTP password, and any other secret go here too, one per line. Secrets stay out of `tapflow.config.json` and live in this gitignored file instead.
 
 Paste each value after the `=`.
 
@@ -109,7 +109,26 @@ After `tapflow init` finishes, the install directory looks like this.
     .env                 ← only when DNS auto-issue is chosen
 ```
 
-The relay fills `data/` in on first start. Flow files are not part of this: keep them in your app repository under `.tapflow/flows/`, where `tapflow flow run` picks them up and failure screenshots land in `.tapflow/artifacts/`.
+The relay fills `data/` in on first start.
+
+## What lives where
+
+Flow files are not part of the install. They belong to your app repository, next to the code they test.
+
+```text
+~/.tapflow/              ← this machine: one install, whatever you run
+  tapflow.config.json
+  data/                  ← database, uploaded builds, secrets
+
+your-app/                ← your repository: reviewed, committed, run in CI
+  .tapflow/
+    flows/               ← the flow YAML you commit
+    artifacts/           ← failure screenshots from `tapflow flow run` (gitignored)
+```
+
+The line between them is how each side comes back. The repository half is restored by `git clone`; the machine half from a backup, because a database, uploaded builds and a signing key cannot be committed. Flow files also have to be in the repository for CI to run them at all — a runner checks out your app, not your home directory.
+
+Uploaded builds are the part that grows, and on a Mac they sit inside your home directory, so Time Machine backs them up with everything else. Set `TAPFLOW_HOME` to put the install somewhere else — `/var/lib/tapflow` on a server, as the [systemd example](/guide/self-hosting#systemd-linux-relay-server) does.
 
 ## Which install a command uses
 

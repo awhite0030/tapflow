@@ -72,9 +72,9 @@ HTTPS를 켜기로 했다면 인증서를 어떻게 마련할지 고릅니다.
 
 DNS 자동 발급을 고르면 업체를 선택하고 도메인을 입력합니다. 이때 토큰을 담을 `.tapflow/data/.env`가 함께 만들어집니다. 인증서 발급 모드와 설정 키의 전체 레퍼런스는 [설정 파일 — HTTPS](/ko/reference/configuration#https-보안-컨텍스트)에 있습니다.
 
-## .tapflow/data/.env — 비밀 보관
+## 데이터 디렉토리의 .env — 비밀 보관
 
-`.tapflow/data/.env`는 릴레이의 **모든 비밀이 모이는 기본 경로**입니다. DNS 자동 발급을 선택하면 `init`이 토큰을 담을 빈 템플릿을 만들지만, 이 파일에는 DNS 토큰뿐 아니라 `JWT_SECRET`이나 SMTP 비밀번호 같은 다른 비밀도 한 줄씩 적을 수 있습니다. 비밀이라 `tapflow.config.json`에 두지 않고, gitignore되는 이 파일에 분리합니다.
+`<데이터 디렉토리>/.env`는 릴레이의 **모든 비밀이 모이는 기본 경로**입니다. 기본 설치라면 `~/.tapflow/data/.env`입니다. DNS 자동 발급을 선택하면 `init`이 토큰을 담을 빈 템플릿을 만들지만, 이 파일에는 DNS 토큰뿐 아니라 `JWT_SECRET`이나 SMTP 비밀번호 같은 다른 비밀도 한 줄씩 적을 수 있습니다. 비밀이라 `tapflow.config.json`에 두지 않고, gitignore되는 이 파일에 분리합니다.
 
 키 이름 뒤 `=` 다음에 값을 붙여넣습니다.
 
@@ -109,7 +109,26 @@ SMTP_PASS=
     .env                 ← DNS 자동 발급을 선택했을 때만
 ```
 
-`data/`는 릴레이가 첫 시작 때 채웁니다. 플로우 파일은 설치의 일부가 아닙니다. 앱 저장소의 `.tapflow/flows/`에 두면 `tapflow flow run`이 읽고, 실패 스크린샷은 `.tapflow/artifacts/`에 쌓입니다.
+`data/`는 릴레이가 첫 시작 때 채웁니다.
+
+## 무엇이 어디에 있나
+
+플로우 파일은 설치의 일부가 아닙니다. 테스트 대상 코드 옆, 앱 저장소에 둡니다.
+
+```text
+~/.tapflow/              ← 이 머신: 설치 하나, 어디서 실행하든 같은 곳
+  tapflow.config.json
+  data/                  ← DB, 업로드된 빌드, 비밀
+
+your-app/                ← 앱 저장소: 리뷰하고 커밋하고 CI에서 실행
+  .tapflow/
+    flows/               ← 커밋하는 플로우 YAML
+    artifacts/           ← `tapflow flow run`의 실패 스크린샷 (gitignore)
+```
+
+둘을 가르는 기준은 복구 방법입니다. 저장소 쪽은 `git clone`으로 돌아오고, 머신 쪽은 백업에서 복원합니다. DB와 업로드된 빌드, 서명 키는 커밋할 수 없기 때문입니다. 게다가 플로우 파일은 저장소에 있어야 CI가 실행할 수 있습니다. 러너는 앱 저장소를 checkout하지 홈 디렉토리를 받지 않습니다.
+
+용량이 커지는 쪽은 업로드된 빌드입니다. Mac에서는 홈 디렉토리 안이라 Time Machine 백업에도 함께 들어갑니다. 다른 곳에 두려면 `TAPFLOW_HOME`을 설정하세요. 서버라면 [systemd 예시](/ko/guide/self-hosting#systemd-linux-릴레이-서버)처럼 `/var/lib/tapflow`를 씁니다.
 
 ## 명령이 쓰는 설치 디렉토리
 
