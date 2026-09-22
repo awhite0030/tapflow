@@ -91,10 +91,16 @@ of that file with both its bails and why neither is worth working around.
 
 `src/__tests__/noSuppressedCompilation.test.ts` is what keeps that "none of the 15 is ours" true. It
 runs the compiler over the package and fails on any skip whose **reason** is a suppression, which is
-the only kind anybody here can cause. It drives the same `@babel/core` major the build does, pinned
-for that reason: measured, `@babel/core` 8 and 7.29 disagree about whether `AndroidViewer` compiles.
-A bundle check cannot do this job — one suppressed component removes its share of 161 sentinels and
-leaves the rest, and 73 of them sit in a lazy chunk the build guard never opens.
+the only kind anybody here can cause. A bundle check cannot do this job — one suppressed component
+removes its share of 161 sentinels and leaves the rest, and 73 of them sit in a lazy chunk the build
+guard never opens.
+
+It must drive the Babel the *build* drives, and it asserts that rather than assuming it: `@babel/core`
+is a devDependency here and a dependency of `@vitejs/plugin-react`, so the two are one install only
+while their ranges agree, and the test compares the resolved paths. Measured, 8.0.6 and 7.29.7
+disagree about whether `AndroidViewer` compiles — a drift would have the census reporting on a
+toolchain nothing ships. Comparing resolution rather than pinning exact versions, because a pin is a
+rule nothing enforces while this fails the moment pnpm hands the plugin a different copy.
 
 #### What an `eslint-disable` costs the compiler, stated as measured
 

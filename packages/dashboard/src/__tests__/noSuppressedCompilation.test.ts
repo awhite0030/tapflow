@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { transformSync } from '@babel/core'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createRequire } from 'node:module'
 
 /**
  * **No function in this package is skipped by the compiler because somebody silenced a lint rule.**
@@ -74,6 +75,23 @@ function census() {
 const result = census()
 
 describe('the React Compiler is not being switched off a function at a time', () => {
+  it('asks the same Babel the build asks', () => {
+    // **The census is only evidence if it runs the compiler the build runs.** `@babel/core` is a
+    // devDependency here *and* a dependency of `@vitejs/plugin-react`, and the two are the same
+    // install only while their ranges agree — measured, 8.0.6 and 7.29.7 disagree about whether
+    // `AndroidViewer` compiles, so a drift between them would have this file reporting on a
+    // toolchain nothing ships.
+    //
+    // Comparing resolved paths rather than pinning exact versions: pinning two packages would be a
+    // rule nothing enforces, while this fails the moment pnpm gives the plugin a different copy.
+    const here = createRequire(join(import.meta.dirname, '..', '..', 'package.json'))
+    const plugin = createRequire(here.resolve('@vitejs/plugin-react'))
+    expect(
+      here.resolve('@babel/core'),
+      'this test and the vite react plugin resolved different copies of @babel/core',
+    ).toBe(plugin.resolve('@babel/core'))
+  })
+
   it('skips nothing because of an eslint suppression', () => {
     expect(
       result.suppressed,

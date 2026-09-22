@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync, mkdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync, mkdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { sources, SKIP_DIRS, SKIP_PATHS, SKIP_PATHS_SOURCE } from './sourceFiles.mjs'
 
@@ -159,37 +159,46 @@ describe('static checks enumerate the tree from disk, not from git', () => {
     // last step is `rm -rf ../relay/public && cp -r dist/. ../relay/public/`. A walk inside that
     // directory while the `rm -rf` runs dies on ENOENT, which is a failure about nothing.
     //
-    // Held here rather than in the walker's caller because the race is not deterministic: a test that
-    // waits to observe it would be a flake of its own. This asserts the skip instead.
-    // **A planted file, because filtering the result is vacuous here.** `sources()` collects
-    // `.ts`/`.tsx` and that directory holds built `.js`, `.html` and `.svg` — so asserting "nothing
-    // walked came from there" passes whether or not the walk descends, and the race is about
-    // descending. Measured: with the assertion written that way, deleting the skip from
-    // `sourceFiles.mjs` failed nothing. This plants a file the walk would have to collect.
-    for (const target of SKIP_PATHS) {
-      const existed = existsSync(target)
-      if (!existed) mkdirSync(target, { recursive: true })
-      const probe = join(target, '__walk-probe.ts')
-      writeFileSync(probe, 'export const planted = 1\n')
-      try {
-        const walked = sources(join(root, 'packages'))
-        expect(
-          walked.filter((f) => f.endsWith('__walk-probe.ts')),
-          `sources() descended into ${relative(root, target)}, which the dashboard build deletes mid-run`,
-        ).toEqual([])
-      } finally {
-        rmSync(probe, { force: true })
-        if (!existed) rmSync(target, { recursive: true, force: true })
-      }
+    // **Two halves, and neither touches the real directory.** Planting a probe inside
+    // `packages/relay/public` is what the first version of this did, and it reproduced the very race
+    // it exists to prevent: the build can delete the tree between `mkdirSync` and `writeFileSync`,
+    // and a recursive cleanup can remove what the build just wrote. So the mechanism is proved in a
+    // temp tree — under `scripts/`, for the reason the probe above gives — and the *content* of the
+    // real set is proved against the script that writes it. What joins the two is `sources()`'s
+    // default argument, which is one line in `sourceFiles.mjs`.
+    const dir = mkdtempSync(join(scriptsDir, '__tests__', '.skipprobe-'))
+    try {
+      // **Nested one level below the walk's root on purpose.** With the skipped directory as a direct
+      // child, the check runs in the top-level call and a `sources()` that forgot to forward
+      // `skipPaths` to its recursion still passes — measured. The real path is nested too
+      // (`packages/` → `relay` → `public`), and there it is invisible because the recursion falls
+      // back to the same default set.
+      const pkg = join(dir, 'pkg')
+      const generated = join(pkg, 'generated')
+      mkdirSync(generated, { recursive: true })
+      writeFileSync(join(pkg, 'kept.ts'), 'export const a = 1\n')
+      writeFileSync(join(generated, 'skipped.ts'), 'export const b = 2\n')
+      const rel = relative(root, dir)
+
+      const walked = sources(rel, [], new Set([generated]))
+      expect(walked).toContain(join(rel, 'pkg', 'kept.ts').replaceAll('\\', '/'))
+      expect(
+        walked.filter((f) => f.endsWith('skipped.ts')),
+        'sources() descended into a directory its skip set names',
+      ).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
 
-    // And the skip is not allowed to go stale silently: it names a path the dashboard build writes,
-    // so if the build stops writing it the assertion above starts passing for the wrong reason.
+    // The set names a path the dashboard build writes, so if the build stops writing it the skip is
+    // pointing at nothing and the race is back with every check still green.
     const buildScript = JSON.parse(readFileSync(SKIP_PATHS_SOURCE.manifest, 'utf8'))
       .scripts[SKIP_PATHS_SOURCE.script]
     expect(
       buildScript,
       `the dashboard build no longer writes ${SKIP_PATHS_SOURCE.mentions} — SKIP_PATHS is stale`,
     ).toContain(SKIP_PATHS_SOURCE.mentions)
+    expect([...SKIP_PATHS].map((p) => relative(root, p).replaceAll('\\', '/')))
+      .toContain('packages/relay/public')
   })
 })

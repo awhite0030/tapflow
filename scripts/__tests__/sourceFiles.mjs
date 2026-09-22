@@ -39,7 +39,14 @@ const repoRoot = join(import.meta.dirname, '../..')
  *  Exported because two different walkers reach it: this module's `sources()` (through
  *  `clientOutboundTyped.test.mjs`, the only caller that walks all of `packages/`) and
  *  `agentReadableDocs.test.mjs`, which walks the repo root with its own extension set. Fixing one
- *  and not the other left half the race in place. */
+ *  and not the other left half the race in place.
+ *
+ *  **`sources()` takes it as a parameter so the behaviour can be proved without touching this
+ *  directory.** A first version of that test planted a file inside `packages/relay/public` — which
+ *  is to say, it reproduced the race it exists to prevent: the build's `rm -rf` can land between the
+ *  `mkdirSync` and the `writeFileSync`, and a cleanup that removes the directory recursively can
+ *  delete the tree the build just wrote. The probe runs in a temp tree under `scripts/` instead, for
+ *  the reason `checksWalkDisk.test.mjs` already gives about where probes belong. */
 export const SKIP_PATHS = new Set([join(repoRoot, 'packages', 'relay', 'public')])
 
 /** Where `SKIP_PATHS` comes from, so a check can fail loudly when the build stops producing it
@@ -64,12 +71,12 @@ export const SKIP_PATHS_SOURCE = {
  * detection back — so the extension, not the content, decided it. The three call sites' original filters
  * (`endsWith('.ts')` and `/\.(ts|tsx)$/`) both admitted `.d.ts`, and this helper reproduces that exactly.
  */
-export function sources(dir, out = []) {
+export function sources(dir, out = [], skipPaths = SKIP_PATHS) {
   const abs = dir.startsWith(repoRoot) ? dir : join(repoRoot, dir)
   for (const e of readdirSync(abs, { withFileTypes: true })) {
     if (e.isDirectory()) {
       const child = join(abs, e.name)
-      if (!SKIP_DIRS.has(e.name) && !SKIP_PATHS.has(child)) sources(child, out)
+      if (!SKIP_DIRS.has(e.name) && !skipPaths.has(child)) sources(child, out, skipPaths)
     } else if (/\.(ts|tsx)$/.test(e.name)) {
       out.push(join(abs, e.name).slice(repoRoot.length + 1).replaceAll('\\', '/'))
     }
