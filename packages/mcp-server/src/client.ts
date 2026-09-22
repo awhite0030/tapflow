@@ -882,8 +882,10 @@ export class TapflowClient {
     endY: number,
     durationMs = 300,
   ): Promise<void> {
-    if (!Number.isFinite(durationMs) || !Number.isInteger(durationMs) || durationMs <= 0 || durationMs > MAX_TIMER_MS) {
-      throw new RangeError(`swipe duration must be a positive finite integer no greater than ${MAX_TIMER_MS}ms`)
+    // Fractional durations (e.g. 250.5) stay valid for 0.23.0 compatibility;
+    // routed through failed() so a session-scoped failure carries the session note.
+    if (!Number.isFinite(durationMs) || !(durationMs > 0) || durationMs > MAX_TIMER_MS) {
+      throw this.failed(sessionId, `swipe duration must be a positive finite number no greater than ${MAX_TIMER_MS}ms`)
     }
     const STEPS = 8
     const interval = durationMs / STEPS

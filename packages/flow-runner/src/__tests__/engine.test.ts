@@ -340,4 +340,44 @@ steps:
     expect(result.status).toBe('passed')
     expect(result.failureKind).toBeUndefined()
   })
+
+  it('aborts a stalled failure screenshot instead of hanging the flow', async () => {
+    vi.useFakeTimers()
+    try {
+      const driver = fakeDriver([[]])
+      driver.openUrl = vi.fn(async () => { throw new Error('product failure') })
+      let seenSignal: AbortSignal | undefined
+      driver.screenshot = vi.fn((signal?: AbortSignal) => new Promise<Buffer>((_resolve, _reject) => {
+        seenSignal = signal
+      }))
+      const pending = runFlow(flowOf('steps:\n  - openUrl: "app://x"\n'), driver, OPTS)
+      await vi.advanceTimersByTimeAsync(10_000)
+      const result = await pending
+      expect(result.status).toBe('failed')
+      expect(result.failureScreenshot).toBeUndefined()
+      expect(seenSignal).toBeInstanceOf(AbortSignal)
+      expect(seenSignal?.aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a product miss when a trailing transient blip hits the deadline', async () => {
+    const driver = fakeDriver([[]])
+    let n = 0
+    driver.queryUITree = vi.fn(async () => {
+      // Successful empty trees first (the element genuinely never matches),
+      // then a transient blip exactly at the deadline.
+      if (n++ < 3) return []
+      throw new TransientQueryError('agent blip at deadline')
+    })
+    const result = await runFlow(flowOf('steps:\n  - tapOn: "없는버튼"\n'), driver, OPTS)
+    expect(result.status).toBe('failed')
+    expect(result.failureKind).toBe('product')
+  })
+
+  it('rejects timeouts that round to 0ms', async () => {
+    const driver = fakeDriver([[]])
+    await expect(runFlow(flowOf('steps:\n  - openUrl: "app://x"\n'), driver, { defaultTimeoutMs: 0.4 })).rejects.toThrow(/at least 1ms/)
+  })
 })

@@ -120,4 +120,41 @@ describe('run_flow — install before replay', () => {
     expect(JSON.stringify(res.content)).toContain('device offline')
     expect(calls).toEqual([]) // install rejected → launchApp step never reached
   })
+
+  it('returns failureKind so callers never branch on prose', async () => {
+    const calls: string[] = []
+    const client = fakeClient(calls)
+    // Immediate permanent failure (no polling): fails fast with product kind.
+    vi.mocked(client.queryUITree).mockRejectedValueOnce(new Error('Session not found'))
+    const res = await runFlowHandler(client)({ sessionId: 's1', flow: 'steps:\n  - assertVisible: "OK"\n' })
+    expect(res.isError).toBeFalsy()
+    const payload = JSON.parse((res.content[0] as { text: string }).text)
+    expect(payload.status).toBe('failed')
+    expect(payload.failureKind).toBe('product')
+  })
+
+  it('classifies environmental input refusals like the CLI RelayDriver', async () => {
+    const calls: string[] = []
+    const client = fakeClient(calls)
+    const driver = makeFlowDriver(client, 's1', 5)
+    // Same wire shape TapflowClient.failed() builds for an environmental reason.
+    vi.mocked(client.tap).mockRejectedValueOnce(new Error('tap was refused by the device (channel-unavailable): x — the input channel is gone'))
+    const flow = parseFlow('steps:\n  - tapOn: "OK"\n', 'f.yaml')
+    vi.mocked(client.queryUITree).mockResolvedValue([{ role: 'button', label: 'OK', frame: { x: 0, y: 0, width: 1, height: 1 }, enabled: true }])
+    const result = await runFlow(flow, driver)
+    expect(result.status).toBe('failed')
+    expect(result.failureKind).toBe('environment')
+  })
+
+  it('keeps product input refusals (no-gesture) as product', async () => {
+    const calls: string[] = []
+    const client = fakeClient(calls)
+    const driver = makeFlowDriver(client, 's1', 5)
+    vi.mocked(client.tap).mockRejectedValueOnce(new Error('tap was refused by the device (no-gesture): unsure — part of it may already have been applied'))
+    const flow = parseFlow('steps:\n  - tapOn: "OK"\n', 'f.yaml')
+    vi.mocked(client.queryUITree).mockResolvedValue([{ role: 'button', label: 'OK', frame: { x: 0, y: 0, width: 1, height: 1 }, enabled: true }])
+    const result = await runFlow(flow, driver)
+    expect(result.status).toBe('failed')
+    expect(result.failureKind).toBe('product')
+  })
 })

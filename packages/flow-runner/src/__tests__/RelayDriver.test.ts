@@ -37,7 +37,7 @@ describe('RelayDriver failure-kind mapping (#543)', () => {
       () => new RequestTimeoutError('tap timed out'),
       () => new RelayUnavailableError('not connected to relay'),
       () => new RelayHttpError('session not found', 404),
-      () => new PlatformError('device boot failed'),
+      () => new SessionUnavailableError('device boot failed — the relay ended this session (gone)'),
     ]
     for (const make of cases) {
       const original = make()
@@ -56,6 +56,9 @@ describe('RelayDriver failure-kind mapping (#543)', () => {
       () => new InputRefusedError('unsupported', new PlatformError('tap was refused (unsupported): no')),
       () => new InputRefusedError('no-gesture', new PlatformError('tap was refused (no-gesture): unsure')),
       () => new Error('launchApp needs a build under test'),
+      // A launch failure on a healthy session is a broken build, not infra:
+      // failed() returns a plain PlatformError when no session note applies.
+      () => new PlatformError('launch failed'),
     ]
     for (const make of cases) {
       const original = make()

@@ -10,7 +10,7 @@
 // rather than trusting the config to mean what it says.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'child_process'
-import { readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync, rmSync } from 'fs'
+import { readFileSync, readdirSync, existsSync, statSync, writeFileSync, appendFileSync, rmSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -24,15 +24,27 @@ function sourceFiles(dir) {
   if (!existsSync(dir)) return []
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name)
-    return entry.isDirectory() ? sourceFiles(path) : /\.(?:ts|tsx)$/.test(entry.name) ? [path] : []
+    // .mjs/.mts/.js included: a helper behind a dynamic import() or a plain
+    // .js re-export would otherwise hide a sibling import from the guard.
+    return entry.isDirectory() ? sourceFiles(path) : /\.(?:ts|tsx|mts|mjs|js)$/.test(entry.name) ? [path] : []
   })
+}
+
+function isFile(path) {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
 }
 
 function resolveLocalImport(from, specifier) {
   if (!specifier.startsWith('.')) return undefined
-  const base = resolve(dirname(from), specifier.replace(/\.js$/, ''))
-  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts')]) {
-    if (existsSync(candidate)) return candidate
+  const base = resolve(dirname(from), specifier.replace(/\.(js|mjs)$/, ''))
+  // isFile, not existsSync: a bare directory path exists too, and queuing it
+  // makes readFileSync die with EISDIR instead of simply missing.
+  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}.mts`, `${base}.mjs`, `${base}.js`, join(base, 'index.ts'), join(base, 'index.mts'), join(base, 'index.mjs'), join(base, 'index.js')]) {
+    if (isFile(candidate)) return candidate
   }
   return undefined
 }
@@ -49,7 +61,13 @@ function testsImportASibling(dir) {
     seen.add(file)
     const source = readFileSync(file, 'utf8')
     if (/['"]@tapflowio\/[^'"]+['"]/.test(source)) return true
-    for (const match of source.matchAll(/from\s*['"]([^'"]+)['"]/g)) {
+    const specifiers = [
+      ...source.matchAll(/from\s*['"]([^'"]+)['"]/g),
+      // Dynamic import() too: a lazy `await import('./helper.mjs')` hides a
+      // sibling behind a call the static-import regex never sees.
+      ...source.matchAll(/import\s*\(\s*['"]([^'"]+)['"]/g),
+    ]
+    for (const match of specifiers) {
       const local = resolveLocalImport(file, match[1])
       if (local && !seen.has(local)) queue.push(local)
     }
@@ -66,10 +84,15 @@ function runProbe(packageDir, probe) {
   const relativeProbe = probe.slice(packageDir.length + 1)
   if (process.platform === 'win32') {
     const vitest = join(packageDir, 'node_modules', '.bin', 'vitest.cmd')
-    execFileSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `${vitest} run ${relativeProbe}`], {
+    // Run as one shell string so paths containing spaces (e.g.
+    // `C:\Users\Jane Doe\...`) survive: each path is quoted once, and the
+    // shell runs the .cmd shim. The previous `cmd /s /c` array form passed
+    // its quoting through one layer too many and failed to launch.
+    execFileSync(`"${vitest}" run "${relativeProbe}"`, {
       cwd: packageDir,
       stdio: 'pipe',
       encoding: 'utf8',
+      shell: true,
     })
   } else {
     execFileSync('pnpm', ['exec', 'vitest', 'run', relativeProbe], { cwd: packageDir, stdio: 'pipe', encoding: 'utf8' })
@@ -82,7 +105,11 @@ describe('every package whose tests import a sibling reads its source', () => {
   const affected = packageDirs().filter(testsImportASibling)
 
   it('finds the packages by inspection, not from a list', () => {
-    expect(affected.length).toBeGreaterThanOrEqual(5)
+    // Measured: 9 packages import a sibling in their tests (agent-core,
+    // android-agent, audiotap-helper, cli, dashboard, flow-runner, ios-agent,
+    // mcp-server, relay). A lower floor lets a package silently drop out of
+    // the guard.
+    expect(affected.length).toBeGreaterThanOrEqual(9)
   })
 
   it.each(affected)('%s extends the shared config', (dir) => {

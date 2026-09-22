@@ -79,7 +79,11 @@ function parseSelector(v: unknown, ctx: string): Selector {
       if (typeof timeout !== 'number' || !Number.isFinite(timeout) || !(timeout > 0) || timeout > MAX_TIMEOUT_SECONDS) {
         throw new ValidationError(`${ctx}: "timeout" must be a positive number of seconds no greater than ${MAX_TIMEOUT_SECONDS}`)
       }
-      selector.timeoutMs = Math.round(timeout * 1000)
+      const timeoutMs = Math.round(timeout * 1000)
+      if (timeoutMs <= 0) {
+        throw new ValidationError(`${ctx}: "timeout" must be at least 1ms (got ${timeout}s, which rounds to 0ms)`)
+      }
+      selector.timeoutMs = timeoutMs
     }
     return selector
   }
@@ -145,8 +149,10 @@ function parseStep(raw: unknown, ctx: string): Step {
         durationMs: DEFAULT_SWIPE_DURATION_MS,
       }
       if (durationMs !== undefined) {
-        if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || !Number.isInteger(durationMs) || !(durationMs > 0) || durationMs > MAX_TIMER_MS) {
-          throw new ValidationError(`${ctx}: "durationMs" must be a positive integer no greater than ${MAX_TIMER_MS}ms`)
+        // Fractional durations (e.g. 250.5) worked on 0.23.0 and stay valid;
+        // only non-finite, non-positive or over-limit values are rejected.
+        if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || !(durationMs > 0) || durationMs > MAX_TIMER_MS) {
+          throw new ValidationError(`${ctx}: "durationMs" must be a positive number no greater than ${MAX_TIMER_MS}ms`)
         }
         parsed.durationMs = durationMs
       }

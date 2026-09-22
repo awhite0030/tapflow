@@ -74,7 +74,7 @@
               "properties": {
                 "from": { "$ref": "#/definitions/point" },
                 "to": { "$ref": "#/definitions/point" },
-                "durationMs": { "type": "integer", "exclusiveMinimum": 0, "maximum": 2147483647, "default": 300 }
+                "durationMs": { "type": "number", "exclusiveMinimum": 0, "maximum": 2147483647, "default": 300 }
               }
             },
             "assertVisible": { "$ref": "#/definitions/selector" },

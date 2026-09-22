@@ -1,5 +1,4 @@
 import type { FlowDriver } from './engine.js'
-import { PlatformError } from '@tapflowio/agent-core'
 import {
   ENVIRONMENTAL_INPUT_REASONS,
   InputRefusedError,
@@ -22,6 +21,11 @@ import { EnvironmentStepError, markEnvironmentFailure } from './errors.js'
 // poll loop, and anything that did would be a bug rather than a category.
 function isEnvironmentFailure(e: unknown): boolean {
   if (e instanceof InputRefusedError) return ENVIRONMENTAL_INPUT_REASONS.has(e.reason)
+  // No trailing `instanceof PlatformError`: RelayClient.failed() returns a plain
+  // PlatformError for failures on a healthy session (e.g. a broken build that
+  // cannot launch), which must stay a product failure (exit 1). Session-scoped
+  // failures on an actually unavailable session already arrive as
+  // SessionUnavailableError, so the distinction is preserved without it.
   if (
     e instanceof SessionEndedError ||
     e instanceof SessionLeftError ||
@@ -30,8 +34,7 @@ function isEnvironmentFailure(e: unknown): boolean {
     e instanceof RelayUnavailableError ||
     e instanceof RequestTimeoutError ||
     e instanceof InputUnconfirmedError ||
-    e instanceof SessionUnavailableError ||
-    e instanceof PlatformError
+    e instanceof SessionUnavailableError
   ) {
     return true
   }

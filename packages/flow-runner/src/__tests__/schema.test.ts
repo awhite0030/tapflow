@@ -144,4 +144,24 @@ steps:
     expect(() => parseFlow('just a string', 'x.yaml')).toThrow()
     expect(() => parseFlow('- a\n- b\n', 'x.yaml')).toThrow()
   })
+
+  it('keeps fractional swipe durations (0.23.0 compatibility)', () => {
+    const flow = parseFlow(`
+steps:
+  - swipe:
+      from: [0.5, 0.8]
+      to: [0.5, 0.2]
+      durationMs: 250.5
+`, 'x.yaml')
+    expect(flow.steps[0]).toEqual({ type: 'swipe', from: [0.5, 0.8], to: [0.5, 0.2], durationMs: 250.5 })
+  })
+
+  it('rejects non-positive and over-limit swipe durations', () => {
+    expect(() => parseFlow('steps:\n  - swipe:\n      from: [0.5, 0.8]\n      to: [0.5, 0.2]\n      durationMs: 0\n', 'x.yaml')).toThrow(/durationMs/)
+    expect(() => parseFlow('steps:\n  - swipe:\n      from: [0.5, 0.8]\n      to: [0.5, 0.2]\n      durationMs: 2147483648\n', 'x.yaml')).toThrow(/durationMs/)
+  })
+
+  it('rejects timeouts that round to 0ms', () => {
+    expect(() => parseFlow('steps:\n  - tapOn:\n      label: OK\n      timeout: 0.0004\n', 'x.yaml')).toThrow(/at least 1ms/)
+  })
 })

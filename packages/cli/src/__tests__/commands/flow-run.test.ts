@@ -122,6 +122,17 @@ describe('cmdFlowRun exit codes (#543)', () => {
     expect(process.exitCode).toBe(1)
   })
 
+  it('keeps exit 1 when a product failure is followed by a runFlow rejection', async () => {
+    // Guards the sawProductFailure ternary in the catch path: replacing it
+    // with EXIT_ENV_ERROR leaves the other 8 tests green and would mask a
+    // regression behind an infrastructure exit code.
+    mocks.runFlow
+      .mockResolvedValueOnce(resultOf('failed', 'product'))
+      .mockRejectedValueOnce(new Error('relay closed mid-run'))
+    await run([flowFile('a.yaml'), flowFile('b.yaml')])
+    expect(process.exitCode).toBe(1)
+  })
+
   it('leaves a joined session when device preparation fails', async () => {
     mocks.bootDevice.mockRejectedValueOnce(new Error('device boot failed'))
     await run([flowFile('a.yaml')])

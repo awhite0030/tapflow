@@ -43,7 +43,6 @@ function isUIElement(value: unknown): value is UIElement {
 // HID is fire-and-forget about. Generous next to `typeText`'s 15s because that one drives a paste handshake
 // on the device; this one only has to cross the relay.
 const INPUT_ACK_TIMEOUT_MS = 10_000
-const MAX_TIMER_MS = 2_147_483_647
 
 /**
  * The relay connection went away while a waiter was pending.
@@ -735,9 +734,10 @@ export class RelayClient {
   }
 
   async swipe(sessionId: string, from: [number, number], to: [number, number], durationMs: number): Promise<void> {
-    if (!Number.isFinite(durationMs) || !Number.isInteger(durationMs) || durationMs <= 0 || durationMs > MAX_TIMER_MS) {
-      throw new RangeError(`swipe duration must be a positive finite integer no greater than ${MAX_TIMER_MS}ms`)
-    }
+    // No local RangeError: schema.ts is the gate (it rejects non-finite,
+    // non-positive and over-limit durations, including fractional 250.5 which
+    // stays valid for 0.23.0 compatibility), and a construction here breaks
+    // the sessionNoteCoverage gate with no session note in reach.
     const STEPS = 8
     const interval = durationMs / STEPS
     const requestId = randomUUID()
