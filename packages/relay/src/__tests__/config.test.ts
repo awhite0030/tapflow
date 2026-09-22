@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import path from 'path'
 
 vi.mock('fs', () => ({
   default: {
@@ -30,7 +31,8 @@ describe('relay config validation', () => {
     const { config } = await import('../lib/config.js')
     expect(config.local.port).toBe(4000)
     expect(config.local.wsBackpressureBytes).toBe(1_048_576)
-    expect(config.local.dataDir).toMatch(/\.tapflow[/\\]data$/)
+    // Exact, not a pattern: `/\.tapflow.data$/` matched both layouts and so guarded neither.
+    expect(config.local.dataDir).toBe(path.join(process.env.TAPFLOW_HOME!, 'data'))
     expect(exitSpy).not.toHaveBeenCalled()
   })
 
@@ -99,16 +101,17 @@ describe('relay config validation', () => {
 
   it('JWT_SECRET 32자 이상 → 정상 로드', async () => {
     vi.stubEnv('JWT_SECRET', 'a'.repeat(32))
-    const { jwtSecret } = await import('../lib/config.js')
-    expect(jwtSecret).toBe('a'.repeat(32))
+    const { getJwtSecret } = await import('../lib/config.js')
+    expect(getJwtSecret()).toBe('a'.repeat(32))
     expect(exitSpy).not.toHaveBeenCalled()
   })
 
   it('JWT_SECRET 미설정 시 per-install 시크릿을 자동 생성한다 (공개 dev 기본값 미사용)', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const { jwtSecret } = await import('../lib/config.js')
-    expect(jwtSecret).not.toContain('tapflow-dev-secret')
-    expect(jwtSecret.length).toBeGreaterThanOrEqual(32)
+    const { getJwtSecret } = await import('../lib/config.js')
+    const secret = getJwtSecret()
+    expect(secret).not.toContain('tapflow-dev-secret')
+    expect(secret.length).toBeGreaterThanOrEqual(32)
   })
 
   it('config 파일에 jwtSecret 잔존 시 deprecation 경고', async () => {

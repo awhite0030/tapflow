@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { defineConfig } from 'vitest/config'
 
 /**
@@ -29,6 +32,14 @@ export const sourceFirst = defineConfig({
   // against vite's real `defaultServerConditions`, so a version that changes them fails by name
   // instead of by whatever breaks next.
   ssr: { resolve: { conditions: ['source', 'module', 'node', 'development|production'] } },
+
+  // **An install dir of the suite's own.** The relay resolves one at import, and without this the
+  // default is `~/.tapflow` — so a test that loads the config would read the developer's real
+  // `tapflow.config.json` and load their `data/.env` (SMTP password, DNS tokens) into the test
+  // process, and `getJwtSecret()` would read or create their real secret. It was the cwd before,
+  // which is why stray `.tapflow/data/jwt-secret` folders sit in six packages of this repo.
+  // A test that exercises the resolution passes `env` itself, or clears this with `vi.stubEnv`.
+  test: { env: { TAPFLOW_HOME: mkdtempSync(join(tmpdir(), 'tapflow-test-home-')) } },
 })
 
 export default sourceFirst

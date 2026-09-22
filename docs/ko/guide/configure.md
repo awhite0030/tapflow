@@ -1,22 +1,26 @@
 # tapflow 설정
 
-`tapflow init`은 대화형으로 `tapflow.config.json`을 만듭니다. 선택한 옵션과 현재 디렉토리가 git 저장소인지에 따라 자격 증명 `.env` 파일과 `.gitignore` 항목도 함께 준비합니다. 기본값(포트 4000, 터널 없음, HTTP)으로 충분하다면 이 단계를 건너뛰고 바로 `tapflow start`로 넘어가도 됩니다.
+`tapflow init`은 이 머신의 tapflow를 설정합니다. `tapflow.config.json`과 코딩 에이전트가 읽을 문서 파일을 쓰고, 선택에 따라 자격 증명 `.env`도 준비합니다. 기본값(포트 4000, 터널 없음, HTTP)으로 충분하다면 이 단계를 건너뛰고 바로 `tapflow start`로 넘어가도 됩니다.
 
 ## tapflow init 실행
 
-릴레이를 실행할 디렉토리에서 실행합니다.
+어느 디렉토리에서 실행해도 됩니다. tapflow는 머신마다 설치 디렉토리 하나를 쓰고 기본값은 `~/.tapflow`입니다. 모든 명령이 같은 방식으로 그 디렉토리를 찾습니다.
 
 ```sh
 tapflow init
 ```
 
-명령은 최대 세 가지를 만듭니다.
+명령은 설치 디렉토리 안에 최대 다섯 가지를 만듭니다.
 
 | 생성물 | 내용 |
 |--------|------|
-| `tapflow.config.json` | 릴레이 설정 파일. 선택한 포트·터널·HTTPS 설정이 들어갑니다. |
-| `.tapflow/data/.env` | DNS·ACME 자격 증명을 담는 파일. DNS 자동 발급을 선택했을 때만 만들어집니다. |
-| `.gitignore` 항목 | git 저장소 안에서 실행했을 때 `.tapflow/data/`와 `.tapflow/artifacts/`를 추가해 런타임 데이터와 토큰이 커밋되지 않도록 합니다(`.tapflow/flows/`는 추적 유지). |
+| `tapflow.config.json` | 릴레이 설정 파일. 선택한 포트·터널·HTTPS 설정과 데이터 디렉토리가 들어갑니다. |
+| `AGENTS.md` | 코딩 에이전트용 tapflow 섹션. `<!-- tapflow:begin -->` 마커 사이에 들어가고, 마커 밖에 쓴 내용은 `init`을 다시 실행해도 그대로 남습니다. |
+| `CLAUDE.md` | Claude Code용 `@AGENTS.md` 한 줄. 설치 디렉토리가 tapflow 전용일 때만 만듭니다. 앱 저장소처럼 다른 용도가 섞인 디렉토리에 CLAUDE.md가 생기면, Claude Code가 그 저장소의 다른 `AGENTS.md`를 읽지 않게 됩니다. |
+| `data/.env` | DNS·ACME 자격 증명을 담는 파일. DNS 자동 발급을 선택했을 때만 만들어집니다. |
+| `.gitignore` 항목 | 설치 디렉토리가 git 저장소 안이면 데이터 디렉토리와 `/.tapflow/artifacts/`를 추가해 런타임 데이터와 토큰이 커밋되지 않도록 합니다(`.tapflow/flows/`는 추적 유지). |
+
+`init`을 다시 실행하면 설정은 그대로 두고 `AGENTS.md`의 tapflow 섹션만 갱신합니다. 설정을 새로 만들려면 `--force`를 씁니다.
 
 이어서 대화형 프롬프트가 순서대로 나타납니다. 터널을 먼저 고르고, 터널 없이 LAN으로 쓸 때만 스트리밍 성능과 인증서 방식을 묻습니다.
 
@@ -39,7 +43,7 @@ tapflow init
 각 터널의 설정 방법과 사전 준비물은 [릴레이 배포](/ko/guide/self-hosting#외부-접속)에서 다룹니다.
 
 ::: tip 비대화형 환경(CI)
-프롬프트 없이 터널을 지정하려면 플래그를 씁니다. `tapflow init --tunnel tailscale` 또는 `tapflow init --tunnel rathole`. 이미 파일이 있으면 `--force`로 덮어씁니다.
+프롬프트 없이 터널을 지정하려면 플래그를 씁니다. `tapflow init --tunnel tailscale` 또는 `tapflow init --tunnel rathole`. 이미 설정이 있으면 `--force`로 덮어씁니다. `--force` 없이 `--tunnel`을 주면 플래그를 무시하지 않고 멈춥니다.
 :::
 
 ## 2. 스트리밍 성능 (LAN 전용)
@@ -94,20 +98,44 @@ SMTP_PASS=
 
 ## 생성되는 파일
 
-`tapflow init`을 마치면 작업 디렉토리는 다음과 같습니다.
+`tapflow init`을 마치면 설치 디렉토리는 다음과 같습니다.
 
 ```text
-your-directory/
+~/.tapflow/
   tapflow.config.json    ← 릴레이 설정
-  .gitignore             ← .tapflow/ 런타임 디렉토리 추가됨 (data/, artifacts/)
-  .tapflow/
-    data/                ← 릴레이 런타임 상태: db, 업로드, 비밀
-      .env               ← DNS 자동 발급을 선택했을 때만
+  AGENTS.md              ← 코딩 에이전트용 tapflow 섹션
+  CLAUDE.md              ← @AGENTS.md
+  data/                  ← 릴레이 런타임 상태: db, 업로드, 비밀
+    .env                 ← DNS 자동 발급을 선택했을 때만
 ```
 
-tapflow가 쓰는 모든 파일은 `.tapflow/` 루트 하나에 모입니다. 릴레이가 첫 시작 때 `data/`를 채우고, `flows/`에는 커밋하는 YAML 플로우가 들어가며, `artifacts/`는 실패 스크린샷을 담습니다. gitignore 대상은 `data/`와 `artifacts/`뿐이고 `flows/`는 저장소에 남습니다.
+`data/`는 릴레이가 첫 시작 때 채웁니다. 플로우 파일은 설치의 일부가 아닙니다. 앱 저장소의 `.tapflow/flows/`에 두면 `tapflow flow run`이 읽고, 실패 스크린샷은 `.tapflow/artifacts/`에 쌓입니다.
+
+## 명령이 쓰는 설치 디렉토리
+
+모든 명령이 같은 순서로 찾습니다.
+
+| | 설치 디렉토리 |
+|---|---|
+| `TAPFLOW_HOME`이 설정됨 | 그 디렉토리 |
+| 현재 디렉토리가 이미 설치임. `tapflow.config.json`이 있거나, 데이터가 든 `.tapflow/data` 또는 `.tapflow-data`가 있음 | 현재 디렉토리 |
+| 그 외 | `~/.tapflow` |
+
+두 번째 규칙 덕분에 홈 디렉토리 방식이 생기기 전에 만든 설치가 있던 자리에서 그대로 돕니다. `tapflow start`와 `tapflow relay start`는 설치 디렉토리, 설정 파일, 데이터 디렉토리를 시작할 때 출력하므로 어느 설치를 쓰는지 항상 확인할 수 있습니다.
+
+서버나 두 번째 설치에는 `TAPFLOW_HOME`을 씁니다. `TAPFLOW_HOME=/var/lib/tapflow tapflow init`은 그 디렉토리를 만들고, 같은 변수를 가진 이후 명령이 모두 그 설치를 씁니다. 없는 디렉토리를 가리키면 릴레이를 실행하는 명령이 멈춥니다. 다른 자리에 빈 설치를 조용히 만들지 않습니다.
+
+새 설치의 데이터는 `<설치>/data`에 있습니다. 이미 `.tapflow/data`나 `.tapflow-data`가 있는 설치는 그대로 읽고, `init`이 찾은 경로를 `local.dataDir`에 적어 두므로 나중에 레이아웃이 바뀌지 않습니다.
 
 `tapflow.config.json`의 모든 키와 환경변수 오버라이드는 [설정 파일](/ko/reference/configuration)에서 자세히 다룹니다.
+
+## 코딩 에이전트에게 tapflow 묻기
+
+`init`은 설치 디렉토리의 `AGENTS.md`에 `<!-- tapflow:begin -->`과 `<!-- tapflow:end -->` 사이로 tapflow 섹션을 씁니다. 기억이 아니라 [문서 목차](https://www.tapflow.dev/llms.txt)를 근거로 답하라는 것, 각 페이지를 마크다운으로 읽는 방법, 이 설치의 비밀이 어느 파일에 있는지, `tapflow --version`과 CHANGELOG를 대조하라는 것이 들어갑니다. 그 디렉토리에서 에이전트를 열면(`cd ~/.tapflow`) 설정 파일을 읽고 `tapflow doctor`, `tapflow status`, `tapflow logs`도 직접 돌려 볼 수 있습니다.
+
+직접 쓴 내용은 마커 밖에 두세요. `init`은 마커 사이만 교체합니다.
+
+Claude Code는 `AGENTS.md`를 직접 읽습니다. 읽지 못하는 세션(구버전, Amazon Bedrock 같은 서드파티 제공자, 텔레메트리를 끈 경우)은 `CLAUDE.md`를 읽기 때문에 `init`이 `@AGENTS.md` 한 줄을 담은 파일을 만듭니다. 설치 디렉토리에 이미 `CLAUDE.md`가 있으면 그 줄을 직접 추가하세요. `init`은 직접 쓴 파일을 고치지 않고 안내만 합니다.
 
 ## 다음 단계
 

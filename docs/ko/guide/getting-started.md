@@ -32,13 +32,15 @@ tapflow setup
 
 ## 3. tapflow 설정 (선택)
 
-`tapflow init`을 실행해 `tapflow.config.json`을 생성합니다. 터널을 묻고, 터널 없이 LAN으로 쓸 때는 스트리밍 성능(HTTP 또는 HTTPS)까지 대화형으로 물어봅니다. 기본값(포트 4000, 터널 없음, HTTP)으로 충분하다면 이 단계를 건너뛸 수 있습니다.
+`tapflow init`을 실행해 이 머신을 설정합니다. `~/.tapflow`에 `tapflow.config.json`을 쓰고, 터널을 묻고, 터널 없이 LAN으로 쓸 때는 스트리밍 성능(HTTP 또는 HTTPS)까지 대화형으로 물어봅니다. 기본값(포트 4000, 터널 없음, HTTP)으로 충분하다면 이 단계를 건너뛸 수 있습니다.
 
 ```sh
 tapflow init
 ```
 
-각 프롬프트가 무엇을 설정하는지, `.env` 자격 증명 파일과 CI 플래그는 어떻게 쓰는지는 [tapflow 설정](/ko/guide/configure)에서 다룹니다.
+어느 폴더에서 실행해도 됩니다. tapflow는 머신마다 설치 폴더 하나를 쓰고, 모든 명령이 같은 방식으로 그 폴더를 찾습니다. 서버의 `/var/lib/tapflow`처럼 다른 곳에 두려면 `TAPFLOW_HOME`을 설정하세요. 모든 명령이 그 값을 따릅니다.
+
+`init`은 그 폴더에 `AGENTS.md`와 `CLAUDE.md`도 씁니다. 그 폴더에서 연 코딩 에이전트가 tapflow 질문에 공식 문서를 근거로 답합니다. 각 프롬프트가 무엇을 설정하는지, `.env` 자격 증명 파일과 CI 플래그는 어떻게 쓰는지는 [tapflow 설정](/ko/guide/configure)에서 다룹니다.
 
 ## 4. 릴레이 + 에이전트 시작
 

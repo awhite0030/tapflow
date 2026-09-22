@@ -1,22 +1,26 @@
 # Configuring tapflow
 
-`tapflow init` interactively generates `tapflow.config.json`. Depending on the options you choose and whether you're in a git repo, it can also scaffold the credentials `.env` file and update `.gitignore`. If the defaults (port 4000, no tunnel, HTTP) are fine, skip this step and go straight to `tapflow start`.
+`tapflow init` sets up this machine's tapflow: it writes `tapflow.config.json`, the agent documentation files, and, when you choose DNS auto-issue, the credentials `.env`. If the defaults (port 4000, no tunnel, HTTP) are fine, skip this step and go straight to `tapflow start`.
 
 ## Run tapflow init
 
-Run it from the directory where the relay will start.
+Run it from anywhere. tapflow keeps one install per machine, in `~/.tapflow` by default, and every command finds it the same way.
 
 ```sh
 tapflow init
 ```
 
-The command can create up to three things.
+The command can create up to five things, all inside the install directory.
 
 | Output | Contents |
 |--------|----------|
-| `tapflow.config.json` | Relay configuration. Holds the port, tunnel, and HTTPS settings you choose. |
-| `.tapflow/data/.env` | Holds DNS / ACME credentials. Created only when you pick DNS auto-issue. |
-| `.gitignore` entry | Adds `.tapflow/data/` and `.tapflow/artifacts/` when run inside a git repo, so runtime data and tokens are never committed (`.tapflow/flows/` stays tracked). |
+| `tapflow.config.json` | Relay configuration. Holds the port, tunnel, HTTPS settings you choose, and the data directory. |
+| `AGENTS.md` | A tapflow section for coding agents, between `<!-- tapflow:begin -->` markers. Anything you write outside them is kept when you run `init` again. |
+| `CLAUDE.md` | One line, `@AGENTS.md`, for Claude Code. Written only when the install directory is tapflow's own — in a directory that is also something else, such as an app repository an older install lives in, a `CLAUDE.md` would stop Claude Code reading that repository's other `AGENTS.md` files. |
+| `data/.env` | Holds DNS / ACME credentials. Created only when you pick DNS auto-issue. |
+| `.gitignore` entry | Adds the data directory and `/.tapflow/artifacts/` when the install directory is inside a git repository, so runtime data and tokens are never committed (`.tapflow/flows/` stays tracked). |
+
+Running `init` again keeps your configuration and refreshes only the tapflow section of `AGENTS.md`. Pass `--force` to write a fresh configuration.
 
 The interactive prompts then appear in order. You pick a tunnel first; the streaming and certificate prompts only show when you run on the LAN with no tunnel.
 
@@ -39,7 +43,7 @@ This decides how teammates reach the relay.
 Each tunnel's setup steps and prerequisites are covered in [Self-Hosting the Relay](/guide/self-hosting#external-access).
 
 ::: tip Non-interactive environments (CI)
-To set the tunnel without prompts, pass a flag: `tapflow init --tunnel tailscale` or `tapflow init --tunnel rathole`. Use `--force` to overwrite an existing file.
+To set the tunnel without prompts, pass a flag: `tapflow init --tunnel tailscale` or `tapflow init --tunnel rathole`. Use `--force` to overwrite an existing file; without it, `--tunnel` on a configured install stops rather than ignoring the flag.
 :::
 
 ## 2. Streaming performance (LAN only)
@@ -94,20 +98,44 @@ This way you don't re-export secrets every time you restart the relay. Put them 
 
 ## What gets created
 
-After `tapflow init` finishes, your working directory looks like this.
+After `tapflow init` finishes, the install directory looks like this.
 
 ```text
-your-directory/
+~/.tapflow/
   tapflow.config.json    ← relay configuration
-  .gitignore             ← .tapflow/ runtime dirs added (data/, artifacts/)
-  .tapflow/
-    data/                ← relay runtime state: db, uploads, secrets
-      .env               ← only when DNS auto-issue is chosen
+  AGENTS.md              ← tapflow section for coding agents
+  CLAUDE.md              ← @AGENTS.md
+  data/                  ← relay runtime state: db, uploads, secrets
+    .env                 ← only when DNS auto-issue is chosen
 ```
 
-Everything tapflow writes lives under one `.tapflow/` root: the relay fills in `data/` on first start, `flows/` holds the YAML flows you commit, and `artifacts/` collects failure screenshots. Only `data/` and `artifacts/` are gitignored — `flows/` stays in your repo.
+The relay fills `data/` in on first start. Flow files are not part of this: keep them in your app repository under `.tapflow/flows/`, where `tapflow flow run` picks them up and failure screenshots land in `.tapflow/artifacts/`.
+
+## Which install a command uses
+
+Every command answers this the same way, in this order:
+
+| | Install directory |
+|---|---|
+| `TAPFLOW_HOME` is set | that directory |
+| the current directory is already an install — it holds a `tapflow.config.json`, or a `.tapflow/data` or `.tapflow-data` with data in it | the current directory |
+| otherwise | `~/.tapflow` |
+
+The second rule is what keeps an install created before tapflow had a home working exactly where it is. `tapflow start` and `tapflow relay start` print the directory, the configuration file and the data directory they resolved, so you can always see which one is in use.
+
+Set `TAPFLOW_HOME` for a server or a second install: `TAPFLOW_HOME=/var/lib/tapflow tapflow init` creates that directory, and every later command that carries the same variable uses it. A `TAPFLOW_HOME` naming a directory that does not exist stops any command that runs the relay, rather than quietly starting an empty install somewhere else.
+
+Data lives at `<install>/data` on a new install. An install that already has `.tapflow/data` or `.tapflow-data` keeps reading it, and `init` writes whichever one it found into `local.dataDir`, so the layout cannot change under you later.
 
 Every key in `tapflow.config.json` and its environment-variable overrides are detailed in [Configuration](/reference/configuration).
+
+## Asking a coding agent about tapflow
+
+`init` writes an `AGENTS.md` into the install directory with a tapflow section between `<!-- tapflow:begin -->` and `<!-- tapflow:end -->`. It tells an agent to answer from [the documentation index](https://www.tapflow.dev/llms.txt) rather than from memory, how to read any page as markdown, which files hold this install's secrets, and to compare `tapflow --version` against the changelog. Open your agent in that directory (`cd ~/.tapflow`) and it can also read your configuration and run `tapflow doctor`, `tapflow status` and `tapflow logs`.
+
+Write your own notes outside the markers — `init` replaces only what is between them.
+
+Claude Code reads `AGENTS.md` directly. A session that cannot (an older version, a third-party provider such as Amazon Bedrock, or telemetry turned off) reads `CLAUDE.md` instead, which is why `init` writes one containing `@AGENTS.md`. If your install directory already has a `CLAUDE.md`, add that line to it yourself; `init` says so rather than editing a file you wrote.
 
 ## Next step
 

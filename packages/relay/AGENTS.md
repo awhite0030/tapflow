@@ -134,6 +134,10 @@ Routes are registered in `RelayServer.ts`; user-facing reference: [`docs/referen
 
 전체 목록 및 설명: [`docs/reference/configuration.md`](../../docs/reference/configuration.md)
 
+설치 디렉토리: `lib/dataDir.ts`의 `resolveInstallDir()`이 `TAPFLOW_HOME` → 현재 폴더가 이미 설치 → `~/.tapflow` 순으로 정한다. 설정 파일 안의 상대 경로(`local.dataDir`, `tls.certPath`)는 **그 파일이 있는 폴더 기준**이고, `TAPFLOW_DATA_DIR`만 셸 기준이다. 데이터는 설치 디렉토리 안에서 `.tapflow/data` → `.tapflow-data` → `data`(새 기본값) 순으로 찾는다. `jwt-secret` 하나만 든 데이터 폴더는 설치로 치지 않는다 — 예전 CLI가 실행한 자리마다 남긴 흔적이고, 릴레이는 부팅 때 항상 `tapflow.db`를 만든다.
+
+JWT 시크릿은 `getJwtSecret()`으로 **처음 쓸 때** 만든다. `RelayServer.start()`가 부팅 때 한 번 호출하므로 로그와 실패 시점은 전과 같고, 릴레이를 띄우지 않는 CLI 명령은 아무 데도 시크릿을 남기지 않는다. `JWT_SECRET` 길이 검증만 import 시점에 그대로 둔다(파일을 만들지 않으므로 부작용이 없다).
+
 비밀 기본 경로: `config.ts`의 `load()`가 dataDir 확정 직후 `<dataDir>/.env`를 로드한 뒤 나머지 `process.env`를 읽는다 → `JWT_SECRET`·`SMTP_*`·DNS/ACME 토큰 등 **모든 비밀이 `.env`를 기본 경로로** 쓴다. 우선순위는 **셸 env > `.env` > config.json**(`process.loadEnvFile`이 기존 값을 안 덮음). 예외는 `TAPFLOW_DATA_DIR` 하나 — `.env` 경로를 결정하는 값이라 `.env`에서 못 읽고 config.json/셸로만 받는다.
 
 로컬 테스트 시 자주 쓰는 값:

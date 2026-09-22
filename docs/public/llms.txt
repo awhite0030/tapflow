@@ -11,6 +11,8 @@
 > - AI Agent via MCP (experimental): an LLM agent controls the simulator using @tapflowio/mcp-server
 >
 > Every page below is also served as its source markdown at the same URL with a `.md` suffix, and all of them concatenated are at https://www.tapflow.dev/llms-full.txt. Korean translations of every page live under `/ko/` with the same paths and the same content.
+>
+> Read the page you need rather than the concatenation. A tool that truncates or summarises a large fetch loses the end of `llms-full.txt`, which is where the reference pages are — the CLI, the REST API and every configuration key.
 
 ## Getting Started
 
