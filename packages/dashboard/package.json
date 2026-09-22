@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build && rm -rf ../relay/public && mkdir -p ../relay/public && cp -r dist/. ../relay/public/",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "lint": "eslint src hooks components lib *.config.ts",
+    "lint": "eslint src hooks components lib *.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -56,10 +56,12 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@babel/core": "^7.28.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.7",
     "@tweakpane/core": "^2.0.5",
+    "@types/babel__core": "^7.20.5",
     "@types/d3-array": "^3.2.2",
     "@types/d3-time": "^3.0.4",
     "@types/node": "^22.20.2",
@@ -69,6 +71,7 @@
     "@vitejs/plugin-react": "^4.3.0",
     "@vitest/coverage-v8": "^4.1.11",
     "autoprefixer": "^10.6.0",
+    "babel-plugin-react-compiler": "^1.0.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.6",
     "jsdom": "^29.1.1",

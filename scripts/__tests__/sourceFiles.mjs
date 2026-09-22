@@ -23,6 +23,40 @@ export const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.next', 'cov
 
 const repoRoot = join(import.meta.dirname, '../..')
 
+/** Generated trees no name can reach, because the name belongs to something real.
+ *
+ *  `packages/relay/public` is a copy of `packages/dashboard/dist` — the dashboard build ends with
+ *  `rm -rf ../relay/public && mkdir -p ../relay/public && cp -r dist/. ../relay/public/` — so a walk
+ *  that skips `dist` by name and descends into this one is applying the rule to one of two copies.
+ *  `public` cannot join `SKIP_DIRS`: `docs/public` holds `robots.txt` and `llms.txt`, which
+ *  `agentReadableDocs.test.mjs` asserts on by name.
+ *
+ *  **It also makes a walk race that build.** `dashboardFirstLoadBudget.test.mjs` runs it in the same
+ *  `pnpm test:scripts` invocation, in a parallel worker, so a walker inside this directory during the
+ *  `rm -rf` dies on ENOENT. One real run failed that way, and a loop measured 2 failures in 1,718
+ *  walks — both at the moment the copy was replaced — against 0 after the skip.
+ *
+ *  Exported because two different walkers reach it: this module's `sources()` (through
+ *  `clientOutboundTyped.test.mjs`, the only caller that walks all of `packages/`) and
+ *  `agentReadableDocs.test.mjs`, which walks the repo root with its own extension set. Fixing one
+ *  and not the other left half the race in place.
+ *
+ *  **`sources()` takes it as a parameter so the behaviour can be proved without touching this
+ *  directory.** A first version of that test planted a file inside `packages/relay/public` — which
+ *  is to say, it reproduced the race it exists to prevent: the build's `rm -rf` can land between the
+ *  `mkdirSync` and the `writeFileSync`, and a cleanup that removes the directory recursively can
+ *  delete the tree the build just wrote. The probe runs in a temp tree under `scripts/` instead, for
+ *  the reason `checksWalkDisk.test.mjs` already gives about where probes belong. */
+export const SKIP_PATHS = new Set([join(repoRoot, 'packages', 'relay', 'public')])
+
+/** Where `SKIP_PATHS` comes from, so a check can fail loudly when the build stops producing it
+ *  rather than passing vacuously against a path nothing writes any more. */
+export const SKIP_PATHS_SOURCE = {
+  manifest: join(repoRoot, 'packages', 'dashboard', 'package.json'),
+  script: 'build',
+  mentions: '../relay/public',
+}
+
 /**
  * Every `.ts`/`.tsx` source file under `dir`, as **repo-root-relative** paths — the same shape
  * `git ls-files` produced, so call sites keep their existing filters and comparisons.
@@ -37,11 +71,12 @@ const repoRoot = join(import.meta.dirname, '../..')
  * detection back — so the extension, not the content, decided it. The three call sites' original filters
  * (`endsWith('.ts')` and `/\.(ts|tsx)$/`) both admitted `.d.ts`, and this helper reproduces that exactly.
  */
-export function sources(dir, out = []) {
+export function sources(dir, out = [], skipPaths = SKIP_PATHS) {
   const abs = dir.startsWith(repoRoot) ? dir : join(repoRoot, dir)
   for (const e of readdirSync(abs, { withFileTypes: true })) {
     if (e.isDirectory()) {
-      if (!SKIP_DIRS.has(e.name)) sources(join(abs, e.name), out)
+      const child = join(abs, e.name)
+      if (!SKIP_DIRS.has(e.name) && !skipPaths.has(child)) sources(child, out, skipPaths)
     } else if (/\.(ts|tsx)$/.test(e.name)) {
       out.push(join(abs, e.name).slice(repoRoot.length + 1).replaceAll('\\', '/'))
     }

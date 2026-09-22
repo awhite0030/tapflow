@@ -14,6 +14,16 @@
     "jsx": "react-jsx",
     "paths": { "@/*": ["./*"] }
   },
-  "include": ["src", "components", "hooks", "lib"],
+  // Root configs are listed one by one rather than globbed as `*.ts`, and `vitest.config.ts` is
+  // deliberately absent. `build` is `tsc --noEmit && vite build`, so anything in here becomes a
+  // dependency of the **production image build** — and the Docker builder copies `packages/` and the
+  // workspace manifests, not the repo root. Globbing pulled in `vitest.config.ts`, which imports
+  // `../../vitest.shared`, and the image build died on TS2307 while every local check was green.
+  // Copying that file into the image context would have moved the fragility rather than removed it:
+  // the next test-only root file breaks it again.
+  //
+  // So the rule is what the build itself loads. `vitest.config.ts` keeps the coverage it had before —
+  // linted (the `lint` glob is `*.ts`), not type-checked — which is unchanged rather than lost.
+  "include": ["src", "components", "hooks", "lib", "reactPlugin.ts", "vite.config.ts", "tailwind.config.ts"],
   "exclude": ["node_modules", "dist", "out"]
 }

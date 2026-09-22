@@ -61,6 +61,7 @@ import {
   isTranslation,
   pageUrl,
 } from '../../docs/.vitepress/agent-artifacts.mjs'
+import { SKIP_PATHS, SKIP_PATHS_SOURCE } from './sourceFiles.mjs'
 
 const ROOT = join(import.meta.dirname, '..', '..')
 const SITE = 'https://www.tapflow.dev'
@@ -298,12 +299,16 @@ const TEXT_EXT = /\.(md|txt|ts|tsx|mts|mjs|js|json|ya?ml)$/
 const SKIP = new Set(['node_modules', 'dist', 'build', '.next', 'coverage', '.turbo', '.git',
   '.work', '.vercel', '.internal', 'cache', '.tapflow-data', '.tapflow', '.playwright-mcp'])
 
+// `SKIP_PATHS` is shared with `sourceFiles.mjs` — see the reason there. Two walkers reach that
+// directory and fixing one of them left the other racing the dashboard build.
+
 function textFiles(dir = ROOT, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const child = join(dir, e.name)
     if (e.isDirectory()) {
-      if (!SKIP.has(e.name)) textFiles(join(dir, e.name), out)
+      if (!SKIP.has(e.name) && !SKIP_PATHS.has(child)) textFiles(child, out)
     } else if (TEXT_EXT.test(e.name)) {
-      out.push(join(dir, e.name))
+      out.push(child)
     }
   }
   return out
@@ -320,6 +325,21 @@ describe('the site has one origin', () => {
     expect(files).toContain(join(DOCS, 'public', 'llms.txt'))
     expect(files).toContain(join(DOCS, '.vitepress', 'config.ts'))
     expect(files.length).toBeGreaterThan(700)
+    // The dashboard build's copy is not the repo, and walking it is what made this test race the
+    // build in `dashboardFirstLoadBudget.test.mjs`.
+    //
+    // **Two assertions, because the obvious one is vacuous on its own.** Filtering `files` by the
+    // same absolute path `SKIP_PATHS` holds can only fail if the skip is deleted outright: rename
+    // either directory and the filter returns `[]` while the race is back, and on a fresh clone the
+    // directory does not exist at all (`packages/relay/public` is gitignored, 0 tracked files) so it
+    // returns `[]` before anything has been built. The second one is what a rename trips.
+    expect([...SKIP_PATHS].filter((p) => files.some((f) => f.startsWith(p)))).toEqual([])
+    const buildScript = JSON.parse(readFileSync(SKIP_PATHS_SOURCE.manifest, 'utf8'))
+      .scripts[SKIP_PATHS_SOURCE.script]
+    expect(
+      buildScript,
+      `the dashboard build no longer writes ${SKIP_PATHS_SOURCE.mentions} — SKIP_PATHS is stale`,
+    ).toContain(SKIP_PATHS_SOURCE.mentions)
 
     const offenders = files
       .filter((f) => /https:\/\/tapflow\.dev/.test(readFileSync(f, 'utf8')))
