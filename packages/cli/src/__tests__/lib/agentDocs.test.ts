@@ -172,7 +172,7 @@ describe('scaffoldAgentDocs', () => {
     expect(report.notes.join('\n')).toContain('@AGENTS.md')
   })
 
-  it('says nothing when the CLAUDE.md already imports it, or is a symlink to it', () => {
+  it.skipIf(process.platform === 'win32')('says nothing when the CLAUDE.md already imports it, or is a symlink to it', () => {
     const owned = tmp()
     write(path.join(owned, 'CLAUDE.md'), 'House rules\n\n@AGENTS.md\n')
     expect(scaffoldAgentDocs(owned, tmp()).notes).toEqual([])

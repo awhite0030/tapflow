@@ -177,7 +177,9 @@ describe('resolveInstallDir', () => {
     })
   })
 
-  it('matches the home through a symlink', () => {
+  // Skipped on Windows, where creating a symlink needs Developer Mode or elevation. The relay
+  // package's suite is the one this repo also runs there.
+  it.skipIf(process.platform === 'win32')('matches the home through a symlink', () => {
     const real = tmp()
     const link = path.join(tmp(), 'home-link')
     fs.symlinkSync(real, link)
