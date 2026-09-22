@@ -644,6 +644,59 @@ describe('App Center — focus survives the list being swapped out (#829)', () =
     expect(visited).not.toContain(releaseTrigger())
   })
 
+
+  it('moves focus to the search box when a row\'s own status change filters it out (#833)', async () => {
+    // 1. Initial load
+    getBuilds.mockResolvedValueOnce([{ ...build(1, '1.0.0'), status_label: 'Backlog' }])
+    renderAppCenter()
+    await screen.findByText('uploader-1')
+
+    // 2. Change the filter to 'Backlog'
+    getBuilds.mockResolvedValueOnce([{ ...build(1, '1.0.0'), status_label: 'Backlog' }])
+    const filter = screen.getByRole('combobox', { name: 'Filter by status' })
+    await userEvent.click(filter)
+    await userEvent.click(screen.getByRole('option', { name: 'Backlog' }))
+
+    // 3. Pick 'Done' on the row
+    const statusTrigger = await screen.findByRole('combobox', { name: /status for ios build 1, 1\.0\.0/i })
+
+    // The mutation triggers a refetch
+    getBuilds.mockResolvedValueOnce([])
+
+    await userEvent.click(statusTrigger)
+    await userEvent.click(screen.getByRole('option', { name: 'Done' }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('combobox', { name: /status for ios build 1, 1\.0\.0/i })).toBeNull()
+    })
+
+    // Focus should fall back to the search box
+    expect(screen.getByLabelText('Search versions')).toHaveFocus()
+  })
+
+  it('moves focus to the next element or fallback when a row leaves a list that stays a list (#833)', async () => {
+    getBuilds.mockResolvedValueOnce([build(1, '1.0.0'), build(2, '2.0.0')])
+    const { client } = renderAppCenter()
+    await screen.findByText('uploader-1')
+
+    // Focus the second release header
+    const release2 = screen.getByRole('button', { name: /^2\.0\.0/ })
+    release2.focus()
+
+    // Trigger a refetch that drops the second release
+    const search = deferred<Build[]>()
+    getBuilds.mockReturnValueOnce(search.promise)
+    await act(async () => { void client.invalidateQueries({ queryKey: ['builds'] }) })
+    search.resolve([build(1, '1.0.0')])
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /^2\.0\.0/ })).toBeNull()
+    })
+
+    // Focus should fall back to the search box
+    expect(screen.getByLabelText('Search versions')).toHaveFocus()
+  })
+
   it('returns focus to the row\'s deletion control when its dialog closes', async () => {
     // The dialog is opened by state, not by an `AlertDialogTrigger`, so Radix had nothing to hand
     // focus back to and dropped it on `body` — the same loss #829 is about, from a row's own control.
