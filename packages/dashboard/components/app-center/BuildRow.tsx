@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { TechLabel } from '@/components/ui/tech-label';
@@ -55,6 +55,12 @@ export function BuildRow({
   onCancelDeletion,
 }: Props) {
   const [pendingSchedule, setPendingSchedule] = useState(false);
+  // The dialog is opened by state rather than by an `AlertDialogTrigger`, so Radix has no trigger to
+  // hand focus back to when it closes and drops it on `body`. This is where it goes instead: the
+  // button that opened it. Its slot holds "Schedule deletion" or "Cancel scheduled deletion" — the
+  // same `Button` in the same position either way, so it is the same node after a deletion is
+  // scheduled and focus lands on the control that can undo it.
+  const deletionButtonRef = useRef<HTMLButtonElement>(null);
   const isDone = build.status_label === 'Done';
   const deletion = build.delete_after ? formatDeletionCountdown(build.delete_after) : null;
 
@@ -65,7 +71,12 @@ export function BuildRow({
   return (
     <>
       <AlertDialog open={pendingSchedule} onOpenChange={setPendingSchedule}>
-        <AlertDialogContent>
+        <AlertDialogContent
+          onCloseAutoFocus={(e) => {
+            e.preventDefault();
+            deletionButtonRef.current?.focus();
+          }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>Schedule deletion?</AlertDialogTitle>
             <AlertDialogDescription>
@@ -156,6 +167,7 @@ export function BuildRow({
 
         {deletion ? (
           <Button
+            ref={deletionButtonRef}
             size="icon-sm"
             variant="outline"
             onClick={() => onCancelDeletion(build.id)}
@@ -165,6 +177,7 @@ export function BuildRow({
           </Button>
         ) : (
           <Button
+            ref={deletionButtonRef}
             size="icon-sm"
             variant="destructive"
             onClick={() => setPendingSchedule(true)}

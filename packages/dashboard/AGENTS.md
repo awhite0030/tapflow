@@ -421,6 +421,53 @@ the toolbar buttons Android has, not to overlay the frame. Read it that way when
 device control is unreachable: ask whether the control should exist in the DOM at all, and if it
 should, put it in the toolbar where the group rules above already say it belongs.
 
+### A view that replaces another puts back the focus it destroyed
+
+Swapping one view of a region for another — the list for its failure, the failure for the list a
+retry brought back, the list for its empty state — unmounts whatever inside had focus, and the
+browser drops it on `body`. Spread `useFocusAfterSwap(view, fallback)` onto the element holding the
+views and render from the same `view` name, so the key cannot say "list" over an empty state. App
+Center is the example (#829).
+
+**It acts only when one commit both changes the view and removes the focused element.** A second
+design acted on any removal and broke the page's most common interaction: picking a row's status
+unmounts the `Select`'s content, and the status mutation re-rendered the page before Radix handed
+focus back to the trigger — so focus went to the first release and the list scrolled to the top under
+a mouse user. A removal that is not a swap belongs to whatever caused it. That leaves **a row leaving
+a list that stays a list** unhandled here on purpose: where its focus should go — the next row, the
+previous one, its release — is a decision for the row, not for a region-wide hook (#833).
+
+**A failed key being fetched again is still the failure.** The manual retry holds the failure screen
+until its answer, and so does a background refetch of the same failure (returning to the tab, an
+upload invalidating builds). Without that, `keepPreviousData` fills the refetching key with the
+previous search's rows, the view becomes a list that belongs to a different search, and focus is
+moved into rows the answer then replaces. Holding it keeps focus on "Try again", now "Trying…".
+**Only the failure that was on screen**, though — `isFetchedAfterMount`, not `errorUpdateCount`,
+which counts any failure in the cache's lifetime and so resurrected a search the relay had failed
+minutes ago, and opened a remounted page on an old failure instead of loading.
+
+**Focus goes to the first control in the new view, else to `fallback`, and that control has to say
+what happened.** Not a `tabIndex={-1}` heading: `DeviceViewer` tried parking focus on a non-control
+and took it out again, since such an element takes focus from a mouse too and then has to wear a ring
+nobody can use. And not trusting `role="status"` to explain it, because NVDA and JAWS flush a pending
+polite announcement when focus moves in the same commit. App Center's "Try again" is described by the
+failure's two lines; its fallback, the search box, by whichever of the loading line and the empty
+state's title is showing; and the first release,
+where a successful retry lands, by the status line itself — not while its rows are held from the app
+being left, when that line is about a different app.
+
+A busy control uses `aria-disabled`, never `disabled`, and dims itself with `aria-disabled:` classes
+because the shared `Button` only styles `disabled:`. A focused element that becomes disabled is dropped
+to `body` by the focus-fixup rule, which jsdom does not model — a test asserting focus stayed on it
+passes in jsdom while a browser loses it.
+
+"Had focus in the region" follows the React tree, not the DOM: a `Select` or menu opened from a row
+lives in a portal under `body` and still goes with its owner.
+
+**A dialog opened by state rather than by a trigger returns focus itself.** Radix returns focus to an
+`AlertDialogTrigger`; without one it drops it on `body`. `BuildRow`'s deletion dialog is opened from
+its trash button's `onClick`, so it passes `onCloseAutoFocus` to put focus back on that button.
+
 ### A toast fired while a dialog is open is not heard
 
 `<Toaster>` renders in place inside the app root, and an open Radix dialog sets `aria-hidden` on everything
