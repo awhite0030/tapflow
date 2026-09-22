@@ -132,7 +132,7 @@ cli
   // called `--force` here would read as `init --force` does (overwrite a file) rather than as this
   // (replace a network filter while somebody is testing through it).
   .option('--ignore-running-devices', 'net-filter only: replace the filter even though devices are in use')
-  .action((subcommand: string, options: { ignoreRunningDevices?: boolean }) => {
+  .action(async (subcommand: string, options: { ignoreRunningDevices?: boolean }) => {
     if (subcommand === 'data-dir') {
       // **Rejected rather than ignored**, for the same reason the flag is named that way: cac accepts
       // it here, and an option that silently does nothing reads as one that worked.
@@ -140,10 +140,10 @@ cli
         console.error('--ignore-running-devices applies to `migrate net-filter` only.')
         process.exit(1)
       }
-      return cmdMigrateDataDir()
+      return await cmdMigrateDataDir()
     }
     if (subcommand === 'net-filter') {
-      return cmdMigrateNetFilter({ ignoreRunningDevices: options.ignoreRunningDevices })
+      return await cmdMigrateNetFilter({ ignoreRunningDevices: options.ignoreRunningDevices })
     }
     console.error(`Unknown subcommand: migrate ${subcommand}`)
     process.exit(1)

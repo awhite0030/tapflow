@@ -714,7 +714,8 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
 }
 
 
-export function purgeExpiredBuilds(recordingsDir: string): void {
+export function purgeExpiredBuilds(uploadsDir: string): void {
+  const recordingsDir = path.join(uploadsDir, 'recordings')
   const db = getDb()
   const expired = db.prepare(
     `SELECT id, file_path FROM builds WHERE delete_after IS NOT NULL AND delete_after < datetime('now')`
@@ -740,9 +741,15 @@ export function purgeExpiredBuilds(recordingsDir: string): void {
     }
   }
 
+
   for (const { file_path } of expired) {
-    unlinkSafe(file_path, 'build')
+    let resolvedFilePath = file_path
+    if (!fs.existsSync(resolvedFilePath)) {
+      resolvedFilePath = path.join(uploadsDir, 'builds', path.basename(file_path))
+    }
+    unlinkSafe(resolvedFilePath, 'build')
   }
+
   for (const chunk of chunks) {
     const ph = chunk.map(() => '?').join(',')
     db.prepare(`DELETE FROM builds WHERE id IN (${ph})`).run(...chunk)

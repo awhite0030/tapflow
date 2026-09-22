@@ -223,4 +223,31 @@ describe('relay config validation', () => {
     await expect(import('../lib/config.js')).rejects.toThrow('process.exit')
     expect(exitSpy).toHaveBeenCalledWith(1)
   })
+
+  it('warns if tapflow.config.json strictly pins local.dataDir to .tapflow-data', async () => {
+    const fsMock = await import('fs')
+    vi.mocked(fsMock.default.existsSync).mockReturnValue(true)
+    vi.mocked(fsMock.default.readFileSync).mockReturnValue(
+      JSON.stringify({ local: { dataDir: '.tapflow-data' } })
+    )
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await import('../lib/config.js')
+
+    const calls = warnSpy.mock.calls.map(c => c[0])
+    expect(calls.some(msg => msg.includes('pins local.dataDir') && msg.includes('.tapflow-data'))).toBe(true)
+  })
+
+  it('does not warn if tapflow.config.json pins local.dataDir to ./.tapflow-data', async () => {
+    const fsMock = await import('fs')
+    vi.mocked(fsMock.default.existsSync).mockReturnValue(true)
+    vi.mocked(fsMock.default.readFileSync).mockReturnValue(
+      JSON.stringify({ local: { dataDir: './.tapflow-data' } })
+    )
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await import('../lib/config.js')
+
+    const calls = warnSpy.mock.calls.map(c => c[0])
+    expect(calls.some(msg => msg.includes('pins local.dataDir'))).toBe(false)
+  })
+
 })
