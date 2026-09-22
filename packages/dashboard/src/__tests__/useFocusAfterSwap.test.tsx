@@ -195,4 +195,13 @@ describe('useFocusAfterSwap', () => {
 
     expect(button('on')).toHaveFocus()
   })
+
+  it('sends focus to the fallback when an element leaves without a view swap', () => {
+    const { rerender } = render(<Harness view="list" content="b" withFallback />)
+    button('b2').focus()
+
+    rerender(<Harness view="list" content="bFirstOnly" withFallback />)
+
+    expect(screen.getByRole('textbox', { name: 'fallback' })).toHaveFocus()
+  })
 })
