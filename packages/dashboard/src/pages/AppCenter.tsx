@@ -548,7 +548,7 @@ export function AppCenter() {
             <Button
               variant="outline"
               size="sm"
-              className="aria-disabled:opacity-50"
+              className="mt-1 aria-disabled:opacity-50"
               aria-describedby={`${errorTitleId} ${errorHintId}`}
               aria-disabled={retryInFlight}
               onClick={() => {
