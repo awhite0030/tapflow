@@ -108,6 +108,10 @@ describe('a row whose status change takes it out of the filtered list (#833)', (
     await waitFor(() => expect(screen.queryByText('uploader-2')).toBeNull())
     await waitFor(() => expect(document.activeElement).toBe(trigger(3, '1.0.0')))
     expect(description(trigger(3, '1.0.0'))).toBe('ios build 2, 1.0.0 was set to Done, so the Backlog filter no longer shows it.')
+    // The destination says it; a toast as well would be flushed by the focus move or heard twice.
+    expect(toastSuccess).not.toHaveBeenCalled()
+    // Heard as a description only, not met again by someone reading the list.
+    expect(document.getElementById(trigger(3, '1.0.0').getAttribute('aria-describedby') ?? '')?.hidden).toBe(true)
   })
 
   it('keeps the note through Radix handing focus back to the leaving row', async () => {
@@ -259,6 +263,8 @@ describe('a row whose status change takes it out of the filtered list (#833)', (
     await waitFor(() => expect(screen.queryByText('uploader-1')).toBeNull())
     expect(document.activeElement).toBe(search)
     expect(description(trigger(2, '1.0.0'))).toBe('')
+    // Not moved, so the reason is said instead — nothing flushes it.
+    expect(toastSuccess).toHaveBeenCalledWith('ios build 1, 1.0.0 was set to Done, so the Backlog filter no longer shows it.')
   })
 })
 

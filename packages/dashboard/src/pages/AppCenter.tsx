@@ -220,7 +220,7 @@ export function AppCenter() {
    * flushed by the focus move in NVDA and JAWS (see this package's AGENTS.md).
    */
   type FocusTarget = { kind: 'row'; buildId: number } | { kind: 'release'; versionName: string }
-  const pendingFocus = useRef<{ leaving: number; target: FocusTarget } | null>(null)
+  const pendingFocus = useRef<{ leaving: number; target: FocusTarget; text: string } | null>(null)
   const [leftNote, setLeftNote] = useState<{ leaving: number; target: FocusTarget; text: string } | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const leftNoteId = useId()
@@ -242,12 +242,9 @@ export function AppCenter() {
     const leaves = statusFilter !== 'all' && status !== statusFilter
     const target = leaves ? focusTargetAfterLeaving(buildId) : null
     if (build && target) {
-      pendingFocus.current = { leaving: buildId, target }
-      setLeftNote({
-        leaving: buildId,
-        target,
-        text: `${buildRowName(build)} was set to ${status ?? 'no status'}, so the ${statusFilter} filter no longer shows it.`,
-      })
+      const text = `${buildRowName(build)} was set to ${status ?? 'no status'}, so the ${statusFilter} filter no longer shows it.`
+      pendingFocus.current = { leaving: buildId, target, text }
+      setLeftNote({ leaving: buildId, target, text })
     }
     statusMutation.mutate({ buildId, status })
   }
@@ -258,12 +255,16 @@ export function AppCenter() {
       : el instanceof HTMLElement && el.dataset.releaseHeader === target.versionName
 
   // On the commit that removes the row. Only if focus went down with it: someone who moved on
-  // while the answer was in flight keeps what they chose.
+  // while the answer was in flight keeps what they chose — and hears why the row went through a
+  // toast instead, since with no focus move there is nothing to flush it.
   useLayoutEffect(() => {
     const pending = pendingFocus.current
     if (!pending || builds.some(b => b.id === pending.leaving)) return
     pendingFocus.current = null
-    if (document.activeElement !== null && document.activeElement !== document.body) return
+    if (document.activeElement !== null && document.activeElement !== document.body) {
+      toast.success(pending.text)
+      return
+    }
     const candidates = listRef.current?.querySelectorAll('[data-status-trigger], [data-release-header]') ?? []
     const destination = Array.from(candidates).find(el => matchesTarget(el, pending.target))
     if (destination instanceof HTMLElement) destination.focus()
@@ -485,7 +486,9 @@ export function AppCenter() {
           /* `aria-busy` while the rows belong to the app you were looking at rather than the one
              the heading now names — the visible half of the same lag. */
           <div ref={listRef} className="flex flex-col gap-2" aria-busy={buildsQuery.isPlaceholderData}>
-            {noteShown && <p id={leftNoteId} className="sr-only">{leftNote.text}</p>}
+            {/* `hidden`: heard as the destination's description, which reads hidden text, and not
+                met again as a stray sentence by someone reading the list in browse mode. */}
+            {noteShown && <p id={leftNoteId} hidden>{leftNote.text}</p>}
             {/* The first release is described by the status line, because it is where focus lands
                 when a retry brings the list back — and that focus move flushes the status sentence
                 ("Showing N builds for …") that would otherwise have said the retry worked.

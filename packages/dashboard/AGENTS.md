@@ -444,7 +444,9 @@ screen: the next row in the release, else the previous one, else the neighbourin
 Focus moves there on the commit that removes the row, and only if focus went down with it. It cannot
 move earlier, because Radix hands focus back to the row's trigger after the pick, and it cannot be
 chosen later, because by then the order it was chosen from is gone. The destination is described by a
-note that says why the row left, and the note clears when focus goes elsewhere.
+note that says why the row left, and the note clears when focus goes elsewhere. Someone who moved
+focus while the change was in flight keeps it, and hears the same sentence as a toast, since
+without a focus move nothing flushes it.
 
 **A failed key being fetched again is still the failure.** The manual retry holds the failure screen
 until its answer, and so does a background refetch of the same failure (returning to the tab, an
