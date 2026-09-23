@@ -346,7 +346,16 @@ export const MIGRATIONS: readonly Migration[] = [
       // **A filter that was never installed is not a pending migration.** It is an optional feature,
       // and `setup` counts declining it as done — offering it here would ask everyone who said no, and
       // install it unasked wherever no terminal is attached.
-      if (s.shippedHost === null || s.installedHost === null) return { state: 'none' }
+      if (s.shippedHost === null || s.shippedExt === null) return { state: 'none' }
+      if (s.installedHost === null) {
+        if (s.activatedExt === null) return { state: 'none' }
+        // The app was deleted while its extension kept running. The installer refuses this rather than
+        // guess which host the Mac had (`refused-host-unknown`), so it is reported, not run into.
+        return {
+          state: 'blocked',
+          reason: `extension ${s.activatedExt} is running but ${NET_FILTER_APP} is gone. See \`tapflow doctor ios\`.`,
+        }
+      }
       // What the installer would refuse is left out rather than run into: a newer copy is another
       // checkout's to replace (`refused-downgrade`). Same for an extension newer than this package's.
       if (isNewer(s.installedHost, s.shippedHost)) return { state: 'none' }
@@ -355,6 +364,7 @@ export const MIGRATIONS: readonly Migration[] = [
       if (isNetFilterCurrent(s)) {
         return isFilterEnforcing() ? { state: 'none' } : { state: 'pending', summary: 'Turn the iOS network filter back on (installed, not filtering)' }
       }
+      if (s.installedHost === s.shippedHost) return { state: 'pending', summary: 'Activate the iOS network filter this version carries' }
       return { state: 'pending', summary: `Update the iOS network filter (${s.installedHost} → ${s.shippedHost})` }
     },
     run: () => runNetFilterMigration(),

@@ -232,6 +232,26 @@ describe('tapflow migrate — which migrations are due', () => {
       expect(netFilter.check().state).toBe('none')
     })
 
+    it('is blocked, not up to date, when the app is gone but its extension still runs', () => {
+      // The installer refuses this state (`refused-host-unknown`); calling it "up to date" would hide it.
+      mockState.mockReturnValue({ ...CURRENT, installedHost: null })
+
+      expect(netFilter.check().state).toBe('blocked')
+    })
+
+    it('is not due when this package ships an app whose extension cannot be read', () => {
+      // The installer answers `no-artifact` here, so offering it would promise a step that fails.
+      mockState.mockReturnValue({ ...CURRENT, installedHost: '100', shippedExt: null })
+
+      expect(netFilter.check().state).toBe('none')
+    })
+
+    it('says activate, not update, when only the extension is behind', () => {
+      mockState.mockReturnValue({ ...CURRENT, activatedExt: '10' })
+
+      expect(netFilter.check()).toEqual({ state: 'pending', summary: expect.stringContaining('Activate') })
+    })
+
     it('does not look at the filter at all off macOS', () => {
       Object.defineProperty(process, 'platform', { value: 'linux' })
 

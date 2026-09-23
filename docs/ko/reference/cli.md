@@ -348,7 +348,7 @@ tapflow migrate
 
 터미널에서는 목록을 보여 주고 한 번 묻습니다. 터미널이 없으면(CI, 프로비저닝 스크립트) 목록을 출력하고 묻지 않고 실행합니다. 각 서브커맨드를 따로 실행할 때와 같습니다. 단, `net-filter` 단계는 macOS 승인 때문에 한 번 더 물을 수 있습니다.
 
-마이그레이션은 순서대로 실행하고 하나가 실패하면 나머지는 실행하지 않고 exit code 1로 끝납니다. 할 일이 없으면 exit 0입니다. `.tapflow-data/`와 `.tapflow/data/`가 둘 다 있으면 `data-dir`은 알리기만 하고 건너뜁니다. 어느 쪽에 데이터가 있는지는 사용자만 알 수 있기 때문입니다.
+마이그레이션은 순서대로 실행하고 하나가 실패하면 나머지는 실행하지 않고 exit code 1로 끝납니다. 할 일이 없으면 exit 0입니다. `.tapflow-data/`와 `.tapflow/data/`가 둘 다 있으면 `data-dir`은 알리기만 하고 건너뜁니다. 어느 쪽에 데이터가 있는지는 사용자만 알 수 있기 때문입니다. 필터 앱은 지워졌는데 확장이 아직 돌고 있을 때도 `net-filter`를 같은 방식으로 건너뜁니다. 이 상태는 `tapflow doctor ios`가 설명합니다.
 
 여기서는 `--ignore-running-devices`를 받지 않습니다. 필요하면 `tapflow migrate net-filter --ignore-running-devices`로 실행하세요.
 

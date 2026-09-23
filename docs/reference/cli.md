@@ -369,7 +369,7 @@ It checks each migration below and lists the ones that apply:
 
 In a terminal it shows the list and asks once. Without one (CI, a provisioning script) it prints the list and runs it without asking, the same as each subcommand does on its own. The `net-filter` step can still stop to ask about the macOS approval.
 
-Migrations run in order, and the first one that fails stops the rest with exit code 1. Nothing to do exits 0. When both `.tapflow-data/` and `.tapflow/data/` exist, `data-dir` is reported and skipped, because only you can tell which one holds your data.
+Migrations run in order, and the first one that fails stops the rest with exit code 1. Nothing to do exits 0. When both `.tapflow-data/` and `.tapflow/data/` exist, `data-dir` is reported and skipped, because only you can tell which one holds your data. `net-filter` is reported and skipped the same way when the filter app was deleted but its extension is still running; `tapflow doctor ios` explains that state.
 
 `--ignore-running-devices` is not accepted here. Run `tapflow migrate net-filter --ignore-running-devices` for that.
 
