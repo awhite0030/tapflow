@@ -158,4 +158,66 @@ describe('migrateDataDir', () => {
     expect(result.status).toBe('exdev')
     expect(fs.readFileSync(path.join(cwd, '.tapflow-data', 'tapflow.db'), 'utf-8')).toBe('DB')
   })
+
+  describe('the config is rewritten before the move (#836)', () => {
+    // Each case pins `.tapflow-data`: that is the only config `repointConfig` writes, so without the
+    // pin nothing is written and "the config is unchanged" would hold whatever the order.
+    const PINNED = JSON.stringify({ local: { port: 4000, dataDir: '.tapflow-data' } }, null, 2) + '\n'
+    const setUp = (): string => {
+      const cwd = track(makeCwd())
+      fs.mkdirSync(path.join(cwd, '.tapflow-data'), { recursive: true })
+      fs.writeFileSync(path.join(cwd, '.tapflow-data', 'tapflow.db'), 'DB')
+      fs.writeFileSync(path.join(cwd, 'tapflow.config.json'), PINNED)
+      return cwd
+    }
+    const failRename = (code: string, before?: () => void) =>
+      vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+        before?.()
+        const e = new Error(`rename failed: ${code}`) as NodeJS.ErrnoException
+        e.code = code
+        throw e
+      })
+
+    it.skipIf(process.platform === 'win32')('moves nothing when the config cannot be written', () => {
+      const cwd = setUp()
+      fs.chmodSync(path.join(cwd, 'tapflow.config.json'), 0o444)
+
+      const result = migrateDataDir(cwd)
+
+      expect(result.status).toBe('config-unwritable')
+      expect(fs.readFileSync(path.join(cwd, '.tapflow-data', 'tapflow.db'), 'utf-8')).toBe('DB')
+      expect(fs.existsSync(path.join(cwd, '.tapflow', 'data'))).toBe(false)
+    })
+
+    it('puts the config back when the move fails', () => {
+      const cwd = setUp()
+      failRename('EPERM')
+
+      const result = migrateDataDir(cwd)
+
+      expect(result).toMatchObject({ status: 'rename-failed', configRestored: true })
+      expect(fs.readFileSync(path.join(cwd, 'tapflow.config.json'), 'utf-8')).toBe(PINNED)
+      expect(fs.readFileSync(path.join(cwd, '.tapflow-data', 'tapflow.db'), 'utf-8')).toBe('DB')
+    })
+
+    it('puts the config back on a cross-filesystem move too', () => {
+      const cwd = setUp()
+      failRename('EXDEV')
+
+      const result = migrateDataDir(cwd)
+
+      expect(result).toMatchObject({ status: 'exdev', configRestored: true })
+      expect(fs.readFileSync(path.join(cwd, 'tapflow.config.json'), 'utf-8')).toBe(PINNED)
+    })
+
+    it.skipIf(process.platform === 'win32')('says so when the config cannot be put back', () => {
+      const cwd = setUp()
+      const configPath = path.join(cwd, 'tapflow.config.json')
+      failRename('EPERM', () => fs.chmodSync(configPath, 0o444))
+
+      const result = migrateDataDir(cwd)
+
+      expect(result).toMatchObject({ status: 'rename-failed', configRestored: false, configPath })
+    })
+  })
 })

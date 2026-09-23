@@ -1,4 +1,7 @@
-import { resolveInstallDir } from '@tapflowio/relay'
+import fs from 'fs'
+import path from 'path'
+import { resolveInstallDir, config } from '@tapflowio/relay'
+import { probeBind } from '../lib/port-available.js'
 import { banner, step, DIM, R } from '../lib/print.js'
 import { migrateDataDir } from '../lib/migrate-data-dir.js'
 import {
@@ -7,14 +10,48 @@ import {
 } from '../lib/net-filter.js'
 import { terminalApprovalDeps } from '../lib/approval-prompt.js'
 
+/**
+ * What one migration step came to, for `tapflow migrate` to decide whether to go on.
+ *
+ * - `ok` — done, already done, or waiting on something only the user can do (a macOS approval, a
+ *   restart). The subcommand exits 0 in each of these, and so does the list.
+ * - `failed` — the subcommand exits 1. The list stops here.
+ * - `cancelled` — the user backed out of a question. Nothing changed; the list stops, exit 0.
+ */
+export type StepResult = 'ok' | 'failed' | 'cancelled'
+
 // `tapflow migrate data-dir` — one-shot move of a legacy .tapflow-data/ into the unified .tapflow/data/.
 //
 // **The install dir, like every other command.** It read the cwd until the install dir existed, and
 // the docs now tell a server operator to set TAPFLOW_HOME and run tapflow commands from wherever
 // they are — which would have reported "nothing to migrate" while the install's legacy directory
 // stayed exactly where it was, with the relay warning about it on every start.
-export function cmdMigrateDataDir(): void {
-  const result = migrateDataDir(resolveInstallDir().dir)
+export async function runDataDirMigration(): Promise<StepResult> {
+  const dir = resolveInstallDir().dir
+
+  // **Refused while this install's relay is running** (#836). The relay holds its uploads directory in
+  // memory: moving the data under it makes the next upload recreate `.tapflow-data/uploads/builds/`
+  // and leave its build there, outside the data the relay reads after a restart — and the next
+  // migrate stops on two directories. The port is the relay's own resolved one (`config.local.port`,
+  // so `TAPFLOW_PORT` from the shell or the data dir's `.env` counts), probed the way the relay binds
+  // it. Only `EADDRINUSE` means something is there; `EACCES` on a low port is not a running relay.
+  // Checked only when there is something to move, so an install with nothing to migrate is not told
+  // to stop anything.
+  if (fs.existsSync(path.join(dir, '.tapflow-data'))) {
+    const port = config.local.port
+    const err = await probeBind(port)
+    if (err?.code === 'EADDRINUSE') {
+      banner('error', 'STOP THE RELAY FIRST', [
+        `Something is listening on port ${port}, the port this install's relay uses.`,
+        'Moving the data while the relay runs leaves anything uploaded meanwhile in the old directory.',
+        'Stop the relay, then run this again.',
+        'A relay started on another port with `tapflow relay start --port` is not detected — stop it too.',
+      ])
+      return 'failed'
+    }
+  }
+
+  const result = migrateDataDir(dir)
   switch (result.status) {
     case 'migrated': {
       const lines = ['Moved .tapflow-data/ → .tapflow/data/.']
@@ -22,30 +59,61 @@ export function cmdMigrateDataDir(): void {
       if (result.gitignoreUpdated) lines.push('Added the runtime paths to .gitignore.')
       lines.push('Start tapflow as usual: tapflow start')
       banner('success', 'DATA DIRECTORY MIGRATED', lines)
-      return
+      return 'ok'
     }
     case 'noop-already':
       banner('success', 'ALREADY MIGRATED', ['.tapflow/data/ is in place and no legacy .tapflow-data/ remains.'])
-      return
+      return 'ok'
     case 'noop-no-legacy':
       banner('success', 'NOTHING TO MIGRATE', ['No legacy .tapflow-data/ found in this directory.'])
-      return
+      return 'ok'
     case 'conflict':
       banner('error', 'MIGRATION BLOCKED', [
         'Both .tapflow-data/ (legacy) and .tapflow/data/ exist.',
         'Reconcile by hand — keep the directory with your real data, remove the other, then re-run.',
       ])
-      process.exit(1)
-      break
+      return 'failed'
     case 'exdev':
       banner('error', 'CROSS-FILESYSTEM MOVE', [
         '.tapflow-data/ and .tapflow/data/ are on different filesystems, so an atomic move is not possible.',
         'Move it by hand: mv .tapflow-data .tapflow/data',
         'Then set local.dataDir to .tapflow/data in tapflow.config.json if it was pinned to the old path.',
+        ...configNotRestored(result),
       ])
-      process.exit(1)
-      break
+      return 'failed'
+    case 'config-unwritable':
+      banner('error', 'CANNOT UPDATE THE CONFIG', [
+        `${result.configPath} names .tapflow-data as the data directory and could not be rewritten:`,
+        result.detail,
+        'Nothing was moved.',
+      ])
+      return 'failed'
+    case 'rename-failed':
+      banner('error', 'MIGRATION FAILED', [
+        `Could not move .tapflow-data/ to .tapflow/data/: ${result.detail}`,
+        'Nothing was moved. Stop anything using the directory and run this again.',
+        ...configNotRestored(result),
+      ])
+      return 'failed'
   }
+}
+
+// The one state a failed move can leave worse than it found: the config already rewritten and not put
+// back. Said with the exact line to restore, because the relay would otherwise start on an empty
+// .tapflow/data/ while the data sits untouched in .tapflow-data/.
+function configNotRestored(result: { configRestored: boolean; configPath: string }): string[] {
+  if (result.configRestored) return []
+  return [
+    '',
+    `${result.configPath} was already changed and could not be put back: it now names`,
+    '.tapflow/data while the data is still in .tapflow-data. Set local.dataDir back to',
+    '".tapflow-data" in that file before starting the relay.',
+  ]
+}
+
+/** `tapflow migrate data-dir` on its own: the step, with the exit code it has always had. */
+export async function cmdMigrateDataDir(): Promise<void> {
+  if (await runDataDirMigration() === 'failed') process.exit(1)
 }
 
 /**
@@ -59,7 +127,7 @@ export function cmdMigrateDataDir(): void {
  * The install itself is `installNetFilter`, shared with setup — one routine, because two would
  * eventually answer the same question differently.
  */
-export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {}): Promise<void> {
+export async function runNetFilterMigration(opts: { ignoreRunningDevices?: boolean } = {}): Promise<StepResult> {
   // **Lines rather than a spinner**, and that is forced rather than chosen: `installNetFilter` is
   // synchronous to the bottom, so `setInterval` never fires while it runs. See `InstallStage`.
   // **Asked before anything changes, when macOS is going to ask too (#799).** The answer opens the
@@ -70,7 +138,7 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
   // Backing out of the question is backing out of the command: nothing has changed yet.
   if (offer === 'cancelled') {
     step('Cancelled — nothing was installed.')
-    return
+    return 'cancelled'
   }
   const installOpts: InstallOptions = {
     ...opts, onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]), openApprovalSheet: offer === 'accepted',
@@ -88,7 +156,7 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
         `Installed to ${NET_FILTER_APP} and activated.`,
         'iOS network control is available now: tapflow doctor ios',
       ])
-      return
+      return 'ok'
     case 'installed-unconfirmed':
       // **Not a failure, and not a success either.** The app is in place and the extension is
       // activated; what could not be confirmed is that a provider came back up and started
@@ -109,11 +177,10 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
         `  ${NET_FILTER_APP}/Contents/MacOS/TapflowNetFilter --off`,
         'Traffic returns immediately; iOS network control stays off until you run this command again.',
       ])
-      process.exit(1)
-      break
+      return 'failed'
     case 'already-current':
       banner('success', 'ALREADY UP TO DATE', ['The Mac is already running the filter this tapflow carries.'])
-      return
+      return 'ok'
     case 'needs-approval':
       banner('success', 'APPROVAL NEEDED', [
         `Installed to ${NET_FILTER_APP}, and macOS is waiting for you to allow it.`,
@@ -128,23 +195,22 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
         ] : []),
       ])
 
-      return
+      return 'ok'
     case 'needs-reboot':
       banner('success', 'RESTART TO FINISH', [
         'Installed. macOS replaces a running filter only on restart, so the previous version keeps running until then.',
         'Restart the Mac, then: tapflow doctor ios',
       ])
-      return
+      return 'ok'
     case 'not-macos':
       banner('success', 'NOTHING TO MIGRATE', ['The iOS network filter is macOS only.'])
-      return
+      return 'ok'
     case 'no-artifact':
       banner('error', 'NO FILTER TO INSTALL', [
         'This tapflow install carries no usable filter app, so there is nothing to migrate.',
         'Reinstalling tapflow restores it.',
       ])
-      process.exit(1)
-      break
+      return 'failed'
     case 'refused-devices-busy':
       // Not an error the way a failed install is: nothing is broken, the moment is wrong. Naming what
       // is running is the point — the person at the keyboard may not be the person testing.
@@ -169,8 +235,7 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
         'Stop them and run this again, or go ahead anyway:',
         '  tapflow migrate net-filter --ignore-running-devices',
       ])
-      process.exit(1)
-      break
+      return 'failed'
     case 'refused-host-unknown':
       // The command whose whole purpose is this repair, so it has to explain why it will not do it.
       banner('error', 'CANNOT TELL WHAT THIS MAC IS RUNNING', [
@@ -185,16 +250,14 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
       // into the package that is longer than that. Wrapped, it is two lines nobody can paste.
       for (const s of removalSteps()) console.log(`${DIM}       ${s}${R}`)
       console.log()
-      process.exit(1)
-      break
+      return 'failed'
     case 'refused-downgrade':
       banner('error', 'MIGRATION REFUSED', [
         `This Mac runs filter ${outcome.installed} and this tapflow carries ${outcome.shipped}.`,
         'Installing would replace a newer filter another tapflow on this Mac depends on.',
         'Upgrade this checkout instead.',
       ])
-      process.exit(1)
-      break
+      return 'failed'
     case 'failed':
       banner('error', 'MIGRATION FAILED', [
         // "Did not finish", not "could not be installed": a failure while switching the filter on comes
@@ -211,15 +274,18 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
           'Run this again to turn it back on.',
         ] : []),
       ])
-      process.exit(1)
-      break
+      return 'failed'
     default: {
-      // **The compiler cannot see a missing case here, and that is why this line exists.** `setup`'s
-      // switch returns a value, so an unhandled member is a type error there; this one returns void,
-      // and `refused-host-unknown` fell straight through it — printing nothing and exiting 0 in the
-      // one state the outcome was invented for.
+      // **Kept although the switch now returns a value.** It returned void when `refused-host-unknown`
+      // fell straight through it — printing nothing and exiting 0 in the one state the outcome was
+      // invented for — and the explicit `never` is what stops that returning if the return goes away.
       const unhandled: never = outcome
       throw new Error(`unhandled install outcome: ${JSON.stringify(unhandled)}`)
     }
   }
+}
+
+/** `tapflow migrate net-filter` on its own: the step, with the exit code it has always had. */
+export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {}): Promise<void> {
+  if (await runNetFilterMigration(opts) === 'failed') process.exit(1)
 }
