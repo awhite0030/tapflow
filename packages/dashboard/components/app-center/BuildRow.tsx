@@ -20,22 +20,10 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Separator } from '@/components/ui/separator';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Play, Trash2, TimerOff } from 'lucide-react';
 import type { Build } from '@/lib/types';
-import { STATUS_TONE } from '@/lib/build-format';
-
-// delete_after is the absolute purge time; the countdown is independent of review status (#258).
-function formatDeletionCountdown(deleteAfter: string): { label: string; urgent: boolean } {
-  // SQLite datetime() returns naive UTC ("YYYY-MM-DD HH:MM:SS") — append Z so it isn't read as local time.
-  const hasTz = /[zZ]|[+-]\d{2}:?\d{2}$/.test(deleteAfter);
-  const ms = new Date(hasTz ? deleteAfter : deleteAfter.replace(' ', 'T') + 'Z').getTime();
-  const diff = ms - Date.now();
-  if (diff <= 0) return { label: 'Deleting…', urgent: true };
-  const h = Math.floor(diff / 3_600_000);
-  if (h < 1) return { label: 'Deletes in < 1h', urgent: true };
-  if (h < 24) return { label: `Deletes in ${h}h`, urgent: h < 6 };
-  return { label: `Deletes in ${Math.floor(h / 24)}d`, urgent: false };
-}
+import { STATUS_TONE, buildRowName, formatDeletionCountdown } from '@/lib/build-format';
 
 interface Props {
   build: Build;
@@ -44,6 +32,9 @@ interface Props {
   onStatusChange: (buildId: number, status: string | null) => void;
   onScheduleDeletion: (buildId: number) => void;
   onCancelDeletion: (buildId: number) => void;
+  /** Describes the status trigger — App Center passes a note here when this row is where focus
+   *  lands after the row above or below it left the filtered list (#833). */
+  statusDescribedBy?: string;
 }
 
 export function BuildRow({
@@ -53,6 +44,7 @@ export function BuildRow({
   onStatusChange,
   onScheduleDeletion,
   onCancelDeletion,
+  statusDescribedBy,
 }: Props) {
   const [pendingSchedule, setPendingSchedule] = useState(false);
   // The dialog is opened by state rather than by an `AlertDialogTrigger`, so Radix has no trigger to
@@ -63,6 +55,7 @@ export function BuildRow({
   const deletionButtonRef = useRef<HTMLButtonElement>(null);
   const isDone = build.status_label === 'Done';
   const deletion = build.delete_after ? formatDeletionCountdown(build.delete_after) : null;
+  const rowName = buildRowName(build);
 
   function handleValueChange(val: string) {
     onStatusChange(build.id, val === 'none' ? null : val);
@@ -142,15 +135,14 @@ export function BuildRow({
         </div>
 
         <Select value={build.status_label ?? 'none'} onValueChange={handleValueChange}>
-          {/* Named from what the row shows, so a screen reader hears what the control sets and
-              voice control can address one row. **The build number alone does not identify a
-              row**: a release groups by `version_name` only, so an iOS and an Android build with
-              the same number sit in one accordion, and iOS restarts numbering per version. The DB
-              id was the first fallback and was worse — the row renders "build —", so it named
-              something nobody can see or say. */}
+          {/* Every control on the row is named from `buildRowName` — see it for why the number
+              alone is not enough. `data-status-trigger` is how App Center finds this trigger to
+              move focus onto it when a neighbouring row leaves the filtered list. */}
           <SelectTrigger
             className="h-9 w-32 text-xs"
-            aria-label={`Status for ${build.platform} build ${build.build_number ?? 'without a number'}, ${build.version_name ?? 'Unversioned'}`}
+            aria-label={`Status for ${rowName}`}
+            aria-describedby={statusDescribedBy}
+            data-status-trigger={build.id}
           >
             <SelectValue />
           </SelectTrigger>
@@ -165,29 +157,42 @@ export function BuildRow({
           </SelectContent>
         </Select>
 
-        {deletion ? (
-          <Button
-            ref={deletionButtonRef}
-            size="icon-sm"
-            variant="outline"
-            onClick={() => onCancelDeletion(build.id)}
-            title="Cancel scheduled deletion"
-          >
-            <TimerOff className="h-3.5 w-3.5" />
-          </Button>
-        ) : (
-          <Button
-            ref={deletionButtonRef}
-            size="icon-sm"
-            variant="destructive"
-            onClick={() => setPendingSchedule(true)}
-            title="Schedule deletion"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
-        )}
+        {/* Named per row, and explained by a tooltip that also opens on keyboard focus. `title` did
+            neither: it was the same on every row, so voice control could not address one, and it
+            appears on hover only, so a keyboard user landing on the icon could not tell what it does.
+            One `Tooltip` around both branches: the slot keeps the same node either way (see
+            `deletionButtonRef`), and so does the trigger wrapping it. */}
+        <TooltipProvider delayDuration={400}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {deletion ? (
+                <Button
+                  ref={deletionButtonRef}
+                  size="icon-sm"
+                  variant="outline"
+                  onClick={() => onCancelDeletion(build.id)}
+                  aria-label={`Cancel scheduled deletion of ${rowName}`}
+                >
+                  <TimerOff className="h-3.5 w-3.5" aria-hidden />
+                </Button>
+              ) : (
+                <Button
+                  ref={deletionButtonRef}
+                  size="icon-sm"
+                  variant="destructive"
+                  onClick={() => setPendingSchedule(true)}
+                  aria-label={`Schedule deletion of ${rowName}`}
+                >
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                </Button>
+              )}
+            </TooltipTrigger>
+            <TooltipContent>{deletion ? 'Cancel scheduled deletion' : 'Schedule deletion'}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
 
-        <Button size="sm" onClick={() => onNavigate(build.id)} disabled={isDone}>
+        {/* The visible words first, so the name still contains what a voice-control user reads. */}
+        <Button size="sm" onClick={() => onNavigate(build.id)} disabled={isDone} aria-label={`Start QA on ${rowName}`}>
           <Play className="mr-1.5 h-3.5 w-3.5" />
           Start QA
         </Button>

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -14,6 +14,8 @@ import { ReleaseAccordion } from '@/components/app-center/ReleaseAccordion'
 import { getApps, getBuilds, updateBuildStatus, scheduleBuildDeletion, cancelBuildDeletion, groupByRelease } from '@/lib/queries'
 import type { Build } from '@/lib/types'
 import { useFocusAfterSwap } from '@/hooks/useFocusAfterSwap'
+import { useReleaseDisclosure } from '@/hooks/useReleaseDisclosure'
+import { buildRowName, describeDeletionCountdown } from '@/lib/build-format'
 
 export function AppCenter() {
   const navigate = useNavigate()
@@ -32,7 +34,6 @@ export function AppCenter() {
     const timer = setTimeout(() => setSettledSearch(search), 250)
     return () => clearTimeout(timer)
   }, [search])
-  const [openReleases, setOpenReleases] = useState<Set<string>>(new Set())
 
   // **Parsed once, and rejected when it is not an id.** `Number('abc')` is `NaN`, which is neither
   // `null` nor falsy in the same way — the query's `enabled` guard let it through and fired a
@@ -65,9 +66,6 @@ export function AppCenter() {
     setSearchParams({ appId: String(appsQuery.data[0].id) }, { replace: true })
   }, [appsQuery.data, searchParams, setSearchParams])
 
-  // **Seeded when the new app's own answer arrives, not when it is asked for.** Resetting on the
-  // click would collapse the list that is deliberately still on screen — trading the flicker this
-  // change removes for a different one.
   // **Which app the rows on screen came from. State, not a ref** — writing and reading a ref during
   // render is a Rules of React violation, and the first version of this did exactly that. The
   // effect below already runs at the moment the answer lands, which is the moment this changes.
@@ -102,8 +100,6 @@ export function AppCenter() {
     if (seededAppId.current === selectedAppId) return
     seededAppId.current = selectedAppId
     setShownAppId(selectedAppId)
-    const first = buildsQuery.data[0]
-    setOpenReleases(first ? new Set([first.version_name ?? 'Unversioned']) : new Set())
   }, [selectedAppId, buildsQuery.isPlaceholderData, buildsQuery.data])
 
   function handleAppSelect(id: number) {
@@ -144,24 +140,30 @@ export function AppCenter() {
     }
   }
 
-  function handleToggleRelease(versionName: string) {
-    setOpenReleases(prev => {
-      const next = new Set(prev)
-      if (next.has(versionName)) next.delete(versionName)
-      else next.add(versionName)
-      return next
-    })
-  }
-
   type StatusVars = { buildId: number; status: string | null }
+  const statusRows = optimisticRows<StatusVars>(
+    (rows, v) => rows.map(b =>
+      b.id === v.buildId ? { ...b, status_label: v.status as Build['status_label'] } : b),
+    'Failed to update status',
+  )
   const statusMutation = useMutation({
     mutationFn: ({ buildId, status }: StatusVars) => updateBuildStatus(buildId, status),
-    ...optimisticRows<StatusVars>(
-      (rows, v) => rows.map(b =>
-        b.id === v.buildId ? { ...b, status_label: v.status as Build['status_label'] } : b),
-      'Failed to update status',
-    ),
+    ...statusRows,
+    onError: (error: unknown, vars: StatusVars, context: MutationContext | undefined) => {
+      statusRows.onError(error, vars, context)
+      // The row stays, so there is nothing to move focus away from.
+      if (pendingFocus.current?.leaving === vars.buildId) {
+        pendingFocus.current = null
+        setLeftNote(null)
+      }
+    },
   })
+
+  /** The row's name as the cache holds it now — for an announcement made after the answer. */
+  const rowNameIn = (key: typeof buildsKey, buildId: number) => {
+    const build = queryClient.getQueryData<Build[]>(key)?.find(b => b.id === buildId)
+    return build ? buildRowName(build) : 'the build'
+  }
 
   const scheduleMutation = useMutation({
     mutationFn: (buildId: number) => scheduleBuildDeletion(buildId),
@@ -177,6 +179,10 @@ export function AppCenter() {
       if (!context) return
       queryClient.setQueryData<Build[]>(context.key, (old) =>
         old?.map(b => b.id === buildId ? { ...b, delete_after: deleteAfter } : b))
+      // **Said on the answer, not on the click** (#834): focus stays on the button while its name
+      // changes, and whether a focused control's new name is read depends on the screen reader —
+      // VoiceOver usually does not. The dialog has closed by now, so the toast is heard.
+      toast.success(`Deletion scheduled for ${rowNameIn(context.key, buildId)} — it will be deleted ${describeDeletionCountdown(deleteAfter)}`)
     },
   })
 
@@ -186,14 +192,97 @@ export function AppCenter() {
       (rows, buildId) => rows.map(b => b.id === buildId ? { ...b, delete_after: null } : b),
       'Failed to cancel scheduled deletion',
     ),
+    onSuccess: (_result: unknown, buildId: number, context?: MutationContext) => {
+      toast.success(`Scheduled deletion cancelled for ${context ? rowNameIn(context.key, buildId) : 'the build'}`)
+    },
   })
 
-  const handleStatusChange = (buildId: number, status: string | null) =>
-    statusMutation.mutate({ buildId, status })
   const handleScheduleDeletion = (buildId: number) => scheduleMutation.mutate(buildId)
   const handleCancelDeletion = (buildId: number) => cancelMutation.mutate(buildId)
 
   const releaseGroups = groupByRelease(builds)
+  const disclosure = useReleaseDisclosure(builds[0]?.app_id ?? null, releaseGroups.map(g => g.versionName))
+
+  /**
+   * **Where focus goes when a status change takes its row out of the filtered list** (#833).
+   *
+   * Radix hands focus back to the row's status trigger when the menu closes; the refetch then drops
+   * the row, and the trigger with it, so focus fell to `body` and the page's top. `useFocusAfterSwap`
+   * leaves this alone on purpose — the list stays a list — so the row decides: the next row in its
+   * release, else the previous one, else the next release's header, else the previous one's. A row
+   * that was the list's last leaves an empty state behind, which the swap hook already handles.
+   *
+   * **Decided now, acted on later.** Moving focus before the row is gone would be undone by Radix
+   * handing it back; after the refetch the order it was chosen from no longer exists. So the target
+   * is chosen from what is on screen at the change and taken once the row has actually gone.
+   *
+   * The destination says what happened itself, through `leftNote`: a polite status sentence is
+   * flushed by the focus move in NVDA and JAWS (see this package's AGENTS.md).
+   */
+  type FocusTarget = { kind: 'row'; buildId: number } | { kind: 'release'; versionName: string }
+  const pendingFocus = useRef<{ leaving: number; target: FocusTarget } | null>(null)
+  const [leftNote, setLeftNote] = useState<{ leaving: number; target: FocusTarget; text: string } | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const leftNoteId = useId()
+
+  function focusTargetAfterLeaving(buildId: number): FocusTarget | null {
+    const index = releaseGroups.findIndex(g => g.builds.some(b => b.id === buildId))
+    if (index < 0) return null
+    const rows = releaseGroups[index].builds
+    const at = rows.findIndex(b => b.id === buildId)
+    const neighbour = rows[at + 1] ?? rows[at - 1]
+    if (neighbour) return { kind: 'row', buildId: neighbour.id }
+    // Headers render whether or not their release is open, so either neighbour will be there.
+    const release = releaseGroups[index + 1] ?? releaseGroups[index - 1]
+    return release ? { kind: 'release', versionName: release.versionName } : null
+  }
+
+  const handleStatusChange = (buildId: number, status: string | null) => {
+    const build = builds.find(b => b.id === buildId)
+    const leaves = statusFilter !== 'all' && status !== statusFilter
+    const target = leaves ? focusTargetAfterLeaving(buildId) : null
+    if (build && target) {
+      pendingFocus.current = { leaving: buildId, target }
+      setLeftNote({
+        leaving: buildId,
+        target,
+        text: `${buildRowName(build)} was set to ${status ?? 'no status'}, so the ${statusFilter} filter no longer shows it.`,
+      })
+    }
+    statusMutation.mutate({ buildId, status })
+  }
+
+  const matchesTarget = (el: Element, target: FocusTarget) =>
+    target.kind === 'row'
+      ? el instanceof HTMLElement && el.dataset.statusTrigger === String(target.buildId)
+      : el instanceof HTMLElement && el.dataset.releaseHeader === target.versionName
+
+  // On the commit that removes the row. Only if focus went down with it: someone who moved on
+  // while the answer was in flight keeps what they chose.
+  useLayoutEffect(() => {
+    const pending = pendingFocus.current
+    if (!pending || builds.some(b => b.id === pending.leaving)) return
+    pendingFocus.current = null
+    if (document.activeElement !== null && document.activeElement !== document.body) return
+    const candidates = listRef.current?.querySelectorAll('[data-status-trigger], [data-release-header]') ?? []
+    const destination = Array.from(candidates).find(el => matchesTarget(el, pending.target))
+    if (destination instanceof HTMLElement) destination.focus()
+  })
+
+  // The note describes its destination until focus goes anywhere else. The leaving row's own trigger
+  // is exempt: Radix hands focus back to it before the row goes.
+  useEffect(() => {
+    if (!leftNote) return
+    const onFocusIn = (event: FocusEvent) => {
+      const el = event.target
+      if (!(el instanceof Element)) return
+      const leavingTrigger = el instanceof HTMLElement && el.dataset.statusTrigger === String(leftNote.leaving)
+      if (!leavingTrigger && !matchesTarget(el, leftNote.target)) setLeftNote(null)
+    }
+    document.addEventListener('focusin', onFocusIn)
+    return () => document.removeEventListener('focusin', onFocusIn)
+  })
+  const noteShown = leftNote !== null && !builds.some(b => b.id === leftNote.leaving)
 
   /**
    * What the list is doing, for anyone who cannot see it doing it.
@@ -395,7 +484,8 @@ export function AppCenter() {
         ) : (
           /* `aria-busy` while the rows belong to the app you were looking at rather than the one
              the heading now names — the visible half of the same lag. */
-          <div className="flex flex-col gap-2" aria-busy={buildsQuery.isPlaceholderData}>
+          <div ref={listRef} className="flex flex-col gap-2" aria-busy={buildsQuery.isPlaceholderData}>
+            {noteShown && <p id={leftNoteId} className="sr-only">{leftNote.text}</p>}
             {/* The first release is described by the status line, because it is where focus lands
                 when a retry brings the list back — and that focus move flushes the status sentence
                 ("Showing N builds for …") that would otherwise have said the retry worked.
@@ -407,11 +497,15 @@ export function AppCenter() {
             {releaseGroups.map(({ versionName, builds: groupBuilds }, index) => (
               <ReleaseAccordion
                 key={versionName}
-                describedBy={index === 0 && !buildsQuery.isPlaceholderData ? statusId : undefined}
+                describedBy={[
+                  index === 0 && !buildsQuery.isPlaceholderData ? statusId : null,
+                  noteShown && leftNote.target.kind === 'release' && leftNote.target.versionName === versionName ? leftNoteId : null,
+                ].filter(Boolean).join(' ') || undefined}
+                rowNote={noteShown && leftNote.target.kind === 'row' ? { buildId: leftNote.target.buildId, id: leftNoteId } : undefined}
                 versionName={versionName}
                 builds={groupBuilds}
-                isOpen={openReleases.has(versionName)}
-                onToggle={() => handleToggleRelease(versionName)}
+                isOpen={disclosure.isOpen(versionName)}
+                onToggle={() => disclosure.toggle(versionName)}
                 onNavigate={(id) => navigate(`/app-center/build?id=${id}`)}
                 onStatusChange={handleStatusChange}
                 onScheduleDeletion={handleScheduleDeletion}

@@ -437,9 +437,14 @@ Center is the example (#829).
 design acted on any removal and broke the page's most common interaction: picking a row's status
 unmounts the `Select`'s content, and the status mutation re-rendered the page before Radix handed
 focus back to the trigger — so focus went to the first release and the list scrolled to the top under
-a mouse user. A removal that is not a swap belongs to whatever caused it. That leaves **a row leaving
-a list that stays a list** unhandled here on purpose: where its focus should go — the next row, the
-previous one, its release — is a decision for the row, not for a region-wide hook (#833).
+a mouse user. A removal that is not a swap belongs to whatever caused it, so **a row leaving a list
+that stays a list** is handled by the change that removed it, not here. In App Center that is a status
+change a filter then hides (#833). The target is chosen when the change is made, from the rows on
+screen: the next row in the release, else the previous one, else the neighbouring release's header.
+Focus moves there on the commit that removes the row, and only if focus went down with it. It cannot
+move earlier, because Radix hands focus back to the row's trigger after the pick, and it cannot be
+chosen later, because by then the order it was chosen from is gone. The destination is described by a
+note that says why the row left, and the note clears when focus goes elsewhere.
 
 **A failed key being fetched again is still the failure.** The manual retry holds the failure screen
 until its answer, and so does a background refetch of the same failure (returning to the tab, an
