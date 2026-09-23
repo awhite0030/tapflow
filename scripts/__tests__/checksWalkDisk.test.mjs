@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync, mkdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import { sources, SKIP_DIRS } from './sourceFiles.mjs'
+import { sources, SKIP_DIRS, SKIP_PATHS, SKIP_PATHS_SOURCE } from './sourceFiles.mjs'
 
 // #522. Three static checks asked git which files exist. `git ls-files` reports **tracked** files only, and a
 // file that was just created is exactly the state a new violation is in — so each of those checks was blind to
@@ -151,5 +151,54 @@ describe('static checks enumerate the tree from disk, not from git', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  it('does not walk into the dashboard build\'s copy, which another test in this suite deletes', () => {
+    // `clientOutboundTyped.test.mjs` walks all of `packages/`, and `dashboardFirstLoadBudget.test.mjs`
+    // runs `pnpm --filter @tapflowio/dashboard build` in the same `pnpm test:scripts` invocation — whose
+    // last step is `rm -rf ../relay/public && cp -r dist/. ../relay/public/`. A walk inside that
+    // directory while the `rm -rf` runs dies on ENOENT, which is a failure about nothing.
+    //
+    // **Two halves, and neither touches the real directory.** Planting a probe inside
+    // `packages/relay/public` is what the first version of this did, and it reproduced the very race
+    // it exists to prevent: the build can delete the tree between `mkdirSync` and `writeFileSync`,
+    // and a recursive cleanup can remove what the build just wrote. So the mechanism is proved in a
+    // temp tree — under `scripts/`, for the reason the probe above gives — and the *content* of the
+    // real set is proved against the script that writes it. What joins the two is `sources()`'s
+    // default argument, which is one line in `sourceFiles.mjs`.
+    const dir = mkdtempSync(join(scriptsDir, '__tests__', '.skipprobe-'))
+    try {
+      // **Nested one level below the walk's root on purpose.** With the skipped directory as a direct
+      // child, the check runs in the top-level call and a `sources()` that forgot to forward
+      // `skipPaths` to its recursion still passes — measured. The real path is nested too
+      // (`packages/` → `relay` → `public`), and there it is invisible because the recursion falls
+      // back to the same default set.
+      const pkg = join(dir, 'pkg')
+      const generated = join(pkg, 'generated')
+      mkdirSync(generated, { recursive: true })
+      writeFileSync(join(pkg, 'kept.ts'), 'export const a = 1\n')
+      writeFileSync(join(generated, 'skipped.ts'), 'export const b = 2\n')
+      const rel = relative(root, dir)
+
+      const walked = sources(rel, [], new Set([generated]))
+      expect(walked).toContain(join(rel, 'pkg', 'kept.ts').replaceAll('\\', '/'))
+      expect(
+        walked.filter((f) => f.endsWith('skipped.ts')),
+        'sources() descended into a directory its skip set names',
+      ).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+
+    // The set names a path the dashboard build writes, so if the build stops writing it the skip is
+    // pointing at nothing and the race is back with every check still green.
+    const buildScript = JSON.parse(readFileSync(SKIP_PATHS_SOURCE.manifest, 'utf8'))
+      .scripts[SKIP_PATHS_SOURCE.script]
+    expect(
+      buildScript,
+      `the dashboard build no longer writes ${SKIP_PATHS_SOURCE.mentions} — SKIP_PATHS is stale`,
+    ).toContain(SKIP_PATHS_SOURCE.mentions)
+    expect([...SKIP_PATHS].map((p) => relative(root, p).replaceAll('\\', '/')))
+      .toContain('packages/relay/public')
   })
 })

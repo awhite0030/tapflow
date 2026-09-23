@@ -1,7 +1,6 @@
-import fs from 'fs'
 import path from 'path'
 import { z } from 'zod'
-import { RelayServer, initDb, config, loadedEnvPath, createCertProvider, startTlsBackgroundTasks, buildCorsOrigins, proxyWithoutPublicUrlWarning, resolveRelayDisplayHost, resolveTunnelPort, isInitialized } from '@tapflowio/relay'
+import { RelayServer, initDb, config, loadedEnvPath, install, configFound, assertInstallDir, createCertProvider, startTlsBackgroundTasks, buildCorsOrigins, proxyWithoutPublicUrlWarning, resolveRelayDisplayHost, resolveTunnelPort, isInitialized } from '@tapflowio/relay'
 import type { TunnelRuntime } from '@tapflowio/relay'
 import { banner, step, warn } from '../lib/print.js'
 import { startConfiguredTunnel, tunnelRuntimeFor } from '../lib/tunnel-runner.js'
@@ -20,6 +19,7 @@ const portSchema = z.number().int().min(1).max(65535, 'port must be between 1 an
 const SUPPORTED_PROVIDERS = ['rathole', 'tailscale']
 
 export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
+  assertInstallDir()
   const rawPort = opts.port ?? DEFAULT_PORT
   const portResult = portSchema.safeParse(rawPort)
   if (!portResult.success) {
@@ -39,9 +39,10 @@ export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
     process.exit(1)
   }
 
-  if (!fs.existsSync(path.join(process.cwd(), 'tapflow.config.json'))) {
-    warn('tapflow.config.json not found — using defaults. Run tapflow init to configure.')
-  }
+  // The install dir, not the cwd: `start` from anywhere runs this machine's install.
+  step(`Install dir  →  ${install.dir} (${install.reason})`)
+  step(configFound ? `Config  →  ${install.configPath}` : 'Config  →  defaults (run tapflow init to configure)')
+  step(`Data  →  ${config.local.dataDir}`)
   // config already loaded <dataDir>/.env before reading any secret (JWT/SMTP/DNS tokens); just report it.
   if (loadedEnvPath) step(`Loaded credentials from ${loadedEnvPath}`)
   initDb(path.join(config.local.dataDir, 'tapflow.db'))

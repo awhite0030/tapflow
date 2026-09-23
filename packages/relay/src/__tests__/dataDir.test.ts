@@ -23,7 +23,7 @@ describe('resolveDefaultDataDir (read-only)', () => {
   it('신규(둘 다 없음) → 통합 경로, usingLegacy=false, 아무것도 안 만듦', () => {
     const cwd = track(makeCwd())
     const result = resolveDefaultDataDir(cwd)
-    expect(result).toEqual({ dataDir: path.join(cwd, '.tapflow', 'data'), usingLegacy: false })
+    expect(result).toEqual({ dataDir: path.join(cwd, '.tapflow', 'data'), usingLegacy: false, existing: false })
     expect(fs.existsSync(path.join(cwd, '.tapflow'))).toBe(false)
     expect(fs.existsSync(path.join(cwd, '.tapflow-data'))).toBe(false)
   })
@@ -32,7 +32,7 @@ describe('resolveDefaultDataDir (read-only)', () => {
     const cwd = track(makeCwd())
     fs.mkdirSync(path.join(cwd, '.tapflow', 'data'), { recursive: true })
     const result = resolveDefaultDataDir(cwd)
-    expect(result).toEqual({ dataDir: path.join(cwd, '.tapflow', 'data'), usingLegacy: false })
+    expect(result).toEqual({ dataDir: path.join(cwd, '.tapflow', 'data'), usingLegacy: false, existing: true })
   })
 
   it('레거시만 존재(미마이그레이션) → 레거시 계속 읽음, usingLegacy=true, 이동 없음', () => {
@@ -40,7 +40,7 @@ describe('resolveDefaultDataDir (read-only)', () => {
     fs.mkdirSync(path.join(cwd, '.tapflow-data'), { recursive: true })
     fs.writeFileSync(path.join(cwd, '.tapflow-data', 'tapflow.db'), 'DB')
     const result = resolveDefaultDataDir(cwd)
-    expect(result).toEqual({ dataDir: path.join(cwd, '.tapflow-data'), usingLegacy: true })
+    expect(result).toEqual({ dataDir: path.join(cwd, '.tapflow-data'), usingLegacy: true, existing: true })
     // read-only: legacy untouched, unified path not created
     expect(fs.readFileSync(path.join(cwd, '.tapflow-data', 'tapflow.db'), 'utf-8')).toBe('DB')
     expect(fs.existsSync(path.join(cwd, '.tapflow', 'data'))).toBe(false)
@@ -51,6 +51,6 @@ describe('resolveDefaultDataDir (read-only)', () => {
     fs.mkdirSync(path.join(cwd, '.tapflow-data'), { recursive: true })
     fs.mkdirSync(path.join(cwd, '.tapflow', 'data'), { recursive: true })
     const result = resolveDefaultDataDir(cwd)
-    expect(result).toEqual({ dataDir: path.join(cwd, '.tapflow', 'data'), usingLegacy: false })
+    expect(result).toEqual({ dataDir: path.join(cwd, '.tapflow', 'data'), usingLegacy: false, existing: true })
   })
 })

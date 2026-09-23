@@ -100,7 +100,10 @@ describe('tapflow migrate net-filter — exit code contract', () => {
     const src = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'commands', 'migrate.ts'), 'utf8',
     )
-    const body = src.slice(src.indexOf('export async function cmdMigrateNetFilter'))
+    const body = src.slice(
+      src.indexOf('export async function runNetFilterMigration'),
+      src.indexOf('export async function cmdMigrateNetFilter'),
+    )
     const handled = [...body.matchAll(/^ {4}case '([a-z-]+)':/gm)].map((m) => m[1])
 
     expect(handled.length, 'no cases were found — the regex stopped matching the source').toBeGreaterThan(5)

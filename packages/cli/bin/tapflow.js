@@ -25,7 +25,7 @@ if (process.argv.slice(2).length === 0) {
   console.log()
   console.log(`${DIM}     Commands:${R}`)
   console.log(`${DIM}       tapflow doctor        check system prerequisites${R}`)
-  console.log(`${DIM}       tapflow init          create your first admin account${R}`)
+  console.log(`${DIM}       tapflow init          configure this machine's tapflow${R}`)
   console.log(`${DIM}       tapflow start         start relay + agent locally${R}`)
   console.log(`${DIM}       tapflow --help        show all commands${R}`)
   console.log()

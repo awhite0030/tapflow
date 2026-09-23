@@ -29,6 +29,7 @@ describe('cmdInitConfig', () => {
   let output: string[]
   let exitSpy: MockInstance
   let tmpDir: string
+  let tmpHome: string
 
   beforeEach(() => {
     vi.resetAllMocks()
@@ -40,12 +41,19 @@ describe('cmdInitConfig', () => {
     exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapflow-init-test-'))
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tapflow-init-home-'))
     vi.spyOn(process, 'cwd').mockReturnValue(tmpDir)
+    // The install dir, which `init` writes to now. Named rather than left to `~/.tapflow`, so these
+    // tests keep asserting against a directory they own.
+    vi.stubEnv('TAPFLOW_HOME', tmpDir)
+    vi.stubEnv('HOME', tmpHome)
   })
 
   afterEach(() => {
+    vi.unstubAllEnvs()
     vi.restoreAllMocks()
     fs.rmSync(tmpDir, { recursive: true, force: true })
+    fs.rmSync(tmpHome, { recursive: true, force: true })
   })
 
   it('--tunnel tailscale → tailscale 섹션 포함 config 생성', async () => {
@@ -75,12 +83,27 @@ describe('cmdInitConfig', () => {
     expect(cfg.local.port).toBe(4000)
   })
 
-  it('이미 config 존재 → --force 없으면 exit(1)', async () => {
+  it('이미 config 존재 → config는 그대로 두고 에이전트 문서만 갱신 (exit 0)', async () => {
+    // Re-running is how an existing install picks up the agent docs. It used to exit 1 here.
+    fs.writeFileSync(path.join(tmpDir, 'tapflow.config.json'), '{"local":{"port":4100}}', 'utf-8')
+
+    await cmdInitConfig({})
+
+    expect(exitSpy).not.toHaveBeenCalled()
+    expect(fs.readFileSync(path.join(tmpDir, 'tapflow.config.json'), 'utf-8')).toBe('{"local":{"port":4100}}')
+    expect(fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8')).toContain('<!-- tapflow:begin -->')
+    expect(output.join('\n')).toContain('CONFIG KEPT')
+    expect(output.join('\n')).toContain('--force')
+  })
+
+  it('이미 config 존재 + --tunnel → 아무것도 쓰지 않고 exit(1)', async () => {
+    // The flag asks to change the config, and keeping the config would ignore it.
     fs.writeFileSync(path.join(tmpDir, 'tapflow.config.json'), '{}', 'utf-8')
 
-    await expect(cmdInitConfig({})).rejects.toThrow('process.exit')
+    await expect(cmdInitConfig({ tunnel: 'tailscale' })).rejects.toThrow('process.exit')
     expect(exitSpy).toHaveBeenCalledWith(1)
-    expect(output.join('\n')).toContain('ALREADY INITIALIZED')
+    expect(fs.readFileSync(path.join(tmpDir, 'tapflow.config.json'), 'utf-8')).toBe('{}')
+    expect(fs.existsSync(path.join(tmpDir, 'AGENTS.md'))).toBe(false)
   })
 
   it('이미 config 존재 + --force → 덮어쓰기', async () => {
@@ -181,8 +204,84 @@ describe('cmdInitConfig', () => {
     expect(cfg.tls).toEqual({ mode: 'import-cert', certPath: '/etc/tls/fullchain.pem', keyPath: '/etc/tls/privkey.pem' })
   })
 
+  describe('agent docs', () => {
+    it('AGENTS.md와 CLAUDE.md를 만들고, 어디서 물어보면 되는지 안내한다', async () => {
+      await cmdInitConfig({ tunnel: 'tailscale' })
+
+      expect(fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8')).toContain('https://www.tapflow.dev/llms.txt')
+      expect(fs.readFileSync(path.join(tmpDir, 'CLAUDE.md'), 'utf-8')).toBe('@AGENTS.md\n')
+      // The banner wraps long paths, so match the sentence rather than the path in it.
+      expect(output.join('\n')).toContain('Ask your coding agent')
+    })
+
+    it('설치 폴더가 앱 레포면 블록만 넣고 CLAUDE.md는 만들지 않는다', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}', 'utf-8')
+      fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# House rules\n', 'utf-8')
+
+      await cmdInitConfig({ tunnel: 'tailscale' })
+
+      const agents = fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8')
+      expect(agents).toContain('# House rules')
+      expect(agents).toContain('<!-- tapflow:begin -->')
+      expect(fs.existsSync(path.join(tmpDir, 'CLAUDE.md'))).toBe(false)
+      // And its data stays wrapped, where that repo's .gitignore already covers it.
+      const cfg = JSON.parse(fs.readFileSync(path.join(tmpDir, 'tapflow.config.json'), 'utf-8'))
+      expect(cfg.local.dataDir).toBe(path.join('.tapflow', 'data'))
+    })
+
+    it('설치 폴더가 홈 디렉터리면 AGENTS.md를 쓰지 않는다', async () => {
+      vi.stubEnv('TAPFLOW_HOME', tmpHome)
+
+      await cmdInitConfig({ tunnel: 'tailscale' })
+
+      expect(fs.existsSync(path.join(tmpHome, 'tapflow.config.json'))).toBe(true)
+      expect(fs.existsSync(path.join(tmpHome, 'AGENTS.md'))).toBe(false)
+      expect(output.join('\n')).toContain('home directory')
+    })
+  })
+
+  describe('TAPFLOW_HOME', () => {
+    it('가리키는 폴더가 없으면 init이 만든다', async () => {
+      const target = path.join(tmpDir, 'not-yet')
+      vi.stubEnv('TAPFLOW_HOME', target)
+
+      await cmdInitConfig({ tunnel: 'tailscale' })
+
+      expect(fs.existsSync(path.join(target, 'tapflow.config.json'))).toBe(true)
+      expect(fs.existsSync(path.join(target, 'AGENTS.md'))).toBe(true)
+      expect(output.join('\n')).toContain('Install dir')
+    })
+
+    it('옛 ~/tapflow.config.json을 --force로 다시 쓰면 dataDir이 원래 데이터를 가리킨다', async () => {
+      // An install `init` once wrote to `~`: config at ~/tapflow.config.json, data in ~/.tapflow/data.
+      // The rewritten config is read relative to itself, so its dataDir has to be `.tapflow/data`
+      // from `~`. Written relative to the install dir instead, it said `data` — which read back as
+      // `~/data`, an empty directory.
+      vi.stubEnv('TAPFLOW_HOME', '')
+      fs.writeFileSync(path.join(tmpHome, 'tapflow.config.json'), '{}', 'utf-8')
+      fs.mkdirSync(path.join(tmpHome, '.tapflow', 'data'), { recursive: true })
+
+      await cmdInitConfig({ tunnel: 'tailscale', force: true })
+
+      const cfg = JSON.parse(fs.readFileSync(path.join(tmpHome, 'tapflow.config.json'), 'utf-8'))
+      expect(path.resolve(tmpHome, cfg.local.dataDir)).toBe(path.join(tmpHome, '.tapflow', 'data'))
+      expect(fs.existsSync(path.join(tmpHome, '.tapflow', 'tapflow.config.json'))).toBe(false)
+    })
+
+    it('현재 폴더가 아니라 설치 폴더에 쓴다', async () => {
+      const target = path.join(tmpDir, 'install')
+      fs.mkdirSync(target)
+      vi.stubEnv('TAPFLOW_HOME', target)
+
+      await cmdInitConfig({ tunnel: 'tailscale' })
+
+      expect(fs.existsSync(path.join(target, 'tapflow.config.json'))).toBe(true)
+      expect(fs.existsSync(path.join(tmpDir, 'tapflow.config.json'))).toBe(false)
+    })
+  })
+
   describe('.env scaffold (#287)', () => {
-    const envPath = () => path.join(tmpDir, '.tapflow', 'data', '.env')
+    const envPath = () => path.join(tmpDir, 'data', '.env')
 
     it('byo-api-token → .tapflow/data/.env 를 빈 값 템플릿으로 자동 생성', async () => {
       setTTY(true)
@@ -202,7 +301,7 @@ describe('cmdInitConfig', () => {
 
     it('기존 .env 의 실제 값은 보존하고 누락 키만 추가', async () => {
       setTTY(true)
-      fs.mkdirSync(path.join(tmpDir, '.tapflow', 'data'), { recursive: true })
+      fs.mkdirSync(path.join(tmpDir, 'data'), { recursive: true })
       fs.writeFileSync(envPath(), 'TAPFLOW_VERCEL_TOKEN=secret_existing\n', 'utf-8')
       mockSelect.mockResolvedValueOnce('none').mockResolvedValueOnce('high').mockResolvedValueOnce('cloudflare')
       mockText.mockResolvedValueOnce('tap.example.com')
@@ -212,6 +311,21 @@ describe('cmdInitConfig', () => {
       const content = fs.readFileSync(envPath(), 'utf-8')
       expect(content).toContain('TAPFLOW_VERCEL_TOKEN=secret_existing')
       expect(content).toContain('TAPFLOW_CLOUDFLARE_TOKEN=')
+    })
+
+    it('기존 .tapflow/data 레이아웃이면 거기에 .env를 쓰고 config에도 그 경로를 적는다', async () => {
+      // An install that already has data keeps it, whichever layout it is in.
+      setTTY(true)
+      fs.mkdirSync(path.join(tmpDir, '.tapflow', 'data'), { recursive: true })
+      mockSelect.mockResolvedValueOnce('none').mockResolvedValueOnce('high').mockResolvedValueOnce('cloudflare')
+      mockText.mockResolvedValueOnce('tap.example.com')
+
+      await cmdInitConfig({})
+
+      const cfg = JSON.parse(fs.readFileSync(path.join(tmpDir, 'tapflow.config.json'), 'utf-8'))
+      expect(cfg.local.dataDir).toBe(path.join('.tapflow', 'data'))
+      expect(fs.existsSync(path.join(tmpDir, '.tapflow', 'data', '.env'))).toBe(true)
+      expect(fs.existsSync(path.join(tmpDir, 'data'))).toBe(false)
     })
 
     it('import-cert → .env 생성 없음', async () => {
@@ -234,8 +348,8 @@ describe('cmdInitConfig', () => {
       await cmdInitConfig({ tunnel: 'tailscale' })
 
       const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf-8')
-      expect(content).toContain('.tapflow/data/')
-      expect(content).toContain('.tapflow/artifacts/')
+      expect(content).toContain('/data/')
+      expect(content).toContain('/.tapflow/artifacts/')
       // flows는 커밋 대상이라 무시하면 안 된다
       expect(content).not.toMatch(/^\.tapflow\/$/m)
       expect(output.join('\n')).toContain('.gitignore created')
@@ -248,31 +362,29 @@ describe('cmdInitConfig', () => {
 
       const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf-8')
       expect(content).toContain('node_modules/')
-      expect(content).toContain('.tapflow/data/')
-      expect(content).toContain('.tapflow/artifacts/')
-      expect(output.join('\n')).toContain('.tapflow/ runtime dirs added to .gitignore')
+      expect(content).toContain('/data/')
+      expect(content).toContain('/.tapflow/artifacts/')
+      expect(output.join('\n')).toContain('Runtime dirs added to .gitignore')
     })
 
     it('.gitignore에 이미 런타임 항목 있음 → 중복 추가 안 됨', async () => {
-      fs.writeFileSync(path.join(tmpDir, '.gitignore'), '.tapflow/data/\n.tapflow/artifacts/\n', 'utf-8')
+      fs.writeFileSync(path.join(tmpDir, '.gitignore'), '/data/\n/.tapflow/artifacts/\n', 'utf-8')
 
       await cmdInitConfig({ tunnel: 'tailscale' })
 
       const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf-8')
-      const dataCount = content.split('\n').filter((l) => l.trim() === '.tapflow/data/').length
-      const artifactsCount = content.split('\n').filter((l) => l.trim() === '.tapflow/artifacts/').length
-      expect(dataCount).toBe(1)
-      expect(artifactsCount).toBe(1)
+      expect(content.split('\n').filter((l) => l.trim() === '/data/').length).toBe(1)
+      expect(content.split('\n').filter((l) => l.trim() === '/.tapflow/artifacts/').length).toBe(1)
     })
 
-    it('.gitignore가 **/ glob으로 이미 커버 → 중복 추가 안 됨', async () => {
-      fs.writeFileSync(path.join(tmpDir, '.gitignore'), '**/.tapflow/data/\n**/.tapflow/artifacts/\n', 'utf-8')
+    it('앵커 없는 항목이나 **/ glob으로 이미 커버 → 중복 추가 안 됨', async () => {
+      fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'data/\n**/.tapflow/artifacts/\n', 'utf-8')
 
       await cmdInitConfig({ tunnel: 'tailscale' })
 
       const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf-8')
-      expect(content.split('\n').filter((l) => l.trim() === '.tapflow/data/').length).toBe(0)
-      expect(content.split('\n').filter((l) => l.trim() === '.tapflow/artifacts/').length).toBe(0)
+      expect(content.split('\n').filter((l) => l.trim() === '/data/').length).toBe(0)
+      expect(content.split('\n').filter((l) => l.trim() === '/.tapflow/artifacts/').length).toBe(0)
     })
   })
 
@@ -296,8 +408,10 @@ describe('cmdInitConfig', () => {
       await cmdInitConfig({ tunnel: 'tailscale' })
 
       const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf-8')
-      expect(content).toContain('.tapflow-data/')
-      expect(content).toContain('.tapflow/data/')
+      // The data dir it pinned, which is the legacy one until `migrate data-dir` moves it.
+      expect(content).toContain('/.tapflow-data/')
+      expect(content.split('\n').filter((l) => l.trim() === '/.tapflow-data/').length).toBe(1)
+      expect(content).not.toContain('/data/\n')
     })
 
     it('레거시 존재 + DNS 자동발급 → .env scaffold 생략(.tapflow/data 미생성)', async () => {

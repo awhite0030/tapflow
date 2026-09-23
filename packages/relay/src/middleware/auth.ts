@@ -3,7 +3,7 @@ import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { AuthError } from '@tapflowio/agent-core'
 import { getDb } from '../db.js'
-import { jwtSecret } from '../lib/config.js'
+import { getJwtSecret } from '../lib/config.js'
 
 export interface AuthContext {
   userId: number
@@ -14,12 +14,12 @@ export interface AuthContext {
 const JWT_EXPIRES = '7d'
 
 export function signJwt(payload: AuthContext): string {
-  return jwt.sign(payload, jwtSecret, { expiresIn: JWT_EXPIRES })
+  return jwt.sign(payload, getJwtSecret(), { expiresIn: JWT_EXPIRES })
 }
 
 export function verifyJwtOrThrow(token: string): AuthContext {
   try {
-    return jwt.verify(token, jwtSecret) as AuthContext
+    return jwt.verify(token, getJwtSecret()) as AuthContext
   } catch (cause) {
     throw new AuthError('Invalid or expired auth token', { cause })
   }

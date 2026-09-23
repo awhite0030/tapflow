@@ -85,6 +85,10 @@ export function pageUrl(page, hostname) {
  * @param {string} hostname origin with no trailing slash
  */
 export function renderLlmsFull(pages, hostname) {
+  // Derived, never typed: the docs grow, and a number written by hand here would be wrong by the
+  // next page anyone adds.
+  const approxChars = pages.reduce((n, { source }) => n + source.length, 0)
+  const lengthLabel = `about ${Math.round(approxChars / 1000)},000 characters`
   const header = [
     '# tapflow — full documentation',
     '',
@@ -92,6 +96,11 @@ export function renderLlmsFull(pages, hostname) {
     `> descriptions is at ${hostname}/llms.txt, and each page below is also served on its own at`,
     '> the path under its `#` heading with a `.md` suffix — an index page at `<dir>/index.md`.',
     '> Korean translations live under `/ko/` and carry the same content.',
+    '>',
+    // Said here as well as in llms.txt, because a tool that truncated this file still received the
+    // header: it is the only line that reaches a reader who cannot see the reference pages below.
+    `> This file is ${lengthLabel} long and the reference pages are at the end, so a tool that`,
+    '> truncates or summarises a large fetch will not see them. Prefer the single page you need.',
     '',
   ].join('\n')
 

@@ -11,6 +11,8 @@
 > - AI Agent via MCP (experimental): an LLM agent controls the simulator using @tapflowio/mcp-server
 >
 > Every page below is also served as its source markdown at the same URL with a `.md` suffix, and all of them concatenated are at https://www.tapflow.dev/llms-full.txt. Korean translations of every page live under `/ko/` with the same paths and the same content.
+>
+> Read the page you need rather than the concatenation. A tool that truncates or summarises a large fetch loses the end of `llms-full.txt`, which is where the reference pages are — the CLI, the REST API and every configuration key.
 
 ## Getting Started
 
@@ -45,7 +47,7 @@
 
 ## Reference
 
-- [CLI Reference](https://www.tapflow.dev/reference/cli): Every command with a section on that page — doctor, setup, init, admin init, start, relay start, agent start, devices, boot, reset, status, logs, migrate data-dir, migrate net-filter. `tapflow flow run` is documented under Flow Reference instead.
+- [CLI Reference](https://www.tapflow.dev/reference/cli): Every command with a section on that page — doctor, setup, init, admin init, start, relay start, agent start, devices, boot, reset, status, logs, migrate, migrate data-dir, migrate net-filter. `tapflow flow run` is documented under Flow Reference instead.
 - [Configuration](https://www.tapflow.dev/reference/configuration): tapflow.config.json schema and environment variable overrides (JWT_SECRET, TAPFLOW_PORT, TAPFLOW_DATA_DIR, SMTP_*, etc.).
 - [Streaming Quality](https://www.tapflow.dev/guide/streaming): The three streaming profiles (Standard / Smooth / Remote), which one a viewer gets from how it connects, the decoder and resolution behind each, and how to tune the resolution.
 - [Audio](https://www.tapflow.dev/guide/audio): Device audio in the browser — on by default on both platforms, the one-time permission, per-agent opt-out with TAPFLOW_AUDIO=off, volume, and why the agent Mac itself stays silent.

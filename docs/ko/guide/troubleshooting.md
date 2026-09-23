@@ -428,9 +428,13 @@ AWDL은 트리거(AirDrop 검색·AirPlay 수신·Handoff·Bluetooth 근접)가 
 
 ## 인증 관련
 
-### `tapflow init` 실패 (`ALREADY INITIALIZED`)
+### `tapflow init`이 `CONFIG KEPT`라고 합니다
 
-현재 디렉토리에 `tapflow.config.json`이 이미 존재합니다. `--force` 옵션을 사용해 덮어쓰거나, 기존 파일을 직접 편집하세요.
+설치에 `tapflow.config.json`이 이미 있어서 설정은 그대로 두고 `AGENTS.md`의 tapflow 섹션만 갱신했습니다. 설정을 새로 만들려면 `--force`를 쓰거나 기존 파일을 직접 편집하세요.
+
+### 릴레이가 예상과 다른 설정이나 DB를 씁니다
+
+`tapflow start`와 `tapflow relay start`는 시작할 때 설치 디렉토리, 설정 파일, 데이터 디렉토리를 출력합니다. 명령은 `TAPFLOW_HOME`, 그다음 현재 디렉토리가 이미 설치인 경우, 마지막으로 `~/.tapflow` 순으로 찾습니다([명령이 쓰는 설치 디렉토리](/ko/guide/configure#명령이-쓰는-설치-디렉토리)). 예전 설치가 있는 디렉토리에서 실행하면 그 설치를 쓰게 되므로, 분명히 하려면 `TAPFLOW_HOME`을 설정하세요.
 
 ### `tapflow admin init` 실패 (`Already initialized`)
 

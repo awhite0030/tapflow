@@ -88,9 +88,9 @@ setup은 부팅 가능한 디바이스/AVD를 준비하는 데까지만 하며 �
 
 ## `tapflow init`
 
-`tapflow.config.json`을 인터랙티브하게 생성합니다. `tapflow start` 전에 한 번 실행합니다.
+이 머신의 tapflow를 설정합니다. `tapflow.config.json`, 코딩 에이전트가 읽는 `AGENTS.md`와 `CLAUDE.md`, 그리고 DNS 자동 발급을 선택하면 자격 증명 `.env`까지 만듭니다. 어느 디렉토리에서 실행해도 됩니다. 설치 디렉토리에 쓰고, 기본값은 `~/.tapflow`이며 `TAPFLOW_HOME`이나 현재 디렉토리의 기존 설치가 있으면 그쪽입니다([명령이 쓰는 설치 디렉토리](/ko/guide/configure#명령이-쓰는-설치-디렉토리)). 디렉토리가 없으면 만듭니다.
 
-`tapflow.config.json`이 이미 존재하면 `--force` 없이는 오류로 종료합니다.
+다시 실행하면 설정은 그대로 두고 `AGENTS.md`의 tapflow 섹션만 갱신하므로, 기존 설치도 이 문서를 받을 수 있습니다. 설정을 새로 만들려면 `--force`를 씁니다. 이미 설정이 있는데 `--tunnel`을 주면 오류로 멈춥니다. 설정을 유지하면 그 플래그를 무시하게 되기 때문입니다.
 
 터널 플래그 없이 대화형 터미널에서 실행하면 터널 선택 화면이 표시됩니다. 비대화형 환경에서 `--tunnel` 없이 실행하면 터널 없는 기본 설정 파일이 생성됩니다.
 
@@ -107,7 +107,10 @@ Tailscale 예시:
 
 ```sh
 tapflow init --tunnel tailscale
-# ✓ tapflow.config.json created.
+# ✓ CONFIG CREATED
+# Install dir: /Users/you/.tapflow (default)
+# tapflow.config.json created.
+# AGENTS.md created for your coding agent.
 # Tunnel: tailscale
 # → Next: tapflow start
 ```
@@ -116,8 +119,14 @@ tapflow init --tunnel tailscale
 
 ```sh
 tapflow init
-# ✓ tapflow.config.json created.
+# ✓ CONFIG CREATED
 # → Next: tapflow start
+```
+
+다른 디렉토리에 설치를 만들 때:
+
+```sh
+TAPFLOW_HOME=/var/lib/tapflow tapflow init
 ```
 
 
@@ -324,9 +333,30 @@ tapflow logs
 | `--relay <url>` | config의 `relay.url`, 없으면 `http://localhost:4000` | 릴레이 URL. `tapflow.config.json`에 `relay.url`이 있으면 생략 가능. |
 | `--lines <n>` | `100` | 표시할 로그 줄 수 (최대 500) |
 
+## `tapflow migrate`
+
+업그레이드 후 이 설치에 필요한 마이그레이션을 한 번에 실행합니다.
+
+```sh
+tapflow migrate
+```
+
+아래 마이그레이션을 하나씩 확인해서 해당하는 것만 목록으로 보여 줍니다.
+
+- `data-dir`: 설치 폴더에 데이터가 든 `.tapflow-data/`가 있을 때.
+- `net-filter`: macOS에서 iOS 네트워크 필터가 설치돼 있는데 지금 tapflow 버전보다 오래됐거나, 설치돼 있는데 동작하지 않을 때. 필터는 선택 기능이라서 설치한 적 없는 맥은 건드리지 않습니다.
+
+터미널에서는 목록을 보여 주고 한 번 묻습니다. 터미널이 없으면(CI, 프로비저닝 스크립트) 목록을 출력하고 묻지 않고 실행합니다. 각 서브커맨드를 따로 실행할 때와 같습니다. 단, `net-filter` 단계는 macOS 승인 때문에 한 번 더 물을 수 있습니다.
+
+마이그레이션은 순서대로 실행하고 하나가 실패하면 나머지는 실행하지 않고 exit code 1로 끝납니다. 할 일이 없으면 exit 0입니다. `.tapflow-data/`와 `.tapflow/data/`가 둘 다 있으면 `data-dir`은 알리기만 하고 건너뜁니다. 어느 쪽에 데이터가 있는지는 사용자만 알 수 있기 때문입니다. 필터 앱은 지워졌는데 확장이 아직 돌고 있을 때도 `net-filter`를 같은 방식으로 건너뜁니다. 이 상태는 `tapflow doctor ios`가 설명합니다.
+
+여기서는 `--ignore-running-devices`를 받지 않습니다. 필요하면 `tapflow migrate net-filter --ignore-running-devices`로 실행하세요.
+
 ## `tapflow migrate data-dir`
 
 구 `.tapflow-data/`를 통합 `.tapflow/data/` 레이아웃으로 옮깁니다. 업그레이드 후 한 번 실행하면 되고, 멱등이라 다시 돌려도 안전합니다.
+
+먼저 릴레이를 멈추세요. 릴레이 포트(`local.port` 또는 `TAPFLOW_PORT`)를 무언가 쓰고 있으면 아무것도 옮기지 않고 거부합니다. 옮기는 동안 릴레이가 돌고 있으면 그 뒤에 올라온 빌드가 다시 `.tapflow-data/`에 쌓이기 때문입니다. `tapflow relay start --port`로 다른 포트에 띄운 릴레이는 감지하지 못하므로 직접 멈춰야 합니다.
 
 ```sh
 tapflow migrate data-dir
@@ -338,7 +368,7 @@ tapflow migrate data-dir
 - `tapflow.config.json`의 `local.dataDir`이 구 기본값 `.tapflow-data`를 가리키면 다시 써줍니다. 커스텀 경로는 건드리지 않습니다.
 - `.tapflow/data/`와 `.tapflow/artifacts/`를 `.gitignore`에 추가해 옮긴 비밀이 git에 올라가지 않게 합니다.
 
-이 명령을 안 돌려도 기존 설치는 그대로 동작합니다. 지정된 `local.dataDir`은 존중되고, config 없는 기본 설치는 `.tapflow-data/`를 계속 읽습니다. 두 경로가 서로 다른 파일시스템에 있거나 둘 다 이미 존재하면, 명령은 추측하지 않고 멈춘 뒤 수동 단계를 안내합니다.
+이 명령을 안 돌려도 기존 설치는 그대로 동작합니다. 지정된 `local.dataDir`은 존중되고, config 없는 기본 설치는 `.tapflow-data/`를 계속 읽습니다. 두 경로가 서로 다른 파일시스템에 있거나 둘 다 이미 존재하면, 명령은 추측하지 않고 멈춘 뒤 수동 단계를 안내합니다. config는 옮기기 전에 먼저 고치고 옮기기에 실패하면 되돌립니다. 되돌리지도 못하면 원래대로 적어야 할 값을 출력합니다.
 
 ## `tapflow migrate net-filter`
 

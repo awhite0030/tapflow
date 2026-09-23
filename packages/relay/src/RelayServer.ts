@@ -16,10 +16,11 @@ import { requireViewAuth, requireAuth, getAuth, verifyPat } from './middleware/a
 import { classifyConnection } from './lib/connectionAuth.js'
 import { isTunnelIngress, markTunnelIngress, resolveClientAddress } from './lib/clientAddress.js'
 import { BuildTicketStore } from './lib/buildTickets.js'
+import { resolveBuildFile } from './lib/buildFiles.js'
 import { resolveCorsHeaders } from './lib/cors.js'
 import { isCsrfBlocked } from './lib/csrf.js'
 import { pickLanAddress, runningInContainer } from './lib/lanAddress.js'
-import { config } from './lib/config.js'
+import { config, getJwtSecret } from './lib/config.js'
 import { forTeammates, resolveAgentRelayUrl, resolvePublicBaseUrl, type TunnelRuntime } from './lib/publicUrl.js'
 import { createTrailingRequester, systemTimerScheduler, type TrailingRequester } from './lib/trailingRequester.js'
 import { getDb } from './db.js'
@@ -478,6 +479,9 @@ export class RelayServer {
   }
 
   start(): Promise<void> {
+    // Creates this install's JWT secret if it has none. Here rather than at import, so commands
+    // that never run a relay stop leaving one behind — and a write failure is still a boot failure.
+    getJwtSecret()
     purgeExpiredRecordings(this.recordingsDir)
     this.purgeRecordingsTimer = setInterval(() => purgeExpiredRecordings(this.recordingsDir), 24 * 60 * 60 * 1000)
     this.purgeRecordingsTimer.unref()
@@ -489,8 +493,8 @@ export class RelayServer {
     this.purgeOldResourcesTimer = setInterval(purgeOldResources, 24 * 60 * 60 * 1000)
     this.purgeOldResourcesTimer.unref()
 
-    purgeExpiredBuilds(this.recordingsDir)
-    this.purgeBuildsTimer = setInterval(() => purgeExpiredBuilds(this.recordingsDir), 24 * 60 * 60 * 1000)
+    purgeExpiredBuilds(this.recordingsDir, this.uploadsDir)
+    this.purgeBuildsTimer = setInterval(() => purgeExpiredBuilds(this.recordingsDir, this.uploadsDir), 24 * 60 * 60 * 1000)
     this.purgeBuildsTimer.unref()
 
     this.flushResourcesTimer = setInterval(() => this.flushResourceBuffers(), 60_000)
@@ -2104,9 +2108,14 @@ export class RelayServer {
     // A missing file is answered rather than thrown for the same reason the lookup above is: the
     // build row outlives its file whenever a bind mount goes away or a purge half-ran, and an
     // unanswered install is a spinner that never stops and a caller that times out with no cause.
+    //
+    // Resolved rather than read verbatim: the stored path names wherever the data directory was at
+    // upload time, and a migrated, moved or restored install keeps the file under a different one.
+    const filePath = resolveBuildFile(build.file_path, this.uploadsDir)
     let bytes: number
     try {
-      bytes = fs.statSync(build.file_path).size
+      if (filePath === null) throw new Error('not found')
+      bytes = fs.statSync(filePath).size
     } catch {
       return fail('The relay cannot read this build file. It may have been deleted — re-upload the build.')
     }
@@ -2117,10 +2126,10 @@ export class RelayServer {
       requestId,
       payload: {
         // Still sent, and sent first: an agent that predates `build-download` reads only this.
-        filePath: build.file_path,
+        filePath,
         bundleId: build.bundle_id,
-        buildTicket: this.buildTickets.mint(msg.buildId, build.file_path),
-        buildName: path.basename(build.file_path),
+        buildTicket: this.buildTickets.mint(msg.buildId, filePath),
+        buildName: path.basename(filePath),
         buildBytes: bytes,
       },
     })

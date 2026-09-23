@@ -1,7 +1,6 @@
-import { RelayServer, initDb, config, createCertProvider, startTlsBackgroundTasks, buildCorsOrigins, proxyWithoutPublicUrlWarning, resolveRelayDisplayHost, resolveTunnelPort, isInitialized } from '@tapflowio/relay'
+import { RelayServer, initDb, config, install, configFound, assertInstallDir, createCertProvider, startTlsBackgroundTasks, buildCorsOrigins, proxyWithoutPublicUrlWarning, resolveRelayDisplayHost, resolveTunnelPort, isInitialized } from '@tapflowio/relay'
 import type { TunnelRuntime } from '@tapflowio/relay'
 import { AgentRegistry } from '@tapflowio/agent-core'
-import fs from 'fs'
 import path from 'path'
 import { requestAudioPermission, isAudioSupported } from '@tapflowio/ios-agent'
 import '@tapflowio/android-agent'
@@ -18,6 +17,7 @@ export interface StartOptions {
 const RELAY_PORT = config.local.port
 
 export async function cmdStart(opts: StartOptions): Promise<void> {
+  assertInstallDir()
   const explicit = opts.platform
 
   let platformsToRun: string[]
@@ -43,9 +43,10 @@ export async function cmdStart(opts: StartOptions): Promise<void> {
   }
 
   // ── 1. Relay setup (always local) ─────────────────────────────────────────
-  if (!fs.existsSync(path.join(process.cwd(), 'tapflow.config.json'))) {
-    warn('tapflow.config.json not found — using defaults. Run tapflow init to configure.')
-  }
+  // The install dir, not the cwd: `start` from anywhere runs this machine's install.
+  step(`Install dir  →  ${install.dir} (${install.reason})`)
+  step(configFound ? `Config  →  ${install.configPath}` : 'Config  →  defaults (run tapflow init to configure)')
+  step(`Data  →  ${config.local.dataDir}`)
   initDb(path.join(config.local.dataDir, 'tapflow.db'))
 
   // LAN HTTPS for the secure-context (Smooth/WebCodecs) path — same wiring as `tapflow relay start`.

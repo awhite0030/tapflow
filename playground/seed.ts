@@ -1,9 +1,11 @@
 import path from 'path'
 import crypto from 'crypto'
-import { initDb, getDb } from '@tapflowio/relay'
+import { initDb, getDb, config } from '@tapflowio/relay'
 
-const dataDir = path.join(import.meta.dirname, '.tapflow', 'data')
+// Same directory relay.ts serves from, or the admin lands in a DB the relay never opens.
+const { dataDir } = config.local
 initDb(path.join(dataDir, 'tapflow.db'))
+console.log(`Database  →  ${path.join(dataDir, 'tapflow.db')}`)
 
 function makePasswordHash(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex')

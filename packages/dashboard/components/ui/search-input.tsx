@@ -1,3 +1,4 @@
+import type { Ref } from 'react'
 import { Search } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 
@@ -14,14 +15,20 @@ interface Props {
    * named by its placeholder alone.
    */
   'aria-label': string
+  'aria-describedby'?: string
+  ref?: Ref<HTMLInputElement>
 }
 
-export function SearchInput({ value, onChange, placeholder, className, 'aria-label': ariaLabel }: Props) {
+export function SearchInput({
+  value, onChange, placeholder, className, 'aria-label': ariaLabel, 'aria-describedby': describedBy, ref,
+}: Props) {
   return (
     <div className="relative">
       <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
       <Input
+        ref={ref}
         aria-label={ariaLabel}
+        aria-describedby={describedBy}
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}

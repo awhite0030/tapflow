@@ -1,6 +1,8 @@
 # 설정 파일
 
-릴레이는 시작 디렉토리에서 `tapflow.config.json`을 읽습니다. `tapflow init`을 실행해 파일을 생성하고, 설정을 변경한 뒤에는 릴레이를 재시작해야 적용됩니다.
+릴레이는 이 머신의 설치 디렉토리에서 `tapflow.config.json`을 읽습니다. 기본값은 `~/.tapflow`이고, `TAPFLOW_HOME`이나 현재 디렉토리의 기존 설치가 있으면 그쪽입니다([명령이 쓰는 설치 디렉토리](/ko/guide/configure#명령이-쓰는-설치-디렉토리)). `tapflow init`을 실행해 파일을 생성하고, 설정을 변경한 뒤에는 릴레이를 재시작해야 적용됩니다.
+
+파일 안의 상대 경로는 그 파일을 기준으로 풉니다. `tsconfig.json`이나 `litestream.yml`과 같은 방식입니다. `~/.tapflow/tapflow.config.json`의 `"dataDir": "data"`는 어느 디렉토리에서 명령을 실행하든 `~/.tapflow/data`를 뜻합니다.
 
 ## 예시
 
@@ -8,7 +10,7 @@
 {
   "local": {
     "port": 4000,
-    "dataDir": ".tapflow/data"
+    "dataDir": "data"
   },
   "relay": {
     "url": "https://your-relay-url"
@@ -40,14 +42,15 @@
 
 환경변수는 항상 설정 파일보다 우선합니다. 서버 환경이나 CI에서 유용합니다.
 
-비밀은 `.tapflow/data/.env` 파일에도 둘 수 있습니다. 릴레이가 시작할 때 이 파일을 먼저 읽으므로, 아래 변수를 셸 대신 파일에 적어도 됩니다. 우선순위는 **셸 환경변수 > `.env` > 설정 파일** 순입니다. 파일 형식과 예외(`TAPFLOW_DATA_DIR`)는 [tapflow 설정](/ko/guide/configure)에서 다룹니다.
+비밀은 데이터 디렉토리의 `.env` 파일에도 둘 수 있습니다. 릴레이가 시작할 때 이 파일을 먼저 읽으므로, 아래 변수를 셸 대신 파일에 적어도 됩니다. 우선순위는 **셸 환경변수 > `.env` > 설정 파일** 순입니다. 파일 형식과 예외(`TAPFLOW_DATA_DIR`)는 [tapflow 설정](/ko/guide/configure)에서 다룹니다.
 
 | 환경변수 | Config 키 | 기본값 | 설명 |
 |---------|-----------|--------|------|
 | `TAPFLOW_PORT` | `local.port` | `4000` | 서버 포트 |
 | `TAPFLOW_TUNNEL_PORT` | `local.tunnelPort` | 터널 설정이 있으면 `4001`, 없으면 꺼짐 | rathole, `tailscale serve`, `cloudflared` 같은 터널 클라이언트가 연결하는 loopback 전용 포트. 릴레이 머신 안에서 온 연결이라도 이 포트로 들어오면 원격으로 보므로, 로그인하거나 토큰을 내야 합니다. `tapflow start`와 `tapflow relay start`는 `tunnel` 설정이 있으면 이 포트를 엽니다. Docker 이미지를 포함한 그 밖의 경우에는 이 변수나 `local.tunnelPort`로 포트를 지정해야 열립니다. 릴레이와 같은 네트워크 네임스페이스에서 연결하는 터널이나 프록시가 있다면 설정하세요. 릴레이가 `4001`을 쓰면 기본값은 `4002`로 바뀝니다. 컨테이너 안에서는 릴레이와 네트워크 네임스페이스를 공유하는 프로세스만 연결할 수 있습니다. |
 | `JWT_SECRET` | — | *(자동 생성)* | JWT 서명 키 (환경변수 전용). 설정하지 않으면 최초 부팅 시 강력한 per-install 시크릿을 자동으로 생성해 데이터 디렉토리에 저장합니다. |
-| `TAPFLOW_DATA_DIR` | `local.dataDir` | `.tapflow/data` | DB·업로드 디렉토리 (상대 경로 지원) |
+| `TAPFLOW_HOME` | — | `~/.tapflow` | 설치 디렉토리. `tapflow.config.json`과 기본 데이터 디렉토리가 있는 곳이고 모든 명령이 이 값을 읽습니다. 상대 경로는 현재 디렉토리 기준이고 빈 값은 미설정으로 봅니다. 없는 디렉토리를 가리키면 릴레이를 실행하거나 릴레이에 접속하는 명령이 멈춥니다. `tapflow init`은 대신 그 디렉토리를 만듭니다. |
+| `TAPFLOW_DATA_DIR` | `local.dataDir` | `<설치>/data` | DB·업로드 디렉토리. 환경변수는 현재 디렉토리 기준, `local.dataDir`은 설정 파일 기준으로 상대 경로를 풉니다. 이미 `.tapflow/data`나 `.tapflow-data`가 있는 설치는 그대로 씁니다. |
 | `TAPFLOW_RELAY_URL` | `relay.url` | *(비어있음)* | CLI 명령어의 기본 relay URL |
 | `TAPFLOW_AGENT_TOKEN` | — | *(비어있음)* | 원격 릴레이 인증용 `agent` 스코프 토큰. `--token` 플래그가 우선합니다. [에이전트 설정](/ko/guide/agent#원격-릴레이-인증)을 참고하세요. |
 | `TAPFLOW_TRUSTED_PROXIES` | — | *(비어있음)* | 신뢰하는 리버스 프록시 IP 목록(콤마 구분, 예: `127.0.0.1,::1`). 릴레이를 같은 호스트의 리버스 프록시 뒤에서 실행할 때 이 값을 설정하면, 프록시 주소 대신 `X-Forwarded-For`에 담긴 실제 클라이언트 IP를 사용합니다. 비어 있으면 전달 헤더를 파싱하지 않습니다. |
@@ -218,25 +221,28 @@ API 토큰은 설정 파일이 아니라 `tapflow init`이 만들어 두는 `.ta
 
 ## 데이터 디렉토리
 
-릴레이는 최초 실행 시 작업 디렉토리에 다음 파일들을 생성합니다:
+릴레이는 최초 실행 시 설치 디렉토리에 다음 파일들을 생성합니다:
 
 ```text
-your-directory/
+~/.tapflow/
   tapflow.config.json   ← 릴레이 설정 파일 (tapflow init으로 생성)
-  .tapflow/
-    data/               ← 릴레이 런타임 상태 (gitignore)
-      tapflow.db        ← SQLite 데이터베이스
-      uploads/
-        builds/         ← .app.zip 및 .apk 파일
-        avatars/
-        comments/
-    flows/              ← 커밋하는 YAML 플로우
-    artifacts/          ← 플로우 실패 스크린샷 (gitignore)
+  AGENTS.md             ← 코딩 에이전트용 tapflow 섹션
+  CLAUDE.md             ← @AGENTS.md
+  data/                 ← 릴레이 런타임 상태
+    tapflow.db          ← SQLite 데이터베이스
+    jwt-secret          ← 설치별 서명 키
+    .env                ← DNS 자동 발급을 쓸 때의 자격 증명
+    uploads/
+      builds/           ← .app.zip 및 .apk 파일
+      avatars/
+      comments/
 ```
 
-데이터 디렉토리 위치를 변경하려면 `TAPFLOW_DATA_DIR` 환경변수 또는 `local.dataDir`을 사용합니다. `.tapflow/data/`를 백업하면 모든 데이터가 보존됩니다.
+플로우 파일은 설치의 일부가 아닙니다. 앱 저장소의 `.tapflow/flows/`에 두고, 실패 스크린샷은 `.tapflow/artifacts/`에 쌓입니다.
 
-`.tapflow-data/`를 쓰던 버전에서 올라와도 깨지지 않습니다. `tapflow.config.json`이 `local.dataDir`을 지정하고 있으면(구 `tapflow init`이 `.tapflow-data`를 써둠) 릴레이가 그 값을 존중하고, config가 없는 기본 설치는 기존 `.tapflow-data/`를 계속 읽습니다. 통합 레이아웃으로 바꾸려면 `tapflow migrate data-dir`을 한 번 실행하세요. `.tapflow-data/`를 `.tapflow/data/`로 원자적 rename 하고(복사 없음, 유실 없음), `local.dataDir`이 구 기본값을 가리키면 다시 써주며, `.gitignore`도 갱신합니다.
+데이터 디렉토리 위치를 변경하려면 `TAPFLOW_DATA_DIR` 환경변수 또는 `local.dataDir`을 사용합니다. 데이터 디렉토리를 백업하면 모든 데이터가 보존됩니다.
+
+릴레이를 실행한 디렉토리에 데이터를 두던 버전에서 올라와도 아무것도 옮겨지지 않습니다. 그 디렉토리에 `tapflow.config.json`, `.tapflow/data`, `.tapflow-data` 중 하나가 있으면 계속 설치로 인정되므로 거기서 실행한 릴레이는 전과 똑같은 파일을 씁니다. `local.dataDir`도 옆에 있는 설정 파일 기준으로 풀리므로 구 `init`과 `tapflow migrate data-dir`이 써 둔 `.tapflow/data`가 그대로 유효합니다. 통합 레이아웃으로 바꾸려면 릴레이를 멈추고 `tapflow migrate data-dir`을 한 번 실행하세요. `.tapflow-data/`를 `.tapflow/data/`로 원자적 rename 하고(복사 없음, 유실 없음), `local.dataDir`이 구 기본값을 가리키면 다시 써주며, `.gitignore`도 갱신합니다.
 
 ## SMTP 설정
 

@@ -50,16 +50,16 @@ describe('relay config — .env loads before secrets are read', () => {
 
   it('JWT_SECRET을 .env에서 읽는다 (셸 미설정)', async () => {
     fakeEnvFile = { JWT_SECRET: 'a'.repeat(40) }
-    const { jwtSecret } = await import('../lib/config.js')
-    expect(jwtSecret).toBe('a'.repeat(40))
+    const { getJwtSecret } = await import('../lib/config.js')
+    expect(getJwtSecret()).toBe('a'.repeat(40))
     expect(exitSpy).not.toHaveBeenCalled()
   })
 
   it('셸 JWT_SECRET이 .env보다 우선한다', async () => {
     vi.stubEnv('JWT_SECRET', 'b'.repeat(40))
     fakeEnvFile = { JWT_SECRET: 'a'.repeat(40) }
-    const { jwtSecret } = await import('../lib/config.js')
-    expect(jwtSecret).toBe('b'.repeat(40))
+    const { getJwtSecret } = await import('../lib/config.js')
+    expect(getJwtSecret()).toBe('b'.repeat(40))
   })
 
   it('SMTP 자격 증명을 .env에서 읽는다', async () => {
@@ -73,7 +73,7 @@ describe('relay config — .env loads before secrets are read', () => {
   it('dataDir은 .env에서 못 읽는다 (닭-달걀 — config.json/셸만)', async () => {
     fakeEnvFile = { TAPFLOW_DATA_DIR: '/from/env/file' }
     const { config } = await import('../lib/config.js')
-    expect(config.local.dataDir).toBe(path.join(process.cwd(), '.tapflow', 'data'))
+    expect(config.local.dataDir).toBe(path.join(process.env.TAPFLOW_HOME!, 'data'))
     expect(config.local.dataDir).not.toBe('/from/env/file')
   })
 
@@ -87,9 +87,9 @@ describe('relay config — .env loads before secrets are read', () => {
   })
 
   it('.env 없음 → 회귀 없이 per-install JWT secret 자동 생성', async () => {
-    const { jwtSecret, loadedEnvPath } = await import('../lib/config.js')
+    const { getJwtSecret, loadedEnvPath } = await import('../lib/config.js')
     expect(loadedEnvPath).toBeNull()
-    expect(jwtSecret.length).toBeGreaterThanOrEqual(32)
+    expect(getJwtSecret().length).toBeGreaterThanOrEqual(32)
     expect(exitSpy).not.toHaveBeenCalled()
   })
 
@@ -103,6 +103,6 @@ describe('relay config — .env loads before secrets are read', () => {
   it('loadedEnvPath는 로드된 .env 경로를 노출한다', async () => {
     fakeEnvFile = { JWT_SECRET: 'a'.repeat(40) }
     const { loadedEnvPath } = await import('../lib/config.js')
-    expect(loadedEnvPath).toBe(path.join(process.cwd(), '.tapflow', 'data', '.env'))
+    expect(loadedEnvPath).toBe(path.join(process.env.TAPFLOW_HOME!, 'data', '.env'))
   })
 })

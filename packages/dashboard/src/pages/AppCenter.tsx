@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -13,6 +13,7 @@ import { AppSidebar } from '@/components/app-center/AppSidebar'
 import { ReleaseAccordion } from '@/components/app-center/ReleaseAccordion'
 import { getApps, getBuilds, updateBuildStatus, scheduleBuildDeletion, cancelBuildDeletion, groupByRelease } from '@/lib/queries'
 import type { Build } from '@/lib/types'
+import { useFocusAfterSwap } from '@/hooks/useFocusAfterSwap'
 
 export function AppCenter() {
   const navigate = useNavigate()
@@ -213,10 +214,61 @@ export function AppCenter() {
   // over the screen reader echoing what was typed. Keyed on the app because that is the switch a
   // person is waiting through.
   const switching = buildsQuery.isPlaceholderData && shownAppId !== selectedAppId
+
+  /**
+   * **Which view the builds region is showing, named once and rendered from.** `useFocusAfterSwap`
+   * keys on it — focus moves only on a commit that changes it — so the render branches on this rather
+   * than restating the conditions: two copies of the same chain are how a key comes to say "list" over
+   * an empty state.
+   *
+   * `isLoadingError`, not `isError`: with `refetchOnWindowFocus` on and no retries, a single missed
+   * answer while the tab was in the background would otherwise throw away a list that is still
+   * perfectly good — and take the focus inside it with the rows. A failed *refresh* keeps the list and
+   * says so through the status region.
+   *
+   * **Only a change of app is unknown enough to say "Loading…" over held emptiness.** Emptiness held
+   * from the app you are leaving is not an answer about the one you picked. But emptiness held from
+   * the *same* app under a different search is the last answer, and swapping it for "Loading…" on every
+   * refinement is the flicker #828 was about — pointed at the filter bar instead of the sidebar.
+   */
+  /**
+   * **A failed search being fetched again with nothing of its own to show is still the failure.** The
+   * manual retry has held the failure screen until its answer since #828 (`retrying`). A background
+   * refetch of the same failure — returning to the tab, an upload invalidating builds — did not: the
+   * key goes back to pending, `keepPreviousData` fills it with the *previous search's* rows, and the
+   * view turned into a list that belongs to a different search, with focus moved into rows the answer
+   * would replace again (#829's review). So it is held the same way.
+   *
+   * **Only the failure that was on screen.** `errorUpdateCount` alone meant "failed at any time in the
+   * cache's five minutes", so backspacing a search into one that had failed while the relay was down
+   * — since recovered — flashed the failure between two lists, and reopening the page opened on a
+   * failure from before instead of loading. `isFetchedAfterMount` counts only answers that arrived
+   * while this key was being observed, and with no data of its own that answer was an error: the
+   * failure the person is looking at.
+   */
+  const refetchingAFailure =
+    buildsQuery.isFetchedAfterMount && (buildsQuery.isPlaceholderData || buildsQuery.isLoading)
+  const retryInFlight = retrying || refetchingAFailure
+
+  const view: 'error' | 'loading' | 'empty' | 'list' =
+    buildsQuery.isLoadingError || retryInFlight ? 'error'
+      : buildsQuery.isLoading ? 'loading'
+        : releaseGroups.length === 0 && switching ? 'loading'
+          : releaseGroups.length === 0 ? 'empty'
+            : 'list'
+  // Loading and empty have no control of their own, so focus a swap into one of them took from the
+  // region lands on the search box above it.
+  const searchRef = useRef<HTMLInputElement>(null)
+  const swapRegion = useFocusAfterSwap<HTMLDivElement>(view, searchRef)
+  const errorTitleId = useId()
+  const errorHintId = useId()
+  const emptyTitleId = useId()
+  const loadingId = useId()
+  const statusId = useId()
   const buildsStatus =
     selectedAppId === null ? ''
       : buildsQuery.isLoadingError ? `Couldn't load builds for ${appName}`
-          : buildsQuery.isLoading || switching ? `Loading builds for ${appName}`
+          : buildsQuery.isLoading || switching || retryInFlight ? `Loading builds for ${appName}`
             : releaseGroups.length > 0
               ? `Showing ${builds.length} build${builds.length === 1 ? '' : 's'} for ${appName}`
               // "no builds" and "nothing matches" are different facts, and the visible copy below
@@ -247,7 +299,7 @@ export function AppCenter() {
           />
         </div>
 
-        <p role="status" className="sr-only">{buildsStatus}</p>
+        <p id={statusId} role="status" className="sr-only">{buildsStatus}</p>
 
         {selectedAppId === null ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center">
@@ -258,7 +310,14 @@ export function AppCenter() {
         ) : (
         <>
         <div className="flex flex-wrap gap-2">
+          {/* Described by the loading line or the empty state's title — at most one of them exists, and
+              an IDREF that resolves to nothing is ignored, so there is no condition to keep in step with
+              the render below. Focus lands here when the list it was in empties out, or when a search
+              typed on the failure screen, with nothing ever loaded, turns it into a loading view; the
+              focus move flushes the polite status sentence that would otherwise have said which. */}
           <SearchInput
+            ref={searchRef}
+            aria-describedby={`${loadingId} ${emptyTitleId}`}
             aria-label="Search versions"
             placeholder="Search version…"
             value={search}
@@ -281,43 +340,54 @@ export function AppCenter() {
           )}
         </div>
 
-        {buildsQuery.isLoadingError || retrying ? (
-          /* `isLoadingError`, not `isError`: with `refetchOnWindowFocus` on and no retries, a
-             single missed answer while the tab was in the background would otherwise throw away a
-             list that is still perfectly good — and take the focus inside it with the rows. A
-             failed *refresh* keeps the list and says so through the status region above. */
+        {/* `contents`, so the region adds no box: the views below are still the flex column's own
+            children, and `flex-1` on the failure and empty states keeps meaning what it meant. */}
+        <div {...swapRegion} className="contents">
+        {view === 'error' ? (
           /* The same three slots as the empty state below — icon, title, line — because a failure
              and an app with no builds are different facts, not different layouts. Before this the
              failure fell through to that empty state and read as "this app has no builds". */
           <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center">
             <Ban className="w-8 h-8 text-muted-foreground/40" />
-            <p className="text-sm font-medium">Couldn't load builds</p>
-            <p className="text-sm text-muted-foreground">Check that the relay is reachable.</p>
+            <p id={errorTitleId} className="text-sm font-medium">Couldn't load builds</p>
+            <p id={errorHintId} className="text-sm text-muted-foreground">Check that the relay is reachable.</p>
+            {/* **Described by the two lines above**, because focus lands here when the list it was in
+                is replaced by this state, and a focus move in the same commit flushes the polite
+                `role="status"` sentence in NVDA and JAWS — so the button has to say what failed on
+                its own, or all that is heard is "Try again, button".
+
+                **`aria-disabled`, not `disabled`.** A focused element that becomes `disabled` is no
+                longer focusable, and the HTML focus-fixup rule sends focus to `body` — while the
+                retry runs, from the button just pressed. jsdom does not model that rule, which is why
+                the test holding focus on "Trying…" was green against a real browser that drops it. */}
+            {/* `aria-disabled` has no styling of its own in the shared `Button`, which only styles
+                `disabled:` — so the dimming is restored here, as `SimulatorToolbar` does.
+
+                The guard is what makes `aria-disabled` mean anything, since unlike `disabled` it does
+                not stop a click. It is observable when the query key changed during the retry: a
+                search typed meanwhile leaves this button up (`retrying` is not per key) over a new
+                key whose fetch has already failed, and a second press would refetch that one. */}
             <Button
               variant="outline"
               size="sm"
-              disabled={retrying}
+              className="aria-disabled:opacity-50"
+              aria-describedby={`${errorTitleId} ${errorHintId}`}
+              aria-disabled={retryInFlight}
               onClick={() => {
+                if (retryInFlight) return
                 setRetrying(true)
                 void buildsQuery.refetch().finally(() => setRetrying(false))
               }}
             >
-              {retrying ? 'Trying…' : 'Try again'}
+              {retryInFlight ? 'Trying…' : 'Try again'}
             </Button>
           </div>
-        ) : buildsQuery.isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : releaseGroups.length === 0 && switching ? (
-          /* **Only a change of app is unknown enough to say so.** Held emptiness from the app you
-             are leaving is not an answer about the one you picked. But held emptiness from the
-             *same* app under a different search is the last answer, and swapping it for "Loading…"
-             on every refinement is the flicker this whole change is about — pointed at the filter
-             bar instead of the sidebar. */
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : releaseGroups.length === 0 ? (
+        ) : view === 'loading' ? (
+          <p id={loadingId} className="text-sm text-muted-foreground">Loading…</p>
+        ) : view === 'empty' ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center">
             <Package className="w-8 h-8 text-muted-foreground/40" />
-            <p className="text-sm font-medium">{filtered ? 'No matching builds' : 'No builds yet'}</p>
+            <p id={emptyTitleId} className="text-sm font-medium">{filtered ? 'No matching builds' : 'No builds yet'}</p>
             <p className="text-sm text-muted-foreground">
               {filtered ? 'No build matches the search and status filters.' : 'Upload the first build to get started.'}
             </p>
@@ -326,9 +396,18 @@ export function AppCenter() {
           /* `aria-busy` while the rows belong to the app you were looking at rather than the one
              the heading now names — the visible half of the same lag. */
           <div className="flex flex-col gap-2" aria-busy={buildsQuery.isPlaceholderData}>
-            {releaseGroups.map(({ versionName, builds: groupBuilds }) => (
+            {/* The first release is described by the status line, because it is where focus lands
+                when a retry brings the list back — and that focus move flushes the status sentence
+                ("Showing N builds for …") that would otherwise have said the retry worked.
+
+                **Not while the rows are held from the app being left.** Then the status line is about
+                the app being loaded, and describing the old app's first release with it pairs one app's
+                builds with another's name. A retry that succeeds lands on its own key's rows, which
+                are not placeholder ones. */}
+            {releaseGroups.map(({ versionName, builds: groupBuilds }, index) => (
               <ReleaseAccordion
                 key={versionName}
+                describedBy={index === 0 && !buildsQuery.isPlaceholderData ? statusId : undefined}
                 versionName={versionName}
                 builds={groupBuilds}
                 isOpen={openReleases.has(versionName)}
@@ -341,6 +420,7 @@ export function AppCenter() {
             ))}
           </div>
         )}
+        </div>
         </>
         )}
       </div>

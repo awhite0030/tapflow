@@ -43,6 +43,98 @@ The audience is the whole team (PO, PM, designers, backend, QA) — not just QA.
 - **An address for someone else comes from `lib/publicLink.ts`** — an invite link, a link to a comment, the relay address in the agent command. The browser's own `location.origin` is right for this page and wrong for a teammate: on the Vite server it is `localhost:3001`, which is how #788 was found. The relay reports what its settings mean and the helper only falls back. `useRelay` is the exception, because it connects this page to its own relay. `scripts/__tests__/teammateUrlsSingleSource.test.mjs` fails on a `location` read other than `pathname`/`search`/`hash`/`hostname`/`protocol` outside the files it allows.
 - **Build order**: dashboard first → relay second (`agent-core → dashboard → relay`).
 
+### The React Compiler is on
+
+`babel-plugin-react-compiler` runs on this package through `reactPlugin.ts` — **shared by
+`vite.config.ts` and `vitest.config.ts` on purpose.** The test run used to build its own `react()`
+without the compiler, which would have left the suite exercising source the product does not ship.
+
+**Two configs need two guards, and for a while only one had one.** Everything the compiler does is
+an optimisation, so a config that quietly stops applying it fails nothing else.
+
+- `src/__tests__/reactCompilerOn.test.tsx` asserts the emitted memo-cache read. It runs *under
+  vitest*, so what it proves is that `vitest.config.ts` applies the compiler.
+- `scripts/__tests__/dashboardFirstLoadBudget.test.mjs` asserts that the built entry chunk contains
+  `react.memo_cache_sentinel` — a string literal the compiler writes into every function it caches
+  for, which survives minification and lands in app code only when app code was compiled. On an
+  uncompiled build it appears in the React vendor chunk alone, where React itself defines it.
+
+Measured: deleting `reactWithCompiler()` from `vite.config.ts` alone leaves the first test green and
+ships an uncompiled bundle. The second one fails on it.
+
+`reactPlugin.ts` sits at the package root, which used to be outside both gates — `lint` globbed
+`*.config.ts` and the tsconfig included only `src`/`components`/`hooks`/`lib`. The `lint` glob is
+`*.ts` now, so every root TypeScript file is linted; a root `.mjs` (`postcss.config.mjs` is one) or
+a root `.tsx` is still outside it.
+
+**The tsconfig lists the root configs one by one, and `vitest.config.ts` is deliberately not among
+them.** `build` is `tsc --noEmit && vite build`, so whatever the tsconfig includes becomes a
+dependency of the *production image build* — and the Docker builder copies `packages/` and the
+workspace manifests, not the repo root. Globbing `*.ts` there was tried and the image build died on
+`TS2307: Cannot find module '../../vitest.shared'`, with every local check green; it is the Docker
+job in CI that says so. Copying that file into the image context would have moved the fragility
+rather than removed it, since the next test-only root file breaks it again. So the tsconfig covers
+what the build itself loads, and `vitest.config.ts` keeps exactly the coverage it always had —
+linted, not type-checked.
+
+**Stop adding `useCallback` and `useMemo` for identity.** The compiler does that. What is here, in
+product code (`src`/`components`/`hooks`/`lib` minus `__tests__`): 62 `useCallback`, 3 `useMemo`, and
+**zero** `memo()` components — so most of that is stabilising effect dependencies by hand. Existing ones are not worth a sweep; new ones need a reason that is not
+"so the child does not re-render".
+
+Measured 2026-09-22: **158 functions compiled, 15 skipped.** A skip is safe — the compiler leaves the
+function alone rather than guessing — and **none of the 15 is ours.** Fourteen are syntax it cannot
+lower yet, nine of them `try`/`catch` shapes (value blocks inside a `try`, a `finally` clause, a
+`throw` inside a `try`), plus `UpdateExpression` on a variable captured in a lambda and dynamic
+`import()`. The fifteenth is an internal invariant in `useClientRecording.ts`, recorded at the top
+of that file with both its bails and why neither is worth working around.
+
+`src/__tests__/noSuppressedCompilation.test.ts` is what keeps that "none of the 15 is ours" true. It
+runs the compiler over the package and fails on any skip whose **reason** is a suppression, which is
+the only kind anybody here can cause. A bundle check cannot do this job — one suppressed component
+removes its share of 161 sentinels and leaves the rest, and 73 of them sit in a lazy chunk the build
+guard never opens.
+
+It must drive the Babel the *build* drives, and it asserts that rather than assuming it: `@babel/core`
+is a devDependency here and a dependency of `@vitejs/plugin-react`, so the two are one install only
+while their ranges agree, and the test compares the resolved paths. Measured, 8.0.6 and 7.29.7
+disagree about whether `AndroidViewer` compiles — a drift would have the census reporting on a
+toolchain nothing ships. Comparing resolution rather than pinning exact versions, because a pin is a
+rule nothing enforces while this fails the moment pnpm hands the plugin a different copy.
+
+#### What an `eslint-disable` costs the compiler, stated as measured
+
+`AndroidViewer` and `IOSViewer` compiled **nothing** until #830, and the cause was easy to read too
+broadly. Probed directly, it is narrower on both axes:
+
+- **Per function, not per file.** A file with four components, one carrying a suppression, compiles
+  the other three. It looked file-wide on the viewers only because each of those files is a single
+  component, so the one skip was the whole file.
+- **Exactly two rules, and they are a hardcoded list.**
+  `DEFAULT_ESLINT_SUPPRESSIONS` in `babel-plugin-react-compiler@1.0.0` is
+  `['react-hooks/exhaustive-deps', 'react-hooks/rules-of-hooks']`, overridable through the
+  `eslintSuppressionRules` option, which we do not set. Suppressing anything else costs nothing.
+
+**The list is not "the rules the compiler validates", and guessing that gets it wrong both ways.**
+`react-hooks/purity`, `refs`, `immutability`, `globals` and `set-state-in-effect` are all in the
+compiler's own diagnostics table at `severity: "Error", recommended: true`, and suppressing any of
+them compiles fine — `src/pages/QASession.tsx` and `components/ui/sidebar.tsx` each carry a `purity`
+suppression and both compile. `rules-of-hooks` is **not** in that table and does bail, which is the
+direction that costs something: it reads as the safe one and it is not. Probed directly rather than
+reasoned about, because the first reading of this was wrong.
+
+So the cost of a suppression is real, local and narrow: it is the function it sits in, for two rule
+names, and it is silent, because a skipped function still works. Removing one is how the two viewers
+went from 0 to 1 each.
+
+`react-hooks/set-state-in-effect` is `'off'` in `eslint.config.mjs` and hides **15 violations across
+13 files**. It *is* one of the compiler's own diagnostics — it is simply not one of the two names
+above, so suppressing or disabling it costs no compilation. Worth knowing for a different reason:
+`eslint-plugin-react-hooks@7`'s recommended set is 16 rules, this is the only one turned off, and a
+clean lint here therefore means "every enabled diagnostic passes" rather than "the Rules of React
+hold". It is a real cleanup with nothing scheduling it; the number is recorded here so the next
+person does not have to re-measure it.
+
 ### Server data is read with TanStack Query, not fetched in an effect
 
 A page that owns server rows in `useState` and fills them from a `useEffect` has to hand-roll three
@@ -328,6 +420,53 @@ and power to the frame. That gap is **platform parity, not accessibility** — t
 the toolbar buttons Android has, not to overlay the frame. Read it that way whenever a finding says a
 device control is unreachable: ask whether the control should exist in the DOM at all, and if it
 should, put it in the toolbar where the group rules above already say it belongs.
+
+### A view that replaces another puts back the focus it destroyed
+
+Swapping one view of a region for another — the list for its failure, the failure for the list a
+retry brought back, the list for its empty state — unmounts whatever inside had focus, and the
+browser drops it on `body`. Spread `useFocusAfterSwap(view, fallback)` onto the element holding the
+views and render from the same `view` name, so the key cannot say "list" over an empty state. App
+Center is the example (#829).
+
+**It acts only when one commit both changes the view and removes the focused element.** A second
+design acted on any removal and broke the page's most common interaction: picking a row's status
+unmounts the `Select`'s content, and the status mutation re-rendered the page before Radix handed
+focus back to the trigger — so focus went to the first release and the list scrolled to the top under
+a mouse user. A removal that is not a swap belongs to whatever caused it. That leaves **a row leaving
+a list that stays a list** unhandled here on purpose: where its focus should go — the next row, the
+previous one, its release — is a decision for the row, not for a region-wide hook (#833).
+
+**A failed key being fetched again is still the failure.** The manual retry holds the failure screen
+until its answer, and so does a background refetch of the same failure (returning to the tab, an
+upload invalidating builds). Without that, `keepPreviousData` fills the refetching key with the
+previous search's rows, the view becomes a list that belongs to a different search, and focus is
+moved into rows the answer then replaces. Holding it keeps focus on "Try again", now "Trying…".
+**Only the failure that was on screen**, though — `isFetchedAfterMount`, not `errorUpdateCount`,
+which counts any failure in the cache's lifetime and so resurrected a search the relay had failed
+minutes ago, and opened a remounted page on an old failure instead of loading.
+
+**Focus goes to the first control in the new view, else to `fallback`, and that control has to say
+what happened.** Not a `tabIndex={-1}` heading: `DeviceViewer` tried parking focus on a non-control
+and took it out again, since such an element takes focus from a mouse too and then has to wear a ring
+nobody can use. And not trusting `role="status"` to explain it, because NVDA and JAWS flush a pending
+polite announcement when focus moves in the same commit. App Center's "Try again" is described by the
+failure's two lines; its fallback, the search box, by whichever of the loading line and the empty
+state's title is showing; and the first release,
+where a successful retry lands, by the status line itself — not while its rows are held from the app
+being left, when that line is about a different app.
+
+A busy control uses `aria-disabled`, never `disabled`, and dims itself with `aria-disabled:` classes
+because the shared `Button` only styles `disabled:`. A focused element that becomes disabled is dropped
+to `body` by the focus-fixup rule, which jsdom does not model — a test asserting focus stayed on it
+passes in jsdom while a browser loses it.
+
+"Had focus in the region" follows the React tree, not the DOM: a `Select` or menu opened from a row
+lives in a portal under `body` and still goes with its owner.
+
+**A dialog opened by state rather than by a trigger returns focus itself.** Radix returns focus to an
+`AlertDialogTrigger`; without one it drops it on `body`. `BuildRow`'s deletion dialog is opened from
+its trash button's `onClick`, so it passes `onCloseAutoFocus` to put focus back on that button.
 
 ### A toast fired while a dialog is open is not heard
 

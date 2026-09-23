@@ -34,6 +34,8 @@ vi.mock('../lib/config.js', () => ({
     tls: mocks.tls,
   },
   loadedEnvPath: null,
+  // server.ts refuses a TAPFLOW_HOME naming a directory nobody created; these tests name none.
+  assertInstallDir: vi.fn(),
 }))
 vi.mock('../lib/proxyConfig.js', () => ({
   buildCorsOrigins: vi.fn(() => []),
