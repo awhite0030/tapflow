@@ -209,81 +209,109 @@ export function AppCenter() {
    * Radix hands focus back to the row's status trigger when the menu closes; the refetch then drops
    * the row, and the trigger with it, so focus fell to `body` and the page's top. `useFocusAfterSwap`
    * leaves this alone on purpose — the list stays a list — so the row decides: the next row in its
-   * release, else the previous one, else the next release's header, else the previous one's. A row
-   * that was the list's last leaves an empty state behind, which the swap hook already handles.
+   * release, else the previous one, then further out; then the next release's header, else the
+   * previous one's, then further out. A row that was the list's last leaves an empty state behind,
+   * which the swap hook already handles.
    *
-   * **Decided now, acted on later.** Moving focus before the row is gone would be undone by Radix
-   * handing it back; after the refetch the order it was chosen from no longer exists. So the target
-   * is chosen from what is on screen at the change and taken once the row has actually gone.
+   * **Ranked now, chosen later.** Moving focus before the row is gone would be undone by Radix
+   * handing it back, and after the refetch the order the neighbours were ranked in no longer exists.
+   * So the candidates are ranked from what is on screen at the change, nearest first, and the first
+   * one still on screen when the row goes is the destination. The same refetch can take the nearest
+   * neighbour too — a teammate's change, a rename — and a single target would then drop focus to
+   * `body` all over again.
    *
    * The destination says what happened itself, through `leftNote`: a polite status sentence is
-   * flushed by the focus move in NVDA and JAWS (see this package's AGENTS.md).
+   * flushed by the focus move in NVDA and JAWS (see this package's AGENTS.md). Focus and note both
+   * resolve through `resolveTarget` in the same render, so they cannot point at different controls.
    */
   type FocusTarget = { kind: 'row'; buildId: number } | { kind: 'release'; versionName: string }
-  const pendingFocus = useRef<{ leaving: number; target: FocusTarget; text: string } | null>(null)
-  const [leftNote, setLeftNote] = useState<{ leaving: number; target: FocusTarget; text: string } | null>(null)
+  type Leaving = { leaving: number; candidates: FocusTarget[]; text: string }
+  const pendingFocus = useRef<Leaving | null>(null)
+  const [leftNote, setLeftNote] = useState<Leaving | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const leftNoteId = useId()
 
-  function focusTargetAfterLeaving(buildId: number): FocusTarget | null {
+  /** Nearest first: from the middle outwards, `at + 1` before `at - 1`. */
+  const byDistance = <T,>(items: T[], at: number): T[] =>
+    items.map((item, i) => ({ item, d: i > at ? 2 * (i - at) - 1 : 2 * (at - i) }))
+      .filter(({ d }) => d > 0).sort((x, y) => x.d - y.d).map(({ item }) => item)
+
+  function rankTargets(buildId: number): FocusTarget[] {
     const index = releaseGroups.findIndex(g => g.builds.some(b => b.id === buildId))
-    if (index < 0) return null
+    if (index < 0) return []
     const rows = releaseGroups[index].builds
-    const at = rows.findIndex(b => b.id === buildId)
-    const neighbour = rows[at + 1] ?? rows[at - 1]
-    if (neighbour) return { kind: 'row', buildId: neighbour.id }
-    // Headers render whether or not their release is open, so either neighbour will be there.
-    const release = releaseGroups[index + 1] ?? releaseGroups[index - 1]
-    return release ? { kind: 'release', versionName: release.versionName } : null
+    return [
+      ...byDistance(rows, rows.findIndex(b => b.id === buildId)).map(b => ({ kind: 'row', buildId: b.id }) as const),
+      // Headers render whether or not their release is open, so they are always there to take it.
+      ...byDistance(releaseGroups, index).map(g => ({ kind: 'release', versionName: g.versionName }) as const),
+    ]
+  }
+
+  /**
+   * The first candidate the current render still has. Rows are ranked only from the leaving row's own
+   * release, which was open for the change to be made; collapsing it meanwhile puts focus on its
+   * header, so the move below is skipped anyway.
+   */
+  function resolveTarget(candidates: FocusTarget[]): FocusTarget | null {
+    return candidates.find(t => t.kind === 'row'
+      ? builds.some(b => b.id === t.buildId)
+      : releaseGroups.some(g => g.versionName === t.versionName)) ?? null
   }
 
   const handleStatusChange = (buildId: number, status: string | null) => {
     const build = builds.find(b => b.id === buildId)
     const leaves = statusFilter !== 'all' && status !== statusFilter
-    const target = leaves ? focusTargetAfterLeaving(buildId) : null
-    if (build && target) {
+    const candidates = leaves ? rankTargets(buildId) : []
+    if (build && candidates.length > 0) {
       const text = `${buildRowName(build)} was set to ${status ?? 'no status'}, so the ${statusFilter} filter no longer shows it.`
-      pendingFocus.current = { leaving: buildId, target, text }
-      setLeftNote({ leaving: buildId, target, text })
+      pendingFocus.current = { leaving: buildId, candidates, text }
+      setLeftNote({ leaving: buildId, candidates, text })
     }
     statusMutation.mutate({ buildId, status })
   }
 
-  const matchesTarget = (el: Element, target: FocusTarget) =>
-    target.kind === 'row'
-      ? el instanceof HTMLElement && el.dataset.statusTrigger === String(target.buildId)
-      : el instanceof HTMLElement && el.dataset.releaseHeader === target.versionName
+  const matchesTarget = (el: Element, target: FocusTarget | null) =>
+    target !== null && el instanceof HTMLElement && (target.kind === 'row'
+      ? el.dataset.statusTrigger === String(target.buildId)
+      : el.dataset.releaseHeader === target.versionName)
+
+  const noteShown = leftNote !== null && !builds.some(b => b.id === leftNote.leaving)
+  const noteTarget = noteShown ? resolveTarget(leftNote.candidates) : null
 
   // On the commit that removes the row. Only if focus went down with it: someone who moved on
   // while the answer was in flight keeps what they chose — and hears why the row went through a
-  // toast instead, since with no focus move there is nothing to flush it.
+  // toast instead, since with no focus move there is nothing to flush it. So does anyone whose
+  // every candidate went with the refetch, which leaves an empty list and the swap hook in charge.
   useLayoutEffect(() => {
     const pending = pendingFocus.current
     if (!pending || builds.some(b => b.id === pending.leaving)) return
     pendingFocus.current = null
-    if (document.activeElement !== null && document.activeElement !== document.body) {
+    const target = resolveTarget(pending.candidates)
+    if (!target || (document.activeElement !== null && document.activeElement !== document.body)) {
       toast.success(pending.text)
       return
     }
-    const candidates = listRef.current?.querySelectorAll('[data-status-trigger], [data-release-header]') ?? []
-    const destination = Array.from(candidates).find(el => matchesTarget(el, pending.target))
+    const controls = listRef.current?.querySelectorAll('[data-status-trigger], [data-release-header]') ?? []
+    const destination = Array.from(controls).find(el => matchesTarget(el, target))
     if (destination instanceof HTMLElement) destination.focus()
   })
 
   // The note describes its destination until focus goes anywhere else. The leaving row's own trigger
-  // is exempt: Radix hands focus back to it before the row goes.
+  // is exempt: Radix hands focus back to it before the row goes. **Against the candidates, not
+  // `noteTarget`**: the layout effect above moves focus before this listener is re-registered for
+  // the render that resolved the target, so this closure still holds the one from before the row
+  // went — and a first version that compared against it cleared the note on the focus it describes.
   useEffect(() => {
     if (!leftNote) return
     const onFocusIn = (event: FocusEvent) => {
       const el = event.target
       if (!(el instanceof Element)) return
       const leavingTrigger = el instanceof HTMLElement && el.dataset.statusTrigger === String(leftNote.leaving)
-      if (!leavingTrigger && !matchesTarget(el, leftNote.target)) setLeftNote(null)
+      if (!leavingTrigger && !leftNote.candidates.some(t => matchesTarget(el, t))) setLeftNote(null)
     }
     document.addEventListener('focusin', onFocusIn)
     return () => document.removeEventListener('focusin', onFocusIn)
   })
-  const noteShown = leftNote !== null && !builds.some(b => b.id === leftNote.leaving)
 
   /**
    * What the list is doing, for anyone who cannot see it doing it.
@@ -502,9 +530,9 @@ export function AppCenter() {
                 key={versionName}
                 describedBy={[
                   index === 0 && !buildsQuery.isPlaceholderData ? statusId : null,
-                  noteShown && leftNote.target.kind === 'release' && leftNote.target.versionName === versionName ? leftNoteId : null,
+                  noteTarget?.kind === 'release' && noteTarget.versionName === versionName ? leftNoteId : null,
                 ].filter(Boolean).join(' ') || undefined}
-                rowNote={noteShown && leftNote.target.kind === 'row' ? { buildId: leftNote.target.buildId, id: leftNoteId } : undefined}
+                rowNote={noteTarget?.kind === 'row' ? { buildId: noteTarget.buildId, id: leftNoteId } : undefined}
                 versionName={versionName}
                 builds={groupBuilds}
                 isOpen={disclosure.isOpen(versionName)}

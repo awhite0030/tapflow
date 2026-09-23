@@ -439,11 +439,13 @@ unmounts the `Select`'s content, and the status mutation re-rendered the page be
 focus back to the trigger — so focus went to the first release and the list scrolled to the top under
 a mouse user. A removal that is not a swap belongs to whatever caused it, so **a row leaving a list
 that stays a list** is handled by the change that removed it, not here. In App Center that is a status
-change a filter then hides (#833). The target is chosen when the change is made, from the rows on
-screen: the next row in the release, else the previous one, else the neighbouring release's header.
-Focus moves there on the commit that removes the row, and only if focus went down with it. It cannot
-move earlier, because Radix hands focus back to the row's trigger after the pick, and it cannot be
-chosen later, because by then the order it was chosen from is gone. The destination is described by a
+change a filter then hides (#833). Candidates are ranked when the change is made, from the rows on
+screen: rows of the same release nearest first (next before previous), then release headers nearest
+first. Focus moves to the first one still on screen on the commit that removes the row, and only if
+focus went down with it. The move cannot happen earlier, because Radix hands focus back to the row's
+trigger after the pick, and the ranking cannot happen later, because by then the order is gone. A
+list of candidates rather than one target, because the same refetch can take the nearest neighbour
+too. The destination is described by a
 note that says why the row left, and the note clears when focus goes elsewhere. Someone who moved
 focus while the change was in flight keeps it, and hears the same sentence as a toast, since
 without a focus move nothing flushes it.
