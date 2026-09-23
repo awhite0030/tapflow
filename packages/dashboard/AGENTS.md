@@ -410,9 +410,12 @@ tapflow is used by a team that sees the screen, and it streams the device as ima
 product a screen-reader user does manual QA with. What it keeps is what helps **anyone** who does
 not drive it with a mouse, or who uses voice control or zoom:
 
-- **Kept:** accessible names (icon-only buttons, labels that are not placeholders, a name that
-  matches the visible label), keyboard operation, focus that is moved, returned and never lost, no
-  focus stealing, and contrast.
+- **Kept, and checked at commit time:** accessible names (icon-only buttons, labels that are not
+  placeholders, a name that matches the visible label), keyboard operation, focus that is moved,
+  returned and never lost, and no focus stealing.
+- **Kept, but not checked by a11y-lens:** colour contrast. The rule set leaves contrast to static
+  tools, and no check here looks at it, so it holds only if the colours used come from the theme's
+  tokens.
 - **Not pursued:** screen-reader-specific choreography, such as announcement timing, live regions
   for async results and loading, descriptions written for a state change, complete ARIA widget
   patterns, heading and landmark outlines, and alt-text wording. The same goes for manual VoiceOver
