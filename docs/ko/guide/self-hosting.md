@@ -370,17 +370,17 @@ fly.io, Railway 등 클라우드 서비스에 릴레이를 올리면 에이전�
 
 `.tapflow-data/`에 상태를 저장하던 버전에서 올라와도 깨지지 않습니다. 지정된 `local.dataDir`은 그대로 존중되고, config 없는 설치는 기존 `.tapflow-data/`를 계속 읽습니다. 통합 레이아웃을 적용하려면 `tapflow migrate data-dir`을 한 번 실행하세요. `.tapflow-data/`를 `.tapflow/data/`로 원자적 rename 하고(복사 없음, 데이터 유실 없음), `local.dataDir`이 구 기본값을 가리키면 다시 써주며, `.gitignore`도 갱신합니다.
 
-아래 주요 경로는 `$TAPFLOW_DATA_DIR`로 씁니다. 릴레이가 시작할 때 출력한 디렉토리로 바꿔 읽으세요.
+아래 경로는 모두 그 데이터 디렉토리 안에 있습니다. `tapflow start`가 출력하는 `Data →` 줄의 경로입니다.
 
 주요 경로:
 
 | 경로 | 중요한 이유 |
 |------|-------------|
-| `.tapflow/data/tapflow.db` | 계정, 앱, 빌드, 세션, 댓글, 토큰, 설정을 담는 SQLite 데이터베이스입니다. |
-| `.tapflow/data/tapflow.db-wal` / `.tapflow/data/tapflow.db-shm` | SQLite WAL 보조 파일입니다. 파일시스템 스냅샷에 함께 포함하거나, Litestream을 사용해 변경분을 안전하게 캡처하세요. |
-| `.tapflow/data/uploads/` | 릴레이가 제공하는 업로드된 빌드 아티팩트입니다. |
-| `.tapflow/data/recordings/` | 릴레이를 통해 업로드된 세션 녹화 파일입니다. |
-| `.tapflow/data/.env`와 `.tapflow/data/jwt-secret` | 릴레이 시크릿입니다. 비공개로 보관하고 데이터 디렉토리와 함께 복원해야 기존 세션과 연동이 유지됩니다. |
+| `tapflow.db` | 계정, 앱, 빌드, 세션, 댓글, 토큰, 설정을 담는 SQLite 데이터베이스입니다. |
+| `tapflow.db-wal` / `tapflow.db-shm` | SQLite WAL 보조 파일입니다. 파일시스템 스냅샷에 함께 포함하거나, Litestream을 사용해 변경분을 안전하게 캡처하세요. |
+| `uploads/` | 릴레이가 제공하는 업로드된 빌드 아티팩트입니다. |
+| `recordings/` | 릴레이를 통해 업로드된 세션 녹화 파일입니다. |
+| `.env`와 `jwt-secret` | 릴레이 시크릿입니다. 비공개로 보관하고 데이터 디렉토리와 함께 복원해야 기존 세션과 연동이 유지됩니다. |
 
 ### 권장: SQLite에는 Litestream 사용
 
@@ -423,7 +423,8 @@ pm2 save
 새 호스트에서 tapflow를 시작하기 전에 데이터베이스를 복원합니다:
 
 ```sh
-litestream restore -config litestream.yml -if-replica-exists "$TAPFLOW_DATA_DIR/tapflow.db"
+DATA_DIR=/Users/you/.tapflow/data   # tapflow start가 출력한 Data → 경로
+litestream restore -config litestream.yml -if-replica-exists "$DATA_DIR/tapflow.db"
 ```
 
 그다음 같은 데이터 디렉토리 안의 `uploads/`, `recordings/`, `.env`, `jwt-secret`을 파일 백업에서 복원하세요. Litestream은 SQLite 데이터베이스만 보호합니다. 빌드 파일, 녹화 파일, 시크릿은 별도의 파일시스템 또는 오브젝트 스토리지 백업이 필요합니다.

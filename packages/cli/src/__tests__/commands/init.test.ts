@@ -252,6 +252,22 @@ describe('cmdInitConfig', () => {
       expect(output.join('\n')).toContain('Install dir')
     })
 
+    it('옛 ~/tapflow.config.json을 --force로 다시 쓰면 dataDir이 원래 데이터를 가리킨다', async () => {
+      // An install `init` once wrote to `~`: config at ~/tapflow.config.json, data in ~/.tapflow/data.
+      // The rewritten config is read relative to itself, so its dataDir has to be `.tapflow/data`
+      // from `~`. Written relative to the install dir instead, it said `data` — which read back as
+      // `~/data`, an empty directory.
+      vi.stubEnv('TAPFLOW_HOME', '')
+      fs.writeFileSync(path.join(tmpHome, 'tapflow.config.json'), '{}', 'utf-8')
+      fs.mkdirSync(path.join(tmpHome, '.tapflow', 'data'), { recursive: true })
+
+      await cmdInitConfig({ tunnel: 'tailscale', force: true })
+
+      const cfg = JSON.parse(fs.readFileSync(path.join(tmpHome, 'tapflow.config.json'), 'utf-8'))
+      expect(path.resolve(tmpHome, cfg.local.dataDir)).toBe(path.join(tmpHome, '.tapflow', 'data'))
+      expect(fs.existsSync(path.join(tmpHome, '.tapflow', 'tapflow.config.json'))).toBe(false)
+    })
+
     it('현재 폴더가 아니라 설치 폴더에 쓴다', async () => {
       const target = path.join(tmpDir, 'install')
       fs.mkdirSync(target)

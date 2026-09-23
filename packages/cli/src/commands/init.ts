@@ -188,6 +188,13 @@ async function promptTls(): Promise<TlsConfig | null> {
   return { mode: 'byo-api-token', domain: domain.trim(), dnsProvider: method }
 }
 
+// Forward slashes in anything written for another tool to parse. On Windows `path` joins with `\`,
+// which a .gitignore reads as an escape — `/.tapflow\data/` ignores nothing, and the secrets in it
+// would be committed. Node reads either separator back, so the config gets the same form.
+function toPosix(p: string): string {
+  return p.split(path.sep).join('/')
+}
+
 /** The data layout `init` writes into a config it creates, relative to the install dir. */
 function dataDirFor(install: InstallDir, home: string): string {
   const found = resolveDefaultDataDir(install.dir, install.defaultDataLayout)
@@ -264,9 +271,13 @@ export async function cmdInitConfig(opts: InitConfigOptions): Promise<void> {
   }
 
   const dataDir = dataDirFor(install, home)
+  const absoluteDataDir = path.join(install.dir, dataDir)
   const configOut = {
     ...BASE_CONFIG,
-    local: { ...BASE_CONFIG.local, dataDir },
+    // Relative to the config file, which is how the relay reads it — and which is not the install
+    // dir when the file being rewritten is an older install's `~/tapflow.config.json`. Written
+    // relative to the install dir, `--force` there pinned `data`, which read back as `~/data`.
+    local: { ...BASE_CONFIG.local, dataDir: toPosix(path.relative(path.dirname(configPath), absoluteDataDir)) },
     ...(tunnel != null ? { tunnel } : {}),
     ...(tls != null ? { tls } : {}),
   }
@@ -282,7 +293,6 @@ export async function cmdInitConfig(opts: InitConfigOptions): Promise<void> {
 
   // Legacy .tapflow-data/ moves only via `tapflow migrate data-dir`; until then don't scaffold a fresh data dir (it would trap that command with a both-dirs conflict).
   const hasLegacyDataDir = dataDir === '.tapflow-data'
-  const absoluteDataDir = path.join(install.dir, dataDir)
 
   // byo-api-token: 토큰 재export 없이 재시작 가능하도록 자격 증명 env 파일을 스캠폴드(빈 변수명만 작성).
   let envScaffold: 'created' | 'appended' | 'already-present' | 'skipped' = 'skipped'
@@ -298,7 +308,7 @@ export async function cmdInitConfig(opts: InitConfigOptions): Promise<void> {
   let gitignoreUpdated: 'created' | 'appended' | 'already-present' | 'skipped' = 'skipped'
   if (isInsideGitRepo(install.dir)) {
     // Ignore the legacy dir too while it awaits migration, so its secrets aren't committed meanwhile.
-    const ignoreEntries = [`/${dataDir}/`, '/.tapflow/artifacts/']
+    const ignoreEntries = [`/${toPosix(dataDir)}/`, '/.tapflow/artifacts/']
     if (dataDir !== '.tapflow-data' && fs.existsSync(path.join(install.dir, '.tapflow-data'))) ignoreEntries.push('/.tapflow-data/')
     try {
       gitignoreUpdated = addToGitignore(install.dir, ignoreEntries)

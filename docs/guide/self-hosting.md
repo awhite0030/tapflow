@@ -371,17 +371,17 @@ The relay keeps its durable state under the resolved data directory — `~/.tapf
 
 If you are upgrading from a version that stored state in `.tapflow-data/`, nothing breaks: a pinned `local.dataDir` is honored and a config-less install keeps reading the existing `.tapflow-data/`. Run `tapflow migrate data-dir` once to adopt the unified layout: it atomically renames `.tapflow-data/` → `.tapflow/data/` (no copy, no data loss), repoints `local.dataDir` when it pinned the old default, and updates `.gitignore`.
 
-Paths below are written as `$TAPFLOW_DATA_DIR`. Substitute the directory the relay printed on start.
+The paths below are inside that data directory — the one on the `Data →` line `tapflow start` prints.
 
 Important paths:
 
 | Path | Why it matters |
 |------|----------------|
-| `.tapflow/data/tapflow.db` | SQLite database for accounts, apps, builds, sessions, comments, tokens, and settings. |
-| `.tapflow/data/tapflow.db-wal` / `.tapflow/data/tapflow.db-shm` | SQLite WAL sidecar files. Include them in filesystem snapshots, or use Litestream so changes are captured safely. |
-| `.tapflow/data/uploads/` | Uploaded build artifacts served by the relay. |
-| `.tapflow/data/recordings/` | Session recordings uploaded through the relay. |
-| `.tapflow/data/.env` and `.tapflow/data/jwt-secret` | Relay secrets. Keep them private and restore them with the data directory so existing sessions and integrations keep working. |
+| `tapflow.db` | SQLite database for accounts, apps, builds, sessions, comments, tokens, and settings. |
+| `tapflow.db-wal` / `tapflow.db-shm` | SQLite WAL sidecar files. Include them in filesystem snapshots, or use Litestream so changes are captured safely. |
+| `uploads/` | Uploaded build artifacts served by the relay. |
+| `recordings/` | Session recordings uploaded through the relay. |
+| `.env` and `jwt-secret` | Relay secrets. Keep them private and restore them with the data directory so existing sessions and integrations keep working. |
 
 ### Recommended: Litestream for SQLite
 
@@ -424,7 +424,8 @@ pm2 save
 Restore the database before starting tapflow on a new host:
 
 ```sh
-litestream restore -config litestream.yml -if-replica-exists "$TAPFLOW_DATA_DIR/tapflow.db"
+DATA_DIR=/Users/you/.tapflow/data   # the Data → line tapflow start printed
+litestream restore -config litestream.yml -if-replica-exists "$DATA_DIR/tapflow.db"
 ```
 
 Then restore `uploads/`, `recordings/`, `.env`, and `jwt-secret` inside that same data directory from your file backup. Litestream protects the SQLite database only; build files, recordings, and secrets still need a normal filesystem or object-storage backup.
