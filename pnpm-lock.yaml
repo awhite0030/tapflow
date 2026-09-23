@@ -9,8 +9,8 @@ importers:
   .:
     devDependencies:
       '@a11y-lens/cli':
-        specifier: ^0.5.0
-        version: 0.5.0
+        specifier: ^0.6.0
+        version: 0.6.0
       '@changesets/cli':
         specifier: ^2.31.1
         version: 2.31.1(@types/node@22.20.2)
@@ -592,8 +592,8 @@ importers:
 
 packages:
 
-  '@a11y-lens/cli@0.5.0':
-    resolution: {integrity: sha512-peOcmVuk8U1KKytJWHXYmtNt3sTrDzi/F2pR9xzHBe/z8ZOgfYwq3c9F5I39hTuEIsoLqShuDe+UCyAP2qpMmA==}
+  '@a11y-lens/cli@0.6.0':
+    resolution: {integrity: sha512-PSLmqoe3F0A16EbImjzGhZn+orGIEjFx9eFTyoJrC1yamzXE2A7unKU1rau5+9OUZYtadlhQax5kotaiisQhuQ==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -5391,7 +5391,7 @@ packages:
 
 snapshots:
 
-  '@a11y-lens/cli@0.5.0': {}
+  '@a11y-lens/cli@0.6.0': {}
 
   '@adobe/css-tools@4.4.4': {}
 
