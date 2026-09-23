@@ -81,7 +81,8 @@ docs-only. Stopping a second time passes, so the block is a prompt rather than a
 pre-commit job never blocks on its own infrastructure, so a timeout passes with the same ✔️ as a
 clean run (#827). a11y-lens records the files it could not review, and
 `.claude/hooks/a11y-lens-pending-gate.sh` blocks finishing while any are recorded, until
-`pnpm exec a11y-lens check --pending` has run in the session. Stopping a second time passes.
+`pnpm exec a11y-lens check --pending` has run in the session after the latest one was recorded.
+Stopping a second time passes.
 
 When starting a **new** task that requires code changes (not when continuing work on an existing branch):
 1. `git checkout main && git pull origin main` — start from the latest main.

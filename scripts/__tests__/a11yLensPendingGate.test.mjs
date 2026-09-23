@@ -19,9 +19,9 @@ const CLI = path.join(
   'bin/a11y-lens.mjs',
 )
 
-/** A transcript line carrying one Bash call. */
-const bash = (command) =>
-  JSON.stringify({ message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } } ] } })
+/** A transcript line carrying one Bash call, stamped like the runtime stamps it (now, by default). */
+const bash = (command, timestamp = new Date().toISOString()) =>
+  JSON.stringify({ timestamp, message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } })
 
 let dir, repo, tx
 
@@ -92,6 +92,15 @@ describe('a skipped check the session has not followed up', () => {
   it('passes once --pending has run in this session, even if files are still recorded', () => {
     expect(blocked([bash('pnpm exec a11y-lens check --pending')])).toBe(false)
     expect(blocked([bash('A11Y_LENS_TIMEOUT_MS=600000 pnpm exec a11y-lens check --strict --pending')])).toBe(false)
+  })
+
+  it('is satisfied by a call split across lines', () => {
+    expect(blocked([bash('pnpm exec a11y-lens check \\\n  --pending')])).toBe(false)
+  })
+
+  it('blocks again for a skip recorded after the session ran --pending', () => {
+    // The record was written in beforeAll; a --pending call stamped before it did not see it.
+    expect(blocked([bash('pnpm exec a11y-lens check --pending', '2000-01-01T00:00:00.000Z')])).toBe(true)
   })
 
   it('is not satisfied by a different a11y-lens command', () => {

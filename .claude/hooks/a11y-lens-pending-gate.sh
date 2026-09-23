@@ -10,8 +10,10 @@
 #
 # **Satisfied inside the session, not only by the files.** Stop fires at the end of every turn, and
 # `--pending` is the same agent call that just failed; if it fails again the files stay, and a gate
-# that looked only at them would block every turn after. So one `--pending` run in this session's
-# transcript passes, the way one `/ai-tells` run passes `docs-aitells-gate.sh`.
+# that looked only at them would block every turn after. So a `--pending` run in this session's
+# transcript passes, the way one `/ai-tells` run passes `docs-aitells-gate.sh` — **but only for what
+# was recorded before it.** A skip later in the same session writes a newer file and blocks again;
+# a failed `--pending` rewrites nothing, so it does not.
 #
 # **Reads the layout, not the records.** a11y-lens documents `<git-common-dir>/a11y-lens/pending/
 # *.json` as a public contract; counting files there needs no schema. The test builds its fixture
@@ -31,14 +33,24 @@ common=$(cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null && git rev-parse --path-forma
 count=$(find "$common/a11y-lens/pending" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ') || exit 0
 [ "${count:-0}" -gt 0 ] || exit 0
 
+pending="$common/a11y-lens/pending"
 tx=$(printf '%s' "$input" | jq -r '.transcript_path // ""' 2>/dev/null) || tx=""
 if [ -n "$tx" ] && [ -f "$tx" ]; then
-  ran=$(jq -rR 'fromjson? | .message.content[]? | select(.type=="tool_use" and .name=="Bash") | .input.command // empty | select(test("a11y-lens\\s+check\\b.*--pending"))' "$tx" 2>/dev/null | wc -l) || ran=0
-  [ "${ran:-0}" -gt 0 ] && exit 0
+  # The last `--pending` call, by the record's timestamp. Matched on the command text, so a grep or
+  # an echo naming the command also counts: a floor, not a fence — the miss direction costs one
+  # extra stop, and parsing shell to close it is not worth it. Line continuations are joined first.
+  last=$(jq -rR 'fromjson? | .timestamp as $t | .message.content[]? | select(.type=="tool_use" and .name=="Bash") | .input.command // empty | gsub("\\\\\n"; " ") | select(test("a11y-lens\\s+check\\b.*--pending")) | $t // empty' "$tx" 2>/dev/null | tail -n 1) || last=""
+  if [ -n "$last" ]; then
+    ref=$(mktemp) || exit 0
+    trap 'rm -f "$ref"' EXIT
+    touch -d "$last" "$ref" 2>/dev/null || exit 0
+    newer=$(find "$pending" -maxdepth 1 -name '*.json' -newer "$ref" 2>/dev/null | wc -l | tr -d ' ') || exit 0
+    [ "${newer:-0}" -eq 0 ] && exit 0
+  fi
 fi
 
 jq -n '{
   decision: "block",
-  reason: "An a11y-lens pre-commit check was skipped (timeout, agent error, or prompt budget), so some committed UI files were never reviewed. Run `pnpm exec a11y-lens check --pending` and address any errors it reports. To skip deliberately, just stop again and this passes."
+  reason: "An a11y-lens pre-commit check was skipped (timeout, agent error, or prompt budget), so some committed UI files were never reviewed. Run `pnpm exec a11y-lens check --pending` with the Bash tool timeout at 600000 or in the background: each skipped commit is its own agent call of up to 3 minutes. Address any errors it reports. If it reports records it cannot read, delete those files from `.git/a11y-lens/pending/` by hand. To skip deliberately, just stop again and this passes."
 }'
 exit 0
