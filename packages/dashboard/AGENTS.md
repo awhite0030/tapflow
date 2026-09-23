@@ -379,9 +379,9 @@ either platform adds to Device is the one that should arrive with a popover rath
 <!-- a11y-lens:begin -->
 ## Accessibility rules (a11y-lens)
 
-This package is the only one with DOM/client code, so the a11y-lens rules apply here. Staged UI changes are checked at commit time by the root lefthook `a11y-lens` job; findings with `error` severity block the commit.
+This project uses [a11y-lens](https://github.com/jo-duchan/a11y-lens) for semantic accessibility review. Staged UI changes are checked at commit time; findings with `error` severity block the commit.
 
-When writing or modifying UI code (JSX/TSX/HTML), apply the rule set in `node_modules/@a11y-lens/cli/skills/a11y-lens/references/` — read the relevant category before implementing:
+When writing or modifying UI code (JSX/TSX/HTML/Vue/Svelte), apply the rule set in `node_modules/@a11y-lens/cli/skills/a11y-lens/references/` — read the relevant category before implementing:
 
 - `01-landmarks-headings.md` — document outline, one h1, no level skips, labelled landmarks
 - `02-images-alt.md` — alt text that describes function in context; icon-only controls need accessible names
@@ -390,6 +390,8 @@ When writing or modifying UI code (JSX/TSX/HTML), apply the rule set in `node_mo
 - `05-keyboard-interaction.md` — full APG key sets, no hover-only affordances, no keyboard traps
 - `06-focus-management.md` — overlays move and return focus; async results are announced via live regions
 
+Each check is tagged `[core]` or `[full]`. If this project's `a11y-lens.config.json` (or the `"a11y-lens"` field of `package.json`) sets `"level": "core"`, apply only the `[core]` checks — the commit-time review checks nothing else.
+
 Tip: agents with skills support get richer guidance via `npx skills add jo-duchan/a11y-lens`.
 
 Self-check against these categories before finishing any UI task — it is cheaper than failing the pre-commit gate.
@@ -397,6 +399,29 @@ Self-check against these categories before finishing any UI task — it is cheap
 
 > 아래는 이 레포의 결정이고 **마커 밖에 둔다** — `a11y-lens init`은 `begin`/`end` 사이를
 > 템플릿으로 통째 치환하므로, 안에 쓰면 다음 init에 지워진다.
+
+This package is the only one with DOM code, so the rules above apply here. The root lefthook
+`a11y-lens` job checks staged UI files at commit time.
+
+### The level is `core`: what everyone needs, not screen-reader choreography
+
+`a11y-lens.config.json` at the repository root sets `"level": "core"` and `"report": "errors"`.
+tapflow is used by a team that sees the screen, and it streams the device as images, so it is not a
+product a screen-reader user does manual QA with. What it keeps is what helps **anyone** who does
+not drive it with a mouse, or who uses voice control or zoom:
+
+- **Kept:** accessible names (icon-only buttons, labels that are not placeholders, a name that
+  matches the visible label), keyboard operation, focus that is moved, returned and never lost, no
+  focus stealing, and contrast.
+- **Not pursued:** screen-reader-specific choreography, such as announcement timing, live regions
+  for async results and loading, descriptions written for a state change, complete ARIA widget
+  patterns, heading and landmark outlines, and alt-text wording. The same goes for manual VoiceOver
+  passes and for a11y-lens warnings, which `report: errors` no longer prints.
+
+**What is already built stays.** #829 and #841 went further than core (status-line descriptions,
+the leaving-row note, release headings). That code is tested and costs nothing to keep. A `full`
+review is a superset of a `core` one, so it passes. Keep it working when you touch it. Do not build
+new work of that kind unless someone asks for it.
 
 **A check that was skipped is not a check that passed.** When the gate times out or its agent
 fails, the commit goes through and the files are recorded as pending; review them with
@@ -415,9 +440,9 @@ them in `IOSViewer`'s `toButton` — carry no accessible name and take no focus,
 `a11y-lens` finding against that surface is answered with `A11Y_LENS_SKIP=1` and a line in the commit
 message saying which surface and why.
 
-**Everything else gets the full rule set**, and the line is the DOM rather than the feature: toolbar
-buttons, dialogs, forms, the app centre, settings, invitations. A control that exists as an element
-is a control that must be reachable and named.
+**Everything else gets the `core` rule set** (see the section above), and the line is the DOM
+rather than the feature: toolbar buttons, dialogs, forms, the app centre, settings, invitations. A
+control that exists as an element is a control that must be reachable and named.
 
 **The line is also the answer when a frame control has no DOM equivalent.** `AndroidViewer` already
 renders volume and power as real toolbar buttons (`deviceSlot = buttonsIn(DEVICE_BUTTONS)`, each an
