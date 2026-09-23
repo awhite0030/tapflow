@@ -423,9 +423,11 @@ pm2 save
 새 호스트에서 tapflow를 시작하기 전에 데이터베이스를 복원합니다:
 
 ```sh
-DATA_DIR=/Users/you/.tapflow/data   # tapflow start가 출력한 Data → 경로
+DATA_DIR=/Users/you/.tapflow/data   # ~/.tapflow/data, $TAPFLOW_HOME/data, 또는 설정한 TAPFLOW_DATA_DIR
 litestream restore -config litestream.yml -if-replica-exists "$DATA_DIR/tapflow.db"
 ```
+
+경로는 tapflow를 실행해서 출력을 보는 대신 위 규칙으로 정하세요. 처음 시작할 때 빈 `tapflow.db`가 만들어지고, `litestream restore`는 이미 있는 데이터베이스를 덮어쓰지 않습니다.
 
 그다음 같은 데이터 디렉토리 안의 `uploads/`, `recordings/`, `.env`, `jwt-secret`을 파일 백업에서 복원하세요. Litestream은 SQLite 데이터베이스만 보호합니다. 빌드 파일, 녹화 파일, 시크릿은 별도의 파일시스템 또는 오브젝트 스토리지 백업이 필요합니다.
 

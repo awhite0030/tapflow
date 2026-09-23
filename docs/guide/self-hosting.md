@@ -424,9 +424,11 @@ pm2 save
 Restore the database before starting tapflow on a new host:
 
 ```sh
-DATA_DIR=/Users/you/.tapflow/data   # the Data → line tapflow start printed
+DATA_DIR=/Users/you/.tapflow/data   # ~/.tapflow/data, $TAPFLOW_HOME/data, or your TAPFLOW_DATA_DIR
 litestream restore -config litestream.yml -if-replica-exists "$DATA_DIR/tapflow.db"
 ```
+
+Work the directory out from those rules rather than by starting tapflow to see what it prints: the first start creates an empty `tapflow.db`, and `litestream restore` will not overwrite a database that already exists.
 
 Then restore `uploads/`, `recordings/`, `.env`, and `jwt-secret` inside that same data directory from your file backup. Litestream protects the SQLite database only; build files, recordings, and secrets still need a normal filesystem or object-storage backup.
 
