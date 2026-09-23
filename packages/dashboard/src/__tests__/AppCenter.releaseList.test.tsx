@@ -132,6 +132,25 @@ describe('a row whose status change takes it out of the filtered list (#833)', (
     expect(description(trigger(1, '1.0.0'))).toContain('ios build 2, 1.0.0 was set to Done')
   })
 
+  it('skips a neighbour the same refetch moved into a collapsed release', async () => {
+    // Build 3's version was renamed to 0.9.0 meanwhile: it is still in the list, but 0.9.0 is
+    // collapsed, so its trigger is not drawn and cannot take focus.
+    serve([build(1, '1.0.0'), build(2, '1.0.0'), build(3, '1.0.0'), build(4, '0.9.0')])
+    renderAppCenter()
+    await screen.findByText('uploader-3')
+    await filterBy('Backlog')
+    await screen.findByText('uploader-3')
+    api.updateBuildStatus.mockImplementationOnce(async (id: number, status: Build['status_label']) => {
+      db = db.map(b => (b.id === id ? { ...b, status_label: status } : b.id === 3 ? { ...b, version_name: '0.9.0' } : b))
+    })
+
+    await setStatus(2, '1.0.0', 'Done')
+
+    await waitFor(() => expect(screen.queryByText('uploader-3')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(trigger(1, '1.0.0')))
+    expect(description(trigger(1, '1.0.0'))).toContain('ios build 2, 1.0.0 was set to Done')
+  })
+
   it('keeps the note through Radix handing focus back to the leaving row', async () => {
     // In a browser the menu takes focus and returns it to the row's trigger after the pick — after
     // the note was written. jsdom's Select does not move focus, so the hand-back is done here.

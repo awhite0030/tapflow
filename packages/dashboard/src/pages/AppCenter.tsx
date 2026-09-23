@@ -248,13 +248,15 @@ export function AppCenter() {
   }
 
   /**
-   * The first candidate the current render still has. Rows are ranked only from the leaving row's own
-   * release, which was open for the change to be made; collapsing it meanwhile puts focus on its
-   * header, so the move below is skipped anyway.
+   * The first candidate the current render actually draws. **A row counts only inside an open
+   * release, judged by where it is now**: the refetch that drops the leaving row can also move a
+   * neighbour into another release — a version renamed, say — and a collapsed one draws no rows, so
+   * `builds` alone would pick a control that is not on screen. Worked out from state rather than the
+   * DOM so the note, resolved during render, lands on the same control focus does.
    */
   function resolveTarget(candidates: FocusTarget[]): FocusTarget | null {
     return candidates.find(t => t.kind === 'row'
-      ? builds.some(b => b.id === t.buildId)
+      ? releaseGroups.some(g => disclosure.isOpen(g.versionName) && g.builds.some(b => b.id === t.buildId))
       : releaseGroups.some(g => g.versionName === t.versionName)) ?? null
   }
 
@@ -293,7 +295,10 @@ export function AppCenter() {
     }
     const controls = listRef.current?.querySelectorAll('[data-status-trigger], [data-release-header]') ?? []
     const destination = Array.from(controls).find(el => matchesTarget(el, target))
+    // Not expected: `resolveTarget` models what is drawn. If the model and the DOM ever disagree,
+    // the reason is still said rather than focus falling silently.
     if (destination instanceof HTMLElement) destination.focus()
+    else toast.success(pending.text)
   })
 
   // The note describes its destination until focus goes anywhere else. The leaving row's own trigger
