@@ -369,7 +369,7 @@ Deploying the relay to fly.io, Railway, or similar services puts the agent→rel
 
 The relay keeps its durable state under the resolved data directory — `~/.tapflow/data/` on a default install, or `<install>/.tapflow/data/` for one that lives in its own folder from an earlier version. `tapflow start` and `tapflow relay start` print the directory they resolved; `TAPFLOW_DATA_DIR` overrides `local.dataDir`. Back that directory up before OS upgrades, relay migration, or any long-running team pilot.
 
-If you are upgrading from a version that stored state in `.tapflow-data/`, nothing breaks: a pinned `local.dataDir` is honored and a config-less install keeps reading the existing `.tapflow-data/`. Run `tapflow migrate data-dir` once to adopt the unified layout: it atomically renames `.tapflow-data/` → `.tapflow/data/` (no copy, no data loss), repoints `local.dataDir` when it pinned the old default, and updates `.gitignore`.
+If you are upgrading from a version that stored state in `.tapflow-data/`, nothing breaks: a pinned `local.dataDir` is honored and a config-less install keeps reading the existing `.tapflow-data/`. Stop the relay and run `tapflow migrate data-dir` once to adopt the unified layout: it atomically renames `.tapflow-data/` → `.tapflow/data/` (no copy, no data loss), repoints `local.dataDir` when it pinned the old default, and updates `.gitignore`.
 
 The paths below are inside that data directory — the one on the `Data →` line `tapflow start` prints.
 

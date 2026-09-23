@@ -242,7 +242,7 @@ API 토큰은 설정 파일이 아니라 `tapflow init`이 만들어 두는 `.ta
 
 데이터 디렉토리 위치를 변경하려면 `TAPFLOW_DATA_DIR` 환경변수 또는 `local.dataDir`을 사용합니다. 데이터 디렉토리를 백업하면 모든 데이터가 보존됩니다.
 
-릴레이를 실행한 디렉토리에 데이터를 두던 버전에서 올라와도 아무것도 옮겨지지 않습니다. 그 디렉토리에 `tapflow.config.json`, `.tapflow/data`, `.tapflow-data` 중 하나가 있으면 계속 설치로 인정되므로 거기서 실행한 릴레이는 전과 똑같은 파일을 씁니다. `local.dataDir`도 옆에 있는 설정 파일 기준으로 풀리므로 구 `init`과 `tapflow migrate data-dir`이 써 둔 `.tapflow/data`가 그대로 유효합니다. 통합 레이아웃으로 바꾸려면 `tapflow migrate data-dir`을 한 번 실행하세요. `.tapflow-data/`를 `.tapflow/data/`로 원자적 rename 하고(복사 없음, 유실 없음), `local.dataDir`이 구 기본값을 가리키면 다시 써주며, `.gitignore`도 갱신합니다.
+릴레이를 실행한 디렉토리에 데이터를 두던 버전에서 올라와도 아무것도 옮겨지지 않습니다. 그 디렉토리에 `tapflow.config.json`, `.tapflow/data`, `.tapflow-data` 중 하나가 있으면 계속 설치로 인정되므로 거기서 실행한 릴레이는 전과 똑같은 파일을 씁니다. `local.dataDir`도 옆에 있는 설정 파일 기준으로 풀리므로 구 `init`과 `tapflow migrate data-dir`이 써 둔 `.tapflow/data`가 그대로 유효합니다. 통합 레이아웃으로 바꾸려면 릴레이를 멈추고 `tapflow migrate data-dir`을 한 번 실행하세요. `.tapflow-data/`를 `.tapflow/data/`로 원자적 rename 하고(복사 없음, 유실 없음), `local.dataDir`이 구 기본값을 가리키면 다시 써주며, `.gitignore`도 갱신합니다.
 
 ## SMTP 설정
 

@@ -1,12 +1,15 @@
 import fs from 'fs'
 import path from 'path'
-import { resolveInstallDir, config } from '@tapflowio/relay'
+import { confirm, isCancel } from '@clack/prompts'
+import { resolveInstallDir, holdsInstallData, config, LEGACY_DATA_DIR, UNIFIED_DATA_DIR } from '@tapflowio/relay'
 import { probeBind } from '../lib/port-available.js'
-import { banner, step, DIM, R } from '../lib/print.js'
+import { isInteractive } from '../lib/interactive.js'
+import { banner, step, warn, DIM, R } from '../lib/print.js'
 import { migrateDataDir } from '../lib/migrate-data-dir.js'
 import {
   installNetFilter, followThroughApproval, offerApprovalUpFront, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, CONFIRM_DEADLINE_MS,
   NET_FILTER_APP, removalSteps, type InstallOptions,
+  readNetFilterState, isNetFilterCurrent, isFilterEnforcing, isNewer,
 } from '../lib/net-filter.js'
 import { terminalApprovalDeps } from '../lib/approval-prompt.js'
 
@@ -288,4 +291,114 @@ export async function runNetFilterMigration(opts: { ignoreRunningDevices?: boole
 /** `tapflow migrate net-filter` on its own: the step, with the exit code it has always had. */
 export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {}): Promise<void> {
   if (await runNetFilterMigration(opts) === 'failed') process.exit(1)
+}
+
+// ── `tapflow migrate` — every migration this install still needs, in one run ─────────────────────
+
+/**
+ * What a migration's check found. Only `pending` is run.
+ *
+ * `blocked` is a migration that is due but would fail every time it ran — two data directories side
+ * by side is the one case today. Running it would stop the list on the same refusal forever, so it is
+ * reported beside the list and left out of the exit code: nothing this command does can fix it.
+ */
+export type MigrationCheck =
+  | { state: 'none' }
+  | { state: 'pending'; summary: string }
+  | { state: 'blocked'; reason: string }
+
+export interface Migration {
+  /** The subcommand that runs this one on its own. */
+  id: string
+  /** Reads only. Whatever it touches, it must not change it. */
+  check(): MigrationCheck
+  run(): Promise<StepResult>
+}
+
+/**
+ * **Adding a migration is adding an entry here**, and the entry's `check` is the whole decision of
+ * whether `tapflow migrate` offers it. Order is run order.
+ */
+export const MIGRATIONS: readonly Migration[] = [
+  {
+    id: 'data-dir',
+    check() {
+      const dir = resolveInstallDir().dir
+      // A `.tapflow-data` holding only `jwt-secret` is what an older CLI left wherever it ran, not an
+      // install's data (see `holdsInstallData`). Offering to move it would be offering to move nothing.
+      if (!holdsInstallData(path.join(dir, LEGACY_DATA_DIR))) return { state: 'none' }
+      if (fs.existsSync(path.join(dir, UNIFIED_DATA_DIR))) {
+        return {
+          state: 'blocked',
+          reason: `${dir} has both .tapflow-data/ and .tapflow/data/. Keep the one with your data, remove the other, then run \`tapflow migrate data-dir\`.`,
+        }
+      }
+      return { state: 'pending', summary: `Move ${path.join(dir, LEGACY_DATA_DIR)} into .tapflow/data/` }
+    },
+    run: runDataDirMigration,
+  },
+  {
+    id: 'net-filter',
+    check() {
+      // Before any probe: `readNetFilterState` shells out to macOS tools that do not exist elsewhere.
+      if (process.platform !== 'darwin') return { state: 'none' }
+      const s = readNetFilterState()
+      // **A filter that was never installed is not a pending migration.** It is an optional feature,
+      // and `setup` counts declining it as done — offering it here would ask everyone who said no, and
+      // install it unasked wherever no terminal is attached.
+      if (s.shippedHost === null || s.installedHost === null) return { state: 'none' }
+      // What the installer would refuse is left out rather than run into: a newer copy is another
+      // checkout's to replace (`refused-downgrade`). Same for an extension newer than this package's.
+      if (isNewer(s.installedHost, s.shippedHost)) return { state: 'none' }
+      if (s.activatedExt !== null && s.shippedExt !== null && isNewer(s.activatedExt, s.shippedExt)) return { state: 'none' }
+      // The installer's own test for "nothing to do" (`installNetFilter`), so the two cannot disagree.
+      if (isNetFilterCurrent(s)) {
+        return isFilterEnforcing() ? { state: 'none' } : { state: 'pending', summary: 'Turn the iOS network filter back on (installed, not filtering)' }
+      }
+      return { state: 'pending', summary: `Update the iOS network filter (${s.installedHost} → ${s.shippedHost})` }
+    },
+    run: () => runNetFilterMigration(),
+  },
+]
+
+/**
+ * `tapflow migrate`: check every migration, show what is due, and run it.
+ *
+ * Asked once in a terminal; run without asking otherwise, as each subcommand already does. Stops at
+ * the first failure with exit 1, and at a step the user backs out of with exit 0.
+ */
+export async function cmdMigrate(migrations: readonly Migration[] = MIGRATIONS): Promise<void> {
+  const pending: { id: string; summary: string; run: () => Promise<StepResult> }[] = []
+  for (const m of migrations) {
+    const c = m.check()
+    if (c.state === 'blocked') warn(`${m.id}: ${c.reason}`)
+    if (c.state === 'pending') pending.push({ id: m.id, summary: c.summary, run: () => m.run() })
+  }
+
+  if (pending.length === 0) {
+    banner('success', 'NOTHING TO MIGRATE', ['This install is up to date.'])
+    return
+  }
+
+  console.log('\n  Pending migrations:')
+  for (const p of pending) console.log(`    ${p.id.padEnd(12)}${p.summary}`)
+  console.log('')
+
+  if (isInteractive()) {
+    const go = await confirm({ message: pending.length === 1 ? 'Run it?' : `Run all ${pending.length}?` })
+    if (isCancel(go) || !go) {
+      step('Cancelled — nothing was changed.')
+      return
+    }
+  }
+
+  for (const [i, p] of pending.entries()) {
+    step(`${DIM}[${i + 1}/${pending.length}]${R} ${p.id}`)
+    const result = await p.run()
+    if (result === 'ok') continue
+    const rest = pending.slice(i + 1).map((r) => r.id)
+    if (rest.length > 0) step(`Not run: ${rest.join(', ')}. Run \`tapflow migrate\` again when ready.`)
+    if (result === 'failed') process.exit(1)
+    return
+  }
 }
