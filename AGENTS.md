@@ -77,6 +77,12 @@ so `docs/ko/guide/agent.md` counts — and finishing without running
 laundry**: it flags AI-writing tells in prose a human wrote, and `rewrite` stays manual and
 docs-only. Stopping a second time passes, so the block is a prompt rather than a wall.
 
+**A skipped accessibility check is followed up before the session ends.** The `a11y-lens`
+pre-commit job never blocks on its own infrastructure, so a timeout passes with the same ✔️ as a
+clean run (#827). a11y-lens records the files it could not review, and
+`.claude/hooks/a11y-lens-pending-gate.sh` blocks finishing while any are recorded, until
+`pnpm exec a11y-lens check --pending` has run in the session. Stopping a second time passes.
+
 When starting a **new** task that requires code changes (not when continuing work on an existing branch):
 1. `git checkout main && git pull origin main` — start from the latest main.
 2. `git checkout -b <branch-name>` — work on a new branch, never directly on main.

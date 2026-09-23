@@ -396,6 +396,10 @@ Self-check against these categories before finishing any UI task — it is cheap
 > 아래는 이 레포의 결정이고 **마커 밖에 둔다** — `a11y-lens init`은 `begin`/`end` 사이를
 > 템플릿으로 통째 치환하므로, 안에 쓰면 다음 init에 지워진다.
 
+**A check that was skipped is not a check that passed.** When the gate times out or its agent
+fails, the commit goes through and the files are recorded as pending; review them with
+`pnpm exec a11y-lens check --pending`. The root AGENTS.md has the Stop gate that asks for it.
+
 ### The streamed device is out of scope, and everything in the DOM is not
 
 **The device frame and what is drawn on it are deliberately not made accessible.** The stream is a
