@@ -178,7 +178,11 @@ describe('migrateDataDir', () => {
         throw e
       })
 
-    it.skipIf(process.platform === 'win32')('moves nothing when the config cannot be written', () => {
+    // chmod cannot make a file unwritable on Windows, or for root, which ignores mode bits — as it
+    // runs in many CI containers. There the write succeeds and the case measures nothing.
+    const cannotRevokeWrite = process.platform === 'win32' || process.getuid?.() === 0
+
+    it.skipIf(cannotRevokeWrite)('moves nothing when the config cannot be written', () => {
       const cwd = setUp()
       fs.chmodSync(path.join(cwd, 'tapflow.config.json'), 0o444)
 
@@ -210,7 +214,7 @@ describe('migrateDataDir', () => {
       expect(fs.readFileSync(path.join(cwd, 'tapflow.config.json'), 'utf-8')).toBe(PINNED)
     })
 
-    it.skipIf(process.platform === 'win32')('says so when the config cannot be put back', () => {
+    it.skipIf(cannotRevokeWrite)('says so when the config cannot be put back', () => {
       const cwd = setUp()
       const configPath = path.join(cwd, 'tapflow.config.json')
       failRename('EPERM', () => fs.chmodSync(configPath, 0o444))
