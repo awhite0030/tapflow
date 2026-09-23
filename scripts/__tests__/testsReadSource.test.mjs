@@ -10,8 +10,8 @@
 // rather than trusting the config to mean what it says.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'child_process'
-import { readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync } from 'fs'
-import { join, dirname } from 'path'
+import { readFileSync, readdirSync, existsSync, statSync, writeFileSync, appendFileSync, rmSync } from 'fs'
+import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -20,14 +20,69 @@ const PKGS = join(ROOT, 'packages')
 const packageDirs = () =>
   readdirSync(PKGS).filter((d) => existsSync(join(PKGS, d, 'package.json')))
 
-/** Does this package's own test files import a sibling workspace package? */
+// Every suffix in Vitest's default include (`**/*.{test,spec}.?(c|m)[jt]s?(x)`):
+// a test in any of them can import a sibling, so the guard must walk all of
+// them or a sibling import hides behind an unscanned file.
+const TEST_FILE_SUFFIX = /\.(?:[cm]?[jt]s(?:x)?)$/
+const RESOLVABLE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.mtsx', '.mjs', '.mjsx', '.js', '.jsx', '.cts', '.ctsx', '.cjs', '.cjsx']
+
+function sourceFiles(dir) {
+  if (!existsSync(dir)) return []
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name)
+    // A helper behind a dynamic import() or a plain re-export in any suffix
+    // would otherwise hide a sibling import from the guard.
+    return entry.isDirectory() ? sourceFiles(path) : TEST_FILE_SUFFIX.test(entry.name) ? [path] : []
+  })
+}
+
+function isFile(path) {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+function resolveLocalImport(from, specifier) {
+  if (!specifier.startsWith('.')) return undefined
+  const base = resolve(dirname(from), specifier.replace(/\.(js|mjs)$/, ''))
+  // isFile, not existsSync: a bare directory path exists too, and queuing it
+  // makes readFileSync die with EISDIR instead of simply missing.
+  for (const candidate of [
+    base,
+    ...RESOLVABLE_EXTENSIONS.map((extension) => `${base}${extension}`),
+    ...RESOLVABLE_EXTENSIONS.map((extension) => join(base, `index${extension}`)),
+  ]) {
+    if (isFile(candidate)) return candidate
+  }
+  return undefined
+}
+
+/** Does a test import a sibling directly or through one of its local source modules? */
 function testsImportASibling(dir) {
   const tests = join(PKGS, dir, 'src', '__tests__')
   if (!existsSync(tests)) return false
-  try {
-    execFileSync('grep', ['-rlq', '@tapflowio/', tests], { stdio: 'ignore' })
-    return true
-  } catch { return false }
+  const queue = sourceFiles(tests)
+  const seen = new Set()
+  while (queue.length > 0) {
+    const file = queue.pop()
+    if (seen.has(file)) continue
+    seen.add(file)
+    const source = readFileSync(file, 'utf8')
+    if (/['"]@tapflowio\/[^'"]+['"]/.test(source)) return true
+    const specifiers = [
+      ...source.matchAll(/from\s*['"]([^'"]+)['"]/g),
+      // Dynamic import() too: a lazy `await import('./helper.mjs')` hides a
+      // sibling behind a call the static-import regex never sees.
+      ...source.matchAll(/import\s*\(\s*['"]([^'"]+)['"]/g),
+    ]
+    for (const match of specifiers) {
+      const local = resolveLocalImport(file, match[1])
+      if (local && !seen.has(local)) queue.push(local)
+    }
+  }
+  return false
 }
 
 const extendsShared = (dir) => {
@@ -35,13 +90,54 @@ const extendsShared = (dir) => {
   return existsSync(cfg) && readFileSync(cfg, 'utf8').includes('sourceFirst')
 }
 
+function runProbe(packageDir, probe) {
+  const relativeProbe = probe.slice(packageDir.length + 1)
+  if (process.platform === 'win32') {
+    const vitest = join(packageDir, 'node_modules', '.bin', 'vitest.cmd')
+    // Run as one shell string so paths containing spaces (e.g.
+    // `C:\Users\Jane Doe\...`) survive: each path is quoted once, and the
+    // shell runs the .cmd shim. The previous `cmd /s /c` array form passed
+    // its quoting through one layer too many and failed to launch.
+    execFileSync(`"${vitest}" run "${relativeProbe}"`, {
+      cwd: packageDir,
+      stdio: 'pipe',
+      encoding: 'utf8',
+      shell: true,
+    })
+  } else {
+    execFileSync('pnpm', ['exec', 'vitest', 'run', relativeProbe], { cwd: packageDir, stdio: 'pipe', encoding: 'utf8' })
+  }
+}
+
+describe('the guard sees every Vitest test suffix', () => {
+  // The 12 suffixes `?(c|m)[jt]s?(x)` expands to. A narrower list lets a test
+  // file in an unscanned suffix import a sibling with no sourceFirst required.
+  const all = ['js', 'jsx', 'ts', 'tsx', 'cjs', 'cjsx', 'mjs', 'mjsx', 'cts', 'ctsx', 'mts', 'mtsx']
+
+  it('walks test files in every suffix', () => {
+    for (const suffix of all) {
+      expect(TEST_FILE_SUFFIX.test(`probe.test.${suffix}`), suffix).toBe(true)
+    }
+    expect(TEST_FILE_SUFFIX.test('probe.test.css')).toBe(false)
+  })
+
+  it('resolves extensionless and index imports in every suffix', () => {
+    const withoutDot = RESOLVABLE_EXTENSIONS.map((e) => e.slice(1)).sort()
+    expect(withoutDot).toEqual([...all].sort())
+  })
+})
+
 describe('every package whose tests import a sibling reads its source', () => {
   // Derived, not listed. A hardcoded list is exactly how vitest came to be the tool nobody had
   // switched on: it described the day it was written.
   const affected = packageDirs().filter(testsImportASibling)
 
   it('finds the packages by inspection, not from a list', () => {
-    expect(affected.length).toBeGreaterThanOrEqual(5)
+    // Measured: 9 packages import a sibling in their tests (agent-core,
+    // android-agent, audiotap-helper, cli, dashboard, flow-runner, ios-agent,
+    // mcp-server, relay). A lower floor lets a package silently drop out of
+    // the guard.
+    expect(affected.length).toBeGreaterThanOrEqual(9)
   })
 
   it.each(affected)('%s extends the shared config', (dir) => {
@@ -89,14 +185,34 @@ describe('and the resolution really lands on source', () => {
         '',
       ].join('\n'))
       try {
-        execFileSync('npx', ['vitest', 'run', '--root', join(PKGS, 'ios-agent'),
-          'src/__tests__/zz-source-resolution.probe.test.ts'],
-          { cwd: ROOT, stdio: 'pipe', encoding: 'utf8' })
+        runProbe(join(PKGS, 'ios-agent'), probe)
       } finally {
-        execFileSync('rm', ['-f', probe])
+        rmSync(probe, { force: true })
       }
     } finally {
       writeFileSync(RELAY_DIST, before)
+    }
+  }, 120_000)
+
+  it('the MCP flow-runner import does not see a symbol that exists only in dist', () => {
+    const FLOW_RUNNER_DIST = join(PKGS, 'flow-runner', 'dist', 'index.js')
+    const packageDir = join(PKGS, 'mcp-server')
+    const probe = join(packageDir, 'src', '__tests__', 'zz-source-resolution.probe.test.ts')
+    const marker = '__LOADED_FLOW_RUNNER_FROM_DIST__'
+    if (!existsSync(FLOW_RUNNER_DIST)) throw new Error('packages/flow-runner/dist/index.js is missing — run `pnpm build` first')
+    const before = readFileSync(FLOW_RUNNER_DIST, 'utf8')
+    appendFileSync(FLOW_RUNNER_DIST, `\nexport const ${marker} = true;\n`)
+    try {
+      writeFileSync(probe, [
+        `import { it, expect } from 'vitest'`,
+        `import * as runner from '@tapflowio/flow-runner'`,
+        `it('resolves to source', () => { expect('${marker}' in runner).toBe(false) })`,
+        '',
+      ].join('\n'))
+      runProbe(packageDir, probe)
+    } finally {
+      rmSync(probe, { force: true })
+      writeFileSync(FLOW_RUNNER_DIST, before)
     }
   }, 120_000)
 })

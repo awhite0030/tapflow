@@ -9,8 +9,8 @@ import { TransientQueryError } from './errors.js'
 
 // Carries the HTTP status so ui-tree queries can tell a transient failure (retry) from a permanent one.
 // status 0 marks a network-level failure (fetch rejected before a response).
-class RelayHttpError extends PlatformError {
-  constructor(message: string, readonly status: number, options?: ErrorOptions) {
+export class RelayHttpError extends PlatformError {
+  constructor(message: string, readonly status: number, options?: ErrorOptions, readonly permanent = false) {
     super(message, options)
   }
 }
@@ -19,6 +19,25 @@ class RelayHttpError extends PlatformError {
 // (a flow always boots first, so mid-flow 409 is a dead device, not a race). Everything else
 // (agent/foreground-race 502, idle-timeout 504, 5xx, network 0) is retryable.
 const PERMANENT_QUERY_STATUSES = new Set([400, 401, 403, 404, 409])
+const UI_ROLES = new Set(['button', 'text', 'input', 'image', 'checkbox', 'switch', 'slider', 'list', 'cell', 'tab', 'other'])
+
+function isUIElement(value: unknown): value is UIElement {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  const frame = record.frame
+  if (typeof frame !== 'object' || frame === null || Array.isArray(frame)) return false
+  const rect = frame as Record<string, unknown>
+  if (typeof record.role !== 'string' || !UI_ROLES.has(record.role) || typeof record.label !== 'string' || typeof record.enabled !== 'boolean') return false
+  if (record.identifier !== undefined && typeof record.identifier !== 'string') return false
+  if (record.rawRole !== undefined && typeof record.rawRole !== 'string') return false
+  const x = rect.x
+  const y = rect.y
+  const width = rect.width
+  const height = rect.height
+  if (![x, y, width, height].every((n) => typeof n === 'number' && Number.isFinite(n))) return false
+  return (x as number) >= 0 && (y as number) >= 0 && (width as number) >= 0 && (height as number) >= 0
+    && (x as number) + (width as number) <= 1 && (y as number) + (height as number) <= 1
+}
 
 // An input ack is a local round trip — the agent answers from its own dispatch, not from the device, which
 // HID is fire-and-forget about. Generous next to `typeText`'s 15s because that one drives a paste handshake
@@ -34,7 +53,7 @@ const INPUT_ACK_TIMEOUT_MS = 10_000
  * stopped being able to hear it, so the version-skew diagnosis `warnInputAckSilence` prints would be
  * a false accusation.
  */
-class RelayClosedError extends PlatformError {}
+export class RelayClosedError extends PlatformError {}
 
 /**
  * A waiter that reached its deadline.
@@ -44,7 +63,56 @@ class RelayClosedError extends PlatformError {}
  * something else the day one is added. The twin in `mcp-server` had the same shape spelled as a message
  * comparison and this change replaced it there; leaving the inverse here would keep the weaker half.
  */
-class RequestTimeoutError extends PlatformError {}
+export class RequestTimeoutError extends PlatformError {}
+
+/** A request could not be confirmed because the relay connection went away or the input ack expired. */
+export class InputUnconfirmedError extends PlatformError {}
+
+/** A relay request could not be sent because the client is not connected. */
+export class RelayUnavailableError extends PlatformError {}
+
+/**
+ * An input the relay refused, carrying the machine-readable `reason` (#543).
+ *
+ * The message is the same one `failed()` builds (prose plus the session note), so this
+ * changes the classification without changing a word the operator reads. The
+ * sessionNoteCoverage gate keeps holding, since the construction still reaches
+ * `this.failed()`. `RelayDriver` maps the environmental reasons to exit 2; the rest
+ * stay product failures.
+ */
+export class InputRefusedError extends PlatformError {
+  constructor(readonly reason: InputErrorReason, failure: PlatformError) {
+    super(failure.message, { cause: failure })
+  }
+}
+
+/**
+ * Input refusal reasons that name the environment rather than the product under test:
+ * the device is not booted, the agent/relay channel is down or starting, the relay
+ * could not dispatch, or the session belongs to someone else. `unsupported`,
+ * `malformed` and `no-gesture` stay out: the first two name the test's own request,
+ * and the last one's wire semantics cannot tell a clean refusal from a partially
+ * applied gesture, so it must not read as infrastructure.
+ */
+export const ENVIRONMENTAL_INPUT_REASONS: ReadonlySet<InputErrorReason> = new Set([
+  'not-booted',
+  'channel-unavailable',
+  'channel-starting',
+  'dispatch-failed',
+  'not-session-owner',
+])
+
+/**
+ * A ui-tree query failed for a session the relay has told us is gone or unbound
+ * (terminated, or rebound without a device binding). Same message the inline
+ * `PlatformError` carried. The type is what lets the engine tell an environment
+ * failure from a product one without branching on prose.
+ */
+export class SessionUnavailableError extends PlatformError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+  }
+}
 
 /**
  * The relay said this session ended while a request was still in flight (#512, finding 4).
@@ -295,7 +363,7 @@ export class RelayClient {
         this.ws = ws
         resolve()
       })
-      ws.once('error', (e) => reject(new PlatformError(`relay connection failed: ${(e as Error).message}`)))
+      ws.once('error', (e) => reject(new RelayUnavailableError(`relay connection failed: ${(e as Error).message}`)))
       ws.on('message', (data, isBinary) => {
         if (isBinary) return
         try {
@@ -317,8 +385,19 @@ export class RelayClient {
   }
 
   disconnect(): void {
-    this.ws?.close()
+    const ws = this.ws
     this.ws = null
+    if (!ws) return
+    try {
+      ws.close()
+    } catch {
+      // ignore close errors on half-open socket
+    }
+    try {
+      if ((ws as unknown as { readyState: number }).readyState !== WebSocket.CLOSED) ws.terminate()
+    } catch {
+      // ignore terminate errors
+    }
   }
 
   private addressSkewLogged = false
@@ -400,7 +479,7 @@ export class RelayClient {
    */
   private failed(sessionId: string, message: string): PlatformError {
     const note = this.sessionNote(sessionId)
-    return new PlatformError(note ? `${message} — ${note}` : message)
+    return note ? new SessionUnavailableError(`${message} — ${note}`) : new PlatformError(message)
   }
 
   /** Settle every waiter tagged with this session, backwards so the splice cannot skip one.
@@ -507,7 +586,7 @@ export class RelayClient {
    *  `mcp-server`'s equivalent was typed in `7637be3`. */
   private send(msg: BrowserToRelay): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new PlatformError('not connected to relay')
+      throw new RelayUnavailableError('not connected to relay')
     }
     this.ws.send(JSON.stringify(msg))
   }
@@ -655,6 +734,10 @@ export class RelayClient {
   }
 
   async swipe(sessionId: string, from: [number, number], to: [number, number], durationMs: number): Promise<void> {
+    // No local RangeError: schema.ts is the gate (it rejects non-finite,
+    // non-positive and over-limit durations, including fractional 250.5 which
+    // stays valid for 0.23.0 compatibility), and a construction here breaks
+    // the sessionNoteCoverage gate with no session note in reach.
     const STEPS = 8
     const interval = durationMs / STEPS
     const requestId = randomUUID()
@@ -683,7 +766,10 @@ export class RelayClient {
       'type text',
       sessionId,
     )
-    if (msg['type'] === 'input:type-error') throw this.failed(sessionId, (msg['message'] as string) ?? 'type text failed')
+    if (msg['type'] === 'input:type-error') {
+      const reason = asInputErrorReason(msg['reason'])
+      throw new InputRefusedError(reason, this.failed(sessionId, `type text was refused by the device (${reason}): ${(msg['message'] as string) ?? 'no detail'}`))
+    }
   }
 
   async pressKey(sessionId: string, code: string): Promise<void> {
@@ -699,12 +785,9 @@ export class RelayClient {
    * `assertVisible` polled until its own deadline, and the flow failed with "selector not found". For a test
    * runner that is the worst place to lose a cause.
    *
-   * What this fixes is the **message**, not the classification. `runFlow` catches every throw from a step as
-   * `status: 'failed'` and the CLI maps any failed flow to exit 1, so a refusal whose reason is entirely
-   * environmental — `not-booted`, `channel-unavailable`, `not-session-owner`, which the relay raises before an
-   * agent ever sees the frame — still leaves CI a flow failure rather than the exit 2 this package's
-   * AGENTS.md reserves for it. Routing it there means a failure kind the engine can distinguish, which is a
-   * separate slice; naming the reason is the prerequisite either way.
+   * The typed reason now also reaches the flow result. `runFlow` catches every throw from a step as
+   * `status: 'failed'`, so `RelayDriver` marks environmental refusals and the CLI can return exit 2
+   * without parsing this message. Product reasons remain ordinary flow failures and return exit 1.
    *
    * **No automatic retry, deliberately.** `channel-starting` is the reason that would succeed 200ms later, and
    * retrying it here would be one line — but the retry belongs to whoever owns the step's timeout, not to a
@@ -755,7 +838,7 @@ export class RelayClient {
       // **No note appended here.** Both rejection sources already carry it — `waitFor` at the deadline and
       // the close handler on a dropped socket — so adding one produced the clause twice in the same
       // sentence. One source, and the wrapper says only what the wrapper knows.
-      throw new PlatformError(
+      throw new InputUnconfirmedError(
         `${what} was not confirmed (${(e as Error).message}) — it may have reached the device, so do not ` +
         'repeat it blindly',
         { cause: e },
@@ -769,7 +852,7 @@ export class RelayClient {
     // and cannot retroactively fix. Absent, or a member this build does not know, both read as
     // `channel-unavailable`, which is the conservative one (protocol/AGENTS.md).
     const reason = asInputErrorReason(msg['reason'])
-    throw this.failed(sessionId, `${what} was refused by the device (${reason}): ${(msg['message'] as string) ?? 'no detail'}`)
+    throw new InputRefusedError(reason, this.failed(sessionId, `${what} was refused by the device (${reason}): ${(msg['message'] as string) ?? 'no detail'}`))
   }
 
   async openUrl(sessionId: string, url: string): Promise<void> {
@@ -810,7 +893,11 @@ export class RelayClient {
       } catch { /* keep raw text */ }
       throw new RelayHttpError(message, res.status)
     }
-    return (await res.json()) as T
+    try {
+      return (await res.json()) as T
+    } catch (e) {
+      throw new RelayHttpError(`${what} returned invalid JSON: ${(e as Error).message}`, res.status, { cause: e }, true)
+    }
   }
 
   /**
@@ -837,8 +924,11 @@ export class RelayClient {
    */
   async queryUITree(sessionId: string, signal?: AbortSignal): Promise<UIElement[]> {
     try {
-      const body = await this.getJson<{ elements?: UIElement[] }>(`/api/v1/sessions/${sessionId}/ui-tree`, 'ui-tree query', signal)
-      return body.elements ?? []
+      const body = await this.getJson<unknown>(`/api/v1/sessions/${sessionId}/ui-tree`, 'ui-tree query', signal)
+      if (typeof body !== 'object' || body === null || Array.isArray(body) || !('elements' in body) || !Array.isArray(body.elements) || !body.elements.every(isUIElement)) {
+        throw new RelayHttpError('ui-tree query returned an invalid response shape', 200, undefined, true)
+      }
+      return body.elements
     } catch (e) {
       const s = this.lifecycle.get(sessionId)
       if (s && (s.terminated || s.needsReboot)) {
@@ -853,24 +943,34 @@ export class RelayClient {
           ? `the relay ended this session (${s.terminated})`
           : 'the agent reconnected and cleared its device binding, so this session needs booting again ' +
             'and nothing in a flow can (the app itself is still running)'
-        throw new PlatformError(`ui-tree query failed — ${why}`, { cause: e })
+        throw new SessionUnavailableError(`ui-tree query failed — ${why}`, { cause: e })
       }
       // A retryable condition (foreground race, idle timeout, agent blip, network) → let the runner
       // poll again until the step deadline. Permanent failures keep their type and fail the step now.
-      if (e instanceof RelayHttpError && !PERMANENT_QUERY_STATUSES.has(e.status)) {
+      if (e instanceof RelayHttpError && !e.permanent && !PERMANENT_QUERY_STATUSES.has(e.status)) {
         throw new TransientQueryError(e.message, { cause: e })
       }
       throw e
     }
   }
 
-  async screenshot(sessionId: string): Promise<Buffer> {
-    const res = await fetch(new URL(`/api/v1/sessions/${sessionId}/screenshot`, this.httpBase()).toString(), {
-      headers: this.token ? { Authorization: `Bearer ${this.token}` } : undefined,
-    })
+  async screenshot(sessionId: string, signal?: AbortSignal): Promise<Buffer> {
+    let res: Response
+    try {
+      res = await fetch(new URL(`/api/v1/sessions/${sessionId}/screenshot`, this.httpBase()).toString(), {
+        headers: this.token ? { Authorization: `Bearer ${this.token}` } : undefined,
+        signal,
+      })
+    } catch (e) {
+      const failure = this.failed(sessionId, `screenshot failed: ${(e as Error).message}`)
+      throw new RelayHttpError(failure.message, 0, { cause: e })
+    }
     // Through `failed()` like every other session-scoped failure here. A screenshot is taken to explain a
     // step that already failed, so arriving with no cause is the worst moment for it.
-    if (!res.ok) throw this.failed(sessionId, `screenshot failed: ${res.status}`)
+    if (!res.ok) {
+      const failure = this.failed(sessionId, `screenshot failed: ${res.status}`)
+      throw new RelayHttpError(failure.message, res.status, { cause: failure })
+    }
     return Buffer.from(await res.arrayBuffer())
   }
 }

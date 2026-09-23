@@ -27,10 +27,12 @@ export interface FlowRunOptions {
 // 1 = at least one flow failed, 2 = environment/config error.
 const EXIT_FLOW_FAILED = 1
 const EXIT_ENV_ERROR = 2
+const MAX_TIMEOUT_SECONDS = 2_147_483_647 / 1000
+
+class FlowRunEnvironmentError extends Error {}
 
 function envFail(message: string): never {
-  console.error(`✗ ${message}`)
-  process.exit(EXIT_ENV_ERROR)
+  throw new FlowRunEnvironmentError(message)
 }
 
 async function resolveSession(client: RelayClient, opts: FlowRunOptions): Promise<{ sessionId: string; device: DeviceInfo }> {
@@ -69,42 +71,48 @@ async function resolveSession(client: RelayClient, opts: FlowRunOptions): Promis
 }
 
 export async function cmdFlowRun(files: string[], opts: FlowRunOptions): Promise<void> {
-  if (files.length === 0) envFail('no flow files given — usage: tapflow flow run .tapflow/flows/*.yaml')
-  // NaN would disable every deadline check in the engine (Date.now() >= NaN is
-  // always false) and hang the run — reject bad numeric flags up front.
-  if (opts.build !== undefined && !Number.isInteger(opts.build)) envFail('--build must be an integer build id (see list_builds / the dashboard)')
-  if (opts.timeout !== undefined && !(Number.isFinite(opts.timeout) && opts.timeout > 0)) envFail('--timeout must be a positive number of seconds')
-
-  // Parse everything up front: a schema error is a config problem (exit 2),
-  // not a test failure, and it should surface before touching any device.
-  const flows: Flow[] = []
-  for (const file of files) {
-    let text: string
-    try {
-      text = fs.readFileSync(file, 'utf-8')
-    } catch (e) {
-      envFail(`cannot read ${file}: ${(e as Error).message}`)
-    }
-    try {
-      flows.push(parseFlow(text, file))
-    } catch (e) {
-      envFail((e as Error).message)
-    }
-  }
-
-  const relayUrl = opts.relay ?? 'ws://localhost:4000'
-  const token = opts.token ?? process.env.TAPFLOW_TOKEN ?? ''
-  const client = new RelayClient(relayUrl, token)
-  try {
-    await client.connect()
-  } catch (e) {
-    envFail(`cannot connect to relay at ${relayUrl}: ${(e as Error).message}`)
-  }
-
+  let client: RelayClient | undefined
   let exitCode = 0
+  let joinedSessionId: string | undefined
+  let sawProductFailure = false
   try {
+    if (files.length === 0) envFail('no flow files given — usage: tapflow flow run .tapflow/flows/*.yaml')
+    // NaN would disable every deadline check in the engine (Date.now() >= NaN is
+    // always false) and hang the run — reject bad numeric flags up front.
+    if (opts.build !== undefined && !Number.isInteger(opts.build)) envFail('--build must be an integer build id (see list_builds / the dashboard)')
+    if (opts.timeout !== undefined && !(Number.isFinite(opts.timeout) && opts.timeout > 0 && opts.timeout <= MAX_TIMEOUT_SECONDS)) {
+      envFail(`--timeout must be a positive number of seconds no greater than ${MAX_TIMEOUT_SECONDS}`)
+    }
+
+    // Parse everything up front: a schema error is a config problem (exit 2),
+    // not a test failure, and it should surface before touching any device.
+    const flows: Flow[] = []
+    for (const file of files) {
+      let text: string
+      try {
+        text = fs.readFileSync(file, 'utf-8')
+      } catch (e) {
+        envFail(`cannot read ${file}: ${(e as Error).message}`)
+      }
+      try {
+        flows.push(parseFlow(text, file))
+      } catch (e) {
+        envFail((e as Error).message)
+      }
+    }
+
+    const relayUrl = opts.relay ?? 'ws://localhost:4000'
+    const token = opts.token ?? process.env.TAPFLOW_TOKEN ?? ''
+    client = new RelayClient(relayUrl, token)
+    try {
+      await client.connect()
+    } catch (e) {
+      envFail(`cannot connect to relay at ${relayUrl}: ${(e as Error).message}`)
+    }
+
     const { sessionId, device } = await resolveSession(client, opts)
     await client.joinSession(sessionId)
+    joinedSessionId = sessionId
 
     // Always send device:boot — it is idempotent on a booted device and it is
     // what initializes the agent's touch/stream state for this session (the
@@ -117,13 +125,14 @@ export async function cmdFlowRun(files: string[], opts: FlowRunOptions): Promise
     }
 
     const driver = new RelayDriver(client, sessionId, opts.build)
-    const engineOpts = opts.timeout !== undefined ? { defaultTimeoutMs: opts.timeout * 1000 } : {}
+    const engineOpts = opts.timeout !== undefined ? { defaultTimeoutMs: Math.round(opts.timeout * 1000) } : {}
     const results: FlowResult[] = []
 
     for (const [flowIndex, flow] of flows.entries()) {
       process.stdout.write(`▶ ${flow.name} `)
       const result = await runFlow(flow, driver, engineOpts)
       results.push(result)
+      if (result.status === 'failed' && result.failureKind !== 'environment') sawProductFailure = true
       console.log(result.status === 'passed' ? `✓ (${(result.durationMs / 1000).toFixed(1)}s)` : '✗')
       if (result.status === 'failed') {
         console.error(`  ${result.failureMessage}`)
@@ -146,16 +155,29 @@ export async function cmdFlowRun(files: string[], opts: FlowRunOptions): Promise
       console.log(`JUnit report: ${opts.junit}`)
     }
 
-    const failed = results.filter((r) => r.status === 'failed').length
-    console.log(`\n${results.length - failed}/${results.length} flows passed`)
-    if (failed > 0) exitCode = EXIT_FLOW_FAILED
+    const failed = results.filter((r) => r.status === 'failed')
+    console.log(`\n${results.length - failed.length}/${results.length} flows passed`)
+    // All failed flows environmental → exit 2 (infrastructure, not a regression). Any
+    // product failure keeps exit 1, so a real regression is never masked by a blip.
+    if (failed.length > 0) {
+      exitCode = failed.every((r) => (r.failureKind ?? 'product') === 'environment')
+        ? EXIT_ENV_ERROR
+        : EXIT_FLOW_FAILED
+    }
 
-    client.leaveSession(sessionId)
   } catch (e) {
     console.error(`✗ ${(e as Error).message}`)
-    exitCode = EXIT_ENV_ERROR
+    if (exitCode === 0) exitCode = sawProductFailure ? EXIT_FLOW_FAILED : EXIT_ENV_ERROR
   } finally {
-    client.disconnect()
+    if (client && joinedSessionId !== undefined) {
+      try {
+        client.leaveSession(joinedSessionId)
+      } catch (e) {
+        console.error(`✗ could not leave session cleanly: ${(e as Error).message}`)
+        if (exitCode === 0) exitCode = sawProductFailure ? EXIT_FLOW_FAILED : EXIT_ENV_ERROR
+      }
+    }
+    client?.disconnect()
   }
-  process.exit(exitCode)
+  process.exitCode = exitCode
 }

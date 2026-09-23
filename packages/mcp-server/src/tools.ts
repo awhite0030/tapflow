@@ -3,26 +3,94 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { parseFlow, runFlow, type FlowDriver } from '@tapflowio/flow-runner'
-import type { TapflowClient } from './client.js'
+import { EnvironmentStepError, parseFlow, runFlow, type FlowDriver } from '@tapflowio/flow-runner'
+import { SessionEndedError, SessionLeftError, type TapflowClient } from './client.js'
+
+// Input refusal reasons that name the environment rather than the product,
+// mirroring flow-runner's ENVIRONMENTAL_INPUT_REASONS. `unsupported`,
+// `malformed` and `no-gesture` stay product: the first two name the test's own
+// request, and no-gesture cannot tell a clean refusal from a partially applied
+// gesture, so retry safety and failure classification stay separate concerns.
+const ENVIRONMENTAL_REASONS = new Set([
+  'not-booted',
+  'channel-unavailable',
+  'channel-starting',
+  'dispatch-failed',
+  'not-session-owner',
+])
+
+// Session lifecycle notes TapflowClient.failed() appends when the relay has
+// told us the session is gone or unbound. A failure carrying one is
+// environmental even when the prose names the request, not the session.
+const SESSION_NOTE_MARKERS = [
+  'the relay ended this session',
+  "the agent's connection to the relay went away",
+  'the agent reconnected and cleared its device binding',
+]
+
+// TapflowClient rebuilds timeout/disconnect input failures as prose instead of
+// a typed error, so they carry no class to branch on — but the prefix is the
+// contract this package's own tests hold (see client.test.ts), not free prose.
+const UNCONFIRMED_INPUT_PREFIX = 'Could not confirm the input reached the device'
+
+function toEnvironmentError(e: unknown): unknown {
+  if (e instanceof EnvironmentStepError) return e
+  // Session lifecycle failures the client rethrows as their own class: the CLI
+  // maps both to exit 2 via RelayDriver, so run_flow must do the same before
+  // falling back to message matching (their prose carries no session marker).
+  if (e instanceof SessionEndedError || e instanceof SessionLeftError) {
+    return new EnvironmentStepError(e.message, { cause: e })
+  }
+  const message = e instanceof Error ? e.message : String(e)
+  // The client's unconfirmed-input error mirrors flow-runner's
+  // InputUnconfirmedError, which RelayDriver also maps to exit 2.
+  if (message.startsWith(UNCONFIRMED_INPUT_PREFIX)) {
+    return new EnvironmentStepError(message, { cause: e })
+  }
+  const reason = /\((not-booted|channel-unavailable|channel-starting|dispatch-failed|not-session-owner|unsupported|malformed|no-gesture)\)/.exec(message)?.[1]
+  if (reason !== undefined) {
+    // Environmental reasons retype without changing a word the operator reads;
+    // product reasons (unsupported, malformed, no-gesture) pass through.
+    if (ENVIRONMENTAL_REASONS.has(reason)) {
+      return new EnvironmentStepError(message, { cause: e })
+    }
+    return e
+  }
+  if (SESSION_NOTE_MARKERS.some((marker) => message.includes(marker))) {
+    return new EnvironmentStepError(message, { cause: e })
+  }
+  return e
+}
 
 // Adapts TapflowClient (this process's single relay connection) to the
 // flow-runner engine surface, so run_flow shares the session the agent
 // already joined via connect_device instead of opening a second one.
-function makeFlowDriver(client: TapflowClient, sessionId: string, buildId?: number): FlowDriver {
+// The guard gives run_flow the same failureKind as the CLI's RelayDriver:
+// without it every input refusal reads as product here while the CLI reports
+// the environmental ones as environment.
+export function makeFlowDriver(client: TapflowClient, sessionId: string, buildId?: number): FlowDriver {
+  const guard = async <T>(fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await fn()
+    } catch (e) {
+      throw toEnvironmentError(e)
+    }
+  }
   return {
-    queryUITree: () => client.queryUITree(sessionId),
-    tap: async (x, y) => client.tap(sessionId, x, y),
-    swipe: (from, to, durationMs) => client.swipe(sessionId, from[0], from[1], to[0], to[1], durationMs),
-    inputText: async (text) => client.typeText(sessionId, text),
-    pressKey: async (code) => client.pressKey(sessionId, code),
-    openUrl: (url) => client.openUrl(sessionId, url),
+    queryUITree: (signal) => guard(() => client.queryUITree(sessionId, signal)),
+    tap: async (x, y) => guard(() => client.tap(sessionId, x, y)),
+    swipe: (from, to, durationMs) => guard(() => client.swipe(sessionId, from[0], from[1], to[0], to[1], durationMs)),
+    inputText: async (text) => guard(() => client.typeText(sessionId, text)),
+    pressKey: async (code) => guard(() => client.pressKey(sessionId, code)),
+    openUrl: (url) => guard(() => client.openUrl(sessionId, url)),
     launchApp: async () => {
-      if (buildId === undefined) throw new Error('this flow uses launchApp — pass buildId (see list_builds)')
-      await client.launchApp(sessionId, buildId)
+      if (buildId === undefined) {
+        throw new EnvironmentStepError('this flow uses launchApp — pass buildId (see list_builds)')
+      }
+      await guard(() => client.launchApp(sessionId, buildId))
     },
-    clearState: (appId) => client.clearState(sessionId, appId),
-    screenshot: () => client.screenshot(sessionId),
+    clearState: (appId) => guard(() => client.clearState(sessionId, appId)),
+    screenshot: (signal) => guard(() => client.screenshot(sessionId, 'png', signal)),
   }
 }
 
@@ -262,6 +330,7 @@ export function registerTools(server: McpServer, client: TapflowClient): void {
           durationMs: result.durationMs,
           steps: result.steps,
           ...(result.failureMessage ? { failureMessage: result.failureMessage } : {}),
+          ...(result.failureKind ? { failureKind: result.failureKind } : {}),
           ...(screenshotPath ? { failureScreenshotPath: screenshotPath } : {}),
         }, null, 2))
       } catch (e) {

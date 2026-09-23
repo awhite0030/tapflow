@@ -49,7 +49,7 @@ The vocabulary is deliberately small. These ten cover most scenarios.
 | `tapOn` | selector | Taps the center of the matched element. |
 | `inputText` | string | Types text into the focused input field. |
 | `pressKey` | key name | Presses a keyboard key (`Enter`, `Backspace`, `Escape`, …). |
-| `swipe` | `{ from, to, durationMs? }` | Swipes between two points. Coordinates are 0–1. |
+| `swipe` | `{ from, to, durationMs? }` | Swipes between two points. Coordinates are 0–1. `durationMs` is milliseconds as a number, default 300, max 2147483647. Fractional values (e.g. 250.5) are accepted. |
 | `scroll` | keyword or `scroll: <direction>` | Scrolls the screen. The bare keyword scrolls down. |
 | `openUrl` | URL string | Opens a deep link or URL. |
 | `assertVisible` | selector | Waits until the element appears; fails if it does not. |
@@ -89,7 +89,7 @@ To resolve an ambiguous match, add a disambiguator to the object form:
 
 The object form needs at least one of `id`, `label`, or `role`; `role`/`index` refine that set.
 
-`timeout` is in seconds and defaults to 10. You can set it per selector.
+`timeout` is in seconds and defaults to 10 (max 2147483.647, about 24.8 days). You can set it per selector. Values that round to 0ms (e.g. 0.0004s) are rejected.
 
 ### Resetting state
 
@@ -124,7 +124,7 @@ tapflow flow run .tapflow/flows/login.yaml .tapflow/flows/checkout.yaml
 | `--build <id>` | Build under test. Installed before the run; the `launchApp` step launches it. |
 | `--junit <path>` | Write a JUnit XML report to this path. |
 | `--artifacts <dir>` | Failure-screenshot directory (default `.tapflow/artifacts`) |
-| `--timeout <seconds>` | Default per-selector wait (default 10) |
+| `--timeout <seconds>` | Default per-selector wait (default 10, max 2147483.647) |
 
 The `launchApp` step takes no argument and launches the build passed via `--build`. That keeps the build id out of the flow file, so the same flow runs against a fresh build on every CI run.
 
@@ -135,10 +135,10 @@ The exit codes are a contract so CI can tell what happened.
 | Code | Meaning |
 |------|---------|
 | `0` | All flows passed |
-| `1` | At least one flow failed |
-| `2` | Environment/config error (flow parse failure, relay unreachable, no device) |
+| `1` | At least one product failure, including a run with both product and environment failures |
+| `2` | Environment/config error before execution, or every failed flow was environmental |
 
-Distinguishing `1` from `2` matters: a test failure (`1`) and an infrastructure problem (`2`) should be handled differently on a CI dashboard.
+Distinguishing `1` from `2` matters: a product failure (`1`) and an infrastructure problem (`2`) should be handled differently on a CI dashboard. A run with both kinds stays at `1` so an infrastructure blip cannot hide a regression.
 
 A failed flow leaves a screenshot from the point of failure in the artifacts directory, and with `--junit` each flow is recorded as one `testcase`.
 

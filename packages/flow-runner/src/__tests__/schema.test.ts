@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'fs'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
 import { parseFlow } from '../schema.js'
 
 describe('parseFlow', () => {
@@ -91,6 +94,11 @@ steps:
     expect(() => parseFlow('steps:\n  - tapOn:\n      role: cell\n      index: 1.5\n', 'x.yaml')).toThrow(/index/)
   })
 
+  it('rejects non-finite and timer-overflow selector timeouts', () => {
+    expect(() => parseFlow('steps:\n  - tapOn:\n      label: OK\n      timeout: .inf\n', 'x.yaml')).toThrow(/timeout/)
+    expect(() => parseFlow('steps:\n  - tapOn:\n      label: OK\n      timeout: 2147483.648\n', 'x.yaml')).toThrow(/timeout/)
+  })
+
   it('rejects index alone with no id/label/role', () => {
     expect(() => parseFlow('steps:\n  - tapOn:\n      index: 0\n', 'x.yaml')).toThrow(/id.*label.*role/)
   })
@@ -138,5 +146,37 @@ steps:
   it('rejects non-YAML and non-object documents', () => {
     expect(() => parseFlow('just a string', 'x.yaml')).toThrow()
     expect(() => parseFlow('- a\n- b\n', 'x.yaml')).toThrow()
+  })
+
+  it('keeps fractional swipe durations (0.23.0 compatibility)', () => {
+    const flow = parseFlow(`
+steps:
+  - swipe:
+      from: [0.5, 0.8]
+      to: [0.5, 0.2]
+      durationMs: 250.5
+`, 'x.yaml')
+    expect(flow.steps[0]).toEqual({ type: 'swipe', from: [0.5, 0.8], to: [0.5, 0.2], durationMs: 250.5 })
+  })
+
+  it('rejects non-positive and over-limit swipe durations', () => {
+    expect(() => parseFlow('steps:\n  - swipe:\n      from: [0.5, 0.8]\n      to: [0.5, 0.2]\n      durationMs: 0\n', 'x.yaml')).toThrow(/durationMs/)
+    expect(() => parseFlow('steps:\n  - swipe:\n      from: [0.5, 0.8]\n      to: [0.5, 0.2]\n      durationMs: 2147483648\n', 'x.yaml')).toThrow(/durationMs/)
+  })
+
+  it('rejects timeouts that round to 0ms', () => {
+    expect(() => parseFlow('steps:\n  - tapOn:\n      label: OK\n      timeout: 0.0004\n', 'x.yaml')).toThrow(/at least 1ms/)
+  })
+
+  it('keeps the JSON schema timeout floor consistent with the parser', () => {
+    // The parser rejects timeouts that round to 0ms, i.e. anything below
+    // 0.0005s — so the shipped JSON schema must reject them too, or
+    // schema-validated flows fail at runtime.
+    const schema = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'schema', 'tapflow-flow.schema.json'), 'utf8'))
+    const timeout = schema.definitions.selector.oneOf[1].properties.timeout
+    expect(timeout.minimum).toBe(0.0005)
+    // The boundary itself parses: 0.0005s rounds to exactly 1ms.
+    const flow = parseFlow('steps:\n  - tapOn:\n      label: OK\n      timeout: 0.0005\n', 'x.yaml')
+    expect(flow.steps[0]).toEqual({ type: 'tapOn', selector: { label: 'OK', timeoutMs: 1 } })
   })
 })

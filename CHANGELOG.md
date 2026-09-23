@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`tapflow flow run` exits 2 when every failed flow failed environmentally** ([#543](https://github.com/jo-duchan/tapflow/issues/543)). A refused input with an environmental reason, a session lost to an agent restart, or a dropped relay connection used to reach CI as exit 1, reading as a product regression on dashboards that rely on the 1-vs-2 distinction. Selector, assertion and other product failures still exit 1, successful runs still exit 0, and a run with both kinds keeps exit 1 so a real regression is never masked by a blip.
+
 - **The dashboard is built with the React Compiler.** It memoises what React would otherwise recompute on every render, in place of the hand-written `useCallback` and `useMemo` that were doing part of that by hand — 62 of the first and 3 of the second, against no memoised components at all. 158 functions are compiled and 15 are skipped, which is safe: a function the compiler cannot prove is left exactly as it was. Fourteen of those 15 are a shape the compiler does not lower yet, nine of them `try`/`catch`; the fifteenth is an internal compiler invariant. None is anything this codebase is doing wrong. The first load grows 3,810 B compressed, since the memoisation is code. No behaviour change is intended — the compiler only memoises — and the dashboard's test suite runs against the compiled output rather than beside it.
 
 ### Fixed
