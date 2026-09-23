@@ -4,7 +4,7 @@ import os from 'os'
 import path from 'path'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { EnvironmentStepError, parseFlow, runFlow, type FlowDriver } from '@tapflowio/flow-runner'
-import type { TapflowClient } from './client.js'
+import { SessionEndedError, SessionLeftError, type TapflowClient } from './client.js'
 
 // Input refusal reasons that name the environment rather than the product,
 // mirroring flow-runner's ENVIRONMENTAL_INPUT_REASONS. `unsupported`,
@@ -28,9 +28,25 @@ const SESSION_NOTE_MARKERS = [
   'the agent reconnected and cleared its device binding',
 ]
 
+// TapflowClient rebuilds timeout/disconnect input failures as prose instead of
+// a typed error, so they carry no class to branch on — but the prefix is the
+// contract this package's own tests hold (see client.test.ts), not free prose.
+const UNCONFIRMED_INPUT_PREFIX = 'Could not confirm the input reached the device'
+
 function toEnvironmentError(e: unknown): unknown {
   if (e instanceof EnvironmentStepError) return e
+  // Session lifecycle failures the client rethrows as their own class: the CLI
+  // maps both to exit 2 via RelayDriver, so run_flow must do the same before
+  // falling back to message matching (their prose carries no session marker).
+  if (e instanceof SessionEndedError || e instanceof SessionLeftError) {
+    return new EnvironmentStepError(e.message, { cause: e })
+  }
   const message = e instanceof Error ? e.message : String(e)
+  // The client's unconfirmed-input error mirrors flow-runner's
+  // InputUnconfirmedError, which RelayDriver also maps to exit 2.
+  if (message.startsWith(UNCONFIRMED_INPUT_PREFIX)) {
+    return new EnvironmentStepError(message, { cause: e })
+  }
   const reason = /\((not-booted|channel-unavailable|channel-starting|dispatch-failed|not-session-owner|unsupported|malformed|no-gesture)\)/.exec(message)?.[1]
   if (reason !== undefined) {
     // Environmental reasons retype without changing a word the operator reads;

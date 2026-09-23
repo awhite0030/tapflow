@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { makeFlowDriver, registerTools } from '../tools.js'
-import type { TapflowClient } from '../client.js'
+import { SessionEndedError, SessionLeftError, type TapflowClient } from '../client.js'
 import { EnvironmentStepError, isEnvironmentStepFailure, parseFlow, runFlow, TransientQueryError } from '@tapflowio/flow-runner'
 
 type ToolResult = { content: unknown[]; isError?: boolean }
@@ -156,5 +156,38 @@ describe('run_flow — install before replay', () => {
     const result = await runFlow(flow, driver)
     expect(result.status).toBe('failed')
     expect(result.failureKind).toBe('product')
+  })
+
+  it('maps ended and left sessions to environment like the CLI RelayDriver', async () => {
+    // TapflowClient rethrows these as their own class with prose that carries
+    // no session-note marker, so message matching alone would call them product.
+    const cases = [
+      new SessionEndedError('tap failed: the relay ended session s1 (agent-disconnected) while it was in flight', 'agent-disconnected'),
+      new SessionLeftError('tap failed: this client left session s1 while the request was in flight'),
+    ]
+    for (const original of cases) {
+      const calls: string[] = []
+      const client = fakeClient(calls)
+      const driver = makeFlowDriver(client, 's1', 5)
+      vi.mocked(client.tap).mockRejectedValueOnce(original)
+      const flow = parseFlow('steps:\n  - tapOn: "OK"\n', 'f.yaml')
+      vi.mocked(client.queryUITree).mockResolvedValue([{ role: 'button', label: 'OK', frame: { x: 0, y: 0, width: 1, height: 1 }, enabled: true }])
+      const result = await runFlow(flow, driver)
+      expect(result.status).toBe('failed')
+      expect(result.failureKind).toBe('environment')
+      expect(result.failureMessage).toBe(`tapOn("OK"): ${original.message}`)
+    }
+  })
+
+  it('maps unconfirmed input to environment like InputUnconfirmedError', async () => {
+    const calls: string[] = []
+    const client = fakeClient(calls)
+    const driver = makeFlowDriver(client, 's1', 5)
+    vi.mocked(client.tap).mockRejectedValueOnce(new Error('Could not confirm the input reached the device: this session has acknowledged input before, and this one went unanswered. Do not repeat the input.'))
+    const flow = parseFlow('steps:\n  - tapOn: "OK"\n', 'f.yaml')
+    vi.mocked(client.queryUITree).mockResolvedValue([{ role: 'button', label: 'OK', frame: { x: 0, y: 0, width: 1, height: 1 }, enabled: true }])
+    const result = await runFlow(flow, driver)
+    expect(result.status).toBe('failed')
+    expect(result.failureKind).toBe('environment')
   })
 })

@@ -20,13 +20,19 @@ const PKGS = join(ROOT, 'packages')
 const packageDirs = () =>
   readdirSync(PKGS).filter((d) => existsSync(join(PKGS, d, 'package.json')))
 
+// Every suffix in Vitest's default include (`**/*.{test,spec}.?(c|m)[jt]s?(x)`):
+// a test in any of them can import a sibling, so the guard must walk all of
+// them or a sibling import hides behind an unscanned file.
+const TEST_FILE_SUFFIX = /\.(?:[cm]?[jt]s(?:x)?)$/
+const RESOLVABLE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.mtsx', '.mjs', '.mjsx', '.js', '.jsx', '.cts', '.ctsx', '.cjs', '.cjsx']
+
 function sourceFiles(dir) {
   if (!existsSync(dir)) return []
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name)
-    // .mjs/.mts/.js included: a helper behind a dynamic import() or a plain
-    // .js re-export would otherwise hide a sibling import from the guard.
-    return entry.isDirectory() ? sourceFiles(path) : /\.(?:ts|tsx|mts|mjs|js)$/.test(entry.name) ? [path] : []
+    // A helper behind a dynamic import() or a plain re-export in any suffix
+    // would otherwise hide a sibling import from the guard.
+    return entry.isDirectory() ? sourceFiles(path) : TEST_FILE_SUFFIX.test(entry.name) ? [path] : []
   })
 }
 
@@ -43,7 +49,11 @@ function resolveLocalImport(from, specifier) {
   const base = resolve(dirname(from), specifier.replace(/\.(js|mjs)$/, ''))
   // isFile, not existsSync: a bare directory path exists too, and queuing it
   // makes readFileSync die with EISDIR instead of simply missing.
-  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}.mts`, `${base}.mjs`, `${base}.js`, join(base, 'index.ts'), join(base, 'index.mts'), join(base, 'index.mjs'), join(base, 'index.js')]) {
+  for (const candidate of [
+    base,
+    ...RESOLVABLE_EXTENSIONS.map((extension) => `${base}${extension}`),
+    ...RESOLVABLE_EXTENSIONS.map((extension) => join(base, `index${extension}`)),
+  ]) {
     if (isFile(candidate)) return candidate
   }
   return undefined
@@ -98,6 +108,24 @@ function runProbe(packageDir, probe) {
     execFileSync('pnpm', ['exec', 'vitest', 'run', relativeProbe], { cwd: packageDir, stdio: 'pipe', encoding: 'utf8' })
   }
 }
+
+describe('the guard sees every Vitest test suffix', () => {
+  // The 12 suffixes `?(c|m)[jt]s?(x)` expands to. A narrower list lets a test
+  // file in an unscanned suffix import a sibling with no sourceFirst required.
+  const all = ['js', 'jsx', 'ts', 'tsx', 'cjs', 'cjsx', 'mjs', 'mjsx', 'cts', 'ctsx', 'mts', 'mtsx']
+
+  it('walks test files in every suffix', () => {
+    for (const suffix of all) {
+      expect(TEST_FILE_SUFFIX.test(`probe.test.${suffix}`), suffix).toBe(true)
+    }
+    expect(TEST_FILE_SUFFIX.test('probe.test.css')).toBe(false)
+  })
+
+  it('resolves extensionless and index imports in every suffix', () => {
+    const withoutDot = RESOLVABLE_EXTENSIONS.map((e) => e.slice(1)).sort()
+    expect(withoutDot).toEqual([...all].sort())
+  })
+})
 
 describe('every package whose tests import a sibling reads its source', () => {
   // Derived, not listed. A hardcoded list is exactly how vitest came to be the tool nobody had

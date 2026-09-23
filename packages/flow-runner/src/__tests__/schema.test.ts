@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'fs'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
 import { parseFlow } from '../schema.js'
 
 describe('parseFlow', () => {
@@ -163,5 +166,17 @@ steps:
 
   it('rejects timeouts that round to 0ms', () => {
     expect(() => parseFlow('steps:\n  - tapOn:\n      label: OK\n      timeout: 0.0004\n', 'x.yaml')).toThrow(/at least 1ms/)
+  })
+
+  it('keeps the JSON schema timeout floor consistent with the parser', () => {
+    // The parser rejects timeouts that round to 0ms, i.e. anything below
+    // 0.0005s — so the shipped JSON schema must reject them too, or
+    // schema-validated flows fail at runtime.
+    const schema = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'schema', 'tapflow-flow.schema.json'), 'utf8'))
+    const timeout = schema.definitions.selector.oneOf[1].properties.timeout
+    expect(timeout.minimum).toBe(0.0005)
+    // The boundary itself parses: 0.0005s rounds to exactly 1ms.
+    const flow = parseFlow('steps:\n  - tapOn:\n      label: OK\n      timeout: 0.0005\n', 'x.yaml')
+    expect(flow.steps[0]).toEqual({ type: 'tapOn', selector: { label: 'OK', timeoutMs: 1 } })
   })
 })
