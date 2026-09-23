@@ -258,6 +258,9 @@ export function AppCenter() {
   // doing, and a move or toast then would describe a filter nobody is looking at.
   type Leaving = { leaving: number; candidates: TargetId[]; text: string; key: string }
   const pendingFocus = useRef<Leaving | null>(null)
+  // The control focus was handed to, once it has been. From then on the note belongs to that control
+  // alone: tabbing to a neighbouring candidate and back would otherwise hear it again, long after.
+  const landedOn = useRef<TargetId | null>(null)
   const [leftNote, setLeftNote] = useState<Leaving | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const leftNoteId = useId()
@@ -294,6 +297,7 @@ export function AppCenter() {
       const text = `${buildRowName(build)} was set to ${status ?? 'no status'}, so the ${statusFilter} filter no longer shows it.`
       const leaving = { leaving: buildId, candidates, text, key: buildsKeyId }
       pendingFocus.current = leaving
+      landedOn.current = null
       setLeftNote(leaving)
     }
     statusMutation.mutate({ buildId, status })
@@ -319,7 +323,8 @@ export function AppCenter() {
     const pending = pendingFocus.current
     if (!pending) return
     // A refetch that failed leaves the row on screen; whenever it does leave, it is too late to
-    // follow. Dropped quietly, as is a change made under a key no longer shown.
+    // follow, and the "Couldn't refresh" toast has already said the list is stale. Dropped quietly,
+    // as is a change made under a key no longer shown.
     if (pending.key !== buildsKeyId || refetchFailed) {
       pendingFocus.current = null
       setLeftNote(null)
@@ -339,8 +344,10 @@ export function AppCenter() {
     const destination = Array.from(controls).find(el => targetIdOf(el) === target)
     // Not expected: `drawnKey` models what is drawn. If the model and the DOM ever disagree, the
     // reason is still said rather than focus falling silently.
-    if (destination instanceof HTMLElement) destination.focus()
-    else {
+    if (destination instanceof HTMLElement) {
+      landedOn.current = target
+      destination.focus()
+    } else {
       toast.success(pending.text)
       setLeftNote(null)
     }
@@ -355,6 +362,10 @@ export function AppCenter() {
     if (!leftNote) return
     const onFocusIn = (event: FocusEvent) => {
       const id = targetIdOf(event.target)
+      if (landedOn.current !== null) {
+        if (id !== landedOn.current) setLeftNote(null)
+        return
+      }
       if (id === rowTarget(leftNote.leaving)) return
       if (id === null || !leftNote.candidates.includes(id)) setLeftNote(null)
     }

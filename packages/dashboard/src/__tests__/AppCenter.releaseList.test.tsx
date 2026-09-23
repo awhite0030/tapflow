@@ -151,6 +151,42 @@ describe('a row whose status change takes it out of the filtered list (#833)', (
     expect(description(trigger(1, '1.0.0'))).toContain('ios build 2, 1.0.0 was set to Done')
   })
 
+  it('lets the note go once focus leaves the control it landed on, even for another candidate', async () => {
+    serve([build(1, '1.0.0'), build(2, '1.0.0'), build(3, '1.0.0')])
+    renderAppCenter()
+    await screen.findByText('uploader-3')
+    await filterBy('Backlog')
+    await screen.findByText('uploader-3')
+
+    await setStatus(2, '1.0.0', 'Done')
+    await waitFor(() => expect(document.activeElement).toBe(trigger(3, '1.0.0')))
+    trigger(1, '1.0.0').focus() // a candidate too, but not where the note was heard
+    trigger(3, '1.0.0').focus()
+
+    await waitFor(() => expect(description(trigger(3, '1.0.0'))).toBe(''))
+  })
+
+  it('still moves focus when the list was showing a failed refresh before the change', async () => {
+    // The stale-list state is cleared by the optimistic write in the same commit that keeps the row,
+    // so a move made from it is not mistaken for one whose own refetch failed.
+    serve([build(1, '1.0.0'), build(2, '1.0.0')])
+    const { client } = renderAppCenter()
+    await screen.findByText('uploader-2')
+    await filterBy('Backlog')
+    await screen.findByText('uploader-2')
+    const serveNormally = api.getBuilds.getMockImplementation()
+    api.getBuilds.mockRejectedValueOnce(new Error('relay blinked'))
+    await client.invalidateQueries({ queryKey: ['builds'] })
+    await screen.findByText('Showing the last list — refresh failed.')
+    api.getBuilds.mockImplementation(serveNormally!)
+
+    await setStatus(1, '1.0.0', 'Done')
+
+    await waitFor(() => expect(screen.queryByText('uploader-1')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(trigger(2, '1.0.0')))
+    expect(description(trigger(2, '1.0.0'))).toContain('was set to Done')
+  })
+
   it('keeps the note through Radix handing focus back to the leaving row', async () => {
     // In a browser the menu takes focus and returns it to the row's trigger after the pick — after
     // the note was written. jsdom's Select does not move focus, so the hand-back is done here.
