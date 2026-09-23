@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Changing a build's status under a status filter no longer drops focus to the top of the App Center** ([#833](https://github.com/jo-duchan/tapflow/issues/833)). When the new status was one the filter hides, the refetch removed the row along with the control that had focus. Focus now moves to the next build in the release, or the previous one, or the neighbouring release's header, and that control says why the build disappeared. If the list empties, focus goes to the search box as before. A change the server refuses moves nothing.
 - **Four more App Center accessibility gaps** ([#834](https://github.com/jo-duchan/tapflow/issues/834)):
-  - After a retry, the first release is announced open from the start. It used to be announced collapsed and then report its own expansion.
+  - After a retry, the first release is announced in its actual state from the start. It used to be announced collapsed and then report its own expansion.
   - Release headers are headings, so a screen reader can move between releases.
   - Scheduling or cancelling a deletion is announced with the build and when it will be deleted, where before only the icon changed.
   - Every control on a build row names its build. The deletion icons were all called "Schedule deletion", so voice control could not pick one row's button, and their tooltip appeared only on hover; it now shows on keyboard focus too.

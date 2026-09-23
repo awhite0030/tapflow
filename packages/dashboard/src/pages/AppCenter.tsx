@@ -17,6 +17,34 @@ import { useFocusAfterSwap } from '@/hooks/useFocusAfterSwap'
 import { useReleaseDisclosure } from '@/hooks/useReleaseDisclosure'
 import { buildRowName, describeDeletionCountdown } from '@/lib/build-format'
 
+/**
+ * A control in the release list that a leaving row can hand focus to (#833): a build's status
+ * trigger, `row:<id>`, or a release header, `release:<version>`. Strings, so a list of them can sit in
+ * state and in an effect's dependencies as plain values.
+ */
+type TargetId = string
+const rowTarget = (buildId: number): TargetId => `row:${buildId}`
+const releaseTarget = (versionName: string): TargetId => `release:${versionName}`
+
+function targetIdOf(el: EventTarget | null): TargetId | null {
+  if (!(el instanceof HTMLElement)) return null
+  if (el.dataset.statusTrigger !== undefined) return rowTarget(Number(el.dataset.statusTrigger))
+  if (el.dataset.releaseHeader !== undefined) return releaseTarget(el.dataset.releaseHeader)
+  return null
+}
+
+/** The first candidate among the controls drawn now (`drawnKey` is a JSON array of target ids). */
+function firstDrawn(candidates: TargetId[], drawnKey: string): TargetId | null {
+  const drawn = new Set(JSON.parse(drawnKey) as TargetId[])
+  return candidates.find(c => drawn.has(c)) ?? null
+}
+
+/** Nearest first: from the middle outwards, `at + 1` before `at - 1`. */
+function byDistance<T>(items: T[], at: number): T[] {
+  return items.map((item, i) => ({ item, d: i > at ? 2 * (i - at) - 1 : 2 * (at - i) }))
+    .filter(({ d }) => d > 0).sort((x, y) => x.d - y.d).map(({ item }) => item)
+}
+
 export function AppCenter() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -49,6 +77,7 @@ export function AppCenter() {
   // key nobody is reading any more lands in the cache for that key and is not rendered — the
   // generation counter this page would otherwise hand-roll.
   const buildsKey = ['builds', selectedAppId, settledSearch, statusFilter] as const
+  const buildsKeyId = JSON.stringify(buildsKey)
 
   const buildsQuery = useQuery({
     queryKey: buildsKey,
@@ -222,43 +251,40 @@ export function AppCenter() {
    *
    * The destination says what happened itself, through `leftNote`: a polite status sentence is
    * flushed by the focus move in NVDA and JAWS (see this package's AGENTS.md). Focus and note both
-   * resolve through `resolveTarget` in the same render, so they cannot point at different controls.
+   * resolve through `firstDrawn` over the same `drawnKey`, so they cannot point at different controls.
    */
-  type FocusTarget = { kind: 'row'; buildId: number } | { kind: 'release'; versionName: string }
-  type Leaving = { leaving: number; candidates: FocusTarget[]; text: string }
+  // `key` is the query the change was made under. The row leaves on *that* key's refetch; if the
+  // search, filter or app changed first, the row going from some other list is not this change's
+  // doing, and a move or toast then would describe a filter nobody is looking at.
+  type Leaving = { leaving: number; candidates: TargetId[]; text: string; key: string }
   const pendingFocus = useRef<Leaving | null>(null)
   const [leftNote, setLeftNote] = useState<Leaving | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const leftNoteId = useId()
 
-  /** Nearest first: from the middle outwards, `at + 1` before `at - 1`. */
-  const byDistance = <T,>(items: T[], at: number): T[] =>
-    items.map((item, i) => ({ item, d: i > at ? 2 * (i - at) - 1 : 2 * (at - i) }))
-      .filter(({ d }) => d > 0).sort((x, y) => x.d - y.d).map(({ item }) => item)
-
-  function rankTargets(buildId: number): FocusTarget[] {
+  function rankTargets(buildId: number): TargetId[] {
     const index = releaseGroups.findIndex(g => g.builds.some(b => b.id === buildId))
     if (index < 0) return []
     const rows = releaseGroups[index].builds
     return [
-      ...byDistance(rows, rows.findIndex(b => b.id === buildId)).map(b => ({ kind: 'row', buildId: b.id }) as const),
+      ...byDistance(rows, rows.findIndex(b => b.id === buildId)).map(b => rowTarget(b.id)),
       // Headers render whether or not their release is open, so they are always there to take it.
-      ...byDistance(releaseGroups, index).map(g => ({ kind: 'release', versionName: g.versionName }) as const),
+      ...byDistance(releaseGroups, index).map(g => releaseTarget(g.versionName)),
     ]
   }
 
   /**
-   * The first candidate the current render actually draws. **A row counts only inside an open
-   * release, judged by where it is now**: the refetch that drops the leaving row can also move a
+   * Every control this render draws that focus could be handed to. **A row counts only inside an
+   * open release, judged by where it is now**: the refetch that drops the leaving row can also move a
    * neighbour into another release — a version renamed, say — and a collapsed one draws no rows, so
    * `builds` alone would pick a control that is not on screen. Worked out from state rather than the
-   * DOM so the note, resolved during render, lands on the same control focus does.
+   * DOM so the note, resolved during render, lands on the same control focus does. A string, so the
+   * effect below can depend on it: a set built in render is a new object every time.
    */
-  function resolveTarget(candidates: FocusTarget[]): FocusTarget | null {
-    return candidates.find(t => t.kind === 'row'
-      ? releaseGroups.some(g => disclosure.isOpen(g.versionName) && g.builds.some(b => b.id === t.buildId))
-      : releaseGroups.some(g => g.versionName === t.versionName)) ?? null
-  }
+  const drawnKey = JSON.stringify(releaseGroups.flatMap(g => [
+    releaseTarget(g.versionName),
+    ...(disclosure.isOpen(g.versionName) ? g.builds.map(b => rowTarget(b.id)) : []),
+  ]))
 
   const handleStatusChange = (buildId: number, status: string | null) => {
     const build = builds.find(b => b.id === buildId)
@@ -266,40 +292,59 @@ export function AppCenter() {
     const candidates = leaves ? rankTargets(buildId) : []
     if (build && candidates.length > 0) {
       const text = `${buildRowName(build)} was set to ${status ?? 'no status'}, so the ${statusFilter} filter no longer shows it.`
-      pendingFocus.current = { leaving: buildId, candidates, text }
-      setLeftNote({ leaving: buildId, candidates, text })
+      const leaving = { leaving: buildId, candidates, text, key: buildsKeyId }
+      pendingFocus.current = leaving
+      setLeftNote(leaving)
     }
     statusMutation.mutate({ buildId, status })
   }
 
-  const matchesTarget = (el: Element, target: FocusTarget | null) =>
-    target !== null && el instanceof HTMLElement && (target.kind === 'row'
-      ? el.dataset.statusTrigger === String(target.buildId)
-      : el.dataset.releaseHeader === target.versionName)
-
+  // A change of key is answered by the layout effect below, which drops the note with the move.
   const noteShown = leftNote !== null && !builds.some(b => b.id === leftNote.leaving)
-  const noteTarget = noteShown ? resolveTarget(leftNote.candidates) : null
+  const noteTarget = noteShown ? firstDrawn(leftNote.candidates, drawnKey) : null
 
   // On the commit that removes the row. Only if focus went down with it: someone who moved on
   // while the answer was in flight keeps what they chose — and hears why the row went through a
-  // toast instead, since with no focus move there is nothing to flush it. So does anyone whose
-  // every candidate went with the refetch, which leaves an empty list and the swap hook in charge.
+  // toast instead, since with no focus move there is nothing to flush it. So does anyone whose every
+  // candidate went with the refetch: if that emptied the list the swap hook moves focus, and
+  // otherwise it stays where the browser left it.
+  //
+  // **Exact dependencies, no suppression.** An `eslint-disable` for a react-hooks rule makes the
+  // React Compiler skip the whole component (`noSuppressedCompilation.test.ts`), and a first version
+  // of this effect had one. The row leaves when the data changes, the move is dropped when the key or
+  // the refetch's outcome changes, and what is drawn is `drawnKey` — nothing else can decide it.
+  const buildsData = buildsQuery.data
+  const refetchFailed = buildsQuery.isRefetchError
   useLayoutEffect(() => {
     const pending = pendingFocus.current
-    if (!pending || builds.some(b => b.id === pending.leaving)) return
+    if (!pending) return
+    // A refetch that failed leaves the row on screen; whenever it does leave, it is too late to
+    // follow. Dropped quietly, as is a change made under a key no longer shown.
+    if (pending.key !== buildsKeyId || refetchFailed) {
+      pendingFocus.current = null
+      setLeftNote(null)
+      return
+    }
+    if ((buildsData ?? []).some(b => b.id === pending.leaving)) return
     pendingFocus.current = null
-    const target = resolveTarget(pending.candidates)
+    const target = firstDrawn(pending.candidates, drawnKey)
     if (!target || (document.activeElement !== null && document.activeElement !== document.body)) {
       toast.success(pending.text)
+      // Said once. Left in place, the note would describe a candidate the person reaches later
+      // with the sentence the toast already read.
+      setLeftNote(null)
       return
     }
     const controls = listRef.current?.querySelectorAll('[data-status-trigger], [data-release-header]') ?? []
-    const destination = Array.from(controls).find(el => matchesTarget(el, target))
-    // Not expected: `resolveTarget` models what is drawn. If the model and the DOM ever disagree,
-    // the reason is still said rather than focus falling silently.
+    const destination = Array.from(controls).find(el => targetIdOf(el) === target)
+    // Not expected: `drawnKey` models what is drawn. If the model and the DOM ever disagree, the
+    // reason is still said rather than focus falling silently.
     if (destination instanceof HTMLElement) destination.focus()
-    else toast.success(pending.text)
-  })
+    else {
+      toast.success(pending.text)
+      setLeftNote(null)
+    }
+  }, [buildsKeyId, refetchFailed, buildsData, drawnKey])
 
   // The note describes its destination until focus goes anywhere else. The leaving row's own trigger
   // is exempt: Radix hands focus back to it before the row goes. **Against the candidates, not
@@ -309,14 +354,13 @@ export function AppCenter() {
   useEffect(() => {
     if (!leftNote) return
     const onFocusIn = (event: FocusEvent) => {
-      const el = event.target
-      if (!(el instanceof Element)) return
-      const leavingTrigger = el instanceof HTMLElement && el.dataset.statusTrigger === String(leftNote.leaving)
-      if (!leavingTrigger && !leftNote.candidates.some(t => matchesTarget(el, t))) setLeftNote(null)
+      const id = targetIdOf(event.target)
+      if (id === rowTarget(leftNote.leaving)) return
+      if (id === null || !leftNote.candidates.includes(id)) setLeftNote(null)
     }
     document.addEventListener('focusin', onFocusIn)
     return () => document.removeEventListener('focusin', onFocusIn)
-  })
+  }, [leftNote])
 
   /**
    * What the list is doing, for anyone who cannot see it doing it.
@@ -535,9 +579,9 @@ export function AppCenter() {
                 key={versionName}
                 describedBy={[
                   index === 0 && !buildsQuery.isPlaceholderData ? statusId : null,
-                  noteTarget?.kind === 'release' && noteTarget.versionName === versionName ? leftNoteId : null,
+                  noteTarget === releaseTarget(versionName) ? leftNoteId : null,
                 ].filter(Boolean).join(' ') || undefined}
-                rowNote={noteTarget?.kind === 'row' ? { buildId: noteTarget.buildId, id: leftNoteId } : undefined}
+                rowNote={noteTarget?.startsWith('row:') ? { buildId: Number(noteTarget.slice(4)), id: leftNoteId } : undefined}
                 versionName={versionName}
                 builds={groupBuilds}
                 isOpen={disclosure.isOpen(versionName)}

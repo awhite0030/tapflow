@@ -156,11 +156,13 @@ So: `useQuery` for reads, `useMutation` with an optimistic write for actions on 
   twice quickly.
 - **`placeholderData: keepPreviousData` on anything a user switches between.** Without it the page
   re-renders with no rows while the next set loads, and a page with no rows is the empty state.
-- **State derived from a fetch waits for that fetch's own answer.** The App Center seeds which
-  release is expanded from the rows it just received; running that during the placeholder window
-  seeds it from the *previous* app's rows and marks the new one as done, so the release that should
-  open never does. `AppCenter.switch.test.tsx` holds both halves — the previous list stays, and the
-  new one opens when it lands.
+- **State derived from a fetch is read against the rows it came from.** The App Center works out
+  which releases are open during render, from the rows on screen and the app *those rows* belong to
+  (`builds[0].app_id`), not the app selected. During the placeholder window the held rows are judged
+  by the previous app's toggles, and the new app's are used once its own rows land.
+  `AppCenter.switch.test.tsx` holds both halves: the previous list stays, and the new one opens when
+  it lands. An earlier version seeded the open set from an effect instead, and #834 found the cost: a
+  header focused in a layout effect was announced collapsed before the seed expanded it.
 - Defaults live in `lib/queryClient.ts` (`retry: 0`, `refetchOnWindowFocus: true`) with the reason
   for each.
 

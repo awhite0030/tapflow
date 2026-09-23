@@ -39,13 +39,19 @@ export function formatDeletionCountdown(deleteAfter: string): { label: string; u
   return { label: `Deletes in ${Math.floor(h / 24)}d`, urgent: false }
 }
 
-/** The same countdown in words, for an announcement — "7d" is read out as "7 d". */
+/**
+ * The same countdown in words, for an announcement — "7d" is read out as "7 d".
+ *
+ * **Rounded, not floored**, because this is said right after scheduling: the relay answers
+ * `datetime('now', '+7 days')`, truncated to the second and a round trip old by the time it is read,
+ * so the remaining time is always a little under seven days and flooring announced "in 6 days".
+ */
 export function describeDeletionCountdown(deleteAfter: string): string {
   const diff = deletionMs(deleteAfter)
   if (diff <= 0) return 'now'
-  const h = Math.floor(diff / 3_600_000)
-  if (h < 1) return 'within an hour'
+  if (diff < 3_600_000) return 'within an hour'
+  const h = Math.round(diff / 3_600_000)
   if (h < 24) return `in ${h} hour${h === 1 ? '' : 's'}`
-  const d = Math.floor(h / 24)
+  const d = Math.round(diff / 86_400_000)
   return `in ${d} day${d === 1 ? '' : 's'}`
 }

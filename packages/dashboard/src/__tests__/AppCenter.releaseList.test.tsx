@@ -2,7 +2,7 @@
 // four gaps #834 collected — open state derived rather than seeded, headers as headings, deletion
 // outcomes announced, and every row control named for its row.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -280,6 +280,100 @@ describe('a row whose status change takes it out of the filtered list (#833)', (
     expect(description(trigger(2, '1.0.0'))).toBe('')
   })
 
+  it('drops the move when the filter changed before the row left', async () => {
+    // Made under Backlog, then the person switched to All before the answer: the row stays. When it
+    // later disappears under Rejected, that is the filter's doing, not this change's.
+    serve([build(1, '1.0.0'), build(2, '1.0.0')])
+    renderAppCenter()
+    await screen.findByText('uploader-2')
+    await filterBy('Backlog')
+    await screen.findByText('uploader-2')
+    const answer = deferred<void>()
+    api.updateBuildStatus.mockImplementationOnce(async (id: number, status: Build['status_label']) => {
+      await answer.promise
+      db = db.map(b => (b.id === id ? { ...b, status_label: status } : b))
+    })
+
+    await setStatus(1, '1.0.0', 'Done')
+    await filterBy('All statuses')
+    answer.resolve()
+    await waitFor(() => expect(trigger(1, '1.0.0').textContent).toContain('Done'))
+    db = db.map(b => (b.id === 2 ? { ...b, status_label: 'Rejected' } : b))
+    await filterBy('Rejected')
+
+    await waitFor(() => expect(screen.queryByText('uploader-1')).toBeNull())
+    expect(toastSuccess).not.toHaveBeenCalled()
+    expect(description(trigger(2, '1.0.0'))).toBe('')
+  })
+
+  it('describes nothing in the next app when the app changed without moving focus', async () => {
+    // Safari does not focus a button on click, so switching app from the sidebar fires no focusin.
+    // The note was written against Coffee's list; Tea has a release with the same name.
+    serve([build(1, '1.0.0'), build(2, '0.9.0'), build(3, '0.9.0', 'Backlog', 2)])
+    renderAppCenter()
+    await screen.findByText('uploader-1')
+    await filterBy('Backlog')
+    await screen.findByText('uploader-1')
+    const answer = deferred<void>()
+    api.updateBuildStatus.mockImplementationOnce(async () => { await answer.promise })
+
+    await setStatus(1, '1.0.0', 'Done')
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    fireEvent.click(screen.getByRole('button', { name: /tea/i }))
+    await screen.findByText('uploader-3')
+
+    // Tea's first header is described by the status line as always — just not by Coffee's note.
+    expect(description(header('0.9.0'))).not.toContain('was set to')
+    expect(document.activeElement).toBe(document.body)
+    answer.resolve()
+  })
+
+  it('does not follow a row that leaves only after its own refetch failed', async () => {
+    // The change landed but the list could not be refreshed, so the row stayed. When a later
+    // refetch finally drops it, the person has long moved on; nothing is pulled or described.
+    serve([build(1, '1.0.0'), build(2, '1.0.0')])
+    const { client } = renderAppCenter()
+    await screen.findByText('uploader-2')
+    await filterBy('Backlog')
+    await screen.findByText('uploader-2')
+    const serveNormally = api.getBuilds.getMockImplementation()
+    api.getBuilds.mockRejectedValueOnce(new Error('relay blinked'))
+
+    await setStatus(1, '1.0.0', 'Done')
+    await screen.findByText('Showing the last list — refresh failed.')
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    api.getBuilds.mockImplementation(serveNormally!)
+    await client.invalidateQueries({ queryKey: ['builds'] })
+
+    await waitFor(() => expect(screen.queryByText('uploader-1')).toBeNull())
+    expect(document.activeElement).toBe(document.body)
+    expect(description(trigger(2, '1.0.0'))).toBe('')
+  })
+
+  it('says it once when focus had already moved onto a candidate', async () => {
+    // Tabbed to the next row's status before the answer: focus stays, the toast says why, and the
+    // note does not linger on that control to repeat it the next time it is reached.
+    serve([build(1, '1.0.0'), build(2, '1.0.0')])
+    renderAppCenter()
+    await screen.findByText('uploader-2')
+    await filterBy('Backlog')
+    await screen.findByText('uploader-2')
+    const answer = deferred<void>()
+    api.updateBuildStatus.mockImplementationOnce(async (id: number, status: Build['status_label']) => {
+      await answer.promise
+      db = db.map(b => (b.id === id ? { ...b, status_label: status } : b))
+    })
+
+    await setStatus(1, '1.0.0', 'Done')
+    trigger(2, '1.0.0').focus()
+    answer.resolve()
+
+    await waitFor(() => expect(screen.queryByText('uploader-1')).toBeNull())
+    expect(document.activeElement).toBe(trigger(2, '1.0.0'))
+    expect(toastSuccess).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(description(trigger(2, '1.0.0'))).toBe(''))
+  })
+
   it('keeps focus where the person moved it while the change was in flight', async () => {
     serve([build(1, '1.0.0'), build(2, '1.0.0')])
     renderAppCenter()
@@ -366,6 +460,18 @@ describe('which releases are open (#834)', () => {
     expect(header('2.0.0').getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('keeps the most recent toggle last even for a version named like a number', async () => {
+    // An object would list "2" before "1.0.0" whatever order they were toggled in, and the cap
+    // would then drop the newer toggle first.
+    serve([build(1, '2'), build(2, '1.0.0')])
+    renderAppCenter()
+    await screen.findByText('uploader-1')
+    await userEvent.click(header('1.0.0'))
+    await userEvent.click(header('2'))
+    const stored = JSON.parse(localStorage.getItem('tapflow-app-center-releases:1') ?? '[]') as [string, boolean][]
+    expect(stored.map(([name]) => name)).toEqual(['1.0.0', '2'])
+  })
+
   it('falls back to the default when storage holds something it cannot read', async () => {
     localStorage.setItem('tapflow-app-center-releases:1', '{not json')
     serve([build(1, '2.0.0'), build(2, '1.0.0')])
@@ -398,7 +504,8 @@ describe('deletion outcomes are announced (#834)', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Schedule deletion' }))
     expect(toastSuccess).not.toHaveBeenCalled()
 
-    answer.resolve(new Date(Date.now() + 7 * 86_400_000 + 60_000).toISOString())
+    // As the relay answers: truncated to the second, and read after a round trip — a little under 7 days.
+    answer.resolve(new Date(Date.now() + 7 * 86_400_000 - 1_500).toISOString())
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Deletion scheduled for ios build 1, 1.0.0 — it will be deleted in 7 days'))
   })
 

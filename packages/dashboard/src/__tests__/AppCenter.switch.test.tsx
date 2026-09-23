@@ -442,11 +442,11 @@ describe('App Center — switching apps', () => {
   })
 
   it('opens the new app\'s first release once its answer arrives', async () => {
-    // **The other side of holding the previous list.** Seeding has to wait for the new app's own
-    // data; run it during the placeholder window and it seeds from the *previous* app's rows and
-    // marks this app as already seeded, so the release that should open never does. That failure
-    // is invisible to a test that only checks the previous list stayed put — which is why this one
-    // exists beside it.
+    // **The other side of holding the previous list.** Open state is read against the app whose rows
+    // are on screen; key it on the selected app instead and the held list is judged by the new app's
+    // toggles, or the new list by the old one's. That failure is invisible to a test that only checks
+    // the previous list stayed put, which is why this one exists beside it. (Before #834 this was a
+    // seed run from an effect, with the same trap.)
     getBuilds.mockResolvedValueOnce([build(1, '1.0.0')])
     renderAppCenter()
     await screen.findByText('uploader-1')
