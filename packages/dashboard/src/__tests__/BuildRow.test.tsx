@@ -61,7 +61,7 @@ describe('BuildRow — deletion lifecycle', () => {
   it('scheduling deletion goes through a confirm dialog', async () => {
     const onScheduleDeletion = vi.fn()
     renderRow(makeBuild({ delete_after: null }), { onScheduleDeletion })
-    await userEvent.click(screen.getByTitle('Schedule deletion'))
+    await userEvent.click(screen.getByRole('button', { name: 'Schedule deletion of ios build 1, 1.0.0' }))
     expect(onScheduleDeletion).not.toHaveBeenCalled() // confirm required first
     await userEvent.click(screen.getByRole('button', { name: 'Schedule deletion' }))
     expect(onScheduleDeletion).toHaveBeenCalledWith(1)
@@ -70,7 +70,36 @@ describe('BuildRow — deletion lifecycle', () => {
   it('cancel action fires immediately for a scheduled build', async () => {
     const onCancelDeletion = vi.fn()
     renderRow(makeBuild({ delete_after: new Date(Date.now() + 3_600_000).toISOString() }), { onCancelDeletion })
-    await userEvent.click(screen.getByTitle('Cancel scheduled deletion'))
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel scheduled deletion of ios build 1, 1.0.0' }))
     expect(onCancelDeletion).toHaveBeenCalledWith(1)
+  })
+})
+
+// #834 — the row's icon buttons were named only by `title`, the same on every row.
+describe('BuildRow — every control names its row', () => {
+  it('gives two builds that share a number and version different names on every control', () => {
+    render(
+      <>
+        <BuildRow build={makeBuild({ id: 1, platform: 'ios', build_number: '42', version_name: '1.2.0' })} isLast={false}
+          onNavigate={() => {}} onStatusChange={() => {}} onScheduleDeletion={() => {}} onCancelDeletion={() => {}} />
+        <BuildRow build={makeBuild({ id: 2, platform: 'android', build_number: '42', version_name: '1.2.0', delete_after: new Date(Date.now() + 86_400_000 * 3).toISOString() })} isLast
+          onNavigate={() => {}} onStatusChange={() => {}} onScheduleDeletion={() => {}} onCancelDeletion={() => {}} />
+      </>,
+    )
+    expect(screen.getByRole('button', { name: 'Schedule deletion of ios build 42, 1.2.0' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Cancel scheduled deletion of android build 42, 1.2.0' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Start QA on ios build 42, 1.2.0' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Start QA on android build 42, 1.2.0' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Status for android build 42, 1.2.0' })).toBeTruthy()
+  })
+
+  it('explains the icon on keyboard focus, not only on hover, and carries no title', async () => {
+    renderRow(makeBuild())
+    const button = screen.getByRole('button', { name: 'Schedule deletion of ios build 1, 1.0.0' })
+    expect(button.getAttribute('title')).toBeNull()
+    await userEvent.tab()
+    await userEvent.tab()
+    expect(document.activeElement).toBe(button)
+    expect((await screen.findByRole('tooltip')).textContent).toContain('Schedule deletion')
   })
 })

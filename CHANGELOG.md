@@ -26,11 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The App Center remembers which releases you opened or closed**, per app and per browser. Every visit used to open only the newest release, so an app with many versions had to be unfolded again each time. Only what you toggled is stored, and a release you never touched follows that default: a version uploaded since your last visit arrives open, and one you collapsed stays collapsed.
+
 - **`tapflow flow run` exits 2 when every failed flow failed environmentally** ([#543](https://github.com/jo-duchan/tapflow/issues/543)). A refused input with an environmental reason, a session lost to an agent restart, or a dropped relay connection used to reach CI as exit 1, reading as a product regression on dashboards that rely on the 1-vs-2 distinction. Selector, assertion and other product failures still exit 1, successful runs still exit 0, and a run with both kinds keeps exit 1 so a real regression is never masked by a blip.
 
 - **The dashboard is built with the React Compiler.** It memoises what React would otherwise recompute on every render, in place of the hand-written `useCallback` and `useMemo` that were doing part of that by hand — 62 of the first and 3 of the second, against no memoised components at all. 158 functions are compiled and 15 are skipped, which is safe: a function the compiler cannot prove is left exactly as it was. Fourteen of those 15 are a shape the compiler does not lower yet, nine of them `try`/`catch`; the fifteenth is an internal compiler invariant. None is anything this codebase is doing wrong. The first load grows 3,810 B compressed, since the memoisation is code. No behaviour change is intended — the compiler only memoises — and the dashboard's test suite runs against the compiled output rather than beside it.
 
 ### Fixed
+
+- **Changing a build's status under a status filter no longer drops focus to the top of the App Center** ([#833](https://github.com/jo-duchan/tapflow/issues/833)). When the new status was one the filter hides, the refetch removed the row along with the control that had focus. Focus now moves to the next build in the release, or the previous one, or the neighbouring release's header, and that control says why the build disappeared. If the list empties, focus goes to the search box as before. A change the server refuses moves nothing.
+- **Four more App Center accessibility gaps** ([#834](https://github.com/jo-duchan/tapflow/issues/834)):
+  - After a retry, the first release is announced in its actual state from the start. It used to be announced collapsed and then report its own expansion.
+  - Release headers are headings, so a screen reader can move between releases.
+  - Scheduling or cancelling a deletion is announced with the build and when it will be deleted, where before only the icon changed.
+  - Every control on a build row names its build. The deletion icons were all called "Schedule deletion", so voice control could not pick one row's button, and their tooltip appeared only on hover; it now shows on keyboard focus too.
 
 - **Builds still install after their data directory moves** ([#836](https://github.com/jo-duchan/tapflow/issues/836)). The relay stored each build's full path, so after `tapflow migrate data-dir`, or after copying an install to another disk, every build uploaded before the move failed to install with "The relay cannot read this build file". Expired builds were dropped from the list with their files left on disk. The relay now looks for the file in its current `uploads/builds/` first and falls back to the stored path, for installs and for the expiry purge. Nothing in the database is rewritten.
 

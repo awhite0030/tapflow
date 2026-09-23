@@ -156,11 +156,13 @@ So: `useQuery` for reads, `useMutation` with an optimistic write for actions on 
   twice quickly.
 - **`placeholderData: keepPreviousData` on anything a user switches between.** Without it the page
   re-renders with no rows while the next set loads, and a page with no rows is the empty state.
-- **State derived from a fetch waits for that fetch's own answer.** The App Center seeds which
-  release is expanded from the rows it just received; running that during the placeholder window
-  seeds it from the *previous* app's rows and marks the new one as done, so the release that should
-  open never does. `AppCenter.switch.test.tsx` holds both halves — the previous list stays, and the
-  new one opens when it lands.
+- **State derived from a fetch is read against the rows it came from.** The App Center works out
+  which releases are open during render, from the rows on screen and the app *those rows* belong to
+  (`builds[0].app_id`), not the app selected. During the placeholder window the held rows are judged
+  by the previous app's toggles, and the new app's are used once its own rows land.
+  `AppCenter.switch.test.tsx` holds both halves: the previous list stays, and the new one opens when
+  it lands. An earlier version seeded the open set from an effect instead, and #834 found the cost: a
+  header focused in a layout effect was announced collapsed before the seed expanded it.
 - Defaults live in `lib/queryClient.ts` (`retry: 0`, `refetchOnWindowFocus: true`) with the reason
   for each.
 
@@ -437,9 +439,18 @@ Center is the example (#829).
 design acted on any removal and broke the page's most common interaction: picking a row's status
 unmounts the `Select`'s content, and the status mutation re-rendered the page before Radix handed
 focus back to the trigger — so focus went to the first release and the list scrolled to the top under
-a mouse user. A removal that is not a swap belongs to whatever caused it. That leaves **a row leaving
-a list that stays a list** unhandled here on purpose: where its focus should go — the next row, the
-previous one, its release — is a decision for the row, not for a region-wide hook (#833).
+a mouse user. A removal that is not a swap belongs to whatever caused it, so **a row leaving a list
+that stays a list** is handled by the change that removed it, not here. In App Center that is a status
+change a filter then hides (#833). Candidates are ranked when the change is made, from the rows on
+screen: rows of the same release nearest first (next before previous), then release headers nearest
+first. Focus moves to the first one still on screen on the commit that removes the row, and only if
+focus went down with it. The move cannot happen earlier, because Radix hands focus back to the row's
+trigger after the pick, and the ranking cannot happen later, because by then the order is gone. A
+list of candidates rather than one target, because the same refetch can take the nearest neighbour
+too. The destination is described by a
+note that says why the row left, and the note clears when focus goes elsewhere. Someone who moved
+focus while the change was in flight keeps it, and hears the same sentence as a toast, since
+without a focus move nothing flushes it.
 
 **A failed key being fetched again is still the failure.** The manual retry holds the failure screen
 until its answer, and so does a background refetch of the same failure (returning to the tab, an
