@@ -36,10 +36,12 @@ count=$(find "$common/a11y-lens/pending" -maxdepth 1 -name '*.json' 2>/dev/null 
 pending="$common/a11y-lens/pending"
 tx=$(printf '%s' "$input" | jq -r '.transcript_path // ""' 2>/dev/null) || tx=""
 if [ -n "$tx" ] && [ -f "$tx" ]; then
-  # The last `--pending` call, by the record's timestamp. Matched on the command text, so a grep or
-  # an echo naming the command also counts: a floor, not a fence — the miss direction costs one
-  # extra stop, and parsing shell to close it is not worth it. Line continuations are joined first.
-  last=$(jq -rR 'fromjson? | .timestamp as $t | .message.content[]? | select(.type=="tool_use" and .name=="Bash") | .input.command // empty | gsub("\\\\\n"; " ") | select(test("a11y-lens\\s+check\\b.*--pending")) | $t // empty' "$tx" 2>/dev/null | tail -n 1) || last=""
+  # The last `--pending` call, by the record's timestamp. Matched where a command starts — the
+  # beginning, or after `;` `&` `|` `(` or a newline — with optional `VAR=value` prefixes, a runner
+  # (`pnpm exec`, `npx`, `yarn`, `bunx`, `node`) and a path. A grep or echo that merely names the
+  # command would otherwise pass the gate with the files still unreviewed. It is not a shell parser:
+  # `bash -c "…"` is missed, which costs one extra stop. Line continuations are joined first.
+  last=$(jq -rR 'fromjson? | .timestamp as $t | .message.content[]? | select(.type=="tool_use" and .name=="Bash") | .input.command // empty | gsub("\\\\\n"; " ") | select(test("(^|[;&|(\n])\\s*([A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*((pnpm|npx|yarn|bunx)\\s+(exec\\s+)?|node\\s+)?(\\S*/)?a11y-lens(\\.mjs)?\\s+check\\b[^;&|\n]*--pending")) | $t // empty' "$tx" 2>/dev/null | tail -n 1) || last=""
   if [ -n "$last" ]; then
     ref=$(mktemp) || exit 0
     trap 'rm -f "$ref"' EXIT

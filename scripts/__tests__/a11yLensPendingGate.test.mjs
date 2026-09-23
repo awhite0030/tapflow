@@ -103,6 +103,28 @@ describe('a skipped check the session has not followed up', () => {
     expect(blocked([bash('pnpm exec a11y-lens check --pending', '2000-01-01T00:00:00.000Z')])).toBe(true)
   })
 
+  it('is satisfied by the forms a session actually runs it in', () => {
+    for (const command of [
+      'cd /repo && pnpm exec a11y-lens check --pending',
+      'npx a11y-lens check --pending; echo done',
+      'node node_modules/@a11y-lens/cli/bin/a11y-lens.mjs check --pending',
+      'node_modules/.bin/a11y-lens check --pending 2>&1 | tail -5',
+    ]) {
+      expect(blocked([bash(command)]), command).toBe(false)
+    }
+  })
+
+  it('is not satisfied by a command that only mentions it', () => {
+    // Each of these would pass the gate with every recorded file still unreviewed.
+    for (const command of [
+      "echo 'run a11y-lens check --pending later'",
+      'grep -n "a11y-lens check --pending" AGENTS.md',
+      'git commit -m "document a11y-lens check --pending"',
+    ]) {
+      expect(blocked([bash(command)]), command).toBe(true)
+    }
+  })
+
   it('is not satisfied by a different a11y-lens command', () => {
     expect(blocked([bash('pnpm exec a11y-lens check --staged')])).toBe(true)
   })
