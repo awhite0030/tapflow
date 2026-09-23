@@ -181,11 +181,20 @@ function queryDeadlineFailure(base: string, lastError: TransientQueryError | und
     : new StepFailure(message)
 }
 
-async function waitForNextPoll(deadline: number, pollIntervalMs: number, base: string, lastError: TransientQueryError | undefined): Promise<void> {
+// The single place a poll loop gives up at its deadline. A trailing transient
+// blip must not turn a product miss into an environment failure: when a tree
+// was seen, the element genuinely never matched, so the deadline stays a
+// StepFailure (product). Both exits — the direct check and the wait below —
+// go through here, since timing decides which one fires and they must agree.
+function deadlineError(base: string, lastError: TransientQueryError | undefined, sawTree: boolean): Error {
+  return sawTree ? new StepFailure(withLastError(base, lastError)) : queryDeadlineFailure(base, lastError)
+}
+
+async function waitForNextPoll(deadline: number, pollIntervalMs: number, base: string, lastError: TransientQueryError | undefined, sawTree: boolean): Promise<void> {
   const remaining = deadline - Date.now()
-  if (remaining <= 0) throw queryDeadlineFailure(base, lastError)
+  if (remaining <= 0) throw deadlineError(base, lastError, sawTree)
   await delay(Math.min(pollIntervalMs, remaining))
-  if (Date.now() >= deadline) throw queryDeadlineFailure(base, lastError)
+  if (Date.now() >= deadline) throw deadlineError(base, lastError, sawTree)
 }
 
 async function resolveOne(
@@ -213,11 +222,8 @@ async function resolveOne(
       lastError = q.transient
     }
     const base = `no element matched ${describeSelector(sel)} within ${waitMs / 1000}s`
-    // A trailing transient blip must not turn a product miss into an
-    // environment failure: when a tree was seen, the element genuinely never
-    // matched, so the deadline stays a StepFailure (product).
-    if (Date.now() >= deadline) throw sawTree ? new StepFailure(withLastError(base, lastError)) : queryDeadlineFailure(base, lastError)
-    await waitForNextPoll(deadline, pollIntervalMs, base, lastError)
+    if (Date.now() >= deadline) throw deadlineError(base, lastError, sawTree)
+    await waitForNextPoll(deadline, pollIntervalMs, base, lastError, sawTree)
   }
 }
 
@@ -236,8 +242,8 @@ async function waitVisible(driver: FlowDriver, sel: Selector, timeoutMs: number,
       lastError = q.transient
     }
     const base = `no element matched ${describeSelector(sel)} within ${waitMs / 1000}s`
-    if (Date.now() >= deadline) throw sawTree ? new StepFailure(withLastError(base, lastError)) : queryDeadlineFailure(base, lastError)
-    await waitForNextPoll(deadline, pollIntervalMs, base, lastError)
+    if (Date.now() >= deadline) throw deadlineError(base, lastError, sawTree)
+    await waitForNextPoll(deadline, pollIntervalMs, base, lastError, sawTree)
   }
 }
 
@@ -257,8 +263,8 @@ async function waitNotVisible(driver: FlowDriver, sel: Selector, timeoutMs: numb
       lastError = q.transient
     }
     const base = `element ${describeSelector(sel)} is still visible after ${waitMs / 1000}s`
-    if (Date.now() >= deadline) throw sawTree ? new StepFailure(withLastError(base, lastError)) : queryDeadlineFailure(base, lastError)
-    await waitForNextPoll(deadline, pollIntervalMs, base, lastError)
+    if (Date.now() >= deadline) throw deadlineError(base, lastError, sawTree)
+    await waitForNextPoll(deadline, pollIntervalMs, base, lastError, sawTree)
   }
 }
 
