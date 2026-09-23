@@ -32,13 +32,15 @@ Skip this on a relay-only server (Linux). See [Environment Setup](/guide/environ
 
 ## 3. Configure tapflow (optional)
 
-Run `tapflow init` to generate `tapflow.config.json`. It interactively asks for a tunnel and, on a plain LAN, your streaming performance (HTTP or HTTPS). Skip this step if the defaults are fine — port 4000, no tunnel, HTTP.
+Run `tapflow init` to set this machine up. It writes `tapflow.config.json` into `~/.tapflow`, asks for a tunnel and, on a plain LAN, your streaming performance (HTTP or HTTPS). Skip this step if the defaults are fine — port 4000, no tunnel, HTTP.
 
 ```sh
 tapflow init
 ```
 
-For what each prompt sets, the `.env` credentials file, and the CI flags, see [Configuring tapflow](/guide/configure).
+Run it from anywhere: tapflow keeps one install per machine, and every command finds it the same way. To keep it somewhere else, such as a server's `/var/lib/tapflow`, set `TAPFLOW_HOME` and every command follows it.
+
+`init` also writes an `AGENTS.md` and a `CLAUDE.md` in that directory, so a coding agent opened there answers tapflow questions from the documentation. For what each prompt sets, the `.env` credentials file, and the CI flags, see [Configuring tapflow](/guide/configure).
 
 ## 4. Start the relay + agent
 

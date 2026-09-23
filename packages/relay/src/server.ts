@@ -1,7 +1,7 @@
 import path from 'path'
 import { initDb } from './db.js'
 import { RelayServer } from './RelayServer.js'
-import { config, loadedEnvPath } from './lib/config.js'
+import { config, loadedEnvPath, assertInstallDir } from './lib/config.js'
 import { buildCorsOrigins, containerWithoutPublicUrlWarning, proxyWithoutPublicUrlWarning } from './lib/proxyConfig.js'
 import { runningInContainer } from './lib/lanAddress.js'
 import { bootstrapAdminFromEnv, AdminBootstrapError } from './lib/adminBootstrap.js'
@@ -10,6 +10,8 @@ import { startTlsBackgroundTasks } from './lib/tlsTasks.js'
 import { createLogger } from '@tapflowio/agent-core'
 
 const logger = createLogger('relay')
+
+assertInstallDir()
 
 const { port, dataDir } = config.local
 // config loaded <dataDir>/.env before reading any secret (JWT/SMTP/DNS tokens); just report it here.

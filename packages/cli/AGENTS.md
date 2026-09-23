@@ -15,10 +15,12 @@ status: living
 `tapflow` CLI: handles local dev environment checks and simulator / relay / agent startup.
 Commands are registered in `src/index.ts`; user-facing reference: [`docs/reference/cli.md`](../../docs/reference/cli.md). Non-obvious contracts:
 
-- `init` never touches the relay; it scaffolds config and auto-adds the `.tapflow/` runtime dirs to `.gitignore`. `admin init` is the CLI fallback for headless servers (web `/setup` is the default path).
+- `init` never touches the relay; it scaffolds the install dir's config, the `AGENTS.md`/`CLAUDE.md` a coding agent reads, and the `.gitignore` entries for the runtime dirs. `admin init` is the CLI fallback for headless servers (web `/setup` is the default path).
+- **Every command resolves the install dir the same way** — `resolveInstallDir` in `@tapflowio/relay`: `TAPFLOW_HOME`, else the cwd when it already is an install, else `~/.tapflow`. No command takes a path for it. `init` re-resolves at call time rather than reading the relay's import-time `install`, because it can be pointed elsewhere in the same process and it creates the dir. Commands that run or reach the relay call `assertInstallDir()`; deciding at import would refuse `setup` and `init` too, since `index.ts` imports every command's module at startup.
+- **`init` pins `local.dataDir` in the config it writes.** A new install in tapflow's own dir gets `data`; one sharing a dir with something else gets `.tapflow/data`, where that repo's `.gitignore` already covers it. Pinned so the layout cannot change later under a different resolution rule.
 - `agent start --token` (or `TAPFLOW_AGENT_TOKEN`) carries an `agent`-scope PAT, required when the relay is on a different machine; flag wins over env.
 - `flow run` exit codes: `0` passed · `1` flow failed · `2` env/config error. Always sends `device:boot` (idempotent — it initializes the agent's touch/stream state). `--token` needs a `view`-scope PAT; REST (`/ui-tree`, `/screenshot`) requires auth even on localhost.
-- `migrate data-dir` moves a legacy `.tapflow-data/` into the unified `.tapflow/data/` (atomic rename), repoints `local.dataDir` in `tapflow.config.json` when it pinned the old default, and updates `.gitignore`. Idempotent; the relay itself never moves data (read-only fallback only).
+- `migrate data-dir` moves a legacy `.tapflow-data/` into the unified `.tapflow/data/` (atomic rename) **inside the resolved install dir**, repoints `local.dataDir` in `tapflow.config.json` when it pinned the old default, and updates `.gitignore`. Idempotent; the relay itself never moves data (read-only fallback only).
 
 ### Command Design Principles
 
@@ -32,7 +34,7 @@ Each command has exactly one responsibility. `tapflow start` is for local develo
 ## HOW
 
 - UX standard: one-line input → progress feedback → result message. Use spinners and banners for visual feedback (`print.ts`: `banner`, `step`, `warn`, `createSpinner`). Interactive prompts use `@clack/prompts`.
-- `tapflow.config.json` lives in the working directory (created by `tapflow init`); runtime data goes in `.tapflow/data/`. Downloaded tunnel binaries are cached in `~/.tapflow/bin`.
+- `tapflow.config.json` lives in the install dir (created by `tapflow init`); runtime data goes in `<install>/data` on a new install, or the `.tapflow/data` / `.tapflow-data` an existing one already has. Downloaded tunnel binaries are cached in `~/.tapflow/bin`.
 - Package dependencies: `@tapflowio/agent-core`, `@tapflowio/ios-agent`, `@tapflowio/android-agent`, `@tapflowio/relay`. Import as libraries — do not reimplement.
 
 ## HOW NOT

@@ -29,7 +29,7 @@ try {
   console.log()
   console.log(`${DIM}     Next steps:${R}`)
   console.log(`${DIM}       tapflow doctor        check system prerequisites${R}`)
-  console.log(`${DIM}       tapflow init          create your first admin account${R}`)
+  console.log(`${DIM}       tapflow init          configure this machine's tapflow${R}`)
   console.log(`${DIM}       tapflow start         start relay + agent${R}`)
   console.log()
   console.log(`${DIM}     Docs: https://github.com/jo-duchan/tapflow${R}`)

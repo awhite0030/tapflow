@@ -229,7 +229,7 @@ tapflow agent start --relay wss://your-relay-url --token <agent-token>
 | `tapflow start` | Start relay + agent together (local mode) |
 | `tapflow relay start` | Start relay only |
 | `tapflow agent start --relay <url> [--token <pat>]` | Start agent and connect to a relay (remote relays need an `agent`-scope token) |
-| `tapflow init` | Scaffold `tapflow.config.json` |
+| `tapflow init` | Configure this machine's tapflow (`~/.tapflow` by default) |
 | `tapflow admin init` | Create the first admin account (CLI fallback) |
 | `tapflow doctor [platform]` | Diagnose prerequisites (Node, iOS, Android) |
 | `tapflow setup [platform]` | Install & configure the local environment |

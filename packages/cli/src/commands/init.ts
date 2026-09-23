@@ -1,16 +1,17 @@
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { select, text, isCancel, cancel } from '@clack/prompts'
-import { dnsProviders } from '@tapflowio/relay'
+import { dnsProviders, resolveInstallDir, resolveDefaultDataDir, OWN_DATA_DIR, UNIFIED_DATA_DIR, type InstallDir } from '@tapflowio/relay'
 import { banner, warn } from '../lib/print.js'
 import { isInteractive } from '../lib/interactive.js'
+import { scaffoldAgentDocs, isTapflowOwned } from '../lib/agentDocs.js'
 
 export interface InitConfigOptions {
   tunnel?: string
   force?: boolean
 }
 
-// dataDir omitted so it defaults to .tapflow/data; not pinning it lets an upgrade use the relay's read-only legacy fallback, keeping `tapflow migrate data-dir` conflict-free.
 const BASE_CONFIG = {
   local: { port: 4000 },
   relay: { url: '' },
@@ -35,14 +36,21 @@ function isInsideGitRepo(dir: string): boolean {
   }
 }
 
-// Ignore only the runtime subdirs of .tapflow/ — .tapflow/flows/ stays committed.
+// Ignore the install's runtime dirs — .tapflow/flows/ stays committed.
+//
+// **Anchored**, so `/data/` means this directory's data and not every `data/` in the repository.
+// An install can sit inside an app repo, and an unanchored entry there would quietly stop tracking
+// the app's own `src/**/data/`.
 function addToGitignore(dir: string, entries: string[]): 'created' | 'appended' | 'already-present' {
   const gitignorePath = path.join(dir, '.gitignore')
   if (fs.existsSync(gitignorePath)) {
     const content = fs.readFileSync(gitignorePath, 'utf-8')
     const present = new Set(content.split('\n').map((line) => line.trim()))
-    // A `**/`-prefixed glob (how the monorepo root ignores these) already covers the exact entry.
-    const missing = entries.filter((e) => !present.has(e) && !present.has(`**/${e}`))
+    // An unanchored or `**/`-prefixed line (how the monorepo root ignores these) already covers it.
+    const missing = entries.filter((e) => {
+      const bare = e.replace(/^\//, '')
+      return !present.has(e) && !present.has(bare) && !present.has(`**/${bare}`)
+    })
     if (missing.length === 0) return 'already-present'
     const separator = content.endsWith('\n') ? '' : '\n'
     fs.appendFileSync(gitignorePath, `${separator}\n# tapflow runtime data\n${missing.join('\n')}\n`, 'utf-8')
@@ -180,15 +188,62 @@ async function promptTls(): Promise<TlsConfig | null> {
   return { mode: 'byo-api-token', domain: domain.trim(), dnsProvider: method }
 }
 
+// Forward slashes in anything written for another tool to parse. On Windows `path` joins with `\`,
+// which a .gitignore reads as an escape — `/.tapflow\data/` ignores nothing, and the secrets in it
+// would be committed. Node reads either separator back, so the config gets the same form.
+function toPosix(p: string): string {
+  return p.split(path.sep).join('/')
+}
+
+/** The data layout `init` writes into a config it creates, relative to the install dir. */
+function dataDirFor(install: InstallDir, home: string): string {
+  const found = resolveDefaultDataDir(install.dir, install.defaultDataLayout)
+  // Pinned rather than left to the default, so the layout cannot change later under an install
+  // that is found by a different rule — and so a dir that is also an app repo keeps its secrets
+  // under `.tapflow/data/`, where that repo's .gitignore already covers them.
+  if (found.existing) return path.relative(install.dir, found.dataDir)
+  return isTapflowOwned(install.dir, home) ? OWN_DATA_DIR : UNIFIED_DATA_DIR
+}
+
+function agentDocsLines(dir: string, home: string): string[] {
+  try {
+    const report = scaffoldAgentDocs(dir, home)
+    const lines: string[] = []
+    if (report.agents === 'created') lines.push('AGENTS.md created for your coding agent.')
+    else if (report.agents === 'appended') lines.push('tapflow section added to AGENTS.md.')
+    else if (report.agents === 'updated') lines.push('tapflow section in AGENTS.md updated.')
+    if (report.claude === 'created') lines.push('CLAUDE.md created (imports AGENTS.md).')
+    return [...lines, ...report.notes]
+  } catch (err) {
+    warn(`Could not write the agent docs: ${err instanceof Error ? err.message : String(err)}`)
+    return []
+  }
+}
+
 export async function cmdInitConfig(opts: InitConfigOptions): Promise<void> {
-  const configPath = path.join(process.cwd(), 'tapflow.config.json')
+  // Resolved here rather than read from the relay's import-time value: this runs in-process in
+  // tests that point it at another directory, and `init` is also what creates a TAPFLOW_HOME dir.
+  const install = resolveInstallDir()
+  const home = os.homedir()
+  const configPath = install.configPath
+  const where = `Install dir: ${install.dir} (${install.reason})`
 
   if (fs.existsSync(configPath) && !opts.force) {
-    banner('error', 'ALREADY INITIALIZED', [
-      'tapflow.config.json already exists.',
-      'Use --force to overwrite.',
-    ])
-    process.exit(1)
+    // Re-running is how an existing install picks up the agent docs, so it is not an error — but a
+    // flag that asks to change the config is, because keeping the config would ignore it.
+    if (opts.tunnel) {
+      banner('error', 'CONFIG EXISTS', [
+        where,
+        `${configPath} already exists, so --tunnel has nothing to write to.`,
+        'Use --force to recreate the config, or edit the file.',
+      ])
+      process.exit(1)
+    }
+    const kept = [where, `${path.basename(configPath)} kept — use --force to recreate it.`]
+    kept.push(...agentDocsLines(install.dir, home))
+    kept.push(`Ask your coding agent about tapflow from here: cd ${install.dir}`)
+    banner('success', 'CONFIG KEPT', kept)
+    return
   }
 
   const SUPPORTED = ['tailscale', 'rathole']
@@ -215,49 +270,56 @@ export async function cmdInitConfig(opts: InitConfigOptions): Promise<void> {
     tls = await promptTls()
   }
 
+  const dataDir = dataDirFor(install, home)
+  const absoluteDataDir = path.join(install.dir, dataDir)
   const configOut = {
     ...BASE_CONFIG,
+    // Relative to the config file, which is how the relay reads it — and which is not the install
+    // dir when the file being rewritten is an older install's `~/tapflow.config.json`. Written
+    // relative to the install dir, `--force` there pinned `data`, which read back as `~/data`.
+    local: { ...BASE_CONFIG.local, dataDir: toPosix(path.relative(path.dirname(configPath), absoluteDataDir)) },
     ...(tunnel != null ? { tunnel } : {}),
     ...(tls != null ? { tls } : {}),
   }
   try {
+    fs.mkdirSync(install.dir, { recursive: true })
     fs.writeFileSync(configPath, JSON.stringify(configOut, null, 2) + '\n', 'utf-8')
   } catch (err) {
     banner('error', 'WRITE FAILED', [
-      `Could not write tapflow.config.json: ${err instanceof Error ? err.message : String(err)}`,
+      `Could not write ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
     ])
     process.exit(1)
   }
 
-  // Legacy .tapflow-data/ moves only via `tapflow migrate data-dir`; until then don't scaffold a fresh .tapflow/data/ (it would trap that command with a both-dirs conflict).
-  const hasLegacyDataDir = fs.existsSync(path.join(process.cwd(), '.tapflow-data'))
+  // Legacy .tapflow-data/ moves only via `tapflow migrate data-dir`; until then don't scaffold a fresh data dir (it would trap that command with a both-dirs conflict).
+  const hasLegacyDataDir = dataDir === '.tapflow-data'
 
   // byo-api-token: 토큰 재export 없이 재시작 가능하도록 자격 증명 env 파일을 스캠폴드(빈 변수명만 작성).
   let envScaffold: 'created' | 'appended' | 'already-present' | 'skipped' = 'skipped'
   if (tls?.mode === 'byo-api-token' && !hasLegacyDataDir) {
     const envVars = dnsProviders.get(tls.dnsProvider)?.envVars ?? []
     try {
-      envScaffold = scaffoldEnvFile(path.join(process.cwd(), '.tapflow', 'data'), envVars)
+      envScaffold = scaffoldEnvFile(absoluteDataDir, envVars)
     } catch (err) {
-      warn(`Could not write .tapflow/data/.env: ${err instanceof Error ? err.message : String(err)}`)
+      warn(`Could not write ${path.join(dataDir, '.env')}: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
   let gitignoreUpdated: 'created' | 'appended' | 'already-present' | 'skipped' = 'skipped'
-  if (isInsideGitRepo(process.cwd())) {
+  if (isInsideGitRepo(install.dir)) {
     // Ignore the legacy dir too while it awaits migration, so its secrets aren't committed meanwhile.
-    const ignoreEntries = ['.tapflow/data/', '.tapflow/artifacts/']
-    if (hasLegacyDataDir) ignoreEntries.push('.tapflow-data/')
+    const ignoreEntries = [`/${toPosix(dataDir)}/`, '/.tapflow/artifacts/']
+    if (dataDir !== '.tapflow-data' && fs.existsSync(path.join(install.dir, '.tapflow-data'))) ignoreEntries.push('/.tapflow-data/')
     try {
-      gitignoreUpdated = addToGitignore(process.cwd(), ignoreEntries)
+      gitignoreUpdated = addToGitignore(install.dir, ignoreEntries)
     } catch (err) {
       warn(`Could not update .gitignore: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
-  const lines: string[] = ['tapflow.config.json created.']
-  if (gitignoreUpdated === 'created') lines.push('.gitignore created (.tapflow/ runtime dirs added).')
-  else if (gitignoreUpdated === 'appended') lines.push('.tapflow/ runtime dirs added to .gitignore.')
+  const lines: string[] = [where, `${path.basename(configPath)} created.`]
+  if (gitignoreUpdated === 'created') lines.push('.gitignore created (runtime dirs added).')
+  else if (gitignoreUpdated === 'appended') lines.push('Runtime dirs added to .gitignore.')
   if (tunnel?.provider === 'rathole' && (!tunnel.serverAddr || !tunnel.publicUrl)) {
     lines.push('Fill in tunnel.serverAddr and tunnel.publicUrl in tapflow.config.json.')
   }
@@ -267,7 +329,7 @@ export async function cmdInitConfig(opts: InitConfigOptions): Promise<void> {
     lines.push(`HTTPS: ${tls.dnsProvider} DNS-01 for ${tls.domain}.`)
     if (!hasLegacyDataDir) {
       if (envScaffold === 'created' || envScaffold === 'appended') {
-        lines.push(`Paste ${envVars} into .tapflow/data/.env (the relay reads it on start).`)
+        lines.push(`Paste ${envVars} into ${path.join(dataDir, '.env')} (the relay reads it on start).`)
       } else {
         lines.push(`Set ${envVars} (the relay auto-publishes the A record on start).`)
       }
@@ -276,8 +338,10 @@ export async function cmdInitConfig(opts: InitConfigOptions): Promise<void> {
     lines.push('HTTPS: import-cert. Ensure the cert/key paths exist on this Mac.')
   }
   if (hasLegacyDataDir) {
-    lines.push('Legacy .tapflow-data/ found — run `tapflow migrate data-dir` first, then add any DNS tokens to .tapflow/data/.env.')
+    lines.push(`Legacy .tapflow-data/ found — run \`tapflow migrate data-dir\` first, then add any DNS tokens to ${path.join(UNIFIED_DATA_DIR, '.env')}.`)
   }
+  lines.push(...agentDocsLines(install.dir, home))
+  lines.push(`Ask your coding agent about tapflow from here: cd ${install.dir}`)
   lines.push('Next: tapflow start')
 
   banner('success', 'CONFIG CREATED', lines)

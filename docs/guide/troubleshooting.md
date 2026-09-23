@@ -442,9 +442,13 @@ A plain-HTTP LAN connection uses the **Standard** profile, which caps the stream
 
 ## Auth issues
 
-### `tapflow init` fails (`ALREADY INITIALIZED`)
+### `tapflow init` says `CONFIG KEPT`
 
-`tapflow.config.json` already exists in the current directory. Use `--force` to overwrite it, or edit the existing file directly.
+The install already has a `tapflow.config.json`, so `init` left it alone and refreshed only the tapflow section of `AGENTS.md`. Pass `--force` to write a fresh configuration, or edit the existing file directly.
+
+### The relay is using a configuration or database you did not expect
+
+`tapflow start` and `tapflow relay start` print the install directory, the configuration file and the data directory they resolved. Commands take the install named by `TAPFLOW_HOME`, then the current directory when it already is an install, and `~/.tapflow` otherwise ([which install a command uses](/guide/configure#which-install-a-command-uses)) — so running from a directory that holds an older install picks that one up. Set `TAPFLOW_HOME` to be explicit.
 
 ### `tapflow admin init` fails (`Already initialized`)
 

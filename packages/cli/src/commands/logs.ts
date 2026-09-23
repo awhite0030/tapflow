@@ -1,7 +1,8 @@
-import { config } from '@tapflowio/relay'
+import { config, assertInstallDir } from '@tapflowio/relay'
 import { DIM, RED, R } from '../lib/print.js'
 
 export async function cmdLogs(opts: { relay?: string; lines?: number }): Promise<void> {
+  assertInstallDir()
   const defaultRelay = config.relay.url ?? `http://localhost:${config.local.port}`
   const base = (opts.relay ?? defaultRelay).replace(/^ws/, 'http')
   const lines = opts.lines ?? 100

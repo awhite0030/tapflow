@@ -1,8 +1,9 @@
 import { WebSocket } from 'ws'
-import { config } from '@tapflowio/relay'
+import { config, assertInstallDir } from '@tapflowio/relay'
 import { DIM, BOLD, GREEN, YELLOW, RED, R } from '../lib/print.js'
 
 export async function cmdStatus(opts: { relay?: string }): Promise<void> {
+  assertInstallDir()
   const defaultRelay = config.relay.url ?? `ws://localhost:${config.local.port}`
   const relayUrl = (opts.relay ?? defaultRelay).replace(/^http/, 'ws')
 

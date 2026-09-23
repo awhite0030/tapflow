@@ -109,9 +109,9 @@ See [Environment Setup](/guide/environment-setup) for the full workflow.
 
 ## `tapflow init`
 
-Scaffold `tapflow.config.json` interactively. Run this once before `tapflow start`.
+Set this machine's tapflow up: `tapflow.config.json`, the `AGENTS.md` and `CLAUDE.md` a coding agent reads, and the credentials `.env` when you choose DNS auto-issue. Run it from anywhere — it writes to the install directory, `~/.tapflow` unless `TAPFLOW_HOME` or an install in the current directory says otherwise ([which install a command uses](/guide/configure#which-install-a-command-uses)). It creates the directory when it is missing.
 
-If `tapflow.config.json` already exists, the command exits with an error unless `--force` is passed.
+Running it again keeps the configuration and refreshes the tapflow section of `AGENTS.md`, so an existing install can pick that up; pass `--force` to write a fresh configuration. `--tunnel` on an install that already has a configuration stops with an error instead, because keeping the configuration would ignore the flag.
 
 If no tunnel flag is given and the terminal is interactive, a prompt guides you through tunnel selection. In a non-interactive environment with no `--tunnel` flag, a config file with no tunnel section is created.
 
@@ -128,7 +128,10 @@ Example (Tailscale):
 
 ```sh
 tapflow init --tunnel tailscale
-# ✓ tapflow.config.json created.
+# ✓ CONFIG CREATED
+# Install dir: /Users/you/.tapflow (default)
+# tapflow.config.json created.
+# AGENTS.md created for your coding agent.
 # Tunnel: tailscale
 # → Next: tapflow start
 ```
@@ -137,8 +140,14 @@ Generating config with no tunnel (defaults):
 
 ```sh
 tapflow init
-# ✓ tapflow.config.json created.
+# ✓ CONFIG CREATED
 # → Next: tapflow start
+```
+
+Setting the install up somewhere else:
+
+```sh
+TAPFLOW_HOME=/var/lib/tapflow tapflow init
 ```
 
 

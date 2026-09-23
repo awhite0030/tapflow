@@ -13,6 +13,9 @@ vi.mock('@tapflowio/relay', () => ({
   proxyWithoutPublicUrlWarning: vi.fn(() => null),
   resolveTunnelPort: vi.fn((explicit: number | null, relayPort: number) => explicit ?? (relayPort === 4001 ? 4002 : 4001)),
   isInitialized: vi.fn(() => true),
+  assertInstallDir: vi.fn(),
+  install: { dir: '/tmp/tapflow-test-install', reason: 'default', configPath: '/tmp/tapflow-test-install/tapflow.config.json', defaultDataLayout: 'data', missing: false, shadowed: [] },
+  configFound: true,
   config: { local: { port: 4000, dataDir: '/tmp/tapflow-test', wsBackpressureBytes: 1048576, trustedProxies: [], tunnelPort: null }, relay: { url: null }, tunnel: null, tls: null },
 }))
 

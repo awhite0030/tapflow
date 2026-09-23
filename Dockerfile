@@ -75,6 +75,9 @@ COPY --from=builder --chown=node:node /app/out ./
 RUN mkdir -p /app/.tapflow/data
 VOLUME ["/app/.tapflow/data"]
 
+# The install dir this image runs, named rather than inferred. The volume below is its data.
+ENV TAPFLOW_HOME=/app
+
 # Set environment to production
 ENV NODE_ENV=production
 

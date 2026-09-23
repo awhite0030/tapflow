@@ -6,7 +6,7 @@ import { createLogger } from '@tapflowio/agent-core'
 import { parseTrustedProxies } from './clientAddress.js'
 import { dnsProviders } from './cert/dnsRegistry.js'
 import { loadDataDirEnv } from './loadEnvFile.js'
-import { resolveDefaultDataDir, LEGACY_DATA_DIR, UNIFIED_DATA_DIR } from './dataDir.js'
+import { resolveInstallDir, resolveDefaultDataDir, LEGACY_DATA_DIR, UNIFIED_DATA_DIR, type InstallDir } from './dataDir.js'
 import { validateWebhookUrl } from './webhookUrl.js'
 
 const logger = createLogger('relay:config')
@@ -115,8 +115,16 @@ const DEFAULTS = {
   webhooks: [],
 } satisfies TapflowConfig
 
-function resolveDataDir(raw: string): string {
+// TAPFLOW_DATA_DIR is a shell value, so a relative one means what it does in a shell: from the cwd.
+function resolveFromCwd(raw: string): string {
   return path.isAbsolute(raw) ? raw : path.join(process.cwd(), raw)
+}
+
+// A path inside tapflow.config.json is relative to that file, the way tsconfig and litestream read
+// theirs. It keeps `"dataDir": ".tapflow/data"` — what older `init` wrote and what
+// `tapflow migrate data-dir` writes — pointing at the same directory it always did.
+function resolveFromConfig(raw: string, configPath: string): string {
+  return path.isAbsolute(raw) ? raw : path.join(path.dirname(configPath), raw)
 }
 
 const rawWebhookEntrySchema = z.array(
@@ -161,11 +169,32 @@ export function resolveWebhooksConfig(raw: unknown, env: NodeJS.ProcessEnv): Tap
 // Populated by load(): path of the dataDir/.env that was loaded, or null. CLI/server use it for a "loaded credentials" log.
 export let loadedEnvPath: string | null = null
 
+// Which install this process is running, decided once. `init` re-resolves at call time instead of
+// reading this, because it can be pointed at another directory in the same process (its tests do).
+export const install: InstallDir = resolveInstallDir()
+// Whether the install's config file exists — the CLI's "not configured yet" hint reads this rather
+// than looking in the cwd.
+export let configFound = false
+// Where local.dataDir came from, so `init` can pin the layout it found into a config it writes.
+export let dataDirSource: 'env' | 'config' | 'existing' | 'default' = 'default'
+
+/**
+ * Refuse a `TAPFLOW_HOME` that names a directory nobody created. Commands that run or reach the
+ * relay call this; `init` creates the directory instead. Deciding at import would take `setup`,
+ * `doctor` and `init` down with it, because the CLI imports every command's module at startup.
+ */
+export function assertInstallDir(): void {
+  if (!install.missing) return
+  logger.error(`TAPFLOW_HOME is ${install.dir}, which does not exist. Create it, fix the variable, or run \`tapflow init\` to set it up.`)
+  process.exit(1)
+}
+
 function load(): TapflowConfig {
   let file: DeepPartial<TapflowConfig> & { local?: { jwtSecret?: unknown } } = {}
 
-  const configPath = path.join(process.cwd(), 'tapflow.config.json')
-  if (fs.existsSync(configPath)) {
+  const configPath = install.configPath
+  configFound = fs.existsSync(configPath)
+  if (configFound) {
     try {
       file = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as typeof file
     } catch {
@@ -184,15 +213,21 @@ function load(): TapflowConfig {
   // pre-existing legacy .tapflow-data/ so an un-migrated install keeps reading its data.
   let dataDir: string
   if (process.env.TAPFLOW_DATA_DIR) {
-    dataDir = resolveDataDir(process.env.TAPFLOW_DATA_DIR)
+    dataDir = resolveFromCwd(process.env.TAPFLOW_DATA_DIR)
+    dataDirSource = 'env'
   } else if (file.local?.dataDir != null) {
-    dataDir = resolveDataDir(file.local.dataDir)
+    dataDir = resolveFromConfig(file.local.dataDir, configPath)
+    dataDirSource = 'config'
   } else {
-    const resolved = resolveDefaultDataDir(process.cwd())
+    const resolved = resolveDefaultDataDir(install.dir, install.defaultDataLayout)
     dataDir = resolved.dataDir
+    dataDirSource = resolved.existing ? 'existing' : 'default'
     if (resolved.usingLegacy) {
       logger.warn(`Reading data from the legacy ${LEGACY_DATA_DIR}/ — run \`tapflow migrate data-dir\` to move it into ${UNIFIED_DATA_DIR}/.`)
     }
+  }
+  for (const hidden of install.shadowed) {
+    logger.warn(`Ignoring ${hidden}: this machine's install is ${install.dir}. Set TAPFLOW_HOME to use the other one.`)
   }
   loadedEnvPath = loadDataDirEnv(dataDir)
 
@@ -230,7 +265,11 @@ function load(): TapflowConfig {
         publishAddress?: boolean; address?: string
       }
       if (t.mode === 'import-cert') {
-        return { mode: 'import-cert' as const, certPath: t.certPath ?? '', keyPath: t.keyPath ?? '' }
+        return {
+          mode: 'import-cert' as const,
+          certPath: t.certPath ? resolveFromConfig(t.certPath, configPath) : '',
+          keyPath: t.keyPath ? resolveFromConfig(t.keyPath, configPath) : '',
+        }
       }
       // Pass mode/provider through (no silent default) so zod rejects a missing/misspelled provider.
       return {
@@ -302,16 +341,29 @@ export function loadOrCreatePersistedSecret(dataDir: string): string {
   return secret
 }
 
-function loadJwtSecret(): string {
-  if (process.env.JWT_SECRET !== undefined) {
-    if (process.env.JWT_SECRET.length < 32) {
-      logger.error('config error: JWT_SECRET — must be at least 32 characters')
-      process.exit(1)
-    }
-    return process.env.JWT_SECRET
+// Checked at import, where a bad value belongs: it reads the environment and writes nothing.
+function checkJwtSecretEnv(): void {
+  if (process.env.JWT_SECRET !== undefined && process.env.JWT_SECRET.length < 32) {
+    logger.error('config error: JWT_SECRET — must be at least 32 characters')
+    process.exit(1)
   }
-  return loadOrCreatePersistedSecret(config.local.dataDir)
+}
+
+let cachedJwtSecret: string | null = null
+
+/**
+ * The secret this install signs with, created on first use rather than at import.
+ *
+ * Creating it at import meant **every** CLI command wrote one wherever it ran — `tapflow --version`
+ * in a repo left a `.tapflow/data/jwt-secret` behind, an agent-only Mac and a CI runner got one for
+ * a relay they never start. `RelayServer.start()` calls this on boot, so the file and its log still
+ * appear when a relay comes up, and a write failure is still a boot failure rather than a 500 at
+ * the first sign-in.
+ */
+export function getJwtSecret(): string {
+  cachedJwtSecret ??= process.env.JWT_SECRET ?? loadOrCreatePersistedSecret(config.local.dataDir)
+  return cachedJwtSecret
 }
 
 export const config = load()
-export const jwtSecret = loadJwtSecret()
+checkJwtSecretEnv()

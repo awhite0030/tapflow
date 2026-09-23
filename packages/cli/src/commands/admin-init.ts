@@ -1,5 +1,5 @@
 import { text, password, isCancel, cancel } from '@clack/prompts'
-import { config } from '@tapflowio/relay'
+import { config, assertInstallDir } from '@tapflowio/relay'
 import { createSpinner, banner, step } from '../lib/print.js'
 import { isInteractive } from '../lib/interactive.js'
 
@@ -8,6 +8,7 @@ export interface InitOptions {
 }
 
 export async function cmdAdminInit(opts: InitOptions): Promise<void> {
+  assertInstallDir()
   // **Both ends, before either question.** Self-hosting sends headless servers here, and a run that
   // cannot answer used to draw the email prompt, never settle, and exit **0** with no account
   // created and no spinner — indistinguishable from success to the script that called it. Failing

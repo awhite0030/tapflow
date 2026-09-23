@@ -88,9 +88,9 @@ setup은 부팅 가능한 디바이스/AVD를 준비하는 데까지만 하며 �
 
 ## `tapflow init`
 
-`tapflow.config.json`을 인터랙티브하게 생성합니다. `tapflow start` 전에 한 번 실행합니다.
+이 머신의 tapflow를 설정합니다. `tapflow.config.json`, 코딩 에이전트가 읽는 `AGENTS.md`와 `CLAUDE.md`, 그리고 DNS 자동 발급을 선택하면 자격 증명 `.env`까지 만듭니다. 어느 디렉토리에서 실행해도 됩니다. 설치 디렉토리에 쓰고, 기본값은 `~/.tapflow`이며 `TAPFLOW_HOME`이나 현재 디렉토리의 기존 설치가 있으면 그쪽입니다([명령이 쓰는 설치 디렉토리](/ko/guide/configure#명령이-쓰는-설치-디렉토리)). 디렉토리가 없으면 만듭니다.
 
-`tapflow.config.json`이 이미 존재하면 `--force` 없이는 오류로 종료합니다.
+다시 실행하면 설정은 그대로 두고 `AGENTS.md`의 tapflow 섹션만 갱신하므로, 기존 설치도 이 문서를 받을 수 있습니다. 설정을 새로 만들려면 `--force`를 씁니다. 이미 설정이 있는데 `--tunnel`을 주면 오류로 멈춥니다. 설정을 유지하면 그 플래그를 무시하게 되기 때문입니다.
 
 터널 플래그 없이 대화형 터미널에서 실행하면 터널 선택 화면이 표시됩니다. 비대화형 환경에서 `--tunnel` 없이 실행하면 터널 없는 기본 설정 파일이 생성됩니다.
 
@@ -107,7 +107,10 @@ Tailscale 예시:
 
 ```sh
 tapflow init --tunnel tailscale
-# ✓ tapflow.config.json created.
+# ✓ CONFIG CREATED
+# Install dir: /Users/you/.tapflow (default)
+# tapflow.config.json created.
+# AGENTS.md created for your coding agent.
 # Tunnel: tailscale
 # → Next: tapflow start
 ```
@@ -116,8 +119,14 @@ tapflow init --tunnel tailscale
 
 ```sh
 tapflow init
-# ✓ tapflow.config.json created.
+# ✓ CONFIG CREATED
 # → Next: tapflow start
+```
+
+다른 디렉토리에 설치를 만들 때:
+
+```sh
+TAPFLOW_HOME=/var/lib/tapflow tapflow init
 ```
 
 

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { AgentRegistry } from '@tapflowio/agent-core'
-import { config } from '@tapflowio/relay'
+import { config, assertInstallDir } from '@tapflowio/relay'
 import { requestAudioPermission, isAudioSupported } from '@tapflowio/ios-agent'
 import '@tapflowio/android-agent'
 import { banner, createSpinner } from '../lib/print.js'
@@ -22,6 +22,7 @@ const relayUrlSchema = z
   })
 
 export async function cmdAgentStart(opts: AgentStartOptions): Promise<void> {
+  assertInstallDir()
   const rawRelay = opts.relay ?? DEFAULT_RELAY
   const relayResult = relayUrlSchema.safeParse(rawRelay)
   if (!relayResult.success) {

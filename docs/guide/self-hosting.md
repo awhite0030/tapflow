@@ -66,8 +66,8 @@ as the variables below:
 ```
 
 An environment variable rather than the config file, because the relay reads `tapflow.config.json`
-from its working directory — `/app` in the image — and the Compose volume mounts
-`/app/.tapflow/data`, so a file placed there is never opened. The same value also goes into the
+from its install directory, which `TAPFLOW_HOME` in the image pins to `/app`, while the Compose
+volume mounts `/app/.tapflow/data` — so a file placed in the volume is never opened. The same value also goes into the
 CORS and CSRF allowlist, which a proxied deployment needs.
 :::
 
@@ -148,7 +148,7 @@ Once set, keep this value stable — changing it invalidates all active sessions
 
 ### tapflow.config.json
 
-The relay reads `tapflow.config.json` from the working directory. See [Configuration](/reference/configuration).
+The relay reads `tapflow.config.json` from this machine's install directory — `~/.tapflow` by default, or wherever `TAPFLOW_HOME` points. On a server, set `TAPFLOW_HOME` in the service environment so the unit, your shell and any `tapflow` command you run by hand all mean the same install. See [Configuration](/reference/configuration).
 
 ## Internal access (same network)
 
@@ -367,21 +367,21 @@ Deploying the relay to fly.io, Railway, or similar services puts the agent→rel
 
 ## Backup
 
-The relay keeps its durable state under the resolved data directory (default: `.tapflow/data/`; `TAPFLOW_DATA_DIR` can override `local.dataDir`). Back up that directory before OS upgrades, relay migration, or any long-running team pilot.
+The relay keeps its durable state under the resolved data directory — `~/.tapflow/data/` on a default install, or `<install>/.tapflow/data/` for one that lives in its own folder from an earlier version. `tapflow start` and `tapflow relay start` print the directory they resolved; `TAPFLOW_DATA_DIR` overrides `local.dataDir`. Back that directory up before OS upgrades, relay migration, or any long-running team pilot.
 
-If you are upgrading from a version that stored state in `.tapflow-data/`, nothing breaks — a pinned `local.dataDir` is honored and a config-less default install keeps reading the existing `.tapflow-data/`. Run `tapflow migrate data-dir` once to adopt the unified layout: it atomically renames `.tapflow-data/` → `.tapflow/data/` (no copy, no data loss), repoints `local.dataDir` when it pinned the old default, and updates `.gitignore`.
+If you are upgrading from a version that stored state in `.tapflow-data/`, nothing breaks: a pinned `local.dataDir` is honored and a config-less install keeps reading the existing `.tapflow-data/`. Run `tapflow migrate data-dir` once to adopt the unified layout: it atomically renames `.tapflow-data/` → `.tapflow/data/` (no copy, no data loss), repoints `local.dataDir` when it pinned the old default, and updates `.gitignore`.
 
-Important paths below use the default directory name. If you configured a different data directory, replace `.tapflow/data/` with that path.
+The paths below are inside that data directory — the one on the `Data →` line `tapflow start` prints.
 
 Important paths:
 
 | Path | Why it matters |
 |------|----------------|
-| `.tapflow/data/tapflow.db` | SQLite database for accounts, apps, builds, sessions, comments, tokens, and settings. |
-| `.tapflow/data/tapflow.db-wal` / `.tapflow/data/tapflow.db-shm` | SQLite WAL sidecar files. Include them in filesystem snapshots, or use Litestream so changes are captured safely. |
-| `.tapflow/data/uploads/` | Uploaded build artifacts served by the relay. |
-| `.tapflow/data/recordings/` | Session recordings uploaded through the relay. |
-| `.tapflow/data/.env` and `.tapflow/data/jwt-secret` | Relay secrets. Keep them private and restore them with the data directory so existing sessions and integrations keep working. |
+| `tapflow.db` | SQLite database for accounts, apps, builds, sessions, comments, tokens, and settings. |
+| `tapflow.db-wal` / `tapflow.db-shm` | SQLite WAL sidecar files. Include them in filesystem snapshots, or use Litestream so changes are captured safely. |
+| `uploads/` | Uploaded build artifacts served by the relay. |
+| `recordings/` | Session recordings uploaded through the relay. |
+| `.env` and `jwt-secret` | Relay secrets. Keep them private and restore them with the data directory so existing sessions and integrations keep working. |
 
 ### Recommended: Litestream for SQLite
 
@@ -395,11 +395,11 @@ brew install litestream
 
 On Linux, install the Litestream release binary for your architecture from the official releases page.
 
-Create `litestream.yml` next to your tapflow config:
+Create `litestream.yml` next to your tapflow config, with an absolute database path — Litestream resolves a relative one against its own working directory, which is not necessarily the install:
 
 ```yaml
 dbs:
-  - path: .tapflow/data/tapflow.db
+  - path: /Users/you/.tapflow/data/tapflow.db
     replicas:
       - type: s3
         bucket: YOUR_BUCKET
@@ -424,10 +424,13 @@ pm2 save
 Restore the database before starting tapflow on a new host:
 
 ```sh
-litestream restore -config litestream.yml -if-replica-exists .tapflow/data/tapflow.db
+DATA_DIR=/Users/you/.tapflow/data   # ~/.tapflow/data, $TAPFLOW_HOME/data, or your TAPFLOW_DATA_DIR
+litestream restore -config litestream.yml -if-replica-exists "$DATA_DIR/tapflow.db"
 ```
 
-Then restore `.tapflow/data/uploads/`, `.tapflow/data/recordings/`, `.tapflow/data/.env`, and `.tapflow/data/jwt-secret` from your file backup. Litestream protects the SQLite database only; build files, recordings, and secrets still need a normal filesystem or object-storage backup.
+Work the directory out from those rules rather than by starting tapflow to see what it prints: the first start creates an empty `tapflow.db`, and `litestream restore` will not overwrite a database that already exists.
+
+Then restore `uploads/`, `recordings/`, `.env`, and `jwt-secret` inside that same data directory from your file backup. Litestream protects the SQLite database only; build files, recordings, and secrets still need a normal filesystem or object-storage backup.
 
 ## PM2 (keeping the relay Mac always on)
 
@@ -472,12 +475,14 @@ sudo mkdir -p /etc/tapflow /var/lib/tapflow/.tapflow/data
 sudo chown -R tapflow:tapflow /var/lib/tapflow
 ```
 
-Put relay secrets in `/etc/tapflow/relay.env`. The existing [JWT_SECRET](#jwt-secret) section also describes the `.tapflow/data/.env` convention that the relay reads directly:
+Put relay secrets in `/etc/tapflow/relay.env`. The existing [JWT_SECRET](#jwt-secret) section also describes the `.env` convention that the relay reads directly from its data directory:
 
 ```ini
 TAPFLOW_DATA_DIR=/var/lib/tapflow/.tapflow/data
 JWT_SECRET=YOUR_JWT_SECRET
 ```
+
+`TAPFLOW_HOME` alone would put the data in `/var/lib/tapflow/data`. `TAPFLOW_DATA_DIR` is named here anyway, so this unit matches a server set up before the install directory existed and keeps its data where it already is. Drop the line on a fresh server if you prefer the shorter layout.
 
 Generate `JWT_SECRET` with `openssl rand -hex 32`, then keep `/etc/tapflow/relay.env` readable only by root:
 
@@ -498,6 +503,7 @@ Type=simple
 User=tapflow
 Group=tapflow
 WorkingDirectory=/var/lib/tapflow
+Environment=TAPFLOW_HOME=/var/lib/tapflow
 EnvironmentFile=/etc/tapflow/relay.env
 ExecStart=/usr/bin/env tapflow relay start
 Restart=on-failure
@@ -524,7 +530,7 @@ what you list. Keep it elsewhere, or switch to `ProtectHome=read-only`. This is
 also why the `tapflow` user is given a home in `/var/lib/tapflow` above rather
 than under `/home`.
 
-Place `tapflow.config.json` in `/var/lib/tapflow` if you need to customize the port or other settings, because that is the service `WorkingDirectory`.
+Place `tapflow.config.json` in `/var/lib/tapflow` if you need to customize the port or other settings, because `TAPFLOW_HOME` above makes that the install directory. Set the same variable in your own shell before running `tapflow` commands by hand, or they will read the default install in your home directory instead of the service's.
 
 Run a smoke test before enabling the service, so a problem arrives as a message
 you can read instead of a unit that restarts every five seconds. `systemd-run`
@@ -532,7 +538,7 @@ applies the same sandbox the unit will, which a plain `sudo -u tapflow` would
 not — the directives above are what most often turn out to be the problem:
 
 ```sh
-sudo systemd-run --pty --unit=tapflow-smoke   --property=User=tapflow --property=Group=tapflow   --property=WorkingDirectory=/var/lib/tapflow   --property=EnvironmentFile=/etc/tapflow/relay.env   --property=NoNewPrivileges=true   --property=ProtectSystem=strict   --property=ProtectHome=true   --property=PrivateTmp=true   --property=ReadWritePaths=/var/lib/tapflow   /usr/bin/env tapflow relay start
+sudo systemd-run --pty --unit=tapflow-smoke   --property=User=tapflow --property=Group=tapflow   --property=WorkingDirectory=/var/lib/tapflow   --property=Environment=TAPFLOW_HOME=/var/lib/tapflow   --property=EnvironmentFile=/etc/tapflow/relay.env   --property=NoNewPrivileges=true   --property=ProtectSystem=strict   --property=ProtectHome=true   --property=PrivateTmp=true   --property=ReadWritePaths=/var/lib/tapflow   /usr/bin/env tapflow relay start
 ```
 
 In another shell, confirm the relay answers. Give it the URL rather than relying

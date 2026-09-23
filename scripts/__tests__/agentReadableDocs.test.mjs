@@ -279,6 +279,21 @@ describe('llms.txt indexes the whole site', () => {
     expect(text).toContain(`${SITE}/llms-full.txt`)
     expect(text).toContain('`.md` suffix')
   })
+
+  /**
+   * **Both files say the bundle can arrive truncated.** Measured 2026-09-23: Claude Code's fetch cut
+   * `llms-full.txt` at 99,973 of 191,529 characters and then answered that `tapflow reset` "is not
+   * mentioned anywhere in the documentation" — the CLI, API and configuration references are all
+   * past the cut. The warning belongs in the bundle's own header too, because that header is the
+   * one part of it a truncated read still receives.
+   */
+  it('warns that a truncated fetch of the bundle loses the reference pages', async () => {
+    expect(llmsTxt()).toMatch(/truncates or summarises a large fetch/)
+    const r = await run()
+    expect(r.full).toMatch(/truncates or summarises a large fetch/)
+    // The length is derived from the pages, so it cannot go stale as the docs grow.
+    expect(r.full).toMatch(/This file is about \d[\d,]* characters long/)
+  })
 })
 
 // ---------------------------------------------------------------------------------------------

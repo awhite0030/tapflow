@@ -19,7 +19,7 @@ import { BuildTicketStore } from './lib/buildTickets.js'
 import { resolveCorsHeaders } from './lib/cors.js'
 import { isCsrfBlocked } from './lib/csrf.js'
 import { pickLanAddress, runningInContainer } from './lib/lanAddress.js'
-import { config } from './lib/config.js'
+import { config, getJwtSecret } from './lib/config.js'
 import { forTeammates, resolveAgentRelayUrl, resolvePublicBaseUrl, type TunnelRuntime } from './lib/publicUrl.js'
 import { createTrailingRequester, systemTimerScheduler, type TrailingRequester } from './lib/trailingRequester.js'
 import { getDb } from './db.js'
@@ -478,6 +478,9 @@ export class RelayServer {
   }
 
   start(): Promise<void> {
+    // Creates this install's JWT secret if it has none. Here rather than at import, so commands
+    // that never run a relay stop leaving one behind — and a write failure is still a boot failure.
+    getJwtSecret()
     purgeExpiredRecordings(this.recordingsDir)
     this.purgeRecordingsTimer = setInterval(() => purgeExpiredRecordings(this.recordingsDir), 24 * 60 * 60 * 1000)
     this.purgeRecordingsTimer.unref()

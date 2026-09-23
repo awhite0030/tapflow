@@ -1,3 +1,4 @@
+import { resolveInstallDir } from '@tapflowio/relay'
 import { banner, step, DIM, R } from '../lib/print.js'
 import { migrateDataDir } from '../lib/migrate-data-dir.js'
 import {
@@ -7,8 +8,13 @@ import {
 import { terminalApprovalDeps } from '../lib/approval-prompt.js'
 
 // `tapflow migrate data-dir` — one-shot move of a legacy .tapflow-data/ into the unified .tapflow/data/.
+//
+// **The install dir, like every other command.** It read the cwd until the install dir existed, and
+// the docs now tell a server operator to set TAPFLOW_HOME and run tapflow commands from wherever
+// they are — which would have reported "nothing to migrate" while the install's legacy directory
+// stayed exactly where it was, with the relay warning about it on every start.
 export function cmdMigrateDataDir(): void {
-  const result = migrateDataDir(process.cwd())
+  const result = migrateDataDir(resolveInstallDir().dir)
   switch (result.status) {
     case 'migrated': {
       const lines = ['Moved .tapflow-data/ → .tapflow/data/.']
