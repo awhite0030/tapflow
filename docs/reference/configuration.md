@@ -240,7 +240,7 @@ Flow files are not part of the install: keep them in your app repository under `
 
 To change the data directory location, set `TAPFLOW_DATA_DIR` or `local.dataDir`. Back up the data directory to preserve all data.
 
-Upgrading from a version that kept its data in the directory you started the relay from? Nothing moves. That directory still counts as the install while it holds `tapflow.config.json`, `.tapflow/data` or `.tapflow-data`, so running the relay there uses exactly what it used before — and `local.dataDir`, including the `.tapflow/data` older `init` and `tapflow migrate data-dir` write, resolves against the config file beside it. To adopt the unified layout, run `tapflow migrate data-dir` once: it atomically renames `.tapflow-data/` → `.tapflow/data/` (no copy, no data loss), repoints `local.dataDir` when it pinned the old default, and updates `.gitignore`.
+Upgrading from a version that kept its data in the directory you started the relay from? Nothing moves. That directory still counts as the install while it holds `tapflow.config.json`, `.tapflow/data` or `.tapflow-data`, so running the relay there uses exactly what it used before — and `local.dataDir`, including the `.tapflow/data` older `init` and `tapflow migrate data-dir` write, resolves against the config file beside it. To adopt the unified layout, stop the relay and run `tapflow migrate data-dir` once: it atomically renames `.tapflow-data/` → `.tapflow/data/` (no copy, no data loss), repoints `local.dataDir` when it pinned the old default, and updates `.gitignore`.
 
 ## SMTP
 

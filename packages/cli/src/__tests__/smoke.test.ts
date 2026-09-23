@@ -59,6 +59,20 @@ describe('CLI smoke tests', () => {
     expect(stdout).toContain('--help')
   })
 
+  // Only the refusals are spawned: a bare `tapflow migrate` on this machine would act on its real
+  // network filter. What it runs is `commands/migrate.test.ts`'s subject.
+  it('tapflow migrate foo → unknown subcommand, exit 1', () => {
+    const { stderr, status } = run('migrate', 'foo')
+    expect(status).toBe(1)
+    expect(stderr).toContain('Unknown subcommand: migrate foo')
+  })
+
+  it('tapflow migrate --ignore-running-devices → refused, exit 1, nothing run', () => {
+    const { stderr, status } = run('migrate', '--ignore-running-devices')
+    expect(status).toBe(1)
+    expect(stderr).toContain('applies to `migrate net-filter` only')
+  })
+
   it('tapflow relay start → 배너 출력 후 대기 (즉시 종료하지 않음)', () => {
     return new Promise<void>((resolve, reject) => {
       const dataDir = path.join(os.tmpdir(), `tapflow-smoke-${Date.now()}`)

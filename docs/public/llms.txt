@@ -47,7 +47,7 @@
 
 ## Reference
 
-- [CLI Reference](https://www.tapflow.dev/reference/cli): Every command with a section on that page — doctor, setup, init, admin init, start, relay start, agent start, devices, boot, reset, status, logs, migrate data-dir, migrate net-filter. `tapflow flow run` is documented under Flow Reference instead.
+- [CLI Reference](https://www.tapflow.dev/reference/cli): Every command with a section on that page — doctor, setup, init, admin init, start, relay start, agent start, devices, boot, reset, status, logs, migrate, migrate data-dir, migrate net-filter. `tapflow flow run` is documented under Flow Reference instead.
 - [Configuration](https://www.tapflow.dev/reference/configuration): tapflow.config.json schema and environment variable overrides (JWT_SECRET, TAPFLOW_PORT, TAPFLOW_DATA_DIR, SMTP_*, etc.).
 - [Streaming Quality](https://www.tapflow.dev/guide/streaming): The three streaming profiles (Standard / Smooth / Remote), which one a viewer gets from how it connects, the decoder and resolution behind each, and how to tune the resolution.
 - [Audio](https://www.tapflow.dev/guide/audio): Device audio in the browser — on by default on both platforms, the one-time permission, per-agent opt-out with TAPFLOW_AUDIO=off, volume, and why the agent Mac itself stays silent.

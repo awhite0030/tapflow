@@ -11,6 +11,7 @@ import { requireAuth, requireBuildAuth } from '../middleware/auth.js'
 import { json, readJson } from '../router.js'
 import { unlinkSafe } from '../lib/uploads.js'
 import { deliverWebhooks } from '../lib/webhooks.js'
+import { resolveBuildFile } from '../lib/buildFiles.js'
 
 // ── archive kind ───────────────────────────────────────────────────────────
 
@@ -714,7 +715,10 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
 }
 
 
-export function purgeExpiredBuilds(recordingsDir: string): void {
+// `uploadsDir` is this install's, because the stored `file_path` names wherever the data directory
+// was at upload time — see `resolveBuildFile`. Without it a moved install's expired builds kept
+// their files for good, and the purge deleted only the rows.
+export function purgeExpiredBuilds(recordingsDir: string, uploadsDir: string): void {
   const db = getDb()
   const expired = db.prepare(
     `SELECT id, file_path FROM builds WHERE delete_after IS NOT NULL AND delete_after < datetime('now')`
@@ -741,7 +745,8 @@ export function purgeExpiredBuilds(recordingsDir: string): void {
   }
 
   for (const { file_path } of expired) {
-    unlinkSafe(file_path, 'build')
+    const found = resolveBuildFile(file_path, uploadsDir)
+    if (found !== null) unlinkSafe(found, 'build')
   }
   for (const chunk of chunks) {
     const ph = chunk.map(() => '?').join(',')

@@ -354,9 +354,30 @@ tapflow logs
 | `--relay <url>` | `relay.url` in config, or `http://localhost:4000` | Relay URL. Omit if `relay.url` is set in `tapflow.config.json`. |
 | `--lines <n>` | `100` | Number of log lines to show (max 500) |
 
+## `tapflow migrate`
+
+Run every migration this install still needs, after an upgrade.
+
+```sh
+tapflow migrate
+```
+
+It checks each migration below and lists the ones that apply:
+
+- `data-dir`, when the install directory has a `.tapflow-data/` with data in it.
+- `net-filter`, on macOS, when the iOS network filter is installed but older than this version of tapflow, or installed and not filtering. A Mac that never installed the filter is left alone, because the filter is optional.
+
+In a terminal it shows the list and asks once. Without one (CI, a provisioning script) it prints the list and runs it without asking, the same as each subcommand does on its own. The `net-filter` step can still stop to ask about the macOS approval.
+
+Migrations run in order, and the first one that fails stops the rest with exit code 1. Nothing to do exits 0. When both `.tapflow-data/` and `.tapflow/data/` exist, `data-dir` is reported and skipped, because only you can tell which one holds your data. `net-filter` is reported and skipped the same way when the filter app was deleted but its extension is still running; `tapflow doctor ios` explains that state.
+
+`--ignore-running-devices` is not accepted here. Run `tapflow migrate net-filter --ignore-running-devices` for that.
+
 ## `tapflow migrate data-dir`
 
 Move a legacy `.tapflow-data/` into the unified `.tapflow/data/` layout. Run this once after upgrading; it is idempotent and safe to re-run.
+
+Stop the relay first. If something is listening on the relay's port (`local.port`, or `TAPFLOW_PORT`), the command refuses and moves nothing: a relay running during the move would put later uploads back into `.tapflow-data/`. A relay started on another port with `tapflow relay start --port` is not detected, so stop that one yourself.
 
 ```sh
 tapflow migrate data-dir
@@ -368,7 +389,7 @@ What it does:
 - Repoints `local.dataDir` in `tapflow.config.json` when it still pins the old default `.tapflow-data`. A custom path is left untouched.
 - Adds `.tapflow/data/` and `.tapflow/artifacts/` to `.gitignore` so the moved secrets stay out of git.
 
-Existing installs keep working without running this — a pinned `local.dataDir` is honored, and a config-less default install keeps reading `.tapflow-data/`. If the two paths are on different filesystems, or both already exist, the command stops and prints the manual step instead of guessing.
+Existing installs keep working without running this — a pinned `local.dataDir` is honored, and a config-less default install keeps reading `.tapflow-data/`. If the two paths are on different filesystems, or both already exist, the command stops and prints the manual step instead of guessing. The config is rewritten before the move and put back if the move fails; if it cannot be put back, the command prints the value to set it back to.
 
 ## `tapflow migrate net-filter`
 
