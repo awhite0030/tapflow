@@ -33,13 +33,16 @@ export interface AdbRunner {
   listAvds(): Promise<string[]>
 }
 
+
+const ADB_MAXBUFFER = 64 * 1024 * 1024
+
 export const defaultRunner: AdbRunner = {
   async exec(...args: string[]): Promise<string> {
-    const { stdout } = await execFileAsync(getAdbPath(), args)
+    const { stdout } = await execFileAsync(getAdbPath(), args, { maxBuffer: ADB_MAXBUFFER })
     return stdout
   },
   async execBinary(...args: string[]): Promise<Buffer> {
-    const { stdout } = await execFileAsync(getAdbPath(), args, { encoding: 'buffer' })
+    const { stdout } = await execFileAsync(getAdbPath(), args, { encoding: 'buffer', maxBuffer: ADB_MAXBUFFER })
     return stdout
   },
   async listAvds(): Promise<string[]> {
