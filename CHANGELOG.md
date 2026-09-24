@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Increase ADB maxBuffer to 64MB** ([#842](https://github.com/jo-duchan/tapflow/issues/842)). This allows `screenshot` on Android devices to capture PNGs larger than 1 MiB without failing with a `stdout maxBuffer length exceeded` error, and similarly prevents the same failure during UI tree dumps via `uiautomator` on complex screens.
 - **Changing a build's status under a status filter no longer drops focus to the top of the App Center** ([#833](https://github.com/jo-duchan/tapflow/issues/833)). When the new status was one the filter hides, the refetch removed the row along with the control that had focus. Focus now moves to the next build in the release, or the previous one, or the neighbouring release's header, and that control says why the build disappeared. If the list empties, focus goes to the search box as before. A change the server refuses moves nothing.
 - **Four more App Center accessibility gaps** ([#834](https://github.com/jo-duchan/tapflow/issues/834)):
   - After a retry, the first release is announced in its actual state from the start. It used to be announced collapsed and then report its own expansion.
