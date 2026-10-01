@@ -188,6 +188,7 @@ export function QASession() {
                 sessionId={activeSessionId}
                 deviceId={deviceId}
                 formFactor={selectedDevice?.formFactor ?? activeFormFactor}
+                platform={os}
                 buildId={build?.id}
                 resetMode={appliedResetMode}
                 onRecordingUploaded={handleRecordingUploaded}

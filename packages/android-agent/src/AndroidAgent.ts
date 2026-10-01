@@ -5,9 +5,10 @@ import type {
   AndroidButton, BootAbandonReason, ClipboardErrorPayload, Device, DeviceAgent,
   NetworkControlCapability, NetworkStatePayload, UIElement,
 } from '@tapflowio/agent-core'
+import { formFactorOf } from './avdConfig.js'
 import type {
   AgentControlOutbound, ClipboardReplyBody, OpenUrlReplyBody,
-  AppInstallReplyBody, AppLaunchReplyBody, AppClearStateReplyBody, DevicePosture,
+  AppInstallReplyBody, AppLaunchReplyBody, AppClearStateReplyBody, DevicePosture, FormFactor,
 } from '@tapflowio/protocol'
 import fs from 'fs'
 import path from 'path'
@@ -358,6 +359,8 @@ export interface AndroidAgentOptions {
   handshakeTimeoutMs?: number
   /** Lean mode (`agent.lean`): keep bundled Google apps nobody testing needs disabled. See `LeanPackages`. */
   lean?: boolean
+  /** An AVD's form factor by name, for `agent:register`. Defaults to reading its config.ini (`avdConfig`). */
+  avdFormFactor?: (avdName: string) => FormFactor | undefined
 }
 
 // Everything inside the per-device clipboard section must be bounded, or one stuck call wedges
@@ -456,6 +459,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
   private readonly token?: string
   private readonly handshakeTimeoutMs: number
   private readonly lean: boolean
+  private readonly avdFormFactor: (avdName: string) => FormFactor | undefined
   /** How long a shutdown whose kill failed watches for the emulator to finish exiting. A field so tests can
    *  shorten it — see `handleDeviceShutdown` for why it waits at all. */
   private shutdownSettleMs = 3_000
@@ -467,6 +471,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
     this.token = options.token
     this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? 10_000
     this.lean = options.lean ?? false
+    this.avdFormFactor = options.avdFormFactor ?? ((name) => formFactorOf(name))
     this.reconnectDelays = options.reconnectDelays ?? [1000, 2000, 4000, 8000, 16000, 30000]
     // No-op under vitest so the suite never spawns real `caffeinate` processes.
     this.sleepBlocker = options.sleepBlocker ?? (process.env.VITEST ? { acquire() {}, release() {} } : createSleepBlocker())
@@ -524,6 +529,9 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
             platform: d.platform,
             status: d.status,
             osVersion: d.osVersion,
+            // Read here and nowhere else — `listDevices` runs in the boot and refresh paths too, and
+            // the config does not change while the agent is connected.
+            formFactor: this.avdFormFactor(d.name),
           })),
         })
       })

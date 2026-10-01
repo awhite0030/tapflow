@@ -297,6 +297,25 @@ describe('AndroidAgent', () => {
       void registerPromise
     })
 
+    // The dashboard draws the boot skeleton from this before the device is up. Read from each AVD's
+    // config.ini by name, at register only. Mutations: leave it out of the register literal (the
+    // explicit field list there is what drops anything not named); look it up by the device id
+    // (`avd:<name>`) rather than the AVD name.
+    it('registers each AVD with the form factor its config gives', async () => {
+      const avdFormFactor = vi.fn((name: string) => (name === 'Pixel_8_API_34' ? 'tablet' as const : undefined))
+      const agent = new AndroidAgent({ avdFormFactor }, mockAdb())
+      const relayWs = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(relayWs)
+      await agent.connect(`ws://localhost:${port}`)
+      relayWs.send(JSON.stringify({ type: 'agents:list' }))
+      const listed = await waitForType(relayWs, 'agents:listed')
+      const sessions = listed['sessions'] as Array<{ devices: Array<{ formFactor?: string }> }>
+      expect(sessions[0].devices[0].formFactor).toBe('tablet')
+      expect(avdFormFactor).toHaveBeenCalledWith('Pixel_8_API_34')
+      agent.disconnect()
+      relayWs.close()
+    })
+
     it('registers one session per device', async () => {
       const adb = mockAdb()
       const agent = new AndroidAgent({}, adb)
