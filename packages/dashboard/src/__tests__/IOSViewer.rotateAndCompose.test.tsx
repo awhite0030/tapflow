@@ -115,7 +115,7 @@ describe('IOSViewer — the recorder gets a composer, and the simulator gets put
     expect(rotateCalls(send)).toHaveLength(2)
     // The session it is addressed to, not only that something went out — the cleanup reads
     // `sessionId` at unmount now rather than capturing it at mount.
-    expect(rotateCalls(send)[1][0]).toEqual({ type: 'input:rotate', sessionId: 's1' })
+    expect(rotateCalls(send)[1][0]).toEqual({ type: 'input:rotate', sessionId: 's1', orientation: 'portrait' })
   })
 
   it('leaves a simulator it never turned alone', () => {

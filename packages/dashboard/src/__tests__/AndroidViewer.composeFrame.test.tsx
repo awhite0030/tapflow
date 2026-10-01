@@ -290,7 +290,7 @@ describe('AndroidViewer — putting the device back the way it was found', () =>
     // The session the message is addressed to, not only that a message went out: the cleanup reads
     // `sessionId` at unmount now rather than capturing it at mount, and a count cannot tell a
     // rotate sent to this device from one sent to nobody.
-    expect(rotateCalls(send)[1][0]).toEqual({ type: 'input:rotate', sessionId: 's1' })
+    expect(rotateCalls(send)[1][0]).toEqual({ type: 'input:rotate', sessionId: 's1', orientation: 'portrait' })
   })
 
   it('leaves a device it never turned alone', () => {

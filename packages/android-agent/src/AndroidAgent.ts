@@ -2609,6 +2609,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         break
       }
       case 'input:rotate': {
+        const { orientation } = msg as unknown as { orientation?: 'portrait' | 'landscape' }
         const state = this.deviceStates.get(msg.sessionId)
         if (!state) break
         const serial = this.adb.getSerial(state.deviceId)
@@ -2617,7 +2618,7 @@ export class AndroidAgent implements DeviceAgent, NetworkControlCapability {
         // rotate so rotation-capable apps re-layout. user_rotation=3 = canonical landscape
         // (home-left/punch-right). Portrait-locked apps ignore it — the viewer's CSS handles
         // their cosmetic rotation.
-        const next = !state.landscape
+        const next = orientation ? (orientation === 'landscape') : !state.landscape
         state.landscape = next
         void this.adb.setRotation(serial, next ? 3 : 0)
           .then(async () => {

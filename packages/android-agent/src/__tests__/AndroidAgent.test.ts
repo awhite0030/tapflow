@@ -2373,15 +2373,15 @@ describe('AndroidAgent', () => {
         const rotateSpy = vi.spyOn(adb, 'setRotation')
         expect(getState().landscape).toBe(false)
 
-        inject({ type: 'input:rotate' })
+        inject({ type: 'input:rotate', orientation: 'landscape' })
         expect(rotateSpy).toHaveBeenCalledWith('emulator-5554', 3)
         expect(getState().landscape).toBe(true)
       })
 
       it('rotates back to portrait (0) on the second toggle', () => {
         const rotateSpy = vi.spyOn(adb, 'setRotation')
-        inject({ type: 'input:rotate' })
-        inject({ type: 'input:rotate' })
+        inject({ type: 'input:rotate', orientation: 'landscape' })
+        inject({ type: 'input:rotate', orientation: 'portrait' })
         expect(rotateSpy).toHaveBeenNthCalledWith(2, 'emulator-5554', 0)
         expect(getState().landscape).toBe(false)
       })
@@ -4250,7 +4250,7 @@ describe('what a rotation does on each backend', () => {
     const agent = new AndroidAgent({}, adb)
     const state = stateOn(backend)
     internals(agent).deviceStates.set('s1', state)
-    internals(agent).handleRelayMessage({ type: 'input:rotate', sessionId: 's1' })
+    internals(agent).handleRelayMessage({ type: 'input:rotate', sessionId: 's1', orientation: 'landscape' })
     // The gRPC path samples `dumpsys` until it settles (3 reads, `TAPFLOW_METRICS_GAP_MS=1`
     // in this suite), so a microtask drain is not enough — wait real time for both branches.
     await new Promise((r) => setTimeout(r, 60))

@@ -290,7 +290,7 @@ describe('browser-inbound routing matches the protocol union', () => {
       'input:key': 'payload requestId sessionId',
       'input:type': 'payload requestId sessionId',
       'input:button': 'payload requestId sessionId',
-      'input:rotate': 'sessionId',
+      'input:rotate': 'orientation? sessionId',
       'input:keyboard:toggle': 'sessionId',
       'clipboard:read': 'payload? requestId sessionId',
       'clipboard:write': 'payload requestId sessionId',

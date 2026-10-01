@@ -365,9 +365,10 @@ export function AndroidViewer({
 
   const handleRotate = useCallback(() => {
     setRotatePending(true)
-    send({ type: 'input:rotate', sessionId })
+    const next = userWantsLandscape ? 'portrait' : 'landscape'
+    send({ type: 'input:rotate', sessionId, orientation: next })
     setUserWantsLandscape((prev) => !prev)
-  }, [send, sessionId])
+  }, [userWantsLandscape, send, sessionId])
 
   // Reset device orientation to portrait on unmount if we left it in landscape (iOS pattern).
   //
@@ -377,7 +378,7 @@ export function AndroidViewer({
   // any more: the React Compiler skips the entire file that carries one, whichever rule it names.
   const undoRotateRef = useRef<(() => void) | null>(null)
   useEffect(() => {
-    undoRotateRef.current = userWantsLandscape ? () => send({ type: 'input:rotate', sessionId }) : null
+    undoRotateRef.current = userWantsLandscape ? () => send({ type: 'input:rotate', sessionId, orientation: 'portrait' }) : null
   }, [userWantsLandscape, send, sessionId])
   useEffect(() => () => { undoRotateRef.current?.() }, [])
 
