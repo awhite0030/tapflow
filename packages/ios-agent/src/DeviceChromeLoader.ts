@@ -811,8 +811,12 @@ export class DeviceChromeLoader {
       // Get logical screen dimensions from the device type's plists
       const screenSize = loadProfileScreenSize(typeIdentifier)
       if (!screenSize) return null
-      const screenW = screenSize.width
-      const screenH = screenSize.height
+      const logicalWidth = screenSize.width
+      const logicalHeight = screenSize.height
+
+      // The slices determine the screen size in pixels
+      const screenW = logicalWidth
+      const screenH = logicalHeight
 
       // Device body = bezel insets + screen (baguette: canvasSize = insets + innerSize)
       const compositeW = leftWidth  + screenW + rightWidth
@@ -867,8 +871,8 @@ export class DeviceChromeLoader {
         },
         screenRect,
         screenCornerRadius: Math.round(screenCornerRadius1x * scale),
-        logicalWidth:  screenW,
-        logicalHeight: screenH,
+        logicalWidth,
+        logicalHeight,
         buttons,
       }
     } catch {
