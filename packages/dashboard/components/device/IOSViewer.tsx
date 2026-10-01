@@ -316,8 +316,9 @@ export function IOSViewer({
   }, [recordState, startClientRecording, stopClientRecording, recordCanvasRef])
 
   const handleRotate = useCallback(() => {
-    send({ type: 'input:rotate', sessionId }); setIsLandscape(prev => !prev)
-  }, [send, sessionId])
+    const next = isLandscape ? 'portrait' : 'landscape'
+    send({ type: 'input:rotate', sessionId, orientation: next }); setIsLandscape(prev => !prev)
+  }, [isLandscape, send, sessionId])
 
   // Reset device orientation to portrait on unmount if we left it in landscape.
   //
@@ -327,7 +328,7 @@ export function IOSViewer({
   // any more: the React Compiler skips the entire file that carries one, whichever rule it names.
   const undoRotateRef = useRef<(() => void) | null>(null)
   useEffect(() => {
-    undoRotateRef.current = isLandscape ? () => send({ type: 'input:rotate', sessionId }) : null
+    undoRotateRef.current = isLandscape ? () => send({ type: 'input:rotate', sessionId, orientation: 'portrait' }) : null
   }, [isLandscape, send, sessionId])
   useEffect(() => () => { undoRotateRef.current?.() }, [])
 

@@ -836,6 +836,8 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
       // device it is taking down — and one that revives itself, so the stale reference outlives the
       // boot that returns just below.
       if (seq !== state.bootSeq) { this.abandonBoot(state, seq, sessionId, requestId); return }
+      state.orientation = 'portrait'
+      this.simctl.rotate(state.deviceId, 'portrait').catch((e) => logger.warn(`could not reset orientation on boot: ${(e as Error).message}`))
       this.sendChromeData(state, bootedDevice)
 
       const streamWs = await this.openStreamWs(state)
@@ -1265,9 +1267,14 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
         break
       }
       case 'input:rotate': {
+        const { orientation } = msg as unknown as { orientation?: 'portrait' | 'landscape' }
         const state = this.deviceStates.get(msg.sessionId)
         if (!state) break
-        state.orientation = state.orientation === 'portrait' ? 'landscapeRight' : 'portrait'
+        if (orientation) {
+          state.orientation = orientation === 'portrait' ? 'portrait' : 'landscapeRight'
+        } else {
+          state.orientation = state.orientation === 'portrait' ? 'landscapeRight' : 'portrait'
+        }
         this.simctl.rotate(state.deviceId, state.orientation)
           .catch((e) => logger.error('rotate failed:', e))
         break

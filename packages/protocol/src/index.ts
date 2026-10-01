@@ -1566,6 +1566,7 @@ export interface InputButton {
 export interface InputRotate {
   type: 'input:rotate'
   sessionId: string
+  orientation?: 'portrait' | 'landscape'
 }
 
 /**

@@ -297,6 +297,25 @@ describe('AndroidAgent', () => {
       void registerPromise
     })
 
+    // The dashboard draws the boot skeleton from this before the device is up. Read from each AVD's
+    // config.ini by name, at register only. Mutations: leave it out of the register literal (the
+    // explicit field list there is what drops anything not named); look it up by the device id
+    // (`avd:<name>`) rather than the AVD name.
+    it('registers each AVD with the form factor its config gives', async () => {
+      const avdFormFactor = vi.fn((name: string) => (name === 'Pixel_8_API_34' ? 'tablet' as const : undefined))
+      const agent = new AndroidAgent({ avdFormFactor }, mockAdb())
+      const relayWs = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(relayWs)
+      await agent.connect(`ws://localhost:${port}`)
+      relayWs.send(JSON.stringify({ type: 'agents:list' }))
+      const listed = await waitForType(relayWs, 'agents:listed')
+      const sessions = listed['sessions'] as Array<{ devices: Array<{ formFactor?: string }> }>
+      expect(sessions[0].devices[0].formFactor).toBe('tablet')
+      expect(avdFormFactor).toHaveBeenCalledWith('Pixel_8_API_34')
+      agent.disconnect()
+      relayWs.close()
+    })
+
     it('registers one session per device', async () => {
       const adb = mockAdb()
       const agent = new AndroidAgent({}, adb)
@@ -2373,15 +2392,15 @@ describe('AndroidAgent', () => {
         const rotateSpy = vi.spyOn(adb, 'setRotation')
         expect(getState().landscape).toBe(false)
 
-        inject({ type: 'input:rotate' })
+        inject({ type: 'input:rotate', orientation: 'landscape' })
         expect(rotateSpy).toHaveBeenCalledWith('emulator-5554', 3)
         expect(getState().landscape).toBe(true)
       })
 
       it('rotates back to portrait (0) on the second toggle', () => {
         const rotateSpy = vi.spyOn(adb, 'setRotation')
-        inject({ type: 'input:rotate' })
-        inject({ type: 'input:rotate' })
+        inject({ type: 'input:rotate', orientation: 'landscape' })
+        inject({ type: 'input:rotate', orientation: 'portrait' })
         expect(rotateSpy).toHaveBeenNthCalledWith(2, 'emulator-5554', 0)
         expect(getState().landscape).toBe(false)
       })
@@ -4250,7 +4269,7 @@ describe('what a rotation does on each backend', () => {
     const agent = new AndroidAgent({}, adb)
     const state = stateOn(backend)
     internals(agent).deviceStates.set('s1', state)
-    internals(agent).handleRelayMessage({ type: 'input:rotate', sessionId: 's1' })
+    internals(agent).handleRelayMessage({ type: 'input:rotate', sessionId: 's1', orientation: 'landscape' })
     // The gRPC path samples `dumpsys` until it settles (3 reads, `TAPFLOW_METRICS_GAP_MS=1`
     // in this suite), so a microtask drain is not enough — wait real time for both branches.
     await new Promise((r) => setTimeout(r, 60))

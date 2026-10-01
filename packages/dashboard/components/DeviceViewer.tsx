@@ -1,5 +1,6 @@
 'use client';
 
+import { skeletonSize } from '@/lib/deviceSkeleton';
 import type { BrowserToRelay, FormFactor, SessionTerminatedReason } from '@tapflowio/protocol'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useRelay } from '@/hooks/useRelay';
@@ -24,8 +25,11 @@ import { toast } from 'sonner';
 interface Props {
   sessionId: string;
   deviceId: string;
-  /** From the device list; the iOS viewer reads it for an iPad's volume tooltips. */
+  /** From the device list; the iOS viewer reads it for an iPad's volume tooltips, and the boot
+   *  skeleton for its shape. */
   formFactor?: FormFactor;
+  /** The platform being tested, known before the chrome is — the skeleton turns a tablet by it. */
+  platform?: string;
   buildId?: number;
   resetMode?: 'app-only' | 'full-erase';
   onRecordingUploaded?: () => void;
@@ -38,7 +42,7 @@ interface Props {
   onSessionEnded?: (reason: SessionTerminatedReason | 'busy-elsewhere' | 'mac-overloaded') => void;
 }
 
-export function DeviceViewer({ sessionId, deviceId, formFactor, buildId, resetMode, onRecordingUploaded, onSessionEnded }: Props) {
+export function DeviceViewer({ sessionId, deviceId, formFactor, platform = 'ios', buildId, resetMode, onRecordingUploaded, onSessionEnded }: Props) {
   const sendRef = useRef<(msg: BrowserToRelay) => void>(() => {});
   // One reset per mount; see the boot handler below.
   const resetSentRef = useRef(false);
@@ -713,9 +717,9 @@ export function DeviceViewer({ sessionId, deviceId, formFactor, buildId, resetMo
           ))}
         </div>
         <div className="flex items-start gap-8">
-          {/* phone body skeleton */}
+          {/* device body skeleton, shaped by the form factor the device list reported */}
           <div aria-hidden="true" style={{ background: '#1c1c1e', borderRadius: '34px', padding: '12px', flexShrink: 0 }}>
-            <div className="animate-pulse bg-zinc-700" style={{ width: 324, height: 720, borderRadius: '22px' }} />
+            <div data-testid="device-skeleton" className="animate-pulse bg-zinc-700" style={{ ...skeletonSize(formFactor, platform), borderRadius: '22px' }} />
           </div>
           <SimulatorInfoCard
             joined={joined} fps={0} connected={connected}

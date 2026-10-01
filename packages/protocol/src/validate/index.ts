@@ -166,7 +166,7 @@ const BROWSER_INBOUND = {
     type: z.literal('input:button'), sessionId, requestId,
     payload: z.object({ name: z.string(), phase: z.enum(['down', 'up']).optional() }),
   }),
-  'input:rotate': z.object({ type: z.literal('input:rotate'), sessionId }),
+  'input:rotate': z.object({ type: z.literal('input:rotate'), sessionId, orientation: z.enum(['portrait', 'landscape']).optional() }),
   'input:posture': z.object({
     type: z.literal('input:posture'), sessionId,
     payload: z.object({ postureId: z.string() }),
