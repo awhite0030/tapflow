@@ -817,6 +817,11 @@ export class IOSAgent implements DeviceAgent, NetworkControlCapability {
       state.streamReader?.cancel().catch(() => { /* an errored stream rejects cancel(); unhandled, it ends the CLI */ })
       state.streamReader = null
       state.captureStreamer = null // reader.cancel() kills the helper proc; drop the ref so a stale requestKeyframe() no-ops
+      if (state.audioPoll) { clearInterval(state.audioPoll); state.audioPoll = null }
+      state.audioStreamer?.stop() // closes the loopback server → the helper sees EOF and exits
+      state.audioStreamer = null
+      state.audioPort = 0
+      state.audioPids = null
       state.touchHelper?.stop()
       state.touchHelper = null
       state.booted = false

@@ -1109,6 +1109,45 @@ describe('IOSAgent', () => {
       browser.close()
     })
 
+    it('stops an audio capture streamer that boot created while a newer boot was in flight', async () => {
+      // similar to the above test, but for audio.
+      MockAudioStreamer.mockClear()
+      const simctl = mockSimctl(false)
+      let releaseBoot = (): void => {}
+      ;(simctl.boot as ReturnType<typeof vi.fn>).mockImplementation(
+        () => new Promise<void>((resolve) => { releaseBoot = () => resolve() }),
+      )
+      // fake audioEnabled to true during test
+      process.env.TAPFLOW_AUDIO = 'on'
+
+      const browser = new WebSocket(`ws://localhost:${port}`)
+      await waitForOpen(browser)
+      const agent = new IOSAgent({ intervalMs: 50 }, simctl)
+      await agent.connect(`ws://localhost:${port}`)
+      browser.send(JSON.stringify({ type: 'session:start', sessionId: agent.sessionId }))
+      await waitForType(browser, 'session:joined')
+
+      const booting1 = waitForType(browser, 'device:booting')
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-4', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await booting1
+
+      releaseBoot()
+      await waitForType(browser, 'device:ready')
+
+      await vi.waitFor(() => expect(MockAudioStreamer).toHaveBeenCalledTimes(1))
+      const instance = MockAudioStreamer.mock.results[0].value as { stop: ReturnType<typeof vi.fn> }
+
+      const booting2 = waitForType(browser, 'device:booting')
+      browser.send(JSON.stringify({ type: 'device:boot', requestId: 'rq-fix-5', sessionId: agent.sessionId, payload: { deviceId: 'dev-1' } }))
+      await booting2
+
+      expect(instance.stop).toHaveBeenCalled()
+
+      agent.disconnect()
+      browser.close()
+      delete process.env.TAPFLOW_AUDIO
+    })
+
     it('stops a helper that input created while a boot was still in flight', async () => {
       // handleDeviceBoot clears the helper up front and then awaits simctl. An input arriving
       // inside that window builds a fresh one through ensureTouchHelper, and sendChromeData
