@@ -1110,7 +1110,6 @@ describe('IOSAgent', () => {
     })
 
     it('stops an audio capture streamer that boot created while a newer boot was in flight', async () => {
-      // similar to the above test, but for audio.
       MockAudioStreamer.mockClear()
       const simctl = mockSimctl(false)
       let releaseBoot = (): void => {}
