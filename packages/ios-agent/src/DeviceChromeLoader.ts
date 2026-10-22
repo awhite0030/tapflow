@@ -843,6 +843,10 @@ export class DeviceChromeLoader {
           height: Math.round(screenH * scale),
         }
 
+        const screenSize = loadProfileScreenSize(typeIdentifier)
+        const logicalWidth = screenSize ? screenSize.width : Math.round(screenW)
+        const logicalHeight = screenSize ? screenSize.height : Math.round(screenH)
+
         return {
           framePng: readFileSync(framePath).toString('base64'),
           bezelWidth:  Math.round((pdfSize.width  - paddingLeft - paddingRight)  * scale),
@@ -857,8 +861,8 @@ export class DeviceChromeLoader {
           },
           screenRect,
           screenCornerRadius: Math.round(screenCornerRadius1x * scale),
-          logicalWidth:  Math.round(screenW),
-          logicalHeight: Math.round(screenH),
+          logicalWidth,
+          logicalHeight,
           buttons,
         }
       }
