@@ -1,4 +1,4 @@
-import type { UIElement } from '@tapflowio/agent-core'
+import { PlatformError, type UIElement } from '@tapflowio/agent-core'
 import type { Flow, Selector, Step, ScrollDirection } from './schema.js'
 import { matchSelector } from './selector.js'
 import { suggestSelectors, type SelectorSuggestion } from './suggest.js'
@@ -394,6 +394,7 @@ export async function runFlow(flow: Flow, driver: FlowDriver, options: EngineOpt
       steps.push({ index, name, status: 'passed', durationMs: Date.now() - stepStart })
       options.onStep?.({ index, name, phase: 'end', status: 'passed' })
     } catch (e) {
+      if (e instanceof PlatformError) throw e
       const message = e instanceof Error ? e.message : String(e)
       failureMessage = `${name}: ${message}`
       if (failureKind === undefined) failureKind = isEnvironmentStepFailure(e) ? 'environment' : 'product'
