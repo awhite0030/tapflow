@@ -68,6 +68,7 @@ export function useFocusAfterSwap<T extends HTMLElement>(view: string, fallback?
   const ref = useRef<T>(null)
   const lastFocused = useRef<Element | null>(null)
   const shownView = useRef(view)
+  const wasInside = useRef(false)
 
   useEffect(() => {
     const clearOnMove = () => { lastFocused.current = null }
@@ -88,7 +89,10 @@ export function useFocusAfterSwap<T extends HTMLElement>(view: string, fallback?
     }
   }, [])
 
-  const onFocus = useCallback((e: FocusEvent) => { lastFocused.current = e.target }, [])
+  const onFocus = useCallback((e: FocusEvent) => {
+    lastFocused.current = e.target as Element
+    wasInside.current = ref.current?.contains(e.target as Node) ?? false
+  }, [])
 
   useLayoutEffect(() => {
     const swapped = shownView.current !== view
@@ -98,8 +102,17 @@ export function useFocusAfterSwap<T extends HTMLElement>(view: string, fallback?
     // Decided on once, whether or not this commit was the swap: a record kept past a removal that
     // was not a swap would pull focus in on some later swap nobody connects with it.
     lastFocused.current = null
-    if (!swapped) return
     if (document.activeElement !== document.body) return
+
+    if (!swapped) {
+      if (!wasInside.current) return
+      // A removal within the same view (e.g. a row leaving a list).
+      // We fall back to the provided fallback instead of the first control in the region,
+      // avoiding arbitrary jumps to unrelated list items.
+      fallback?.current?.focus()
+      return
+    }
+
     ;(ref.current?.querySelector<HTMLElement>(FOCUSABLE) ?? fallback?.current)?.focus()
   })
 
