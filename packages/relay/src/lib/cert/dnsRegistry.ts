@@ -1,6 +1,7 @@
 import type { DnsProvider } from './DnsProvider.js'
 import { cloudflareDnsFromEnv } from './CloudflareDnsProvider.js'
 import { vercelDnsFromEnv } from './VercelDnsProvider.js'
+import { route53DnsFromEnv } from './Route53DnsProvider.js'
 
 // DNS provider 확장점(OCP). 새 공급자는 어댑터 + register()만으로 추가된다 —
 // createCertProvider/addressPublisher/config 스키마/wizard는 이 레지스트리만 조회한다.
@@ -51,4 +52,11 @@ dnsProviders.register({
   hint: 'auto-issue & renew via API token (env TAPFLOW_VERCEL_TOKEN)',
   envVars: ['TAPFLOW_VERCEL_TOKEN'],
   fromEnv: vercelDnsFromEnv,
+})
+dnsProviders.register({
+  name: 'route53',
+  label: 'AWS Route53',
+  hint: 'auto-issue & renew via IAM keys (env AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)',
+  envVars: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'],
+  fromEnv: route53DnsFromEnv,
 })
